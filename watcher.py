@@ -19,8 +19,9 @@ load_dotenv()
 BASE = "https://gradedcardcenter.com"
 FIXED_PRICE_URL = 'https://gradedcardcenter.com/filtres?sellingTypes=%5B%22FIXED_PRICE%22%5D'
 
+MIN_PRICE = 10.0
 MAX_PRICE = float(os.getenv("MAX_PRICE_EUR", "100"))
-MIN_DISCOUNT = float(os.getenv("MIN_DISCOUNT_PCT", "20"))
+MIN_DISCOUNT = 30.0
 MAX_AUCTION_MINUTES = int(os.getenv("MAX_AUCTION_MINUTES", "60"))
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 
@@ -103,11 +104,22 @@ def save_state(state: dict) -> None:
     )
 
 
+def normalize_money(raw: str) -> float:
+    clean = (
+        raw.replace("'", "")
+        .replace("’", "")
+        .replace("\u00a0", "")
+        .replace(" ", "")
+        .replace(",", ".")
+    )
+    return float(clean)
+
+
 def parse_money(text: str) -> Optional[float]:
     vals = []
     for m in MONEY_RE.findall(text or ""):
         try:
-            vals.append(float(m.replace(",", ".")))
+            vals.append(normalize_money(m))
         except ValueError:
             pass
     return vals[0] if vals else None
@@ -155,7 +167,7 @@ def collect_live_auction_urls(page) -> list[str]:
 
 def parse_sale_countdown_minutes(body: str) -> Optional[int]:
     # Sur une page de vente GCC, le compte à rebours global apparaît près du haut.
-    head = (body or "")[:4000]
+    head = body or ""
     values = {}
 
     patterns = {
@@ -258,7 +270,7 @@ def collect_lots_from_listing(page, url: str, source_type: str) -> list[Lot]:
                 continue
 
             price = parse_money(blob)
-            if price is None or price > MAX_PRICE:
+            if price is None or price < MIN_PRICE or price > MAX_PRICE:
                 continue
 
             title = ""
@@ -306,7 +318,7 @@ def parse_grader_grade(text: str) -> tuple[str, str]:
 
 
 def parse_item_countdown_minutes(body: str) -> tuple[Optional[int], str]:
-    head = (body or "")[:3500]
+    head = body or ""
     values = {}
 
     patterns = {
@@ -417,7 +429,7 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
 
     for price_match in MONEY_RE.finditer(section):
         try:
-            price = float(price_match.group(1).replace(",", "."))
+            price = normalize_money(price_match.group(1))
         except ValueError:
             continue
 
@@ -470,7 +482,7 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
 
 
 def estimate_with_grade(lot: Lot, sales: list[HistoricalSale]) -> Optional[Opportunity]:
-    if lot.current_price is None or lot.current_price <= 0 or lot.current_price > MAX_PRICE:
+    if lot.current_price is None or lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
         return None
 
     try:
@@ -623,11 +635,12 @@ def main() -> int:
     state = load_state()
     now = datetime.now(timezone.utc).isoformat()
 
-    log("=== GCC Watcher V2 démarré ===")
-    log("Filtres: Pokémon + carte individuelle")
-    log(f"Prix max: {MAX_PRICE:.0f} €")
+    log("=== GCC Watcher V2.2 démarré ===")
+    log("Ordre des filtres: Pokémon -> carte -> prix -> temps -> valeur/décote")
+    log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
     log(f"Enchères: uniquement <= {MAX_AUCTION_MINUTES} min")
     log("Prix fixes: inclus")
+    log(f"Décote minimale: {MIN_DISCOUNT:.0f}%")
     log("Valorisation: grade exact en priorité + bornes grades voisins")
 
     with sync_playwright() as p:
@@ -653,67 +666,124 @@ def main() -> int:
         page.set_default_navigation_timeout(NAV_TIMEOUT)
 
         try:
+            # ------------------------------------------------------------
+            # 1) Récupérer TOUTES les cartes Pokémon dans la tranche de prix.
+            #    On ne limite surtout PAS encore à MAX_AUCTION_CANDIDATES.
+            # ------------------------------------------------------------
             auction_candidates: dict[str, Lot] = {}
             sales = collect_live_auction_urls(page)
             log(f"Ventes live détectées: {len(sales)}")
 
             for sale in sales:
-                if time.monotonic() - started > MAX_SCAN_SECONDS:
-                    break
-
                 try:
                     lots = collect_lots_from_listing(page, sale, "auction")
-                    log(f"- {len(lots)} cartes Pokémon <= {MAX_PRICE:.0f} € à moins d'1h")
+                    log(
+                        f"- {len(lots)} cartes Pokémon entre "
+                        f"{MIN_PRICE:.0f} et {MAX_PRICE:.0f} € trouvées"
+                    )
                     for lot in lots:
                         auction_candidates.setdefault(lot.url, lot)
                 except PlaywrightTimeoutError:
                     log(f"Timeout vente: {sale}")
 
-            auction_list = sorted(
-                auction_candidates.values(),
-                key=lambda x: x.current_price if x.current_price is not None else 999999,
-            )[:MAX_AUCTION_CANDIDATES]
+            raw_auction_list = list(auction_candidates.values())
+            log(f"Enchères Pokémon/prix avant filtre temps: {len(raw_auction_list)}")
 
+            # ------------------------------------------------------------
+            # 2) FILTRE TEMPS AVANT la limite de candidats et AVANT la décote.
+            #    On ouvre chaque fiche seulement pour confirmer le vrai prix,
+            #    le type de carte et le temps restant.
+            # ------------------------------------------------------------
+            ending_soon: list[Lot] = []
+
+            for idx, lot in enumerate(raw_auction_list, start=1):
+                lot = inspect_item(page, lot)
+
+                if not is_valid_pokemon_card(lot):
+                    continue
+
+                if lot.current_price is None:
+                    continue
+
+                if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+                    continue
+
+                if lot.minutes_to_end is None:
+                    log(f"[préfiltre {idx}] Ignoré: fin d'enchère non lisible")
+                    continue
+
+                if lot.minutes_to_end > MAX_AUCTION_MINUTES:
+                    continue
+
+                ending_soon.append(lot)
+
+            ending_soon.sort(
+                key=lambda x: (
+                    x.minutes_to_end if x.minutes_to_end is not None else 999999,
+                    x.current_price if x.current_price is not None else 999999,
+                )
+            )
+
+            log(
+                f"Enchères réellement <= {MAX_AUCTION_MINUTES} min "
+                f"et {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €: {len(ending_soon)}"
+            )
+
+            # Seulement maintenant on applique la limite.
+            auction_list = ending_soon[:MAX_AUCTION_CANDIDATES]
+            if len(ending_soon) > MAX_AUCTION_CANDIDATES:
+                log(
+                    f"Analyse de valeur limitée aux {MAX_AUCTION_CANDIDATES} "
+                    "enchères qui finissent le plus tôt."
+                )
+
+            # ------------------------------------------------------------
+            # 3) Prix fixes : Pokémon + carte + tranche de prix.
+            #    Pas de filtre de temps.
+            # ------------------------------------------------------------
             fixed_list = collect_lots_from_listing(page, FIXED_PRICE_URL, "fixed")
             fixed_list = sorted(
                 fixed_list,
                 key=lambda x: x.current_price if x.current_price is not None else 999999,
             )[:MAX_FIXED_CANDIDATES]
 
-            log(f"Cartes enchères à inspecter: {len(auction_list)}")
-            log(f"Cartes prix fixes à inspecter: {len(fixed_list)}")
+            log(f"Prix fixes à analyser: {len(fixed_list)}")
 
             opportunities: list[Opportunity] = []
             inspected = 0
 
+            # ------------------------------------------------------------
+            # 4) SEULEMENT ICI : historique, grades et décote.
+            # ------------------------------------------------------------
             for lot in auction_list + fixed_list:
-                if time.monotonic() - started > MAX_SCAN_SECONDS:
-                    log("Durée maximale du scan atteinte.")
-                    break
-
                 inspected += 1
-                lot = inspect_item(page, lot)
 
-                if lot.current_price is None or lot.current_price <= 0:
-                    log(f"[{inspected}] Ignoré: prix actuel non lisible")
-                    continue
-                if lot.current_price > MAX_PRICE:
-                    log(
-                        f"[{inspected}] Ignoré: prix actuel {lot.current_price:.2f} € "
-                        f"> budget {MAX_PRICE:.2f} €"
-                    )
-                    continue
+                # Les enchères ont déjà été ouvertes pendant le préfiltre.
+                # Les prix fixes doivent encore être inspectés.
+                if lot.source_type == "fixed" or not lot.body:
+                    lot = inspect_item(page, lot)
 
                 if not is_valid_pokemon_card(lot):
                     log(f"[{inspected}] Ignoré: pas une carte Pokémon individuelle")
                     continue
 
+                if lot.current_price is None:
+                    log(f"[{inspected}] Ignoré: prix non lisible")
+                    continue
+
+                if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+                    log(
+                        f"[{inspected}] Ignoré: prix {lot.current_price:.2f} € "
+                        f"hors tranche {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €"
+                    )
+                    continue
+
+                # Double sécurité sur le temps, mais ce n'est plus ce filtre
+                # qui consomme la limite MAX_AUCTION_CANDIDATES.
                 if lot.source_type == "auction":
                     if lot.minutes_to_end is None:
-                        log(f"[{inspected}] Ignoré: fin d'enchère non lisible")
                         continue
                     if lot.minutes_to_end > MAX_AUCTION_MINUTES:
-                        log(f"[{inspected}] Ignoré: fin dans {lot.minutes_to_end} min")
                         continue
 
                 history = extract_historical_sales(lot)
