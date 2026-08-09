@@ -583,13 +583,12 @@ def normalize_ebay_eur(raw: str) -> float:
 
 def extract_card_identity(lot: Lot) -> dict:
     """
-    Extrait quelques éléments stables de la fiche GCC pour construire une recherche
-    eBay plus précise: nom, référence, année, langue.
+    Extrait les éléments d'identité de la carte depuis la fiche GCC:
+    nom, référence, année, langue et série/set.
     """
     title = lot.title or ""
     body = lot.body or ""
 
-    # Enlève le grader + grade en tête du titre.
     core = title
     if lot.grader and lot.grade:
         core = re.sub(
@@ -598,11 +597,15 @@ def extract_card_identity(lot: Lot) -> dict:
             core,
             flags=re.I,
         )
-    core = re.sub(r"^\s*(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG)\s*\d+(?:[.,]\d)?\+?\s*", "", core, flags=re.I)
+    core = re.sub(
+        r"^\s*(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG)\s*\d+(?:[.,]\d)?\+?\s*",
+        "",
+        core,
+        flags=re.I,
+    )
     core = re.sub(r"\s+", " ", core).strip()
 
     ref = ""
-    # Cherche d'abord une référence type #108/100 ou #176.
     m = re.search(r"#\s*([A-Z0-9]{1,6}(?:/[A-Z0-9]{1,6})?)", body, re.I)
     if m:
         ref = m.group(1)
@@ -626,11 +629,32 @@ def extract_card_identity(lot: Lot) -> dict:
             language = canonical
             break
 
+    # Série/set: plusieurs libellés possibles selon la fiche GCC.
+    series = ""
+    series_patterns = [
+        r"(?:Série|Serie|Set|Extension)\s*:?\s*([^\n\r]{2,80})",
+        r"(?:Collection)\s*:?\s*([^\n\r]{2,80})",
+    ]
+    for pattern in series_patterns:
+        sm = re.search(pattern, body, re.I)
+        if sm:
+            candidate = sm.group(1).strip()
+            candidate = re.split(
+                r"\s{2,}|(?:Langue|Language|Année|Year|Référence|Reference|Grade|Gradation|Catégorie|Category)\s*:?",
+                candidate,
+                maxsplit=1,
+                flags=re.I,
+            )[0].strip(" -:|")
+            if candidate and len(candidate) >= 2:
+                series = candidate
+                break
+
     return {
         "core": core,
         "ref": ref,
         "year": year,
         "language": language,
+        "series": series,
     }
 
 
@@ -645,6 +669,7 @@ def ebay_queries_for_lot(lot: Lot) -> list[str]:
     ref = ident["ref"]
     year = ident["year"]
     language = ident["language"]
+    series = ident["series"]
 
     queries = []
 
@@ -655,25 +680,25 @@ def ebay_queries_for_lot(lot: Lot) -> list[str]:
             queries.append(q)
 
     # 1. Nom GCC + référence + grader + grade.
-    add(["Pokemon", core, ref, lot.grader, lot.grade])
+    add(["Pokemon", core, series, ref, lot.grader, lot.grade])
 
     # 2. Référence + année + grader + grade:
     #    indépendant du nom français/anglais du Pokémon.
     if ref:
-        add(["Pokemon", ref, year, lot.grader, lot.grade])
+        add(["Pokemon", series, ref, year, lot.grader, lot.grade])
 
     # 3. Référence + grade sans imposer la société de grading.
     if ref:
-        add(["Pokemon", ref, year, lot.grade])
+        add(["Pokemon", series, ref, year, lot.grade])
 
     # 4. Nom + grader/grade, utile si la référence n'est pas visible dans l'annonce eBay.
-    add(["Pokemon", core, lot.grader, lot.grade])
+    add(["Pokemon", core, series, lot.grader, lot.grade])
 
     # 5. Recherche plus large, dernier recours.
     if ref:
-        add(["Pokemon", ref, year])
+        add(["Pokemon", series, ref, year])
     else:
-        add(["Pokemon", core, year, language])
+        add(["Pokemon", core, series, year, language])
 
     return queries
 
@@ -722,6 +747,19 @@ def ebay_result_match_score(lot: Lot, title: str) -> tuple[int, str]:
     if ident["year"] and ident["year"] in t:
         score += 8
         reasons.append("année")
+
+    # Série / set.
+    series = (ident.get("series") or "").strip()
+    if series:
+        series_tokens = [
+            tok.lower()
+            for tok in re.findall(r"[A-Za-zÀ-ÿ0-9'-]{3,}", series)
+            if tok.lower() not in {"pokemon", "pokémon", "the", "de", "du", "des", "set"}
+        ]
+        series_hits = sum(1 for tok in series_tokens[:5] if tok in t)
+        if series_hits:
+            score += min(18, 6 * series_hits)
+            reasons.append(f"série({series_hits})")
 
     # Nom: utile mais non obligatoire si la référence correspond.
     stop = {
@@ -1197,6 +1235,7 @@ def notify(op: Opportunity) -> None:
 
     ident = extract_card_identity(op.lot)
     year_line = f"Année: {ident['year']}\n" if ident["year"] else ""
+    series_line = f"Série: {ident['series']}\n" if ident.get("series") else ""
 
     timing_line = ""
     if op.lot.source_type == "auction":
@@ -1219,6 +1258,7 @@ def notify(op: Opportunity) -> None:
         f"Type: {mode}\n"
         f"{grade_line}"
         f"{year_line}"
+        f"{series_line}"
         f"Prix: {op.lot.current_price:.2f} €\n"
         f"Estimation GCC: {gcc_market:.2f} €\n"
         f"{ebay_lines}"
@@ -1253,7 +1293,7 @@ def main() -> int:
     state = load_state()
     now = datetime.now(timezone.utc).isoformat()
 
-    log("=== GCC Watcher V3.3 FINAL (timer fix + eBay fast-fail) démarré ===")
+    log("=== GCC Watcher V3.4 FINAL (série + matching eBay) démarré ===")
     log("Ordre: prix fixes d'abord, puis enchères")
     log("Filtres enchères: Pokémon -> carte -> prix -> temps <= 60 min -> valeur/décote")
     log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
