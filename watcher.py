@@ -323,10 +323,21 @@ def main() -> int:
         log("Lancement Chromium...")
         browser = p.chromium.launch(headless=HEADLESS)
 
-        context = browser.new_context(
-            locale="fr-FR",
-            timezone_id="Europe/Zurich",
-        )
+        session_file = Path("gcc_session.json")
+
+        if session_file.exists():
+            log("Session GCC trouvée — démarrage authentifié")
+            context = browser.new_context(
+                locale="fr-FR",
+                timezone_id="Europe/Zurich",
+                storage_state=str(session_file),
+            )
+        else:
+            log("ATTENTION: aucune session GCC trouvée")
+            context = browser.new_context(
+                locale="fr-FR",
+                timezone_id="Europe/Zurich",
+            )
 
         page = context.new_page()
         page.set_default_timeout(TEXT_TIMEOUT)
