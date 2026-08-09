@@ -62,6 +62,7 @@ class Lot:
     body: str = ""
     grader: str = ""
     grade: str = ""
+    listing_text: str = ""
 
 
 @dataclass
@@ -285,13 +286,19 @@ def collect_lots_from_listing(page, url: str, source_type: str) -> list[Lot]:
             if not title:
                 title = text.splitlines()[0].strip() if text else item_url.rsplit("/", 1)[-1]
 
-            lots[item_url] = Lot(
+            lot = Lot(
                 url=item_url,
                 title=title,
                 current_price=price,
                 source_type=source_type,
                 sale_name=sale_name,
+                listing_text=blob,
             )
+
+            if source_type == "auction":
+                lot.minutes_to_end, lot.end_text = parse_listing_countdown_minutes(blob)
+
+            lots[item_url] = lot
         except Exception:
             continue
 
@@ -351,6 +358,50 @@ def parse_item_countdown_minutes(body: str) -> tuple[Optional[int], str]:
     )
     return total, label
 
+
+
+def parse_listing_countdown_minutes(text: str) -> tuple[Optional[int], str]:
+    """
+    Lit le temps restant directement dans le bloc d'une carte sur la page de vente.
+    Objectif: éviter d'ouvrir chaque fiche une par une.
+    Retourne (minutes, texte_timer).
+    """
+    raw = text or ""
+
+    # Cas explicite du type:
+    # "6 JOURS 18 HEURES 57 MINUTES 32 SEC"
+    unit_pattern = re.compile(
+        r"(?:(\d+)\s*(?:JOURS?|DAYS?))?.{0,25}?"
+        r"(?:(\d+)\s*(?:HEURES?|HOURS?|HRS?))?.{0,25}?"
+        r"(?:(\d+)\s*(?:MINUTES?|MINS?))?.{0,25}?"
+        r"(?:(\d+)\s*(?:SEC(?:ONDES?)?|SECONDS?))?",
+        re.I | re.S,
+    )
+
+    candidates = []
+    for m in unit_pattern.finditer(raw):
+        if not any(m.groups()):
+            continue
+        d = int(m.group(1) or 0)
+        h = int(m.group(2) or 0)
+        mn = int(m.group(3) or 0)
+        s = int(m.group(4) or 0)
+        total = d * 1440 + h * 60 + mn + (1 if s > 0 else 0)
+        label = f"{d}j {h}h {mn}m {s}s"
+        candidates.append((total, label))
+
+    if candidates:
+        # Le compteur pertinent est généralement le premier bloc complet rencontré.
+        return candidates[0]
+
+    # Cas condensé "00:42:17" ou "01:13:22"
+    for m in re.finditer(r"(?<!\d)(\d{1,2}):(\d{2}):(\d{2})(?!\d)", raw):
+        h, mn, s = map(int, m.groups())
+        if 0 <= mn < 60 and 0 <= s < 60:
+            total = h * 60 + mn + (1 if s > 0 else 0)
+            return total, m.group(0)
+
+    return None, ""
 
 def inspect_item(page, lot: Lot) -> Lot:
     try:
@@ -635,11 +686,10 @@ def main() -> int:
     state = load_state()
     now = datetime.now(timezone.utc).isoformat()
 
-    log("=== GCC Watcher V2.2 démarré ===")
-    log("Ordre des filtres: Pokémon -> carte -> prix -> temps -> valeur/décote")
+    log("=== GCC Watcher V2.3 démarré ===")
+    log("Ordre: prix fixes d'abord, puis enchères")
+    log("Filtres enchères: Pokémon -> carte -> prix -> temps <= 60 min -> valeur/décote")
     log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
-    log(f"Enchères: uniquement <= {MAX_AUCTION_MINUTES} min")
-    log("Prix fixes: inclus")
     log(f"Décote minimale: {MIN_DISCOUNT:.0f}%")
     log("Valorisation: grade exact en priorité + bornes grades voisins")
 
@@ -665,11 +715,66 @@ def main() -> int:
         page.set_default_timeout(TEXT_TIMEOUT)
         page.set_default_navigation_timeout(NAV_TIMEOUT)
 
+        opportunities: list[Opportunity] = []
+
         try:
-            # ------------------------------------------------------------
-            # 1) Récupérer TOUTES les cartes Pokémon dans la tranche de prix.
-            #    On ne limite surtout PAS encore à MAX_AUCTION_CANDIDATES.
-            # ------------------------------------------------------------
+            # ============================================================
+            # A) PRIX FIXES EN PREMIER
+            # ============================================================
+            log("=== Scan prix fixes ===")
+            fixed_list = collect_lots_from_listing(page, FIXED_PRICE_URL, "fixed")
+            fixed_list = sorted(
+                fixed_list,
+                key=lambda x: x.current_price if x.current_price is not None else 999999,
+            )[:MAX_FIXED_CANDIDATES]
+
+            log(f"Prix fixes candidats {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €: {len(fixed_list)}")
+
+            fixed_inspected = 0
+            for lot in fixed_list:
+                fixed_inspected += 1
+                lot = inspect_item(page, lot)
+
+                if not is_valid_pokemon_card(lot):
+                    continue
+
+                if lot.current_price is None:
+                    log(f"[fixe {fixed_inspected}] Ignoré: prix non lisible")
+                    continue
+
+                if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+                    log(
+                        f"[fixe {fixed_inspected}] Ignoré: prix {lot.current_price:.2f} € "
+                        f"hors tranche {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €"
+                    )
+                    continue
+
+                history = extract_historical_sales(lot)
+                log(
+                    f"[fixe {fixed_inspected}] {lot.current_price:.2f} € | "
+                    f"{lot.grader} {lot.grade} | historique: {len(history)} ventes"
+                )
+
+                state["seen"][lot.url] = {
+                    "price": lot.current_price,
+                    "seen_at": now,
+                    "title": lot.title,
+                    "source_type": lot.source_type,
+                    "grade": f"{lot.grader} {lot.grade}".strip(),
+                }
+
+                op = estimate_with_grade(lot, history)
+                if op:
+                    opportunities.append(op)
+
+            # ============================================================
+            # B) ENCHÈRES
+            # 1. Récupération des cartes depuis les listings
+            # 2. Temps lu DIRECTEMENT sur le listing
+            # 3. Fallback fiche individuelle seulement si timer illisible
+            # 4. La limite MAX_AUCTION_CANDIDATES vient APRES le temps
+            # ============================================================
+            log("=== Scan enchères ===")
             auction_candidates: dict[str, Lot] = {}
             sales = collect_live_auction_urls(page)
             log(f"Ventes live détectées: {len(sales)}")
@@ -677,10 +782,6 @@ def main() -> int:
             for sale in sales:
                 try:
                     lots = collect_lots_from_listing(page, sale, "auction")
-                    log(
-                        f"- {len(lots)} cartes Pokémon entre "
-                        f"{MIN_PRICE:.0f} et {MAX_PRICE:.0f} € trouvées"
-                    )
                     for lot in lots:
                         auction_candidates.setdefault(lot.url, lot)
                 except PlaywrightTimeoutError:
@@ -689,14 +790,35 @@ def main() -> int:
             raw_auction_list = list(auction_candidates.values())
             log(f"Enchères Pokémon/prix avant filtre temps: {len(raw_auction_list)}")
 
-            # ------------------------------------------------------------
-            # 2) FILTRE TEMPS AVANT la limite de candidats et AVANT la décote.
-            #    On ouvre chaque fiche seulement pour confirmer le vrai prix,
-            #    le type de carte et le temps restant.
-            # ------------------------------------------------------------
             ending_soon: list[Lot] = []
+            fallback_needed: list[Lot] = []
 
+            # Préfiltre ultra-rapide à partir du texte du listing.
             for idx, lot in enumerate(raw_auction_list, start=1):
+                if lot.minutes_to_end is None:
+                    fallback_needed.append(lot)
+                    log(
+                        f"[préfiltre {idx}] timer listing illisible -> fallback fiche"
+                    )
+                    continue
+
+                action = "GARDÉ" if lot.minutes_to_end <= MAX_AUCTION_MINUTES else "IGNORÉ"
+                log(
+                    f"[préfiltre {idx}] temps lu = \"{lot.end_text}\" "
+                    f"-> {lot.minutes_to_end} min -> {action}"
+                )
+
+                if lot.minutes_to_end <= MAX_AUCTION_MINUTES:
+                    ending_soon.append(lot)
+
+            log(
+                f"Timer lisible sur listing: "
+                f"{len(raw_auction_list) - len(fallback_needed)}/{len(raw_auction_list)}"
+            )
+            log(f"Fallback fiches nécessaire: {len(fallback_needed)}")
+
+            # Fallback seulement pour les cartes dont le timer n'était pas lisible sur le listing.
+            for idx, lot in enumerate(fallback_needed, start=1):
                 lot = inspect_item(page, lot)
 
                 if not is_valid_pokemon_card(lot):
@@ -709,13 +831,23 @@ def main() -> int:
                     continue
 
                 if lot.minutes_to_end is None:
-                    log(f"[préfiltre {idx}] Ignoré: fin d'enchère non lisible")
+                    log(f"[fallback {idx}] temps non lisible -> IGNORÉ")
                     continue
 
-                if lot.minutes_to_end > MAX_AUCTION_MINUTES:
-                    continue
+                action = "GARDÉ" if lot.minutes_to_end <= MAX_AUCTION_MINUTES else "IGNORÉ"
+                log(
+                    f"[fallback {idx}] temps lu = \"{lot.end_text}\" "
+                    f"-> {lot.minutes_to_end} min -> {action}"
+                )
 
-                ending_soon.append(lot)
+                if lot.minutes_to_end <= MAX_AUCTION_MINUTES:
+                    ending_soon.append(lot)
+
+            # Déduplication
+            dedup = {}
+            for lot in ending_soon:
+                dedup[lot.url] = lot
+            ending_soon = list(dedup.values())
 
             ending_soon.sort(
                 key=lambda x: (
@@ -729,7 +861,7 @@ def main() -> int:
                 f"et {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €: {len(ending_soon)}"
             )
 
-            # Seulement maintenant on applique la limite.
+            # Limite seulement APRES le filtre temps.
             auction_list = ending_soon[:MAX_AUCTION_CANDIDATES]
             if len(ending_soon) > MAX_AUCTION_CANDIDATES:
                 log(
@@ -737,56 +869,38 @@ def main() -> int:
                     "enchères qui finissent le plus tôt."
                 )
 
-            # ------------------------------------------------------------
-            # 3) Prix fixes : Pokémon + carte + tranche de prix.
-            #    Pas de filtre de temps.
-            # ------------------------------------------------------------
-            fixed_list = collect_lots_from_listing(page, FIXED_PRICE_URL, "fixed")
-            fixed_list = sorted(
-                fixed_list,
-                key=lambda x: x.current_price if x.current_price is not None else 999999,
-            )[:MAX_FIXED_CANDIDATES]
+            # ============================================================
+            # C) HISTORIQUE + GRADE + DÉCOTE SEULEMENT SUR LES <= 60 MIN
+            # ============================================================
+            auction_inspected = 0
+            for lot in auction_list:
+                auction_inspected += 1
 
-            log(f"Prix fixes à analyser: {len(fixed_list)}")
-
-            opportunities: list[Opportunity] = []
-            inspected = 0
-
-            # ------------------------------------------------------------
-            # 4) SEULEMENT ICI : historique, grades et décote.
-            # ------------------------------------------------------------
-            for lot in auction_list + fixed_list:
-                inspected += 1
-
-                # Les enchères ont déjà été ouvertes pendant le préfiltre.
-                # Les prix fixes doivent encore être inspectés.
-                if lot.source_type == "fixed" or not lot.body:
+                # Si le lot n'a pas été ouvert pendant le fallback, on l'ouvre maintenant
+                # uniquement parce qu'il a déjà passé le filtre temps.
+                if not lot.body:
                     lot = inspect_item(page, lot)
 
                 if not is_valid_pokemon_card(lot):
-                    log(f"[{inspected}] Ignoré: pas une carte Pokémon individuelle")
                     continue
 
                 if lot.current_price is None:
-                    log(f"[{inspected}] Ignoré: prix non lisible")
                     continue
 
                 if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
-                    log(
-                        f"[{inspected}] Ignoré: prix {lot.current_price:.2f} € "
-                        f"hors tranche {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €"
-                    )
                     continue
 
-                # Double sécurité sur le temps, mais ce n'est plus ce filtre
-                # qui consomme la limite MAX_AUCTION_CANDIDATES.
-                if lot.source_type == "auction":
-                    if lot.minutes_to_end is None:
-                        continue
-                    if lot.minutes_to_end > MAX_AUCTION_MINUTES:
-                        continue
+                # Double sécurité.
+                if lot.minutes_to_end is None or lot.minutes_to_end > MAX_AUCTION_MINUTES:
+                    continue
 
                 history = extract_historical_sales(lot)
+
+                log(
+                    f"[enchère {auction_inspected}] {lot.current_price:.2f} € | "
+                    f"fin {lot.end_text} | {lot.grader} {lot.grade} | "
+                    f"historique: {len(history)} ventes"
+                )
 
                 state["seen"][lot.url] = {
                     "price": lot.current_price,
@@ -796,15 +910,13 @@ def main() -> int:
                     "grade": f"{lot.grader} {lot.grade}".strip(),
                 }
 
-                log(
-                    f"[{inspected}] {lot.source_type} | {lot.current_price:.2f} € "
-                    f"| {lot.grader} {lot.grade} | historique: {len(history)} ventes"
-                )
-
                 op = estimate_with_grade(lot, history)
                 if op:
                     opportunities.append(op)
 
+            # ============================================================
+            # D) NOTIFICATIONS
+            # ============================================================
             for op in sorted(opportunities, key=lambda x: x.discount_pct, reverse=True):
                 key = op.lot.url
                 prev = state["notified"].get(key)
