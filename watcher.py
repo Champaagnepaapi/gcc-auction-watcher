@@ -34,7 +34,10 @@ MAX_SCAN_SECONDS = 300
 MAX_AUCTION_CANDIDATES = 120
 MAX_FIXED_CANDIDATES = 120
 
-MONEY_RE = re.compile(r"(?<!\d)(\d{1,5}(?:[.,]\d{1,2})?)\s*€", re.I)
+MONEY_RE = re.compile(
+    r"(?<!\d)(\d{1,3}(?:['’\s]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*€",
+    re.I,
+)
 HREF_ITEM_RE = re.compile(r"/item/[0-9a-f-]{20,}", re.I)
 
 SEALED_KEYWORDS = (
@@ -352,8 +355,15 @@ def inspect_item(page, lot: Lot) -> Lot:
         except Exception:
             pass
 
-        if lot.current_price is None:
-            lot.current_price = parse_money(body)
+        current_section = re.split(
+            r"Historique des ventes|Sales history",
+            body,
+            maxsplit=1,
+            flags=re.I,
+        )[0]
+        page_price = parse_money(current_section)
+        if page_price is not None:
+            lot.current_price = page_price
 
         lot.grader, lot.grade = parse_grader_grade(f"{lot.title}\n{body}")
 
@@ -460,7 +470,7 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
 
 
 def estimate_with_grade(lot: Lot, sales: list[HistoricalSale]) -> Optional[Opportunity]:
-    if lot.current_price is None or lot.current_price > MAX_PRICE:
+    if lot.current_price is None or lot.current_price <= 0 or lot.current_price > MAX_PRICE:
         return None
 
     try:
@@ -683,6 +693,16 @@ def main() -> int:
 
                 inspected += 1
                 lot = inspect_item(page, lot)
+
+                if lot.current_price is None or lot.current_price <= 0:
+                    log(f"[{inspected}] Ignoré: prix actuel non lisible")
+                    continue
+                if lot.current_price > MAX_PRICE:
+                    log(
+                        f"[{inspected}] Ignoré: prix actuel {lot.current_price:.2f} € "
+                        f"> budget {MAX_PRICE:.2f} €"
+                    )
+                    continue
 
                 if not is_valid_pokemon_card(lot):
                     log(f"[{inspected}] Ignoré: pas une carte Pokémon individuelle")
