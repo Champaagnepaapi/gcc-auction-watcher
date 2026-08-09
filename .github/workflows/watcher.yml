@@ -29,4 +29,7 @@ jobs:
           MIN_DISCOUNT_PCT: "20"
           HEADLESS: "true"
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python watcher.py
+          GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
+        run: |
+          echo "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
+          python watcher.py
