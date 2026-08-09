@@ -637,87 +637,206 @@ def extract_card_identity(lot: Lot) -> dict:
     }
 
 
-def ebay_query_for_lot(lot: Lot, broad: bool = False) -> str:
-    ident = extract_card_identity(lot)
-    parts = ["Pokemon", ident["core"]]
-
-    if ident["ref"]:
-        parts.append(ident["ref"])
-    if ident["year"]:
-        parts.append(ident["year"])
-    if ident["language"]:
-        parts.append(ident["language"])
-
-    # Recherche stricte = même grade/grader; broad = tous graders.
-    if not broad and lot.grader:
-        parts.append(lot.grader)
-    if not broad and lot.grade:
-        parts.append(lot.grade)
-
-    return " ".join(p for p in parts if p).strip()
-
-
-def ebay_result_matches_lot(lot: Lot, title: str) -> bool:
+def ebay_queries_for_lot(lot: Lot) -> list[str]:
     """
-    Matching conservateur. On privilégie la référence de carte lorsqu'elle existe.
-    Sinon on exige que les mots significatifs du nom soient présents.
+    Génère plusieurs recherches, de la plus stricte à la plus large.
+    Point clé: si GCC fournit un numéro/référence, on peut retrouver la même carte
+    même lorsque le nom eBay est en anglais (Otaquin -> Oshawott, etc.).
     """
     ident = extract_card_identity(lot)
-    t = (title or "").lower()
+    core = ident["core"]
+    ref = ident["ref"]
+    year = ident["year"]
+    language = ident["language"]
+
+    queries = []
+
+    def add(parts):
+        q = " ".join(str(p).strip() for p in parts if p and str(p).strip())
+        q = re.sub(r"\s+", " ", q).strip()
+        if q and q not in queries:
+            queries.append(q)
+
+    # 1. Nom GCC + référence + grader + grade.
+    add(["Pokemon", core, ref, lot.grader, lot.grade])
+
+    # 2. Référence + année + grader + grade:
+    #    indépendant du nom français/anglais du Pokémon.
+    if ref:
+        add(["Pokemon", ref, year, lot.grader, lot.grade])
+
+    # 3. Référence + grade sans imposer la société de grading.
+    if ref:
+        add(["Pokemon", ref, year, lot.grade])
+
+    # 4. Nom + grader/grade, utile si la référence n'est pas visible dans l'annonce eBay.
+    add(["Pokemon", core, lot.grader, lot.grade])
+
+    # 5. Recherche plus large, dernier recours.
+    if ref:
+        add(["Pokemon", ref, year])
+    else:
+        add(["Pokemon", core, year, language])
+
+    return queries
+
+
+def ebay_result_match_score(lot: Lot, title: str) -> tuple[int, str]:
+    """
+    Score de matching eBay.
+    La référence de carte est le signal le plus fort et permet de ne pas dépendre
+    du nom français du Pokémon.
+
+    Retour:
+      score >= 70 : comparable fort
+      50-69       : comparable acceptable si grade/grader cohérent
+      < 50        : rejeté
+    """
+    ident = extract_card_identity(lot)
+    raw_title = title or ""
+    t = raw_title.lower()
+    compact = re.sub(r"\s+", "", t)
 
     if "pokemon" not in t and "pokémon" not in t:
-        return False
+        return 0, "pas Pokemon"
 
     if any(word in t for word in SEALED_KEYWORDS):
-        return False
+        return 0, "produit scellé/accessoire"
 
+    score = 0
+    reasons = []
+
+    # Référence exacte = très forte identité de carte.
     ref = ident["ref"]
+    ref_matched = False
     if ref:
-        ref_norm = ref.lower().replace(" ", "")
-        title_norm = t.replace(" ", "")
-        if ref_norm not in title_norm:
-            return False
+        ref_forms = {
+            ref.lower().replace(" ", ""),
+            ref.lower().replace("#", "").replace(" ", ""),
+        }
+        for rf in ref_forms:
+            if rf and rf in compact.replace("#", ""):
+                ref_matched = True
+                score += 60
+                reasons.append("référence")
+                break
 
-    # Au moins un mot distinctif du nom de carte.
+    # Année.
+    if ident["year"] and ident["year"] in t:
+        score += 8
+        reasons.append("année")
+
+    # Nom: utile mais non obligatoire si la référence correspond.
     stop = {
         "ex", "gx", "v", "vmax", "vstar", "pokemon", "pokémon",
         "the", "de", "du", "des", "la", "le", "les", "and", "et",
+        "psa", "pca", "cgc", "bgs", "ccc",
     }
     tokens = [
         x.lower()
         for x in re.findall(r"[A-Za-zÀ-ÿ0-9'-]{3,}", ident["core"])
         if x.lower() not in stop
     ]
-    if tokens and not any(tok in t for tok in tokens[:4]):
-        return False
+    name_hits = sum(1 for tok in tokens[:5] if tok in t)
+    if name_hits:
+        score += min(20, 8 * name_hits)
+        reasons.append(f"nom({name_hits})")
 
-    # Si eBay annonce explicitement une langue différente de celle de GCC, on rejette.
+    # Si pas de référence, le nom devient obligatoire.
+    if not ref_matched and name_hits == 0:
+        return 0, "ni référence ni nom"
+
+    # Grade/grader de l'annonce.
+    result_grader, result_grade_text = parse_grader_grade(raw_title)
+    result_grade = None
+    if result_grade_text:
+        try:
+            result_grade = float(result_grade_text)
+        except ValueError:
+            pass
+
+    try:
+        target_grade = float(lot.grade) if lot.grade else None
+    except ValueError:
+        target_grade = None
+
+    if target_grade is not None and result_grade is not None:
+        diff = abs(result_grade - target_grade)
+        if diff == 0:
+            score += 20
+            reasons.append("grade exact")
+        elif diff <= 1:
+            score += 8
+            reasons.append("grade voisin")
+        else:
+            score -= 15
+            reasons.append("grade éloigné")
+    elif target_grade is not None:
+        score -= 10
+        reasons.append("grade eBay absent")
+
+    if lot.grader and result_grader:
+        if result_grader == lot.grader:
+            score += 10
+            reasons.append("grader exact")
+        else:
+            # Autorisé: on veut justement comparer PSA/PCA/CGC/etc.
+            score += 2
+            reasons.append(f"autre grader {result_grader}")
+
+    # Langue explicite contradictoire: pénalité, pas rejet automatique si ref exacte.
     lang = ident["language"].lower()
-    explicit_langs = {
-        "french", "japanese", "english", "german", "spanish", "italian",
-        "français", "japonais", "anglais", "allemand", "espagnol", "italien",
+    language_terms = {
+        "french": {"french", "français", "francais"},
+        "japanese": {"japanese", "japonais"},
+        "english": {"english", "anglais"},
+        "german": {"german", "allemand"},
+        "spanish": {"spanish", "espagnol"},
+        "italian": {"italian", "italien"},
     }
-    present = {x for x in explicit_langs if x in t}
+    all_terms = set().union(*language_terms.values())
+    present = {x for x in all_terms if x in t}
     if lang and present:
-        compatible = {
-            "french": {"french", "français"},
-            "japanese": {"japanese", "japonais"},
-            "english": {"english", "anglais"},
-            "german": {"german", "allemand"},
-            "spanish": {"spanish", "espagnol"},
-            "italian": {"italian", "italien"},
-        }
-        if not (present & compatible.get(lang, {lang})):
-            return False
+        expected = language_terms.get(lang, {lang})
+        if present & expected:
+            score += 8
+            reasons.append("langue")
+        else:
+            score -= 25
+            reasons.append("langue différente")
 
-    return True
+    return score, ", ".join(reasons)
+
+
+def robust_median_prices(prices: list[float]) -> list[float]:
+    """
+    Écarte uniquement les outliers extrêmes lorsqu'il y a assez de données.
+    On reste volontairement conservateur.
+    """
+    vals = sorted(p for p in prices if p > 0)
+    if len(vals) < 5:
+        return vals
+
+    med = median(vals)
+    if med <= 0:
+        return vals
+
+    # Conserve les ventes entre 40% et 250% de la médiane initiale.
+    filtered = [p for p in vals if 0.40 * med <= p <= 2.50 * med]
+    return filtered if len(filtered) >= 3 else vals
 
 
 def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     """
-    Scrape les résultats publics eBay "Objets vendus + terminés".
-    Les annonces "Meilleure offre acceptée" sont ignorées car le prix accepté
-    réel n'est pas forcément visible dans la liste.
+    Recherche publique eBay Sold/Completed sans API Developer.
+
+    Améliorations V3.1:
+    - plusieurs requêtes;
+    - recherche basée sur le numéro de carte si disponible;
+    - nom français non obligatoire lorsque la référence correspond;
+    - matching scoré;
+    - logs détaillés;
+    - exclusion des "Best Offer accepted" dont le vrai prix peut être ambigu.
     """
     if not EBAY_ENABLED:
         return []
@@ -725,26 +844,27 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     collected: list[HistoricalSale] = []
     seen = set()
 
-    queries = [
-        ebay_query_for_lot(lot, broad=False),
-        ebay_query_for_lot(lot, broad=True),
-    ]
+    queries = ebay_queries_for_lot(lot)
+    log(f"eBay: {len(queries)} requête(s) prévues pour {lot.title}")
 
-    for query in queries:
+    for q_index, query in enumerate(queries, start=1):
         if len(collected) >= EBAY_MAX_RESULTS:
             break
 
         url = (
             f"{EBAY_BASE}/sch/i.html"
             f"?_nkw={quote_plus(query)}"
-            f"&LH_Sold=1&LH_Complete=1&_ipg=60&_sop=13"
+            f"&LH_Sold=1&LH_Complete=1&_ipg=120&_sop=13"
         )
+
+        log(f"eBay q{q_index}: {query}")
 
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
             page.wait_for_timeout(EBAY_PAGE_WAIT_MS)
             body = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
-        except Exception:
+        except Exception as e:
+            log(f"eBay q{q_index}: erreur {type(e).__name__}")
             continue
 
         lower_body = body.lower()
@@ -754,13 +874,14 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             or "verify your identity" in lower_body
             or "captcha" in lower_body
         ):
-            log("eBay: anti-bot/captcha détecté, comparaison ignorée pour ce scan")
+            log("eBay: anti-bot/captcha détecté, validation eBay abandonnée pour ce scan")
             return []
 
         cards = page.locator("li.s-item")
-        count = min(cards.count(), 60)
+        raw_count = min(cards.count(), 120)
+        matched_this_query = 0
 
-        for i in range(count):
+        for i in range(raw_count):
             try:
                 txt = (cards.nth(i).inner_text(timeout=700) or "").strip()
             except Exception:
@@ -770,18 +891,16 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
                 continue
 
             low = txt.lower()
-
-            # Prix accepté non public -> on ne l'utilise pas.
             if "best offer accepted" in low or "meilleure offre acceptée" in low:
                 continue
 
             lines = [x.strip() for x in txt.splitlines() if x.strip()]
             title = lines[0] if lines else ""
-            # Certaines cartes eBay ont une première ligne générique.
             if title.lower() in {"shop on ebay", "explorer sur ebay"} and len(lines) > 1:
                 title = lines[1]
 
-            if not ebay_result_matches_lot(lot, title):
+            score, reason = ebay_result_match_score(lot, title)
+            if score < 50:
                 continue
 
             pm = EBAY_MONEY_RE.search(txt)
@@ -802,13 +921,18 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
                 try:
                     grade = float(grade_text)
                 except ValueError:
-                    grade = None
+                    pass
 
-            # Pour une carte GCC gradée, on demande au minimum un grade eBay lisible.
+            # Si la fiche cible est gradée, on ne garde qu'un résultat eBay avec grade lisible.
             if lot.grade and grade is None:
                 continue
 
-            key = (re.sub(r"\s+", " ", title.lower()), round(price, 2), grader, grade)
+            key = (
+                re.sub(r"\s+", " ", title.lower()),
+                round(price, 2),
+                grader,
+                grade,
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -818,15 +942,21 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
                     price=price,
                     grader=grader,
                     grade=grade,
-                    context=f"eBay SOLD | {title}"[:300],
+                    context=f"eBay SOLD score={score} ({reason}) | {title}"[:300],
                 )
             )
+            matched_this_query += 1
 
             if len(collected) >= EBAY_MAX_RESULTS:
                 break
 
-        # Si la recherche stricte donne déjà assez de comparables, pas besoin d'élargir.
-        if len(collected) >= EBAY_MIN_COMPS:
+        log(
+            f"eBay q{q_index}: {raw_count} résultats visibles, "
+            f"{matched_this_query} nouveau(x) comparable(s), total={len(collected)}"
+        )
+
+        # 3 comparables forts suffisent pour arrêter tôt.
+        if len(collected) >= 3:
             break
 
     return collected[:EBAY_MAX_RESULTS]
@@ -884,9 +1014,9 @@ def estimate_cross_grader_market(lot: Lot, sales: list[HistoricalSale]) -> tuple
 
     # 1) Même grader + même grade.
     if len(same_exact) >= 2:
-        base = median([s.price for s in same_exact])
+        base = median(robust_median_prices([s.price for s in same_exact]))
         if other_exact:
-            cross = median([s.price for s in other_exact])
+            cross = median(robust_median_prices([s.price for s in other_exact]))
             return (
                 0.80 * base + 0.20 * cross,
                 "élevée" if len(same_exact) >= 5 else "moyenne",
@@ -907,7 +1037,7 @@ def estimate_cross_grader_market(lot: Lot, sales: list[HistoricalSale]) -> tuple
         for s in other_exact:
             weighted.extend([s.price] * 2)
         return (
-            median(weighted),
+            median(robust_median_prices(weighted)),
             "moyenne" if same_exact else "faible",
             f"{len(same_exact)} même grader + {len(other_exact)} autre(s) grader(s), grade exact",
         )
@@ -1054,11 +1184,18 @@ def estimate_with_grade(lot: Lot, sales: list[HistoricalSale]) -> Optional[Oppor
 
 def notify(op: Opportunity) -> None:
     mode = "ENCHÈRE" if op.lot.source_type == "auction" else "PRIX FIXE"
-    title = f"GCC {mode}: {op.discount_pct:.0f}% sous estimation"
+
+    if op.lot.source_type == "auction":
+        title = f"GCC AUCTION: {op.discount_pct:.0f}% sous estimation"
+    else:
+        title = f"GCC PRIX FIXE: {op.discount_pct:.0f}% sous estimation"
 
     grade_line = ""
     if op.lot.grade:
         grade_line = f"Grade: {op.lot.grader} {op.lot.grade}\n".strip() + "\n"
+
+    ident = extract_card_identity(op.lot)
+    year_line = f"Année: {ident['year']}\n" if ident["year"] else ""
 
     timing_line = ""
     if op.lot.source_type == "auction":
@@ -1080,6 +1217,7 @@ def notify(op: Opportunity) -> None:
         f"{op.lot.title}\n"
         f"Type: {mode}\n"
         f"{grade_line}"
+        f"{year_line}"
         f"Prix: {op.lot.current_price:.2f} €\n"
         f"Estimation GCC: {gcc_market:.2f} €\n"
         f"{ebay_lines}"
@@ -1114,7 +1252,7 @@ def main() -> int:
     state = load_state()
     now = datetime.now(timezone.utc).isoformat()
 
-    log("=== GCC Watcher V3.0 FREE (GCC + eBay Sold) démarré ===")
+    log("=== GCC Watcher V3.2 FINAL (GCC + eBay + année) démarré ===")
     log("Ordre: prix fixes d'abord, puis enchères")
     log("Filtres enchères: Pokémon -> carte -> prix -> temps <= 60 min -> valeur/décote")
     log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
