@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 from typing import Optional
+from urllib.parse import quote_plus
 
 import requests
 from dotenv import load_dotenv
@@ -29,6 +30,14 @@ STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 
+# eBay public "Sold / Completed" search (no Developer API needed)
+EBAY_ENABLED = os.getenv("EBAY_ENABLED", "true").lower() == "true"
+EBAY_BASE = "https://www.ebay.fr"
+EBAY_MIN_COMPS = int(os.getenv("EBAY_MIN_COMPS", "2"))
+EBAY_MAX_RESULTS = int(os.getenv("EBAY_MAX_RESULTS", "20"))
+EBAY_MAX_QUERIES = int(os.getenv("EBAY_MAX_QUERIES", "20"))
+EBAY_PAGE_WAIT_MS = int(os.getenv("EBAY_PAGE_WAIT_MS", "1400"))
+
 NAV_TIMEOUT = 15000
 TEXT_TIMEOUT = 3000
 MAX_SCAN_SECONDS = 300
@@ -37,6 +46,10 @@ MAX_FIXED_CANDIDATES = 120
 
 MONEY_RE = re.compile(
     r"(?<!\d)(\d{1,3}(?:['’\s]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*€",
+    re.I,
+)
+EBAY_MONEY_RE = re.compile(
+    r"(?<!\d)(\d[\d\s\u00a0.,']*)\s*(?:EUR|€)\b",
     re.I,
 )
 HREF_ITEM_RE = re.compile(r"/item/[0-9a-f-]{20,}", re.I)
@@ -83,6 +96,10 @@ class Opportunity:
     higher_grade_comps: list[HistoricalSale]
     confidence: str
     rationale: str
+    gcc_estimated_market: Optional[float] = None
+    ebay_estimated_market: Optional[float] = None
+    ebay_comps: int = 0
+    ebay_note: str = ""
 
 
 def log(msg: str) -> None:
@@ -532,8 +549,475 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
     return deduped[:40]
 
 
+
+def normalize_ebay_eur(raw: str) -> float:
+    """
+    Convertit des formats eBay FR du type:
+    1 299,00 / 1.299,00 / 1299.00 / 69,43
+    en float EUR.
+    """
+    s = (
+        (raw or "")
+        .replace("\u00a0", "")
+        .replace(" ", "")
+        .replace("'", "")
+        .strip()
+    )
+
+    if "," in s and "." in s:
+        # Format européen probable: 1.299,00
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        tail = s.rsplit(",", 1)[-1]
+        if len(tail) in (1, 2):
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "." in s:
+        tail = s.rsplit(".", 1)[-1]
+        if len(tail) == 3 and s.count(".") >= 1:
+            s = s.replace(".", "")
+
+    return float(s)
+
+
+def extract_card_identity(lot: Lot) -> dict:
+    """
+    Extrait quelques éléments stables de la fiche GCC pour construire une recherche
+    eBay plus précise: nom, référence, année, langue.
+    """
+    title = lot.title or ""
+    body = lot.body or ""
+
+    # Enlève le grader + grade en tête du titre.
+    core = title
+    if lot.grader and lot.grade:
+        core = re.sub(
+            rf"^\s*{re.escape(lot.grader)}\s*{re.escape(lot.grade)}\+?\s*",
+            "",
+            core,
+            flags=re.I,
+        )
+    core = re.sub(r"^\s*(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG)\s*\d+(?:[.,]\d)?\+?\s*", "", core, flags=re.I)
+    core = re.sub(r"\s+", " ", core).strip()
+
+    ref = ""
+    # Cherche d'abord une référence type #108/100 ou #176.
+    m = re.search(r"#\s*([A-Z0-9]{1,6}(?:/[A-Z0-9]{1,6})?)", body, re.I)
+    if m:
+        ref = m.group(1)
+
+    year = ""
+    ym = re.search(r"\b(19\d{2}|20\d{2})\b", body)
+    if ym:
+        year = ym.group(1)
+
+    language = ""
+    language_map = {
+        "French": ("French", "Français", "Francais"),
+        "Japanese": ("Japanese", "Japonais"),
+        "English": ("English", "Anglais"),
+        "German": ("German", "Allemand"),
+        "Spanish": ("Spanish", "Espagnol"),
+        "Italian": ("Italian", "Italien"),
+    }
+    for canonical, variants in language_map.items():
+        if any(re.search(rf"\b{re.escape(v)}\b", body, re.I) for v in variants):
+            language = canonical
+            break
+
+    return {
+        "core": core,
+        "ref": ref,
+        "year": year,
+        "language": language,
+    }
+
+
+def ebay_query_for_lot(lot: Lot, broad: bool = False) -> str:
+    ident = extract_card_identity(lot)
+    parts = ["Pokemon", ident["core"]]
+
+    if ident["ref"]:
+        parts.append(ident["ref"])
+    if ident["year"]:
+        parts.append(ident["year"])
+    if ident["language"]:
+        parts.append(ident["language"])
+
+    # Recherche stricte = même grade/grader; broad = tous graders.
+    if not broad and lot.grader:
+        parts.append(lot.grader)
+    if not broad and lot.grade:
+        parts.append(lot.grade)
+
+    return " ".join(p for p in parts if p).strip()
+
+
+def ebay_result_matches_lot(lot: Lot, title: str) -> bool:
+    """
+    Matching conservateur. On privilégie la référence de carte lorsqu'elle existe.
+    Sinon on exige que les mots significatifs du nom soient présents.
+    """
+    ident = extract_card_identity(lot)
+    t = (title or "").lower()
+
+    if "pokemon" not in t and "pokémon" not in t:
+        return False
+
+    if any(word in t for word in SEALED_KEYWORDS):
+        return False
+
+    ref = ident["ref"]
+    if ref:
+        ref_norm = ref.lower().replace(" ", "")
+        title_norm = t.replace(" ", "")
+        if ref_norm not in title_norm:
+            return False
+
+    # Au moins un mot distinctif du nom de carte.
+    stop = {
+        "ex", "gx", "v", "vmax", "vstar", "pokemon", "pokémon",
+        "the", "de", "du", "des", "la", "le", "les", "and", "et",
+    }
+    tokens = [
+        x.lower()
+        for x in re.findall(r"[A-Za-zÀ-ÿ0-9'-]{3,}", ident["core"])
+        if x.lower() not in stop
+    ]
+    if tokens and not any(tok in t for tok in tokens[:4]):
+        return False
+
+    # Si eBay annonce explicitement une langue différente de celle de GCC, on rejette.
+    lang = ident["language"].lower()
+    explicit_langs = {
+        "french", "japanese", "english", "german", "spanish", "italian",
+        "français", "japonais", "anglais", "allemand", "espagnol", "italien",
+    }
+    present = {x for x in explicit_langs if x in t}
+    if lang and present:
+        compatible = {
+            "french": {"french", "français"},
+            "japanese": {"japanese", "japonais"},
+            "english": {"english", "anglais"},
+            "german": {"german", "allemand"},
+            "spanish": {"spanish", "espagnol"},
+            "italian": {"italian", "italien"},
+        }
+        if not (present & compatible.get(lang, {lang})):
+            return False
+
+    return True
+
+
+def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
+    """
+    Scrape les résultats publics eBay "Objets vendus + terminés".
+    Les annonces "Meilleure offre acceptée" sont ignorées car le prix accepté
+    réel n'est pas forcément visible dans la liste.
+    """
+    if not EBAY_ENABLED:
+        return []
+
+    collected: list[HistoricalSale] = []
+    seen = set()
+
+    queries = [
+        ebay_query_for_lot(lot, broad=False),
+        ebay_query_for_lot(lot, broad=True),
+    ]
+
+    for query in queries:
+        if len(collected) >= EBAY_MAX_RESULTS:
+            break
+
+        url = (
+            f"{EBAY_BASE}/sch/i.html"
+            f"?_nkw={quote_plus(query)}"
+            f"&LH_Sold=1&LH_Complete=1&_ipg=60&_sop=13"
+        )
+
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            page.wait_for_timeout(EBAY_PAGE_WAIT_MS)
+            body = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
+        except Exception:
+            continue
+
+        lower_body = body.lower()
+        if (
+            "pardon our interruption" in lower_body
+            or "vérifiez votre identité" in lower_body
+            or "verify your identity" in lower_body
+            or "captcha" in lower_body
+        ):
+            log("eBay: anti-bot/captcha détecté, comparaison ignorée pour ce scan")
+            return []
+
+        cards = page.locator("li.s-item")
+        count = min(cards.count(), 60)
+
+        for i in range(count):
+            try:
+                txt = (cards.nth(i).inner_text(timeout=700) or "").strip()
+            except Exception:
+                continue
+
+            if not txt:
+                continue
+
+            low = txt.lower()
+
+            # Prix accepté non public -> on ne l'utilise pas.
+            if "best offer accepted" in low or "meilleure offre acceptée" in low:
+                continue
+
+            lines = [x.strip() for x in txt.splitlines() if x.strip()]
+            title = lines[0] if lines else ""
+            # Certaines cartes eBay ont une première ligne générique.
+            if title.lower() in {"shop on ebay", "explorer sur ebay"} and len(lines) > 1:
+                title = lines[1]
+
+            if not ebay_result_matches_lot(lot, title):
+                continue
+
+            pm = EBAY_MONEY_RE.search(txt)
+            if not pm:
+                continue
+
+            try:
+                price = normalize_ebay_eur(pm.group(1))
+            except Exception:
+                continue
+
+            if not 1 <= price <= 50000:
+                continue
+
+            grader, grade_text = parse_grader_grade(title)
+            grade = None
+            if grade_text:
+                try:
+                    grade = float(grade_text)
+                except ValueError:
+                    grade = None
+
+            # Pour une carte GCC gradée, on demande au minimum un grade eBay lisible.
+            if lot.grade and grade is None:
+                continue
+
+            key = (re.sub(r"\s+", " ", title.lower()), round(price, 2), grader, grade)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            collected.append(
+                HistoricalSale(
+                    price=price,
+                    grader=grader,
+                    grade=grade,
+                    context=f"eBay SOLD | {title}"[:300],
+                )
+            )
+
+            if len(collected) >= EBAY_MAX_RESULTS:
+                break
+
+        # Si la recherche stricte donne déjà assez de comparables, pas besoin d'élargir.
+        if len(collected) >= EBAY_MIN_COMPS:
+            break
+
+    return collected[:EBAY_MAX_RESULTS]
+
+
+def estimate_cross_grader_market(lot: Lot, sales: list[HistoricalSale]) -> tuple[Optional[float], str, str]:
+    """
+    Estimation par grade + grader utilisable pour GCC et eBay.
+    Renvoie (estimation, confiance, explication).
+    """
+    if not sales:
+        return None, "faible", ""
+
+    try:
+        current_grade = float(lot.grade) if lot.grade else None
+    except ValueError:
+        current_grade = None
+
+    if current_grade is None:
+        prices = [s.price for s in sales if s.price > 0]
+        if len(prices) < 2:
+            return None, "faible", ""
+        return median(prices), ("élevée" if len(prices) >= 5 else "moyenne"), f"{len(prices)} ventes comparables"
+
+    graded = [s for s in sales if s.grade is not None and s.price > 0]
+    if not graded:
+        return None, "faible", ""
+
+    same_exact = [
+        s for s in graded
+        if s.grade == current_grade and lot.grader and s.grader == lot.grader
+    ]
+    other_exact = [
+        s for s in graded
+        if s.grade == current_grade and (not lot.grader or s.grader != lot.grader)
+    ]
+
+    same_lower = [
+        s for s in graded
+        if s.grade < current_grade and lot.grader and s.grader == lot.grader
+    ]
+    other_lower = [
+        s for s in graded
+        if s.grade < current_grade and (not lot.grader or s.grader != lot.grader)
+    ]
+
+    same_higher = [
+        s for s in graded
+        if s.grade > current_grade and lot.grader and s.grader == lot.grader
+    ]
+    other_higher = [
+        s for s in graded
+        if s.grade > current_grade and (not lot.grader or s.grader != lot.grader)
+    ]
+
+    # 1) Même grader + même grade.
+    if len(same_exact) >= 2:
+        base = median([s.price for s in same_exact])
+        if other_exact:
+            cross = median([s.price for s in other_exact])
+            return (
+                0.80 * base + 0.20 * cross,
+                "élevée" if len(same_exact) >= 5 else "moyenne",
+                f"{len(same_exact)} même grader/grade + {len(other_exact)} autre(s) grader(s) même grade",
+            )
+        return (
+            base,
+            "élevée" if len(same_exact) >= 5 else "moyenne",
+            f"{len(same_exact)} ventes même grader au grade exact",
+        )
+
+    # 2) Même grade, autres graders compris.
+    exact_all = same_exact + other_exact
+    if len(exact_all) >= 2:
+        weighted = []
+        for s in same_exact:
+            weighted.extend([s.price] * 3)
+        for s in other_exact:
+            weighted.extend([s.price] * 2)
+        return (
+            median(weighted),
+            "moyenne" if same_exact else "faible",
+            f"{len(same_exact)} même grader + {len(other_exact)} autre(s) grader(s), grade exact",
+        )
+
+    # 3) Bornes de grades voisins, toutes sociétés.
+    lower = same_lower + other_lower
+    higher = same_higher + other_higher
+
+    lower_bound = max((s.price for s in lower), default=None)
+    higher_bound = min((s.price for s in higher), default=None)
+
+    if lower_bound is not None and lot.current_price is not None and lot.current_price <= lower_bound:
+        return (
+            lower_bound,
+            "moyenne" if same_lower else "faible",
+            f"borne basse via grade inférieur ({len(lower)} vente(s))",
+        )
+
+    if lower_bound is not None and higher_bound is not None and higher_bound >= lower_bound:
+        nearest_lower = max(lower, key=lambda s: s.grade or -999)
+        nearest_higher = min(higher, key=lambda s: s.grade or 999)
+        gl = nearest_lower.grade or current_grade
+        gh = nearest_higher.grade or current_grade
+
+        if gh > gl:
+            fraction = (current_grade - gl) / (gh - gl)
+            interpolated = nearest_lower.price + fraction * (nearest_higher.price - nearest_lower.price)
+            market = max(lower_bound, min(interpolated, higher_bound))
+        else:
+            market = lower_bound
+
+        same_company_neighbor = (
+            nearest_lower.grader == lot.grader
+            or nearest_higher.grader == lot.grader
+        )
+        return (
+            market,
+            "moyenne" if same_company_neighbor else "faible",
+            f"interpolation grades {gl:g}→{gh:g}, graders {nearest_lower.grader or '?'}→{nearest_higher.grader or '?'}",
+        )
+
+    return None, "faible", ""
+
+
+def validate_with_ebay(page, op: Opportunity) -> Optional[Opportunity]:
+    """
+    eBay sert de validation externe des vraies ventes GCC.
+    Pour limiter les faux positifs:
+    - eBay peut confirmer ou réduire l'estimation GCC;
+    - si eBay est très divergent, on retient l'estimation la plus prudente;
+    - si eBay n'est pas exploitable, on conserve GCC seul.
+    """
+    op.gcc_estimated_market = op.estimated_market
+
+    ebay_sales = scrape_ebay_sold(page, op.lot)
+    if len(ebay_sales) < EBAY_MIN_COMPS:
+        op.ebay_note = f"eBay: {len(ebay_sales)} comparable(s), insuffisant"
+        return op
+
+    ebay_market, ebay_conf, ebay_reason = estimate_cross_grader_market(op.lot, ebay_sales)
+    if ebay_market is None or ebay_market <= 0:
+        op.ebay_note = f"eBay: {len(ebay_sales)} comparable(s), estimation non fiable"
+        return op
+
+    op.ebay_estimated_market = ebay_market
+    op.ebay_comps = len(ebay_sales)
+
+    gcc_market = op.gcc_estimated_market or op.estimated_market
+    ratio = ebay_market / gcc_market if gcc_market > 0 else 1.0
+
+    # Si les deux marchés sont raisonnablement proches: blend 65/35.
+    # En cas de forte divergence: estimation la plus prudente.
+    if 0.60 <= ratio <= 1.60:
+        combined = 0.65 * gcc_market + 0.35 * ebay_market
+        op.ebay_note = (
+            f"eBay {len(ebay_sales)} ventes, {ebay_market:.2f} € "
+            f"({ebay_conf}; {ebay_reason})"
+        )
+    else:
+        combined = min(gcc_market, ebay_market)
+        op.ebay_note = (
+            f"eBay divergent ({ebay_market:.2f} € vs GCC {gcc_market:.2f} €): "
+            f"estimation prudente retenue"
+        )
+
+    op.estimated_market = combined
+    op.discount_pct = (combined - op.lot.current_price) / combined * 100
+
+    # Si eBay fait tomber l'affaire sous 30%, on ne notifie plus.
+    if op.discount_pct < MIN_DISCOUNT:
+        log(
+            f"eBay veto: {op.lot.title} | GCC {gcc_market:.2f} € | "
+            f"eBay {ebay_market:.2f} € | combinée {combined:.2f} € | "
+            f"décote {op.discount_pct:.1f}%"
+        )
+        return None
+
+    return op
+
+
 def estimate_with_grade(lot: Lot, sales: list[HistoricalSale]) -> Optional[Opportunity]:
     if lot.current_price is None or lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+        return None
+
+    market, confidence, rationale = estimate_cross_grader_market(lot, sales)
+    if market is None or market <= 0:
+        return None
+
+    discount = (market - lot.current_price) / market * 100
+    if discount < MIN_DISCOUNT:
         return None
 
     try:
@@ -541,89 +1025,19 @@ def estimate_with_grade(lot: Lot, sales: list[HistoricalSale]) -> Optional[Oppor
     except ValueError:
         current_grade = None
 
-    # Si la carte est gradée, on refuse les comparables sans grade exploitable.
-    if current_grade is not None:
-        relevant = [
-            s for s in sales
-            if s.grade is not None
-            and (not lot.grader or not s.grader or s.grader == lot.grader)
-        ]
-    else:
-        relevant = sales
-
-    if len(relevant) < 2:
-        return None
-
+    graded = [s for s in sales if s.grade is not None]
     exact = [
-        s.price for s in relevant
+        s.price for s in graded
         if current_grade is not None and s.grade == current_grade
     ]
-
     lower = [
-        s for s in relevant
+        s for s in graded
         if current_grade is not None and s.grade is not None and s.grade < current_grade
     ]
-
     higher = [
-        s for s in relevant
+        s for s in graded
         if current_grade is not None and s.grade is not None and s.grade > current_grade
     ]
-
-    rationale_parts = []
-
-    if len(exact) >= 2:
-        market = median(exact)
-        rationale_parts.append(f"{len(exact)} ventes au grade exact")
-        confidence = "élevée" if len(exact) >= 5 else "moyenne"
-    elif current_grade is not None:
-        # Estimation conservative par bornes ordinales.
-        lower_prices = [s.price for s in lower]
-        higher_prices = [s.price for s in higher]
-
-        lower_bound = max(lower_prices) if lower_prices else None
-        higher_bound = min(higher_prices) if higher_prices else None
-
-        # Cas particulièrement intéressant:
-        # le prix actuel d'un grade supérieur est <= à des ventes de grades inférieurs.
-        if lower_bound is not None and lot.current_price <= lower_bound:
-            market = lower_bound
-            rationale_parts.append(
-                f"prix actuel <= vente(s) de grade inférieur; borne basse {lower_bound:.2f} €"
-            )
-            confidence = "moyenne"
-        elif lower_bound is not None and higher_bound is not None and higher_bound >= lower_bound:
-            # Interpolation prudente entre la meilleure borne basse et haute.
-            nearest_lower = max(lower, key=lambda s: s.grade or -999)
-            nearest_higher = min(higher, key=lambda s: s.grade or 999)
-            gl = nearest_lower.grade or current_grade
-            gh = nearest_higher.grade or current_grade
-
-            if gh > gl:
-                fraction = (current_grade - gl) / (gh - gl)
-                interpolated = nearest_lower.price + fraction * (nearest_higher.price - nearest_lower.price)
-                market = max(lower_bound, min(interpolated, higher_bound))
-            else:
-                market = lower_bound
-
-            rationale_parts.append(
-                f"estimé entre grades {nearest_lower.grade:g} et {nearest_higher.grade:g}"
-            )
-            confidence = "moyenne"
-        else:
-            # Pas assez de bornes fiables pour inventer une valeur.
-            return None
-    else:
-        prices = [s.price for s in relevant]
-        market = median(prices)
-        rationale_parts.append(f"{len(prices)} ventes comparables")
-        confidence = "moyenne" if len(prices) < 5 else "élevée"
-
-    if market <= 0:
-        return None
-
-    discount = (market - lot.current_price) / market * 100
-    if discount < MIN_DISCOUNT:
-        return None
 
     return Opportunity(
         lot=lot,
@@ -633,7 +1047,8 @@ def estimate_with_grade(lot: Lot, sales: list[HistoricalSale]) -> Optional[Oppor
         lower_grade_comps=lower,
         higher_grade_comps=higher,
         confidence=confidence,
-        rationale="; ".join(rationale_parts),
+        rationale=rationale,
+        gcc_estimated_market=market,
     )
 
 
@@ -649,14 +1064,27 @@ def notify(op: Opportunity) -> None:
     if op.lot.source_type == "auction":
         timing_line = f"Fin: {op.lot.end_text}\n"
 
+    gcc_market = op.gcc_estimated_market or op.estimated_market
+
+    ebay_lines = ""
+    if op.ebay_estimated_market is not None:
+        ebay_lines = (
+            f"Estimation eBay vendus: {op.ebay_estimated_market:.2f} € "
+            f"({op.ebay_comps} comps)\n"
+            f"Estimation combinée: {op.estimated_market:.2f} €\n"
+        )
+    elif op.ebay_note:
+        ebay_lines = f"{op.ebay_note}\n"
+
     msg = (
         f"{op.lot.title}\n"
         f"Type: {mode}\n"
         f"{grade_line}"
         f"Prix: {op.lot.current_price:.2f} €\n"
-        f"Estimation GCC: {op.estimated_market:.2f} €\n"
-        f"Décote: {op.discount_pct:.1f}% | confiance {op.confidence}\n"
-        f"Pourquoi: {op.rationale}\n"
+        f"Estimation GCC: {gcc_market:.2f} €\n"
+        f"{ebay_lines}"
+        f"Décote finale: {op.discount_pct:.1f}% | confiance {op.confidence}\n"
+        f"Pourquoi GCC: {op.rationale}\n"
         f"{timing_line}"
         f"{op.lot.url}"
     )
@@ -686,12 +1114,12 @@ def main() -> int:
     state = load_state()
     now = datetime.now(timezone.utc).isoformat()
 
-    log("=== GCC Watcher V2.3 démarré ===")
+    log("=== GCC Watcher V3.0 FREE (GCC + eBay Sold) démarré ===")
     log("Ordre: prix fixes d'abord, puis enchères")
     log("Filtres enchères: Pokémon -> carte -> prix -> temps <= 60 min -> valeur/décote")
     log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
     log(f"Décote minimale: {MIN_DISCOUNT:.0f}%")
-    log("Valorisation: grade exact en priorité + bornes grades voisins")
+    log("Valorisation: GCC inter-graders + validation eBay Sold publique")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -915,9 +1343,37 @@ def main() -> int:
                     opportunities.append(op)
 
             # ============================================================
-            # D) NOTIFICATIONS
+            # D) VALIDATION eBay SOLD + NOTIFICATIONS
             # ============================================================
+            log(f"Opportunités GCC avant eBay: {len(opportunities)}")
+
+            ebay_page = context.new_page()
+            ebay_page.set_default_timeout(TEXT_TIMEOUT)
+            ebay_page.set_default_navigation_timeout(NAV_TIMEOUT)
+
+            final_opportunities: list[Opportunity] = []
+            ebay_queries = 0
+
             for op in sorted(opportunities, key=lambda x: x.discount_pct, reverse=True):
+                validated = op
+
+                if EBAY_ENABLED and ebay_queries < EBAY_MAX_QUERIES:
+                    ebay_queries += 1
+                    log(
+                        f"[eBay {ebay_queries}] {op.lot.title} | "
+                        f"GCC {op.gcc_estimated_market or op.estimated_market:.2f} €"
+                    )
+                    validated = validate_with_ebay(ebay_page, op)
+
+                if validated is not None:
+                    final_opportunities.append(validated)
+
+            try:
+                ebay_page.close()
+            except Exception:
+                pass
+
+            for op in sorted(final_opportunities, key=lambda x: x.discount_pct, reverse=True):
                 key = op.lot.url
                 prev = state["notified"].get(key)
 
@@ -930,7 +1386,8 @@ def main() -> int:
                     }
 
             save_state(state)
-            log(f"Opportunités validées: {len(opportunities)}")
+            log(f"Opportunités GCC avant eBay: {len(opportunities)}")
+            log(f"Opportunités finales après eBay: {len(final_opportunities)}")
 
         finally:
             browser.close()
