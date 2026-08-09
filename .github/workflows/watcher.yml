@@ -2,6 +2,7 @@ name: GCC Auction Watcher
 
 on:
   workflow_dispatch:
+
   schedule:
     - cron: "3,13,23,33,43,53 * * * *"
 
@@ -23,13 +24,39 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Restore bot state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: gcc-state-${{ github.run_id }}
+          restore-keys: |
+            gcc-state-
+
       - name: Scan GCC auctions
         env:
           MAX_PRICE_EUR: "100"
-          MIN_DISCOUNT_PCT: "20"
+          MIN_DISCOUNT_PCT: "30"
+          MAX_AUCTION_MINUTES: "60"
+
           HEADLESS: "true"
+
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
+
+          STATE_FILE: state.json
+
+          EBAY_ENABLED: "true"
+          EBAY_MAX_QUERIES: "2"
+          EBAY_NAV_TIMEOUT: "6000"
+          EBAY_PAGE_WAIT_MS: "700"
+
         run: |
           echo "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           python watcher.py
+
+      - name: Save bot state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: gcc-state-${{ github.run_id }}
