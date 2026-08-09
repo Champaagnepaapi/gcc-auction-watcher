@@ -4,7 +4,7 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
@@ -19,11 +19,15 @@ load_dotenv()
 BASE = "https://gradedcardcenter.com"
 MAX_PRICE = float(os.getenv("MAX_PRICE_EUR", "100"))
 MIN_DISCOUNT = float(os.getenv("MIN_DISCOUNT_PCT", "20"))
-MAX_HOURS_TO_END = float(os.getenv("MAX_HOURS_TO_END", "12"))
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
+
+NAV_TIMEOUT = 15000
+TEXT_TIMEOUT = 3000
+MAX_SCAN_SECONDS = 240
+MAX_CANDIDATES = 80
 
 MONEY_RE = re.compile(r"(?<!\d)(\d{1,5}(?:[.,]\d{1,2})?)\s*€")
 HREF_ITEM_RE = re.compile(r"/item/[0-9a-f-]{20,}", re.I)
@@ -47,6 +51,10 @@ class Opportunity:
     confidence: str
 
 
+def log(msg: str) -> None:
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
@@ -57,8 +65,10 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    STATE_FILE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def parse_money(text: str) -> Optional[float]:
@@ -67,72 +77,88 @@ def parse_money(text: str) -> Optional[float]:
         try:
             vals.append(float(m.replace(",", ".")))
         except ValueError:
-            continue
-    # Sur une carte de listing, le premier prix visible est généralement le prix courant.
+            pass
     return vals[0] if vals else None
 
 
 def collect_live_auction_urls(page) -> list[str]:
-    page.goto(BASE, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(2500)
+    log("Ouverture de la page d'accueil GCC...")
+    page.goto(BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    page.wait_for_timeout(1500)
+
     links = page.locator("a[href]")
+    count = links.count()
+    log(f"{count} liens trouvés sur la page d'accueil")
+
     urls = set()
-    for i in range(links.count()):
-        a = links.nth(i)
+
+    for i in range(count):
         try:
+            a = links.nth(i)
             href = a.get_attribute("href") or ""
             txt = (a.inner_text(timeout=500) or "").strip()
+
+            if "/auction/" in href and ("LIVE" in txt.upper() or "AUCTION" in href.upper()):
+                if href.startswith("/"):
+                    href = BASE + href
+                if href.startswith(BASE):
+                    urls.add(href.split("?")[0])
         except Exception:
             continue
-        # GCC utilise /filtres/auction/... ou /en/filters/auction/...
-        if "/auction/" in href and ("LIVE" in txt.upper() or "AUCTION" in href.upper()):
-            if href.startswith("/"):
-                href = BASE + href
-            if href.startswith(BASE):
-                urls.add(href.split("?")[0])
+
     return sorted(urls)
 
 
 def collect_lots_from_sale(page, sale_url: str) -> list[Lot]:
-    page.goto(sale_url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(2500)
+    log(f"Ouverture vente: {sale_url}")
+    page.goto(sale_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    page.wait_for_timeout(1500)
 
-    # Déclenche le lazy-loading en scrollant progressivement.
     last_height = 0
     stable = 0
-    for _ in range(60):
-        page.mouse.wheel(0, 2200)
-        page.wait_for_timeout(250)
-        h = page.evaluate("document.body.scrollHeight")
+
+    for _ in range(30):
+        page.mouse.wheel(0, 2500)
+        page.wait_for_timeout(150)
+
+        try:
+            h = page.evaluate("document.body.scrollHeight")
+        except Exception:
+            break
+
         if h == last_height:
             stable += 1
-            if stable >= 4:
+            if stable >= 3:
                 break
         else:
             stable = 0
             last_height = h
 
-    sale_name = ""
     try:
         sale_name = page.locator("h1").first.inner_text(timeout=1000).strip()
     except Exception:
-        pass
+        sale_name = ""
 
-    # Cherche tous les liens d'items; remonte à un conteneur raisonnable pour récupérer le texte/prix.
     anchors = page.locator('a[href*="/item/"]')
+    count = anchors.count()
+    log(f"{count} liens d'items détectés")
+
     lots: dict[str, Lot] = {}
-    for i in range(anchors.count()):
-        a = anchors.nth(i)
+
+    for i in range(count):
         try:
+            a = anchors.nth(i)
             href = a.get_attribute("href") or ""
+
             if not HREF_ITEM_RE.search(href):
                 continue
+
             url = BASE + href if href.startswith("/") else href
             url = url.split("?")[0]
 
             text = (a.inner_text(timeout=500) or "").strip()
-            # Souvent le lien lui-même ne contient pas tout; remonter de 1 à 4 parents.
             candidate_texts = [text]
+
             el = a
             for _ in range(4):
                 try:
@@ -142,10 +168,15 @@ def collect_lots_from_sale(page, sale_url: str) -> list[Lot]:
                         candidate_texts.append(t)
                 except Exception:
                     break
-            blob = min((t for t in candidate_texts if "€" in t), key=len, default=max(candidate_texts, key=len, default=""))
+
+            blob = min(
+                (t for t in candidate_texts if "€" in t),
+                key=len,
+                default=max(candidate_texts, key=len, default=""),
+            )
+
             price = parse_money(blob)
 
-            # Titre: première ligne informative qui n'est pas juste un prix/badge.
             title = ""
             for line in blob.splitlines():
                 line = line.strip()
@@ -154,165 +185,266 @@ def collect_lots_from_sale(page, sale_url: str) -> list[Lot]:
                 if len(line) >= 4:
                     title = line
                     break
-            if not title:
-                title = (text.splitlines()[0].strip() if text else url.rsplit("/", 1)[-1])
 
-            if url not in lots or (lots[url].current_price is None and price is not None):
-                lots[url] = Lot(url=url, title=title, current_price=price, sale_name=sale_name)
+            if not title:
+                title = text.splitlines()[0].strip() if text else url.rsplit("/", 1)[-1]
+
+            lots[url] = Lot(
+                url=url,
+                title=title,
+                current_price=price,
+                sale_name=sale_name,
+            )
+
         except Exception:
             continue
+
     return list(lots.values())
 
 
-def fetch_item_details(page, lot: Lot) -> Lot:
+def inspect_item(page, lot: Lot) -> tuple[Lot, list[float]]:
     try:
-        page.goto(lot.url, wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(1200)
-        body = page.locator("body").inner_text(timeout=3000)
+        page.goto(lot.url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        page.wait_for_timeout(700)
+
+        body = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
+
         if lot.current_price is None:
             lot.current_price = parse_money(body)
-        # Capture une ligne "Fin ..." / "Ends ..." si présente.
-        for line in body.splitlines():
-            s = line.strip()
-            if re.search(r"\b(Fin|Ends?)\b", s, re.I) and ("@" in s or ":" in s):
-                lot.end_text = s[:180]
-                break
-        # Titre plus fiable via h1.
+
         try:
             h1 = page.locator("h1").first.inner_text(timeout=800).strip()
             if h1:
                 lot.title = h1
         except Exception:
             pass
-    except Exception:
-        pass
-    return lot
+
+        for line in body.splitlines():
+            s = line.strip()
+            if re.search(r"\b(Fin|Ends?)\b", s, re.I) and ("@" in s or ":" in s):
+                lot.end_text = s[:180]
+                break
+
+        if not re.search(r"Historique des ventes|Sales history", body, re.I):
+            return lot, []
+
+        if re.search(r"Connectez-vous.*historique|log in.*history", body, re.I | re.S):
+            return lot, []
+
+        m = re.search(r"(Historique des ventes|Sales history)(.*)", body, re.I | re.S)
+        if not m:
+            return lot, []
+
+        section = m.group(2)[:5000]
+        vals = [float(x.replace(",", ".")) for x in MONEY_RE.findall(section)]
+        vals = [v for v in vals if 1 <= v <= 50000]
+
+        return lot, vals[:20]
+
+    except PlaywrightTimeoutError:
+        log(f"Timeout fiche: {lot.url}")
+        return lot, []
+    except Exception as e:
+        log(f"Erreur fiche: {type(e).__name__}")
+        return lot, []
 
 
-def gcc_historical_comps(page, lot: Lot) -> list[float]:
-    """Extraction conservatrice des prix d'historique visibles publiquement sur la fiche.
-    Si GCC exige une connexion pour l'historique, retourne [].
-    """
-    try:
-        page.goto(lot.url, wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(1000)
-        body = page.locator("body").inner_text(timeout=2500)
-    except Exception:
-        return []
-
-    # On ne prend des valeurs que si la page semble exposer une section historique.
-    if not re.search(r"Historique des ventes|Sales history", body, re.I):
-        return []
-    if re.search(r"Connectez-vous.*historique|log in.*history", body, re.I | re.S):
-        return []
-
-    # Limitation volontaire: éviter de confondre prix courant, shipping, etc.
-    # Cherche des montants après le début de la section historique.
-    m = re.search(r"(Historique des ventes|Sales history)(.*)", body, re.I | re.S)
-    if not m:
-        return []
-    section = m.group(2)[:5000]
-    vals = [float(x.replace(",", ".")) for x in MONEY_RE.findall(section)]
-    vals = [v for v in vals if 1 <= v <= 50000]
-    return vals[:20]
-
-
-def estimate_opportunity(page, lot: Lot) -> Optional[Opportunity]:
+def estimate_opportunity(lot: Lot, comps: list[float]) -> Optional[Opportunity]:
     if lot.current_price is None or lot.current_price > MAX_PRICE:
         return None
 
-    comps = gcc_historical_comps(page, lot)
     if len(comps) < 2:
-        # Pas assez de données fiables : on n'invente pas une valeur.
         return None
 
     market = median(comps)
+
     if market <= 0:
         return None
+
     discount = (market - lot.current_price) / market * 100
+
     if discount < MIN_DISCOUNT:
         return None
 
     confidence = "élevée" if len(comps) >= 5 else "moyenne"
-    return Opportunity(lot=lot, estimated_market=market, discount_pct=discount, comps=comps, confidence=confidence)
+
+    return Opportunity(
+        lot=lot,
+        estimated_market=market,
+        discount_pct=discount,
+        comps=comps,
+        confidence=confidence,
+    )
 
 
 def notify(op: Opportunity) -> None:
     title = f"GCC: {op.discount_pct:.0f}% sous estimation"
+
     msg = (
         f"{op.lot.title}\n"
         f"Enchère: {op.lot.current_price:.2f} €\n"
         f"Marché estimé: {op.estimated_market:.2f} €\n"
         f"Décote: {op.discount_pct:.1f}% | confiance {op.confidence}\n"
-        f"{op.lot.end_text}\n{op.lot.url}"
+        f"{op.lot.end_text}\n"
+        f"{op.lot.url}"
     )
-    print("\n*** OPPORTUNITÉ ***\n" + msg + "\n")
+
+    log("*** OPPORTUNITÉ DÉTECTÉE ***")
+    print(msg, flush=True)
 
     if NTFY_TOPIC:
         try:
-            requests.post(
+            r = requests.post(
                 f"{NTFY_SERVER}/{NTFY_TOPIC}",
                 data=msg.encode("utf-8"),
-                headers={"Title": title, "Priority": "4", "Tags": "moneybag,card_index"},
-                timeout=15,
-            ).raise_for_status()
+                headers={
+                    "Title": title,
+                    "Priority": "4",
+                    "Tags": "moneybag,card_index",
+                },
+                timeout=10,
+            )
+            r.raise_for_status()
+            log("Notification ntfy envoyée")
         except Exception as e:
-            print(f"Notification ntfy échouée: {e}")
+            log(f"Notification ntfy échouée: {e}")
 
 
 def main() -> int:
+    started = time.monotonic()
+    log("=== GCC Auction Watcher démarré ===")
+    log(f"Budget max: {MAX_PRICE:.0f} €")
+    log(f"Décote minimale: {MIN_DISCOUNT:.0f}%")
+
     state = load_state()
     now = datetime.now(timezone.utc).isoformat()
 
     with sync_playwright() as p:
+        log("Lancement Chromium...")
         browser = p.chromium.launch(headless=HEADLESS)
-        context = browser.new_context(locale="fr-FR", timezone_id="Europe/Zurich")
+
+        context = browser.new_context(
+            locale="fr-FR",
+            timezone_id="Europe/Zurich",
+        )
+
         page = context.new_page()
+        page.set_default_timeout(TEXT_TIMEOUT)
+        page.set_default_navigation_timeout(NAV_TIMEOUT)
 
         try:
             sales = collect_live_auction_urls(page)
-            print(f"Ventes détectées: {len(sales)}")
-            all_lots: dict[str, Lot] = {}
+            log(f"Ventes live détectées: {len(sales)}")
+
             for sale in sales:
+                log(f"  - {sale}")
+
+            if not sales:
+                log("Aucune vente live détectée. Fin du scan.")
+                return 0
+
+            all_lots: dict[str, Lot] = {}
+
+            for sale in sales:
+                if time.monotonic() - started > MAX_SCAN_SECONDS:
+                    log("Durée maximale du scan atteinte.")
+                    break
+
                 try:
                     lots = collect_lots_from_sale(page, sale)
-                    print(f"- {sale}: {len(lots)} lots détectés")
+                    log(f"{len(lots)} lots récupérés dans cette vente")
+
                     for lot in lots:
-                        if lot.url not in all_lots:
-                            all_lots[lot.url] = lot
+                        all_lots.setdefault(lot.url, lot)
+
                 except PlaywrightTimeoutError:
-                    print(f"Timeout: {sale}")
+                    log(f"Timeout vente: {sale}")
 
-            candidates = [x for x in all_lots.values() if x.current_price is not None and x.current_price <= MAX_PRICE]
+            log(f"Total lots uniques: {len(all_lots)}")
+
+            candidates = [
+                x
+                for x in all_lots.values()
+                if x.current_price is not None
+                and x.current_price <= MAX_PRICE
+            ]
+
             candidates.sort(key=lambda x: x.current_price or 999999)
-            print(f"Lots <= {MAX_PRICE:.0f} €: {len(candidates)}")
 
-            # Pour éviter de marteler GCC, on enrichit seulement les candidats budget.
+            if len(candidates) > MAX_CANDIDATES:
+                log(
+                    f"{len(candidates)} candidats <= {MAX_PRICE:.0f} €, "
+                    f"analyse limitée aux {MAX_CANDIDATES} moins chers."
+                )
+                candidates = candidates[:MAX_CANDIDATES]
+            else:
+                log(f"Candidats <= {MAX_PRICE:.0f} €: {len(candidates)}")
+
             opportunities = []
-            for lot in candidates:
-                lot = fetch_item_details(page, lot)
-                state["seen"][lot.url] = {"price": lot.current_price, "seen_at": now, "title": lot.title}
-                op = estimate_opportunity(page, lot)
-                if op:
-                    opportunities.append(op)
-                time.sleep(0.15)
 
-            for op in sorted(opportunities, key=lambda x: x.discount_pct, reverse=True):
-                key = op.lot.url
-                prev = state["notified"].get(key)
-                # Renotifie si l'opportunité s'améliore de >=5 points ou si jamais notifiée.
-                if not prev or op.discount_pct >= float(prev.get("discount_pct", 0)) + 5:
+            total = len(candidates)
+
+            for idx, lot in enumerate(candidates, start=1):
+                elapsed = time.monotonic() - started
+
+                if elapsed > MAX_SCAN_SECONDS:
+                    log("Durée maximale du scan atteinte pendant l'analyse.")
+                    break
+
+                log(
+                    f"[{idx}/{total}] {lot.current_price:.2f} € "
+                    f"| {lot.title[:80]}"
+                )
+
+                lot, comps = inspect_item(page, lot)
+
+                state["seen"][lot.url] = {
+                    "price": lot.current_price,
+                    "seen_at": now,
+                    "title": lot.title,
+                }
+
+                if comps:
+                    log(f"    {len(comps)} comparables GCC trouvés")
+                else:
+                    log("    Aucun historique public exploitable")
+
+                op = estimate_opportunity(lot, comps)
+
+                if op:
+                    log(
+                        f"    Candidat intéressant: "
+                        f"{op.discount_pct:.1f}% sous estimation"
+                    )
+                    opportunities.append(op)
+
+            for op in sorted(
+                opportunities,
+                key=lambda x: x.discount_pct,
+                reverse=True,
+            ):
+                prev = state["notified"].get(op.lot.url)
+
+                if not prev or op.discount_pct >= float(
+                    prev.get("discount_pct", 0)
+                ) + 5:
                     notify(op)
-                    state["notified"][key] = {
+
+                    state["notified"][op.lot.url] = {
                         "discount_pct": op.discount_pct,
                         "price": op.lot.current_price,
                         "notified_at": now,
                     }
 
             save_state(state)
-            print(f"Opportunités validées: {len(opportunities)}")
+
+            log(f"Opportunités validées: {len(opportunities)}")
+
         finally:
             browser.close()
+
+    elapsed = time.monotonic() - started
+    log(f"=== Scan terminé en {elapsed:.1f} s ===")
 
     return 0
 
