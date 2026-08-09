@@ -408,6 +408,14 @@ def main() -> int:
                 )
 
                 lot, comps = inspect_item(page, lot)
+                try:
+                    body_text = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
+                except Exception:
+                    body_text = ""
+
+                if not re.search(r"(Catégorie|Category)\s*:?\s*Pok[ée]mon\b", body_text, re.I):
+                    log("    Ignoré : pas Pokémon")
+                    continue
 
                 state["seen"][lot.url] = {
                     "price": lot.current_price,
