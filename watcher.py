@@ -35,8 +35,9 @@ EBAY_ENABLED = os.getenv("EBAY_ENABLED", "true").lower() == "true"
 EBAY_BASE = "https://www.ebay.fr"
 EBAY_MIN_COMPS = int(os.getenv("EBAY_MIN_COMPS", "2"))
 EBAY_MAX_RESULTS = int(os.getenv("EBAY_MAX_RESULTS", "20"))
-EBAY_MAX_QUERIES = int(os.getenv("EBAY_MAX_QUERIES", "20"))
-EBAY_PAGE_WAIT_MS = int(os.getenv("EBAY_PAGE_WAIT_MS", "1400"))
+EBAY_MAX_QUERIES = int(os.getenv("EBAY_MAX_QUERIES", "2"))
+EBAY_PAGE_WAIT_MS = int(os.getenv("EBAY_PAGE_WAIT_MS", "700"))
+EBAY_NAV_TIMEOUT = int(os.getenv("EBAY_NAV_TIMEOUT", "6000"))
 
 NAV_TIMEOUT = 15000
 TEXT_TIMEOUT = 3000
@@ -379,46 +380,42 @@ def parse_item_countdown_minutes(body: str) -> tuple[Optional[int], str]:
 
 def parse_listing_countdown_minutes(text: str) -> tuple[Optional[int], str]:
     """
-    Lit le temps restant directement dans le bloc d'une carte sur la page de vente.
-    Objectif: éviter d'ouvrir chaque fiche une par une.
-    Retourne (minutes, texte_timer).
+    Lit le temps restant directement dans le bloc de carte du listing.
+
+    IMPORTANT:
+    - ne retourne JAMAIS 0 minute si aucun timer explicite n'est trouvé;
+    - accepte les formats avec unités (jours/heures/minutes/sec);
+    - accepte HH:MM:SS;
+    - sinon retourne (None, "") pour forcer le fallback fiche.
     """
     raw = text or ""
 
-    # Cas explicite du type:
-    # "6 JOURS 18 HEURES 57 MINUTES 32 SEC"
-    unit_pattern = re.compile(
-        r"(?:(\d+)\s*(?:JOURS?|DAYS?))?.{0,25}?"
-        r"(?:(\d+)\s*(?:HEURES?|HOURS?|HRS?))?.{0,25}?"
-        r"(?:(\d+)\s*(?:MINUTES?|MINS?))?.{0,25}?"
-        r"(?:(\d+)\s*(?:SEC(?:ONDES?)?|SECONDS?))?",
-        re.I | re.S,
-    )
+    # Format explicite avec unités. On exige au moins UNE unité réellement présente.
+    days_m = re.search(r"(?<!\d)(\d+)\s*(?:JOURS?|DAYS?)\b", raw, re.I)
+    hours_m = re.search(r"(?<!\d)(\d+)\s*(?:HEURES?|HOURS?|HRS?)\b", raw, re.I)
+    mins_m = re.search(r"(?<!\d)(\d+)\s*(?:MINUTES?|MINS?)\b", raw, re.I)
+    secs_m = re.search(r"(?<!\d)(\d+)\s*(?:SEC(?:ONDES?)?|SECONDS?)\b", raw, re.I)
 
-    candidates = []
-    for m in unit_pattern.finditer(raw):
-        if not any(m.groups()):
-            continue
-        d = int(m.group(1) or 0)
-        h = int(m.group(2) or 0)
-        mn = int(m.group(3) or 0)
-        s = int(m.group(4) or 0)
-        total = d * 1440 + h * 60 + mn + (1 if s > 0 else 0)
-        label = f"{d}j {h}h {mn}m {s}s"
-        candidates.append((total, label))
+    if any((days_m, hours_m, mins_m, secs_m)):
+        d = int(days_m.group(1)) if days_m else 0
+        h = int(hours_m.group(1)) if hours_m else 0
+        m = int(mins_m.group(1)) if mins_m else 0
+        s = int(secs_m.group(1)) if secs_m else 0
 
-    if candidates:
-        # Le compteur pertinent est généralement le premier bloc complet rencontré.
-        return candidates[0]
+        total = d * 1440 + h * 60 + m + (1 if s > 0 else 0)
+        label = f"{d}j {h}h {m}m {s}s"
+        return total, label
 
-    # Cas condensé "00:42:17" ou "01:13:22"
-    for m in re.finditer(r"(?<!\d)(\d{1,2}):(\d{2}):(\d{2})(?!\d)", raw):
-        h, mn, s = map(int, m.groups())
-        if 0 <= mn < 60 and 0 <= s < 60:
-            total = h * 60 + mn + (1 if s > 0 else 0)
-            return total, m.group(0)
+    # Format condensé HH:MM:SS
+    for match in re.finditer(r"(?<!\d)(\d{1,2}):(\d{2}):(\d{2})(?!\d)", raw):
+        h, m, s = map(int, match.groups())
+        if 0 <= m < 60 and 0 <= s < 60:
+            total = h * 60 + m + (1 if s > 0 else 0)
+            return total, match.group(0)
 
+    # Rien de lisible => fallback fiche.
     return None, ""
+
 
 def inspect_item(page, lot: Lot) -> Lot:
     try:
@@ -830,13 +827,12 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     """
     Recherche publique eBay Sold/Completed sans API Developer.
 
-    Améliorations V3.1:
-    - plusieurs requêtes;
-    - recherche basée sur le numéro de carte si disponible;
-    - nom français non obligatoire lorsque la référence correspond;
-    - matching scoré;
-    - logs détaillés;
-    - exclusion des "Best Offer accepted" dont le vrai prix peut être ambigu.
+    V3.3 FAST-FAIL:
+    - 2 requêtes maximum;
+    - timeout navigation court;
+    - abandon immédiat si la page eBay renvoie 0 résultat visible;
+    - abandon immédiat après timeout/anti-bot;
+    - ne ralentit plus le scan GCC de plusieurs minutes.
     """
     if not EBAY_ENABLED:
         return []
@@ -844,13 +840,10 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     collected: list[HistoricalSale] = []
     seen = set()
 
-    queries = ebay_queries_for_lot(lot)
-    log(f"eBay: {len(queries)} requête(s) prévues pour {lot.title}")
+    queries = ebay_queries_for_lot(lot)[:EBAY_MAX_QUERIES]
+    log(f"eBay: {len(queries)} requête(s) max pour {lot.title}")
 
     for q_index, query in enumerate(queries, start=1):
-        if len(collected) >= EBAY_MAX_RESULTS:
-            break
-
         url = (
             f"{EBAY_BASE}/sch/i.html"
             f"?_nkw={quote_plus(query)}"
@@ -860,12 +853,12 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
         log(f"eBay q{q_index}: {query}")
 
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            page.goto(url, wait_until="domcontentloaded", timeout=EBAY_NAV_TIMEOUT)
             page.wait_for_timeout(EBAY_PAGE_WAIT_MS)
-            body = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
+            body = page.locator("body").inner_text(timeout=min(TEXT_TIMEOUT, 2500))
         except Exception as e:
-            log(f"eBay q{q_index}: erreur {type(e).__name__}")
-            continue
+            log(f"eBay q{q_index}: {type(e).__name__} -> abandon eBay pour cette carte")
+            return []
 
         lower_body = body.lower()
         if (
@@ -874,16 +867,22 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             or "verify your identity" in lower_body
             or "captcha" in lower_body
         ):
-            log("eBay: anti-bot/captcha détecté, validation eBay abandonnée pour ce scan")
+            log("eBay: anti-bot/captcha détecté -> abandon eBay pour cette carte")
             return []
 
         cards = page.locator("li.s-item")
         raw_count = min(cards.count(), 120)
+
+        # Si eBay ne fournit même aucun item structuré, inutile d'insister.
+        if raw_count == 0:
+            log(f"eBay q{q_index}: 0 résultat visible -> abandon eBay pour cette carte")
+            return []
+
         matched_this_query = 0
 
         for i in range(raw_count):
             try:
-                txt = (cards.nth(i).inner_text(timeout=700) or "").strip()
+                txt = (cards.nth(i).inner_text(timeout=600) or "").strip()
             except Exception:
                 continue
 
@@ -923,7 +922,6 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
                 except ValueError:
                     pass
 
-            # Si la fiche cible est gradée, on ne garde qu'un résultat eBay avec grade lisible.
             if lot.grade and grade is None:
                 continue
 
@@ -955,9 +953,12 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             f"{matched_this_query} nouveau(x) comparable(s), total={len(collected)}"
         )
 
-        # 3 comparables forts suffisent pour arrêter tôt.
+        # Si on a assez de comparables, on s'arrête.
         if len(collected) >= 3:
             break
+
+        # Si la première requête a des résultats mais zéro comparable, on tente une seule requête plus large.
+        # Après la deuxième, on s'arrête quoi qu'il arrive.
 
     return collected[:EBAY_MAX_RESULTS]
 
@@ -1252,7 +1253,7 @@ def main() -> int:
     state = load_state()
     now = datetime.now(timezone.utc).isoformat()
 
-    log("=== GCC Watcher V3.2 FINAL (GCC + eBay + année) démarré ===")
+    log("=== GCC Watcher V3.3 FINAL (timer fix + eBay fast-fail) démarré ===")
     log("Ordre: prix fixes d'abord, puis enchères")
     log("Filtres enchères: Pokémon -> carte -> prix -> temps <= 60 min -> valeur/décote")
     log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
@@ -1364,7 +1365,7 @@ def main() -> int:
                 if lot.minutes_to_end is None:
                     fallback_needed.append(lot)
                     log(
-                        f"[préfiltre {idx}] timer listing illisible -> fallback fiche"
+                        f"[préfiltre {idx}] timer absent/illisible -> fallback fiche"
                     )
                     continue
 
