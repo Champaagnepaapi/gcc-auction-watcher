@@ -4,9 +4,10 @@ Cette version tourne dans GitHub Actions : **aucun Mac ne doit rester allumé**.
 
 ## Réglage actuel
 
-- GCC Marketplace : enchères uniquement
-- prix courant maximal : **100 €**
-- décote minimale : **20 %** lorsqu'une estimation fiable est disponible
+- GCC Marketplace : prix fixes et enchères (enchères à **60 minutes maximum**)
+- cartes Pokémon uniquement, hors boosters/packs/accessoires
+- prix courant : **10 à 100 €**
+- décote minimale : **30 %**, relevée automatiquement lorsque les comparables sont faibles
 - scan : **toutes les 10 minutes, 24/7**
 - notification : **ntfy sur iPhone**
 - aucun achat ni aucune enchère automatique
@@ -82,13 +83,27 @@ J'ai volontairement utilisé les minutes `03,13,23,33,43,53` plutôt que `00,10,
 
 ## État / anti-spam
 
-GitHub Actions utilise des machines éphémères. Le workflow sauvegarde donc `.data/state.json` dans le cache Actions et restaure l'état au prochain scan. Cela permet d'éviter de renvoyer exactement la même alerte à chaque exécution.
+GitHub Actions utilise des machines éphémères. Le workflow sauvegarde donc `state.json` dans le cache Actions et restaure l'état au prochain scan. Les anciens fichiers d'état restent compatibles.
+
+Une opportunité déjà signalée n'est renotifiée que si son prix baisse d'au moins 10 %, si sa décote gagne au moins 5 points, ou si une enchère franchit un seuil de temps important. Une unique alerte haute priorité est envoyée à cinq minutes ou moins lorsque le prix reste sous le prix maximal conseillé.
 
 ## Limite actuelle sur la valorisation
 
-Le scanner GCC fonctionne indépendamment. En revanche, le moteur de valorisation est volontairement conservateur : il ne valide aujourd'hui une décote que lorsque des comparables exploitables sont visibles.
+Le scanner GCC fonctionne indépendamment. Le moteur de valorisation est volontairement conservateur : il ne valide une décote que lorsque des comparables exploitables sont visibles.
 
-La prochaine étape est d'ajouter des comparables externes (ventes réellement réalisées, lorsque l'accès et les conditions d'utilisation de la source le permettent) et une normalisation stricte : carte, set, numéro, langue, grade et société de grading.
+Les ventes sont normalisées dans un format commun à toutes les sources. Leur pondération de récence est progressive : 1,00 jusqu'à 30 jours, 0,70 à 90 jours, 0,40 à 180 jours et 0,20 à 365 jours, puis au minimum 0,10. Une date inconnue reçoit un poids prudent de 0,45 afin de ne pas supprimer les anciennes données lorsque la liquidité est faible.
+
+Les prix aberrants sont filtrés par MAD (écart absolu médian), avec repli IQR lorsque le MAD est nul. La notification affiche la borne basse, l'estimation centrale, la borne haute, le prix max conseillé, la liquidité, la dispersion, la confiance, la langue, le numéro de carte et la série.
+
+Le prix courant doit rester inférieur ou égal au prix max conseillé, aussi bien pour un prix fixe que pour une enchère. Pour la gradation, une vente de la même société et du même grade constitue le signal principal, même si de nombreuses ventes d'autres graders existent.
+
+En l'absence de vente fiable au grade cible, un grade inférieur de la même société peut produire une voie d'éligibilité distincte **ARBITRAGE GRADE** lorsque son marché robuste est supérieur ou égal au prix actuel. La décote classique n'est alors pas exigée une deuxième fois : le prix max est la borne basse prudente du grade inférieur, la confiance reste faible et la valeur exacte du grade supérieur est explicitement indiquée comme inconnue.
+
+Les ventes d'autres graders restent secondaires et ne peuvent créer seules une estimation achetable. Elles ne deviennent utilisables qu'après normalisation par un ratio empirique possédant assez d'observations et des sources reconnues; aucun ratio de valeur inter-grader n'est appliqué par défaut.
+
+La recherche eBay publique reste un fallback à échec rapide. Le format commun est prêt à recevoir l'eBay Developer API et PSA Auction Prices Realized sans modifier le moteur statistique.
+
+Deux budgets eBay indépendants évitent toute ambiguïté : `EBAY_MAX_QUERIES_PER_CARD` limite les reformulations pour une carte et `EBAY_MAX_CARDS_PER_RUN` limite le nombre d'opportunités contrôlées pendant un scan.
 
 ## Modifier les seuils
 
@@ -96,7 +111,9 @@ Dans `.github/workflows/watcher.yml` :
 
 ```yaml
 MAX_PRICE_EUR: '100'
-MIN_DISCOUNT_PCT: '20'
+MIN_DISCOUNT_PCT: '30'
+EBAY_MAX_QUERIES_PER_CARD: '2'
+EBAY_MAX_CARDS_PER_RUN: '2'
 ```
 
 Pour un scan toutes les 5 minutes :

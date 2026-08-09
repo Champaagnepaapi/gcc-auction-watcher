@@ -4,8 +4,10 @@ import json
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.header import Header
 from pathlib import Path
 from statistics import median
 from typing import Optional
@@ -22,7 +24,7 @@ FIXED_PRICE_URL = 'https://gradedcardcenter.com/filtres?sellingTypes=%5B%22FIXED
 
 MIN_PRICE = 10.0
 MAX_PRICE = float(os.getenv("MAX_PRICE_EUR", "100"))
-MIN_DISCOUNT = 30.0
+MIN_DISCOUNT = float(os.getenv("MIN_DISCOUNT_PCT", "30"))
 MAX_AUCTION_MINUTES = int(os.getenv("MAX_AUCTION_MINUTES", "60"))
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 
@@ -35,9 +37,15 @@ EBAY_ENABLED = os.getenv("EBAY_ENABLED", "true").lower() == "true"
 EBAY_BASE = "https://www.ebay.fr"
 EBAY_MIN_COMPS = int(os.getenv("EBAY_MIN_COMPS", "2"))
 EBAY_MAX_RESULTS = int(os.getenv("EBAY_MAX_RESULTS", "20"))
-EBAY_MAX_QUERIES = int(os.getenv("EBAY_MAX_QUERIES", "2"))
+EBAY_MAX_QUERIES_PER_CARD = int(
+    os.getenv("EBAY_MAX_QUERIES_PER_CARD", os.getenv("EBAY_MAX_QUERIES", "2"))
+)
+EBAY_MAX_CARDS_PER_RUN = int(os.getenv("EBAY_MAX_CARDS_PER_RUN", "2"))
 EBAY_PAGE_WAIT_MS = int(os.getenv("EBAY_PAGE_WAIT_MS", "700"))
 EBAY_NAV_TIMEOUT = int(os.getenv("EBAY_NAV_TIMEOUT", "6000"))
+MIN_EMPIRICAL_GRADER_RATIO_SALES = int(
+    os.getenv("MIN_EMPIRICAL_GRADER_RATIO_SALES", "10")
+)
 
 NAV_TIMEOUT = 15000
 TEXT_TIMEOUT = 3000
@@ -62,6 +70,7 @@ SEALED_KEYWORDS = (
 )
 
 GRADERS = ("PSA", "PCA", "CGC", "BGS", "BECKETT", "CCC", "CA", "PG")
+VALID_COMPARABLE_SOURCES = frozenset({"gcc", "ebay", "psa"})
 
 
 @dataclass
@@ -80,27 +89,104 @@ class Lot:
 
 
 @dataclass
-class HistoricalSale:
+class ComparableSale:
+    """Format commun aux ventes GCC, eBay et aux futures sources (PSA APR)."""
+
     price: float
-    grader: str
-    grade: Optional[float]
-    context: str
+    source: str = "gcc"
+    grader: str = ""
+    grade: Optional[float] = None
+    sold_at: Optional[datetime] = None
+    context: str = ""
+    exact_card: bool = True
+    match_score: int = 100
+
+
+# Alias conservé pour les intégrations qui importeraient encore l'ancien nom.
+HistoricalSale = ComparableSale
+
+
+@dataclass(frozen=True)
+class EmpiricalGraderRatio:
+    """Ratio futur mesuré: valeur grader cible / valeur grader source."""
+
+    source_grader: str
+    target_grader: str
+    grade: float
+    target_per_source_ratio: float
+    sample_size: int
+    sources: tuple[str, ...]
+    measured_at: datetime
+
+
+@dataclass
+class ComparableSelection:
+    primary: list[ComparableSale]
+    lower_bounds: list[ComparableSale]
+    upper_bounds: list[ComparableSale]
+    secondary: list[ComparableSale]
+    rationale: str
+    grade_arbitrage: bool = False
+    arbitrage_reference_grade: Optional[float] = None
+    arbitrage_reference_value: Optional[float] = None
+    depends_on_other_graders: bool = False
+
+
+@dataclass
+class MarketEstimate:
+    low: float
+    central: float
+    high: float
+    kept_comparables: list[ComparableSale]
+    rejected_outliers: list[ComparableSale]
+    recent_90_count: int
+    dated_count: int
+    liquidity: str
+    dispersion: str
+    confidence: str
+    adaptive_discount_pct: float
+    rationale: str
+    source_counts: dict[str, int]
+    exact_grade_count: int
+    same_grader_count: int
+    source_consistent: Optional[bool] = None
+    grade_arbitrage: bool = False
+    arbitrage_reference_grade: Optional[float] = None
+    arbitrage_reference_value: Optional[float] = None
 
 
 @dataclass
 class Opportunity:
     lot: Lot
-    estimated_market: float
+    estimate: MarketEstimate
     discount_pct: float
-    exact_grade_comps: list[float]
-    lower_grade_comps: list[HistoricalSale]
-    higher_grade_comps: list[HistoricalSale]
-    confidence: str
-    rationale: str
-    gcc_estimated_market: Optional[float] = None
-    ebay_estimated_market: Optional[float] = None
-    ebay_comps: int = 0
+    max_recommended: float
+    gcc_comparables: list[ComparableSale]
+    ebay_comparables: list[ComparableSale]
     ebay_note: str = ""
+
+    @property
+    def estimated_market(self) -> float:
+        return self.estimate.central
+
+    @property
+    def confidence(self) -> str:
+        return self.estimate.confidence
+
+    @property
+    def rationale(self) -> str:
+        return self.estimate.rationale
+
+    @property
+    def grade_arbitrage(self) -> bool:
+        return self.estimate.grade_arbitrage
+
+
+@dataclass
+class NotificationDecision:
+    should_notify: bool
+    final_alert: bool = False
+    reasons: tuple[str, ...] = ()
 
 
 def log(msg: str) -> None:
@@ -108,12 +194,23 @@ def log(msg: str) -> None:
 
 
 def load_state() -> dict:
+    state = None
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
-            pass
-    return {"notified": {}, "seen": {}}
+            log(f"État illisible ({STATE_FILE}), nouvel état initialisé")
+
+    # Compatibilité avec les anciens state.json: leurs champs sont conservés et
+    # les nouvelles sections sont ajoutées sans migration destructive.
+    if not isinstance(state, dict):
+        state = {}
+    if not isinstance(state.get("notified"), dict):
+        state["notified"] = {}
+    if not isinstance(state.get("seen"), dict):
+        state["seen"] = {}
+    state["schema_version"] = 2
+    return state
 
 
 def save_state(state: dict) -> None:
@@ -142,6 +239,184 @@ def parse_money(text: str) -> Optional[float]:
         except ValueError:
             pass
     return vals[0] if vals else None
+
+
+MONTH_NUMBERS = {
+    "janvier": 1, "january": 1, "jan": 1,
+    "fevrier": 2, "february": 2, "feb": 2,
+    "mars": 3, "march": 3, "mar": 3,
+    "avril": 4, "april": 4, "apr": 4,
+    "mai": 5, "may": 5,
+    "juin": 6, "june": 6, "jun": 6,
+    "juillet": 7, "july": 7, "jul": 7,
+    "aout": 8, "august": 8, "aug": 8,
+    "septembre": 9, "september": 9, "sept": 9, "sep": 9,
+    "octobre": 10, "october": 10, "oct": 10,
+    "novembre": 11, "november": 11, "nov": 11,
+    "decembre": 12, "december": 12, "dec": 12,
+}
+
+
+def _plain_text(text: str) -> str:
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+
+
+def parse_sale_date(text: str, now: Optional[datetime] = None) -> Optional[datetime]:
+    """Extrait les formats de date courants observés chez GCC/eBay."""
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    plain = _plain_text(text)
+
+    relative_patterns = (
+        (r"(?:il y a\s*)?(\d+)\s*(?:jours?|days?)(?:\s*ago)?", 1),
+        (r"(?:il y a\s*)?(\d+)\s*(?:semaines?|weeks?)(?:\s*ago)?", 7),
+        (r"(?:il y a\s*)?(\d+)\s*(?:mois|months?)(?:\s*ago)?", 30),
+        (r"(?:il y a\s*)?(\d+)\s*(?:ans?|years?)(?:\s*ago)?", 365),
+    )
+    for pattern, multiplier in relative_patterns:
+        match = re.search(pattern, plain, re.I)
+        if match:
+            return reference - timedelta(days=int(match.group(1)) * multiplier)
+
+    numeric_patterns = (
+        (r"\b(20\d{2}|19\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b", "ymd"),
+        (r"\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2}|19\d{2})\b", "dmy"),
+    )
+    for pattern, order in numeric_patterns:
+        match = re.search(pattern, plain)
+        if not match:
+            continue
+        parts = [int(value) for value in match.groups()]
+        year, month, day = parts if order == "ymd" else (parts[2], parts[1], parts[0])
+        try:
+            result = datetime(year, month, day, tzinfo=timezone.utc)
+            return result if result <= reference + timedelta(days=1) else None
+        except ValueError:
+            continue
+
+    month_names = "|".join(sorted(MONTH_NUMBERS, key=len, reverse=True))
+    patterns = (
+        rf"\b(\d{{1,2}})\s+({month_names})\s+(20\d{{2}}|19\d{{2}})\b",
+        rf"\b({month_names})\s+(\d{{1,2}})(?:st|nd|rd|th)?[,]?\s+(20\d{{2}}|19\d{{2}})\b",
+    )
+    for index, pattern in enumerate(patterns):
+        match = re.search(pattern, plain, re.I)
+        if not match:
+            continue
+        if index == 0:
+            day, month_name, year = match.groups()
+        else:
+            month_name, day, year = match.groups()
+        try:
+            result = datetime(
+                int(year), MONTH_NUMBERS[month_name.lower()], int(day), tzinfo=timezone.utc
+            )
+            return result if result <= reference + timedelta(days=1) else None
+        except (KeyError, ValueError):
+            continue
+
+    return None
+
+
+def sale_age_days(sale: ComparableSale, now: Optional[datetime] = None) -> Optional[float]:
+    if sale.sold_at is None:
+        return None
+    reference = now or datetime.now(timezone.utc)
+    sold_at = sale.sold_at
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    if sold_at.tzinfo is None:
+        sold_at = sold_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (reference - sold_at).total_seconds() / 86400)
+
+
+def recency_weight(sold_at: Optional[datetime], now: Optional[datetime] = None) -> float:
+    """Pondération progressive: 1,00 (<30j), 0,70 (90j), 0,40 (180j), 0,20 (365j)."""
+    if sold_at is None:
+        return 0.45
+    age = sale_age_days(ComparableSale(price=1, sold_at=sold_at), now)
+    if age is None or age <= 30:
+        return 1.0
+    if age <= 90:
+        return 1.0 - (age - 30) * (0.30 / 60)
+    if age <= 180:
+        return 0.70 - (age - 90) * (0.30 / 90)
+    if age <= 365:
+        return 0.40 - (age - 180) * (0.20 / 185)
+    return max(0.10, 0.20 * 365 / age)
+
+
+def percentile(values: list[float], quantile: float) -> float:
+    vals = sorted(values)
+    if not vals:
+        raise ValueError("percentile requires at least one value")
+    if len(vals) == 1:
+        return vals[0]
+    position = max(0.0, min(1.0, quantile)) * (len(vals) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(vals) - 1)
+    fraction = position - lower
+    return vals[lower] + fraction * (vals[upper] - vals[lower])
+
+
+def filter_price_outliers(
+    comparables: list[ComparableSale],
+) -> tuple[list[ComparableSale], list[ComparableSale]]:
+    """Filtre MAD (puis IQR si MAD nul), robuste dès quatre comparables."""
+    valid = [sale for sale in comparables if sale.price > 0]
+    if len(valid) < 4:
+        return valid, []
+
+    prices = [sale.price for sale in valid]
+    med = median(prices)
+    deviations = [abs(price - med) for price in prices]
+    mad = median(deviations)
+
+    if mad > 0:
+        kept = [
+            sale for sale in valid
+            if 0.6745 * abs(sale.price - med) / mad <= 3.5
+        ]
+    else:
+        q1 = percentile(prices, 0.25)
+        q3 = percentile(prices, 0.75)
+        iqr = q3 - q1
+        if iqr <= 0:
+            kept = [sale for sale in valid if 0.5 * med <= sale.price <= 2.0 * med]
+        else:
+            kept = [sale for sale in valid if q1 - 1.5 * iqr <= sale.price <= q3 + 1.5 * iqr]
+
+    # Ne jamais fabriquer une estimation sur moins de trois points à cause du filtre.
+    if len(kept) < 3:
+        return valid, []
+    kept_ids = {id(sale) for sale in kept}
+    return kept, [sale for sale in valid if id(sale) not in kept_ids]
+
+
+def weighted_quantile(values_and_weights: list[tuple[float, float]], quantile: float) -> float:
+    pairs = sorted((value, max(weight, 0.001)) for value, weight in values_and_weights)
+    if not pairs:
+        raise ValueError("weighted_quantile requires at least one value")
+    if len(pairs) == 1:
+        return pairs[0][0]
+    total = sum(weight for _, weight in pairs)
+    positions = []
+    cumulative = 0.0
+    for _, weight in pairs:
+        cumulative += weight
+        positions.append((cumulative - weight / 2) / total)
+    target = max(0.0, min(1.0, quantile))
+    if target <= positions[0]:
+        return pairs[0][0]
+    if target >= positions[-1]:
+        return pairs[-1][0]
+    for index in range(1, len(pairs)):
+        if positions[index] >= target:
+            left_pos, right_pos = positions[index - 1], positions[index]
+            fraction = (target - left_pos) / (right_pos - left_pos)
+            return pairs[index - 1][0] + fraction * (pairs[index][0] - pairs[index - 1][0])
+    return pairs[-1][0]
 
 
 def listing_is_pokemon_card(blob: str) -> bool:
@@ -525,11 +800,15 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
                 grade = float(gm.group(1).replace(",", "."))
 
         sales.append(
-            HistoricalSale(
+            ComparableSale(
                 price=price,
+                source="gcc",
                 grader=grader,
                 grade=grade,
+                sold_at=parse_sale_date(context),
                 context=context.replace("\n", " ")[:300],
+                exact_card=True,
+                match_score=100,
             )
         )
 
@@ -537,7 +816,8 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
     deduped: list[HistoricalSale] = []
     seen = set()
     for s in sales:
-        key = (round(s.price, 2), s.grader, s.grade)
+        sold_day = s.sold_at.date().isoformat() if s.sold_at else ""
+        key = (round(s.price, 2), s.grader, s.grade, sold_day)
         if key in seen:
             continue
         seen.add(key)
@@ -606,12 +886,23 @@ def extract_card_identity(lot: Lot) -> dict:
     core = re.sub(r"\s+", " ", core).strip()
 
     ref = ""
-    m = re.search(r"#\s*([A-Z0-9]{1,6}(?:/[A-Z0-9]{1,6})?)", body, re.I)
-    if m:
-        ref = m.group(1)
+    ref_patterns = (
+        r"(?:Réf[ée]rence|Reference|Num[ée]ro|Number)\s*:?\s*#?\s*([A-Z0-9-]{1,10}(?:/[A-Z0-9-]{1,10})?)",
+        r"#\s*([A-Z0-9-]{1,10}(?:/[A-Z0-9-]{1,10})?)",
+        r"\b([A-Z0-9-]{1,10}/[A-Z0-9-]{1,10})\b",
+    )
+    for pattern in ref_patterns:
+        match = re.search(pattern, f"{title}\n{body}", re.I)
+        if match:
+            ref = match.group(1).upper()
+            break
 
     year = ""
-    ym = re.search(r"\b(19\d{2}|20\d{2})\b", body)
+    ym = re.search(
+        r"(?:Année|Year)\s*:?\s*(19\d{2}|20\d{2})\b",
+        body,
+        re.I,
+    ) or re.search(r"\b(19\d{2}|20\d{2})\b", f"{title}\n{body}")
     if ym:
         year = ym.group(1)
 
@@ -625,7 +916,8 @@ def extract_card_identity(lot: Lot) -> dict:
         "Italian": ("Italian", "Italien"),
     }
     for canonical, variants in language_map.items():
-        if any(re.search(rf"\b{re.escape(v)}\b", body, re.I) for v in variants):
+        identity_text = f"{title}\n{lot.listing_text}\n{body}"
+        if any(re.search(rf"\b{re.escape(v)}\b", identity_text, re.I) for v in variants):
             language = canonical
             break
 
@@ -701,6 +993,20 @@ def ebay_queries_for_lot(lot: Lot) -> list[str]:
         add(["Pokemon", core, series, year, language])
 
     return queries
+
+
+def ebay_queries_within_budget(
+    lot: Lot, max_queries: Optional[int] = None
+) -> list[str]:
+    limit = EBAY_MAX_QUERIES_PER_CARD if max_queries is None else max_queries
+    return ebay_queries_for_lot(lot)[:max(0, limit)]
+
+
+def ebay_card_validation_allowed(
+    cards_already_validated: int, max_cards: Optional[int] = None
+) -> bool:
+    limit = EBAY_MAX_CARDS_PER_RUN if max_cards is None else max_cards
+    return EBAY_ENABLED and cards_already_validated < max(0, limit)
 
 
 def ebay_result_match_score(lot: Lot, title: str) -> tuple[int, str]:
@@ -848,17 +1154,9 @@ def robust_median_prices(prices: list[float]) -> list[float]:
     Écarte uniquement les outliers extrêmes lorsqu'il y a assez de données.
     On reste volontairement conservateur.
     """
-    vals = sorted(p for p in prices if p > 0)
-    if len(vals) < 5:
-        return vals
-
-    med = median(vals)
-    if med <= 0:
-        return vals
-
-    # Conserve les ventes entre 40% et 250% de la médiane initiale.
-    filtered = [p for p in vals if 0.40 * med <= p <= 2.50 * med]
-    return filtered if len(filtered) >= 3 else vals
+    comparables = [ComparableSale(price=price) for price in prices if price > 0]
+    kept, _ = filter_price_outliers(comparables)
+    return sorted(sale.price for sale in kept)
 
 
 def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
@@ -866,7 +1164,8 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     Recherche publique eBay Sold/Completed sans API Developer.
 
     V3.3 FAST-FAIL:
-    - 2 requêtes maximum;
+    - budget de requêtes indépendant pour chaque carte;
+    - budget séparé de cartes validées pendant le run;
     - timeout navigation court;
     - abandon immédiat si la page eBay renvoie 0 résultat visible;
     - abandon immédiat après timeout/anti-bot;
@@ -878,7 +1177,7 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     collected: list[HistoricalSale] = []
     seen = set()
 
-    queries = ebay_queries_for_lot(lot)[:EBAY_MAX_QUERIES]
+    queries = ebay_queries_within_budget(lot)
     log(f"eBay: {len(queries)} requête(s) max pour {lot.title}")
 
     for q_index, query in enumerate(queries, start=1):
@@ -974,11 +1273,15 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             seen.add(key)
 
             collected.append(
-                HistoricalSale(
+                ComparableSale(
                     price=price,
+                    source="ebay",
                     grader=grader,
                     grade=grade,
+                    sold_at=parse_sale_date(txt),
                     context=f"eBay SOLD score={score} ({reason}) | {title}"[:300],
+                    exact_card=score >= 70,
+                    match_score=score,
                 )
             )
             matched_this_query += 1
@@ -1001,274 +1304,758 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     return collected[:EBAY_MAX_RESULTS]
 
 
-def estimate_cross_grader_market(lot: Lot, sales: list[HistoricalSale]) -> tuple[Optional[float], str, str]:
-    """
-    Estimation par grade + grader utilisable pour GCC et eBay.
-    Renvoie (estimation, confiance, explication).
-    """
-    if not sales:
-        return None, "faible", ""
-
+def _target_grade(lot: Lot) -> Optional[float]:
     try:
-        current_grade = float(lot.grade) if lot.grade else None
+        return float(lot.grade) if lot.grade else None
     except ValueError:
-        current_grade = None
+        return None
 
-    if current_grade is None:
-        prices = [s.price for s in sales if s.price > 0]
-        if len(prices) < 2:
-            return None, "faible", ""
-        return median(prices), ("élevée" if len(prices) >= 5 else "moyenne"), f"{len(prices)} ventes comparables"
 
-    graded = [s for s in sales if s.grade is not None and s.price > 0]
-    if not graded:
-        return None, "faible", ""
+def empirical_price_for_target_grader(
+    sale: ComparableSale,
+    target_grader: str,
+    target_grade: float,
+    ratios: list[EmpiricalGraderRatio],
+) -> Optional[float]:
+    """Normalise seulement avec un ratio fourni et suffisamment documenté."""
+    if sale.grade != target_grade:
+        return None
+    if sale.grader == target_grader and sale.grade == target_grade:
+        return sale.price
+    eligible = [
+        ratio for ratio in ratios
+        if ratio.source_grader == sale.grader
+        and ratio.target_grader == target_grader
+        and ratio.grade == target_grade
+        and ratio.sample_size >= MIN_EMPIRICAL_GRADER_RATIO_SALES
+        and ratio.target_per_source_ratio > 0
+        and bool(ratio.sources)
+        and all(source in VALID_COMPARABLE_SOURCES for source in ratio.sources)
+    ]
+    if not eligible:
+        return None
+    evidence = max(eligible, key=lambda ratio: (ratio.sample_size, ratio.measured_at))
+    return sale.price * evidence.target_per_source_ratio
 
-    same_exact = [
-        s for s in graded
-        if s.grade == current_grade and lot.grader and s.grader == lot.grader
-    ]
-    other_exact = [
-        s for s in graded
-        if s.grade == current_grade and (not lot.grader or s.grader != lot.grader)
-    ]
 
-    same_lower = [
-        s for s in graded
-        if s.grade < current_grade and lot.grader and s.grader == lot.grader
-    ]
-    other_lower = [
-        s for s in graded
-        if s.grade < current_grade and (not lot.grader or s.grader != lot.grader)
-    ]
-
-    same_higher = [
-        s for s in graded
-        if s.grade > current_grade and lot.grader and s.grader == lot.grader
-    ]
-    other_higher = [
-        s for s in graded
-        if s.grade > current_grade and (not lot.grader or s.grader != lot.grader)
-    ]
-
-    # 1) Même grader + même grade.
-    if len(same_exact) >= 2:
-        base = median(robust_median_prices([s.price for s in same_exact]))
-        if other_exact:
-            cross = median(robust_median_prices([s.price for s in other_exact]))
-            return (
-                0.80 * base + 0.20 * cross,
-                "élevée" if len(same_exact) >= 5 else "moyenne",
-                f"{len(same_exact)} même grader/grade + {len(other_exact)} autre(s) grader(s) même grade",
+def normalize_comparables_for_target_grader(
+    sales: list[ComparableSale],
+    target_grader: str,
+    target_grade: float,
+    ratios: list[EmpiricalGraderRatio],
+) -> list[ComparableSale]:
+    """Convertit les autres graders uniquement via des ratios empiriques admissibles."""
+    normalized = []
+    for sale in sales:
+        price = empirical_price_for_target_grader(
+            sale, target_grader, target_grade, ratios
+        )
+        if price is None or sale.grader == target_grader:
+            continue
+        normalized.append(
+            ComparableSale(
+                price=price,
+                source=sale.source,
+                grader=target_grader,
+                grade=target_grade,
+                sold_at=sale.sold_at,
+                context=(
+                    f"normalisé empiriquement {sale.grader}→{target_grader} | "
+                    f"{sale.context}"
+                )[:300],
+                exact_card=sale.exact_card,
+                match_score=sale.match_score,
             )
+        )
+    return normalized
+
+
+def _same_target_grader(lot: Lot, sale: ComparableSale) -> bool:
+    if not lot.grader:
+        return True
+    return bool(sale.grader) and sale.grader.upper() == lot.grader.upper()
+
+
+def _nearest_grade_group(
+    sales: list[ComparableSale], target_grade: float, lower: bool
+) -> list[ComparableSale]:
+    candidates = [
+        sale for sale in sales
+        if sale.grade is not None
+        and (sale.grade < target_grade if lower else sale.grade > target_grade)
+    ]
+    if not candidates:
+        return []
+    nearest_grade = (
+        max(sale.grade for sale in candidates if sale.grade is not None)
+        if lower
+        else min(sale.grade for sale in candidates if sale.grade is not None)
+    )
+    return [sale for sale in candidates if sale.grade == nearest_grade]
+
+
+def _select_pricing_comparables(
+    lot: Lot,
+    sales: list[ComparableSale],
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+) -> ComparableSelection:
+    valid = [sale for sale in sales if sale.price > 0]
+    exact_card = [sale for sale in valid if sale.exact_card]
+    # Une identité de carte seulement probable reste un signal secondaire:
+    # elle ne peut créer ni valeur achetable ni arbitrage de grade.
+    identity_candidates = exact_card
+    target_grade = _target_grade(lot)
+    if target_grade is None:
+        same_grader = [sale for sale in identity_candidates if _same_target_grader(lot, sale)]
+        primary = same_grader if lot.grader else identity_candidates
+        secondary = [sale for sale in valid if sale not in primary]
+        return ComparableSelection(
+            primary=primary if len(primary) >= 2 else [],
+            lower_bounds=[],
+            upper_bounds=[],
+            secondary=secondary,
+            rationale=f"{len(primary)} ventes comparables sans grade cible" if len(primary) >= 2 else "",
+        )
+
+    graded = [sale for sale in identity_candidates if sale.grade is not None]
+    same_grader = [sale for sale in graded if _same_target_grader(lot, sale)]
+    other_graders = [sale for sale in graded if sale not in same_grader]
+    same_exact = [sale for sale in same_grader if sale.grade == target_grade]
+    other_exact = [sale for sale in other_graders if sale.grade == target_grade]
+    same_lower = _nearest_grade_group(same_grader, target_grade, lower=True)
+    same_higher = _nearest_grade_group(same_grader, target_grade, lower=False)
+
+    # Une seule vraie vente même grader/même grade suffit à devenir la référence.
+    # Le volume d'autres graders reste secondaire et ne peut pas déplacer sa médiane.
+    if same_exact:
+        secondary = [sale for sale in valid if sale not in same_exact + same_lower + same_higher]
+        return ComparableSelection(
+            primary=same_exact,
+            lower_bounds=same_lower,
+            upper_bounds=same_higher,
+            secondary=secondary,
+            rationale=(
+                f"{len(same_exact)} même grader/grade (signal principal); "
+                f"{len(same_lower) + len(same_higher)} grade(s) voisin(s) même grader; "
+                f"{len(other_exact)} autre(s) grader(s) au grade exact en validation"
+            ),
+        )
+
+    # Sans grade exact, le grade inférieur du même grader peut démontrer un
+    # arbitrage conservateur, mais seulement si le prix courant ne le dépasse pas.
+    if same_lower:
+        robust_lower, _ = filter_price_outliers(same_lower)
+        lower_market = median(sale.price for sale in robust_lower)
+        if lot.current_price is not None and lot.current_price <= lower_market:
+            lower_grade = same_lower[0].grade
+            secondary = [sale for sale in valid if sale not in same_lower + same_higher]
+            return ComparableSelection(
+                primary=same_lower,
+                lower_bounds=[],
+                upper_bounds=same_higher,
+                secondary=secondary,
+                rationale=(
+                    f"grade arbitrage: cible {target_grade:g} à {lot.current_price:.2f} € "
+                    f"<= marché robuste grade {lower_grade:g} même grader ({lower_market:.2f} €); "
+                    f"{len(other_exact)} autre(s) grader(s) au grade exact en validation"
+                ),
+                grade_arbitrage=True,
+                arbitrage_reference_grade=lower_grade,
+                arbitrage_reference_value=lower_market,
+            )
+
+    # Les autres graders ne deviennent exploitables qu'après une normalisation
+    # empirique suffisamment documentée. Sans ratio, ils restent secondaires.
+    if other_exact:
+        normalized = normalize_comparables_for_target_grader(
+            other_exact, lot.grader, target_grade, grader_ratios or []
+        )
+        if normalized:
+            return ComparableSelection(
+                primary=normalized,
+                lower_bounds=[],
+                upper_bounds=[],
+                secondary=valid,
+                rationale=(
+                    f"aucune vente {lot.grader or 'grader cible'} au grade exact; "
+                    f"{len(normalized)} vente(s) normalisée(s) par ratio(s) empirique(s)"
+                ),
+                depends_on_other_graders=True,
+            )
+
+    return ComparableSelection([], [], [], valid, "")
+
+
+def _comparable_weight(lot: Lot, sale: ComparableSale, now: Optional[datetime]) -> float:
+    weight = recency_weight(sale.sold_at, now)
+    if not sale.exact_card:
+        weight *= 0.70
+    target_grade = _target_grade(lot)
+    if target_grade is not None and sale.grade is not None and sale.grade != target_grade:
+        weight *= 0.65
+    if sale.source == "ebay":
+        weight *= 0.90
+    weight *= max(0.60, min(1.0, sale.match_score / 100))
+    return max(0.05, weight)
+
+
+def price_dispersion(comparables: list[ComparableSale]) -> str:
+    prices = [sale.price for sale in comparables if sale.price > 0]
+    if len(prices) < 2:
+        return "non mesurable"
+    center = median(prices)
+    if center <= 0:
+        return "élevée"
+    robust_spread = (percentile(prices, 0.75) - percentile(prices, 0.25)) / center
+    if robust_spread <= 0.15:
+        return "faible"
+    if robust_spread <= 0.35:
+        return "moyenne"
+    return "élevée"
+
+
+def assess_liquidity(
+    comparables: list[ComparableSale], now: Optional[datetime] = None
+) -> tuple[str, int, int]:
+    ages = [sale_age_days(sale, now) for sale in comparables]
+    dated_ages = [age for age in ages if age is not None]
+    recent_90 = sum(age <= 90 for age in dated_ages)
+    recent_180 = sum(age <= 180 for age in dated_ages)
+    count = len(comparables)
+    if count >= 5 and recent_90 >= 3:
+        liquidity = "élevée"
+    elif (count >= 3 and recent_180 >= 2) or (count >= 5 and recent_90 >= 1):
+        liquidity = "moyenne"
+    else:
+        liquidity = "faible"
+    return liquidity, recent_90, len(dated_ages)
+
+
+def _source_consistency(comparables: list[ComparableSale]) -> Optional[bool]:
+    grouped: dict[str, list[float]] = {}
+    for sale in comparables:
+        grouped.setdefault(sale.source, []).append(sale.price)
+    medians = [median(prices) for prices in grouped.values() if len(prices) >= 2]
+    if len(medians) < 2:
+        return None
+    return max(medians) / min(medians) <= 1.35
+
+
+def adaptive_discount_threshold(
+    count: int,
+    dispersion: str,
+    liquidity: str,
+    recent_90_count: int,
+    dated_count: int,
+    exact_grade_count: int,
+    source_consistent: Optional[bool] = None,
+    depends_on_other_graders: bool = False,
+) -> float:
+    """Seuil documenté: ~40% (<=2), ~35% (3–4), 30% (>=5), puis prudence qualité."""
+    if count <= 2:
+        threshold = 40.0
+    elif count <= 4:
+        threshold = 35.0
+    else:
+        threshold = 30.0
+
+    if dispersion == "élevée":
+        threshold += 5.0
+    if liquidity == "faible":
+        threshold += 2.0
+    if dated_count and recent_90_count == 0:
+        threshold += 3.0
+    elif dated_count >= 2 and recent_90_count / dated_count < 0.5:
+        threshold += 2.0
+    if count and exact_grade_count / count < 0.5:
+        threshold += 2.0
+    if source_consistent is False:
+        threshold += 3.0
+    if depends_on_other_graders:
+        threshold += 5.0
+    return max(MIN_DISCOUNT, min(45.0, threshold))
+
+
+def determine_confidence(
+    count: int,
+    exact_card_count: int,
+    exact_grade_count: int,
+    same_grader_count: int,
+    recent_90_count: int,
+    dated_count: int,
+    dispersion: str,
+    liquidity: str,
+    source_consistent: Optional[bool],
+    depends_on_other_graders: bool = False,
+) -> str:
+    """Classement par règles explicites, sans faux score numérique sur 100."""
+    exact_card_ratio = exact_card_count / count if count else 0.0
+    exact_grade_ratio = exact_grade_count / count if count else 0.0
+    recent_ratio = recent_90_count / dated_count if dated_count else 0.0
+    coherent_sources = source_consistent is not False
+
+    if depends_on_other_graders:
+        return "faible"
+
+    if (
+        count >= 5
+        and exact_card_ratio >= 0.80
+        and exact_grade_ratio >= 0.60
+        and same_grader_count >= 2
+        and dated_count >= 3
+        and recent_ratio >= 0.50
+        and dispersion != "élevée"
+        and liquidity == "élevée"
+        and coherent_sources
+    ):
+        return "élevée"
+    if (
+        count >= 3
+        and exact_card_ratio >= 0.65
+        and exact_grade_ratio >= 0.50
+        and same_grader_count >= 1
+        and dispersion != "élevée"
+        and liquidity != "faible"
+        and coherent_sources
+    ):
+        return "moyenne"
+    return "faible"
+
+
+def build_market_estimate(
+    lot: Lot,
+    sales: list[ComparableSale],
+    now: Optional[datetime] = None,
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+) -> Optional[MarketEstimate]:
+    selection = _select_pricing_comparables(lot, sales, grader_ratios)
+    if not selection.primary:
+        return None
+    primary_kept, rejected = filter_price_outliers(selection.primary)
+    if not primary_kept:
+        return None
+
+    primary_prices = [
+        (sale.price, _comparable_weight(lot, sale, now)) for sale in primary_kept
+    ]
+    low = weighted_quantile(primary_prices, 0.25)
+    central = weighted_quantile(primary_prices, 0.50)
+    high = weighted_quantile(primary_prices, 0.75)
+
+    lower_kept, lower_rejected = filter_price_outliers(selection.lower_bounds)
+    upper_kept, upper_rejected = filter_price_outliers(selection.upper_bounds)
+    rejected.extend(lower_rejected + upper_rejected)
+    if lower_kept:
+        lower_prices = [
+            (sale.price, _comparable_weight(lot, sale, now)) for sale in lower_kept
+        ]
+        low = min(low, weighted_quantile(lower_prices, 0.50))
+    if upper_kept:
+        upper_prices = [
+            (sale.price, _comparable_weight(lot, sale, now)) for sale in upper_kept
+        ]
+        high = max(high, weighted_quantile(upper_prices, 0.50))
+    low, high = min(low, central), max(high, central)
+
+    kept = primary_kept + lower_kept + upper_kept
+    liquidity, recent_90_count, dated_count = assess_liquidity(kept, now)
+    dispersion = price_dispersion(kept)
+    target_grade = _target_grade(lot)
+    exact_grade_count = sum(
+        target_grade is None or sale.grade == target_grade for sale in kept
+    )
+    same_grader_count = sum(
+        bool(lot.grader) and sale.grader == lot.grader for sale in kept
+    )
+    exact_card_count = sum(sale.exact_card for sale in kept)
+    source_consistent = _source_consistency(kept)
+    threshold = adaptive_discount_threshold(
+        len(kept), dispersion, liquidity, recent_90_count, dated_count,
+        exact_grade_count, source_consistent, selection.depends_on_other_graders,
+    )
+    confidence = determine_confidence(
+        len(kept), exact_card_count, exact_grade_count, same_grader_count,
+        recent_90_count, dated_count, dispersion, liquidity, source_consistent,
+        selection.depends_on_other_graders,
+    )
+    if selection.grade_arbitrage:
+        confidence = "faible"
+    source_counts: dict[str, int] = {}
+    for sale in kept:
+        source_counts[sale.source] = source_counts.get(sale.source, 0) + 1
+
+    return MarketEstimate(
+        low=low,
+        central=central,
+        high=high,
+        kept_comparables=kept,
+        rejected_outliers=rejected,
+        recent_90_count=recent_90_count,
+        dated_count=dated_count,
+        liquidity=liquidity,
+        dispersion=dispersion,
+        confidence=confidence,
+        adaptive_discount_pct=threshold,
+        rationale=selection.rationale,
+        source_counts=source_counts,
+        exact_grade_count=exact_grade_count,
+        same_grader_count=same_grader_count,
+        source_consistent=source_consistent,
+        grade_arbitrage=selection.grade_arbitrage,
+        arbitrage_reference_grade=selection.arbitrage_reference_grade,
+        arbitrage_reference_value=selection.arbitrage_reference_value,
+    )
+
+
+def estimate_cross_grader_market(
+    lot: Lot,
+    sales: list[ComparableSale],
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+) -> tuple[Optional[float], str, str]:
+    """Wrapper compatible autour du nouveau moteur à fourchette."""
+    estimate = build_market_estimate(lot, sales, grader_ratios=grader_ratios)
+    if estimate is None:
+        return None, "faible", ""
+    return estimate.central, estimate.confidence, estimate.rationale
+
+
+def _opportunity_from_estimate(
+    lot: Lot,
+    estimate: MarketEstimate,
+    gcc_sales: list[ComparableSale],
+    ebay_sales: Optional[list[ComparableSale]] = None,
+    ebay_note: str = "",
+) -> Opportunity:
+    discount = (estimate.central - lot.current_price) / estimate.central * 100
+    if estimate.grade_arbitrage:
+        # La borne basse du grade inférieur est déjà la référence prudente:
+        # aucune décote artificielle supplémentaire n'est appliquée.
+        max_recommended = estimate.low
+    else:
+        max_recommended = estimate.low * (1 - estimate.adaptive_discount_pct / 100)
+    return Opportunity(
+        lot=lot,
+        estimate=estimate,
+        discount_pct=discount,
+        max_recommended=max(0.0, max_recommended),
+        gcc_comparables=gcc_sales,
+        ebay_comparables=ebay_sales or [],
+        ebay_note=ebay_note,
+    )
+
+
+def opportunity_rejection_reason(op: Opportunity) -> str:
+    if op.estimate.grade_arbitrage:
+        if op.lot.current_price > op.max_recommended:
+            return (
+                f"grade arbitrage {op.lot.current_price:.2f} € > borne prudente "
+                f"du grade inférieur {op.max_recommended:.2f} €"
+            )
+        return ""
+    if op.discount_pct < op.estimate.adaptive_discount_pct:
         return (
-            base,
-            "élevée" if len(same_exact) >= 5 else "moyenne",
-            f"{len(same_exact)} ventes même grader au grade exact",
+            f"décote {op.discount_pct:.1f}% < seuil adaptatif "
+            f"{op.estimate.adaptive_discount_pct:.1f}%"
         )
-
-    # 2) Même grade, autres graders compris.
-    exact_all = same_exact + other_exact
-    if len(exact_all) >= 2:
-        weighted = []
-        for s in same_exact:
-            weighted.extend([s.price] * 3)
-        for s in other_exact:
-            weighted.extend([s.price] * 2)
+    # Une enchère ne peut que monter: prix fixes et enchères doivent donc être
+    # sous la même limite prudente dès le moment de l'alerte.
+    if op.lot.current_price > op.max_recommended:
+        mode = "enchère" if op.lot.source_type == "auction" else "prix fixe"
         return (
-            median(robust_median_prices(weighted)),
-            "moyenne" if same_exact else "faible",
-            f"{len(same_exact)} même grader + {len(other_exact)} autre(s) grader(s), grade exact",
+            f"{mode} {op.lot.current_price:.2f} € > prix max prudent "
+            f"{op.max_recommended:.2f} €"
         )
-
-    # 3) Bornes de grades voisins, toutes sociétés.
-    lower = same_lower + other_lower
-    higher = same_higher + other_higher
-
-    lower_bound = max((s.price for s in lower), default=None)
-    higher_bound = min((s.price for s in higher), default=None)
-
-    if lower_bound is not None and lot.current_price is not None and lot.current_price <= lower_bound:
-        return (
-            lower_bound,
-            "moyenne" if same_lower else "faible",
-            f"borne basse via grade inférieur ({len(lower)} vente(s))",
-        )
-
-    if lower_bound is not None and higher_bound is not None and higher_bound >= lower_bound:
-        nearest_lower = max(lower, key=lambda s: s.grade or -999)
-        nearest_higher = min(higher, key=lambda s: s.grade or 999)
-        gl = nearest_lower.grade or current_grade
-        gh = nearest_higher.grade or current_grade
-
-        if gh > gl:
-            fraction = (current_grade - gl) / (gh - gl)
-            interpolated = nearest_lower.price + fraction * (nearest_higher.price - nearest_lower.price)
-            market = max(lower_bound, min(interpolated, higher_bound))
-        else:
-            market = lower_bound
-
-        same_company_neighbor = (
-            nearest_lower.grader == lot.grader
-            or nearest_higher.grader == lot.grader
-        )
-        return (
-            market,
-            "moyenne" if same_company_neighbor else "faible",
-            f"interpolation grades {gl:g}→{gh:g}, graders {nearest_lower.grader or '?'}→{nearest_higher.grader or '?'}",
-        )
-
-    return None, "faible", ""
+    return ""
 
 
-def validate_with_ebay(page, op: Opportunity) -> Optional[Opportunity]:
-    """
-    eBay sert de validation externe des vraies ventes GCC.
-    Pour limiter les faux positifs:
-    - eBay peut confirmer ou réduire l'estimation GCC;
-    - si eBay est très divergent, on retient l'estimation la plus prudente;
-    - si eBay n'est pas exploitable, on conserve GCC seul.
-    """
-    op.gcc_estimated_market = op.estimated_market
+def _log_estimate(prefix: str, op: Opportunity) -> None:
+    estimate = op.estimate
+    mode = "grade arbitrage" if estimate.grade_arbitrage else "décote classique"
+    log(
+        f"{prefix} ({mode}): valeur {estimate.low:.2f}/{estimate.central:.2f}/{estimate.high:.2f} € | "
+        f"comps {len(estimate.kept_comparables)} gardés, {len(estimate.rejected_outliers)} outlier(s) | "
+        f"récents <90j {estimate.recent_90_count}/{estimate.dated_count} datés | "
+        f"liquidité {estimate.liquidity} | dispersion {estimate.dispersion} | "
+        f"seuil {estimate.adaptive_discount_pct:.0f}% | prix max {op.max_recommended:.2f} €"
+    )
 
+
+def validate_with_ebay(
+    page,
+    op: Opportunity,
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+) -> Optional[Opportunity]:
+    """Combine le format commun; en cas de divergence, garde la source la plus prudente."""
     ebay_sales = scrape_ebay_sold(page, op.lot)
+    op.ebay_comparables = ebay_sales
     if len(ebay_sales) < EBAY_MIN_COMPS:
         op.ebay_note = f"eBay: {len(ebay_sales)} comparable(s), insuffisant"
         return op
 
-    ebay_market, ebay_conf, ebay_reason = estimate_cross_grader_market(op.lot, ebay_sales)
-    if ebay_market is None or ebay_market <= 0:
+    ebay_estimate = build_market_estimate(
+        op.lot, ebay_sales, grader_ratios=grader_ratios
+    )
+    if ebay_estimate is None:
         op.ebay_note = f"eBay: {len(ebay_sales)} comparable(s), estimation non fiable"
         return op
 
-    op.ebay_estimated_market = ebay_market
-    op.ebay_comps = len(ebay_sales)
-
-    gcc_market = op.gcc_estimated_market or op.estimated_market
+    gcc_market = op.estimate.central
+    ebay_market = ebay_estimate.central
     ratio = ebay_market / gcc_market if gcc_market > 0 else 1.0
-
-    # Si les deux marchés sont raisonnablement proches: blend 65/35.
-    # En cas de forte divergence: estimation la plus prudente.
     if 0.60 <= ratio <= 1.60:
-        combined = 0.65 * gcc_market + 0.35 * ebay_market
-        op.ebay_note = (
-            f"eBay {len(ebay_sales)} ventes, {ebay_market:.2f} € "
-            f"({ebay_conf}; {ebay_reason})"
+        combined_estimate = build_market_estimate(
+            op.lot,
+            op.gcc_comparables + ebay_sales,
+            grader_ratios=grader_ratios,
+        )
+        if combined_estimate is None:
+            return op
+        note = (
+            f"eBay {len(ebay_sales)} ventes, médiane pondérée {ebay_market:.2f} € "
+            f"({ebay_estimate.confidence})"
         )
     else:
-        combined = min(gcc_market, ebay_market)
-        op.ebay_note = (
+        combined_estimate = ebay_estimate if ebay_market < gcc_market else op.estimate
+        combined_estimate.source_consistent = False
+        combined_estimate.confidence = "faible"
+        combined_estimate.adaptive_discount_pct = min(
+            45.0, max(MIN_DISCOUNT, combined_estimate.adaptive_discount_pct + 3)
+        )
+        note = (
             f"eBay divergent ({ebay_market:.2f} € vs GCC {gcc_market:.2f} €): "
-            f"estimation prudente retenue"
+            "source la plus prudente retenue"
         )
 
-    op.estimated_market = combined
-    op.discount_pct = (combined - op.lot.current_price) / combined * 100
+    combined_op = _opportunity_from_estimate(
+        op.lot, combined_estimate, op.gcc_comparables, ebay_sales, note
+    )
+    _log_estimate("Estimation après eBay", combined_op)
+    rejection = opportunity_rejection_reason(combined_op)
+    if rejection:
+        log(f"Rejet eBay: {op.lot.title} | {rejection}")
+        return None
+    return combined_op
 
-    # Si eBay fait tomber l'affaire sous 30%, on ne notifie plus.
-    if op.discount_pct < MIN_DISCOUNT:
-        log(
-            f"eBay veto: {op.lot.title} | GCC {gcc_market:.2f} € | "
-            f"eBay {ebay_market:.2f} € | combinée {combined:.2f} € | "
-            f"décote {op.discount_pct:.1f}%"
-        )
+
+def estimate_with_grade(
+    lot: Lot,
+    sales: list[ComparableSale],
+    now: Optional[datetime] = None,
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+) -> Optional[Opportunity]:
+    if lot.current_price is None or lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+        return None
+    estimate = build_market_estimate(lot, sales, now, grader_ratios)
+    if estimate is None or estimate.central <= 0:
+        log(f"Rejet valeur: {lot.title} | comparables insuffisants ou grades non exploitables")
         return None
 
+    op = _opportunity_from_estimate(lot, estimate, sales)
+    _log_estimate("Estimation GCC", op)
+    rejection = opportunity_rejection_reason(op)
+    if rejection:
+        log(f"Rejet opportunité: {lot.title} | {rejection}")
+        return None
+    log(
+        f"Opportunité retenue ({lot.source_type}): {lot.title} | "
+        f"décote {op.discount_pct:.1f}% | prix max {op.max_recommended:.2f} €"
+    )
     return op
 
 
-def estimate_with_grade(lot: Lot, sales: list[HistoricalSale]) -> Optional[Opportunity]:
-    if lot.current_price is None or lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
-        return None
+def notification_decision(
+    op: Opportunity, previous: Optional[dict]
+) -> NotificationDecision:
+    """Décide les renotifications; accepte aussi les entrées state.json V1."""
+    is_auction = op.lot.source_type == "auction"
+    under_max = op.lot.current_price <= op.max_recommended
+    final_eligible = (
+        is_auction
+        and op.lot.minutes_to_end is not None
+        and op.lot.minutes_to_end <= 5
+        and under_max
+    )
 
-    market, confidence, rationale = estimate_cross_grader_market(lot, sales)
-    if market is None or market <= 0:
-        return None
+    if not isinstance(previous, dict):
+        return NotificationDecision(
+            should_notify=True,
+            final_alert=final_eligible,
+            reasons=("nouvelle opportunité",),
+        )
 
-    discount = (market - lot.current_price) / market * 100
-    if discount < MIN_DISCOUNT:
-        return None
+    reasons = []
+    try:
+        previous_price = float(previous.get("price"))
+        if previous_price > 0 and op.lot.current_price <= previous_price * 0.90:
+            reasons.append("prix en baisse d'au moins 10%")
+    except (TypeError, ValueError):
+        pass
 
     try:
-        current_grade = float(lot.grade) if lot.grade else None
-    except ValueError:
-        current_grade = None
+        previous_discount = float(previous.get("discount_pct", 0))
+        if op.discount_pct >= previous_discount + 5:
+            reasons.append("décote améliorée d'au moins 5 points")
+    except (TypeError, ValueError):
+        pass
 
-    graded = [s for s in sales if s.grade is not None]
-    exact = [
-        s.price for s in graded
-        if current_grade is not None and s.grade == current_grade
-    ]
-    lower = [
-        s for s in graded
-        if current_grade is not None and s.grade is not None and s.grade < current_grade
-    ]
-    higher = [
-        s for s in graded
-        if current_grade is not None and s.grade is not None and s.grade > current_grade
-    ]
+    final_alert = final_eligible and not bool(previous.get("final_alert_sent", False))
+    if final_alert:
+        reasons.append("toujours sous le prix max dans les 5 dernières minutes")
+    elif is_auction and op.lot.minutes_to_end is not None and op.lot.minutes_to_end <= 15:
+        try:
+            previous_minutes = float(previous.get("minutes_to_end"))
+        except (TypeError, ValueError):
+            previous_minutes = None
+        crossed_15 = previous_minutes is None or previous_minutes > 15
+        if crossed_15 and not bool(previous.get("alert_15m_sent", False)):
+            reasons.append("passage sous 15 minutes")
 
-    return Opportunity(
-        lot=lot,
-        estimated_market=market,
-        discount_pct=discount,
-        exact_grade_comps=exact,
-        lower_grade_comps=lower,
-        higher_grade_comps=higher,
-        confidence=confidence,
-        rationale=rationale,
-        gcc_estimated_market=market,
+    return NotificationDecision(bool(reasons), final_alert, tuple(reasons))
+
+
+def updated_notification_state(
+    op: Opportunity,
+    previous: Optional[dict],
+    decision: NotificationDecision,
+    notified_at: str,
+) -> dict:
+    old = previous if isinstance(previous, dict) else {}
+    minutes = op.lot.minutes_to_end
+    return {
+        "discount_pct": op.discount_pct,
+        "price": op.lot.current_price,
+        "notified_at": notified_at,
+        "minutes_to_end": minutes,
+        "max_recommended": op.max_recommended,
+        "adaptive_discount_pct": op.estimate.adaptive_discount_pct,
+        "grade_arbitrage": op.estimate.grade_arbitrage,
+        "alert_15m_sent": bool(old.get("alert_15m_sent"))
+        or bool(op.lot.source_type == "auction" and minutes is not None and minutes <= 15),
+        "final_alert_sent": bool(old.get("final_alert_sent")) or decision.final_alert,
+        "last_reasons": list(decision.reasons),
+    }
+
+
+def _language_in_french(language: str) -> str:
+    return {
+        "French": "Français",
+        "Japanese": "Japonais",
+        "English": "Anglais",
+        "German": "Allemand",
+        "Spanish": "Espagnol",
+        "Italian": "Italien",
+    }.get(language, language or "Inconnue")
+
+
+def _exact_count(lot: Lot, sales: list[ComparableSale]) -> int:
+    target_grade = _target_grade(lot)
+    return sum(
+        sale.exact_card and (target_grade is None or sale.grade == target_grade)
+        for sale in sales
     )
 
 
-def notify(op: Opportunity) -> None:
-    mode = "ENCHÈRE" if op.lot.source_type == "auction" else "PRIX FIXE"
-
-    if op.lot.source_type == "auction":
-        title = f"GCC AUCTION: {op.discount_pct:.0f}% sous estimation"
+def notify(op: Opportunity, decision: NotificationDecision) -> None:
+    if decision.final_alert:
+        title = "GCC AUCTION — DERNIÈRES 5 MIN — SOUS PRIX MAX"
+    elif op.estimate.grade_arbitrage and op.lot.source_type == "auction":
+        title = "GCC AUCTION — ARBITRAGE GRADE"
+    elif op.estimate.grade_arbitrage:
+        title = "GCC PRIX FIXE — ARBITRAGE GRADE"
+    elif op.lot.source_type == "auction":
+        title = "GCC AUCTION — FORTE OPPORTUNITÉ"
     else:
-        title = f"GCC PRIX FIXE: {op.discount_pct:.0f}% sous estimation"
-
-    grade_line = ""
-    if op.lot.grade:
-        grade_line = f"Grade: {op.lot.grader} {op.lot.grade}\n".strip() + "\n"
+        title = "GCC PRIX FIXE — FORTE OPPORTUNITÉ"
 
     ident = extract_card_identity(op.lot)
-    year_line = f"Année: {ident['year']}\n" if ident["year"] else ""
-    series_line = f"Série: {ident['series']}\n" if ident.get("series") else ""
-
-    timing_line = ""
-    if op.lot.source_type == "auction":
-        timing_line = f"Fin: {op.lot.end_text}\n"
-
-    gcc_market = op.gcc_estimated_market or op.estimated_market
-
-    ebay_lines = ""
-    if op.ebay_estimated_market is not None:
-        ebay_lines = (
-            f"Estimation eBay vendus: {op.ebay_estimated_market:.2f} € "
-            f"({op.ebay_comps} comps)\n"
-            f"Estimation combinée: {op.estimated_market:.2f} €\n"
+    card_name = ident["core"] or op.lot.title
+    reference = ""
+    if ident["ref"] and ident["ref"].lower() not in card_name.lower().replace(" ", ""):
+        reference = f" #{ident['ref']}"
+    identity_line = " · ".join(
+        part for part in (
+            ident.get("series") or "Série inconnue",
+            ident.get("year") or "Année inconnue",
         )
-    elif op.ebay_note:
-        ebay_lines = f"{op.ebay_note}\n"
+    )
+    grade_line = f"{op.lot.grader} {op.lot.grade}".strip() or "Grade inconnu"
+    estimate = op.estimate
+    gcc_count = _exact_count(op.lot, op.gcc_comparables)
+    ebay_count = _exact_count(op.lot, op.ebay_comparables)
+    if op.ebay_comparables:
+        ebay_status = (
+            f"{ebay_count} vente(s) exacte(s) / {len(op.ebay_comparables)} comparable(s)"
+        )
+    else:
+        ebay_status = "indisponible / 0 vente"
+    ebay_detail = f"Détail eBay : {op.ebay_note}\n" if op.ebay_note else ""
+    recent_line = (
+        f"{estimate.recent_90_count}/{len(estimate.kept_comparables)} < 90 jours"
+    )
+    if estimate.dated_count < len(estimate.kept_comparables):
+        recent_line += f" ({len(estimate.kept_comparables) - estimate.dated_count} date(s) inconnue(s))"
 
+    if estimate.grade_arbitrage:
+        reference_grade = estimate.arbitrage_reference_grade
+        reference_label = (
+            f"{op.lot.grader} {reference_grade:g}"
+            if reference_grade is not None
+            else "grade inférieur"
+        )
+        reference_value = (
+            f"{estimate.arbitrage_reference_value:.2f} €"
+            if estimate.arbitrage_reference_value is not None
+            else "inconnue"
+        )
+        valuation_lines = (
+            f"Type d'opportunité : ARBITRAGE GRADE\n"
+            f"Référence de marché : {reference_label}\n"
+            f"Valeur robuste de référence : {reference_value}\n"
+            f"Fourchette du grade inférieur : {estimate.low:.2f}–{estimate.high:.2f} €\n"
+            f"Valeur exacte du grade cible : non estimée\n"
+            f"Prix max conseillé : {op.max_recommended:.2f} €\n"
+            f"Décote classique : non applicable\n\n"
+        )
+    else:
+        valuation_lines = (
+            f"Valeur estimée : {estimate.low:.2f}–{estimate.high:.2f} €\n"
+            f"Estimation centrale : {estimate.central:.2f} €\n"
+            f"Prix max conseillé : {op.max_recommended:.2f} €\n"
+            f"Décote actuelle : {op.discount_pct:.1f}%\n"
+            f"Seuil adaptatif : {estimate.adaptive_discount_pct:.0f}%\n\n"
+        )
+
+    timing_lines = ""
+    if op.lot.source_type == "auction":
+        minutes = op.lot.minutes_to_end
+        timing = f"{minutes} min" if minutes is not None else (op.lot.end_text or "inconnue")
+        max_status = "SOUS" if op.lot.current_price <= op.max_recommended else "AU-DESSUS DU"
+        timing_lines = f"Statut enchère : {max_status} prix max conseillé\nFin : {timing}\n"
+
+    reason_line = ", ".join(decision.reasons)
     msg = (
-        f"{op.lot.title}\n"
-        f"Type: {mode}\n"
-        f"{grade_line}"
-        f"{year_line}"
-        f"{series_line}"
-        f"Prix: {op.lot.current_price:.2f} €\n"
-        f"Estimation GCC: {gcc_market:.2f} €\n"
-        f"{ebay_lines}"
-        f"Décote finale: {op.discount_pct:.1f}% | confiance {op.confidence}\n"
-        f"Pourquoi GCC: {op.rationale}\n"
-        f"{timing_line}"
+        f"{title}\n\n"
+        f"{card_name}{reference}\n"
+        f"{identity_line}\n"
+        f"Langue : {_language_in_french(ident.get('language', ''))}\n"
+        f"{grade_line}\n\n"
+        f"Prix actuel : {op.lot.current_price:.2f} €\n"
+        f"{valuation_lines}"
+        f"GCC : {gcc_count} vente(s) exacte(s)\n"
+        f"eBay : {ebay_status}\n"
+        f"{ebay_detail}"
+        f"PSA APR : indisponible / 0 vente\n\n"
+        f"Ventes récentes : {recent_line}\n"
+        f"Liquidité : {estimate.liquidity}\n"
+        f"Dispersion : {estimate.dispersion}\n"
+        f"Confiance : {estimate.confidence}\n"
+        f"Méthode : {estimate.rationale}\n"
+        f"Raison alerte : {reason_line}\n\n"
+        f"{timing_lines}"
         f"{op.lot.url}"
     )
 
-    log("*** OPPORTUNITÉ ***")
+    log(f"*** NOTIFICATION: {reason_line} ***")
     print(msg, flush=True)
 
     if NTFY_TOPIC:
@@ -1277,9 +2064,11 @@ def notify(op: Opportunity) -> None:
                 f"{NTFY_SERVER}/{NTFY_TOPIC}",
                 data=msg.encode("utf-8"),
                 headers={
-                    "Title": title,
-                    "Priority": "4",
-                    "Tags": "moneybag,card_index",
+                    # RFC 2047 garde les titres Unicode (dont le tiret cadratin)
+                    # compatibles avec l'encodage latin-1 des en-têtes HTTP.
+                    "Title": Header(title, "utf-8").encode(),
+                    "Priority": "5" if decision.final_alert else "4",
+                    "Tags": "rotating_light,moneybag" if decision.final_alert else "moneybag,card_index",
                 },
                 timeout=10,
             ).raise_for_status()
@@ -1291,14 +2080,18 @@ def notify(op: Opportunity) -> None:
 def main() -> int:
     started = time.monotonic()
     state = load_state()
-    now = datetime.now(timezone.utc).isoformat()
+    run_now = datetime.now(timezone.utc)
+    now = run_now.isoformat()
 
-    log("=== GCC Watcher V3.4 FINAL (série + matching eBay) démarré ===")
+    log("=== GCC Watcher V4 (valorisation robuste + alertes intelligentes) démarré ===")
     log("Ordre: prix fixes d'abord, puis enchères")
-    log("Filtres enchères: Pokémon -> carte -> prix -> temps <= 60 min -> valeur/décote")
+    log(
+        f"Filtres enchères: Pokémon -> carte -> prix -> temps <= {MAX_AUCTION_MINUTES} min "
+        "-> valeur/décote"
+    )
     log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
-    log(f"Décote minimale: {MIN_DISCOUNT:.0f}%")
-    log("Valorisation: GCC inter-graders + validation eBay Sold publique")
+    log(f"Décote plancher: {MIN_DISCOUNT:.0f}% (seuil adaptatif selon qualité)")
+    log("Valorisation: médiane pondérée par récence + MAD/IQR + validation eBay publique")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -1368,9 +2161,10 @@ def main() -> int:
                     "title": lot.title,
                     "source_type": lot.source_type,
                     "grade": f"{lot.grader} {lot.grade}".strip(),
+                    "minutes_to_end": lot.minutes_to_end,
                 }
 
-                op = estimate_with_grade(lot, history)
+                op = estimate_with_grade(lot, history, run_now)
                 if op:
                     opportunities.append(op)
 
@@ -1515,9 +2309,10 @@ def main() -> int:
                     "title": lot.title,
                     "source_type": lot.source_type,
                     "grade": f"{lot.grader} {lot.grade}".strip(),
+                    "minutes_to_end": lot.minutes_to_end,
                 }
 
-                op = estimate_with_grade(lot, history)
+                op = estimate_with_grade(lot, history, run_now)
                 if op:
                     opportunities.append(op)
 
@@ -1531,16 +2326,17 @@ def main() -> int:
             ebay_page.set_default_navigation_timeout(NAV_TIMEOUT)
 
             final_opportunities: list[Opportunity] = []
-            ebay_queries = 0
+            ebay_cards_validated = 0
 
             for op in sorted(opportunities, key=lambda x: x.discount_pct, reverse=True):
                 validated = op
 
-                if EBAY_ENABLED and ebay_queries < EBAY_MAX_QUERIES:
-                    ebay_queries += 1
+                if ebay_card_validation_allowed(ebay_cards_validated):
+                    ebay_cards_validated += 1
                     log(
-                        f"[eBay {ebay_queries}] {op.lot.title} | "
-                        f"GCC {op.gcc_estimated_market or op.estimated_market:.2f} €"
+                        f"[eBay carte {ebay_cards_validated}/{EBAY_MAX_CARDS_PER_RUN}] "
+                        f"{op.lot.title} | "
+                        f"GCC {op.estimated_market:.2f} €"
                     )
                     validated = validate_with_ebay(ebay_page, op)
 
@@ -1555,14 +2351,14 @@ def main() -> int:
             for op in sorted(final_opportunities, key=lambda x: x.discount_pct, reverse=True):
                 key = op.lot.url
                 prev = state["notified"].get(key)
-
-                if not prev or op.discount_pct >= float(prev.get("discount_pct", 0)) + 5:
-                    notify(op)
-                    state["notified"][key] = {
-                        "discount_pct": op.discount_pct,
-                        "price": op.lot.current_price,
-                        "notified_at": now,
-                    }
+                decision = notification_decision(op, prev)
+                if decision.should_notify:
+                    notify(op, decision)
+                    state["notified"][key] = updated_notification_state(
+                        op, prev, decision, now
+                    )
+                else:
+                    log(f"Pas de renotification: {op.lot.title} | aucun changement important")
 
             save_state(state)
             log(f"Opportunités GCC avant eBay: {len(opportunities)}")

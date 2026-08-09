@@ -46,7 +46,8 @@ jobs:
           STATE_FILE: state.json
 
           EBAY_ENABLED: "true"
-          EBAY_MAX_QUERIES: "2"
+          EBAY_MAX_QUERIES_PER_CARD: "2"
+          EBAY_MAX_CARDS_PER_RUN: "2"
           EBAY_NAV_TIMEOUT: "6000"
           EBAY_PAGE_WAIT_MS: "700"
 
