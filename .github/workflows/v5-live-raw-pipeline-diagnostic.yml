@@ -9,25 +9,26 @@ permissions:
 jobs:
   diagnose-live-raw-pipeline-v5:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
       EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
       EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-      GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       POKETRACE_ENABLED: "true"
       POKETRACE_PLAN: "free"
       POKETRACE_RESULT_LIMIT: "20"
       POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.05"
-      # Dormant in Free mode; preserves the project's agreed minimum discount
-      # threshold for the later Pro/CardMarket phase.
       POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
       POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
+      V5_PROGRESS_LOGS: "true"
       V5_LIVE_RAW_RESULT_LIMIT: "20"
       V5_LIVE_INCLUDE_EBAY_CH: "false"
       PRICECHARTING_ENABLED: "false"
       MARKETPLACE_INSIGHTS_ENABLED: "false"
-      GCC_HISTORY_ENABLED: "true"
+      # Temporary diagnostic isolation: GCC catalogue is restored/saved but
+      # rendered-history Playwright fallback is disabled so this run measures
+      # eBay -> identity -> PokeTrace without the 8-minute GCC search fan-out.
+      GCC_HISTORY_ENABLED: "false"
       GCC_HISTORY_CURRENCY: "USD"
       GCC_CATALOG_INDEX_FILE: gcc_catalog_index.json
       PRODUCT_RESEARCH_MODE: "MANUAL_VALIDATION_ONLY"
@@ -65,21 +66,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install read-only diagnostic dependencies
-        run: |
-          python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
-          playwright install --with-deps chromium
+        run: python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
 
-      - name: Prepare existing authenticated GCC session
-        shell: bash
-        run: |
-          if [ -z "${GCC_SESSION_B64:-}" ]; then
-            echo "GCC authenticated session: MISSING"
-            exit 1
-          fi
-          printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
-          echo "GCC authenticated session: READY"
-
-      - name: Run aggregate-only V5 live raw pipeline with canonical card resolver
+      - name: Run fast V5 PokeTrace Free identity and market diagnostic
         run: python -m v5.live_raw_pipeline_catalog
 
       - name: Save cumulative GCC catalogue even after diagnostic failure
@@ -88,7 +77,3 @@ jobs:
         with:
           path: gcc_catalog_index.json
           key: v5-gcc-catalog-${{ github.run_id }}
-
-      - name: Remove ephemeral GCC session
-        if: always()
-        run: rm -f gcc_session.json
