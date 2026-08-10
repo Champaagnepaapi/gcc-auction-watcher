@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Mapping, Optional, Sequence, Tuple
 
 from .market_values.poketrace import (
+    POKETRACE_DISABLED,
     POKETRACE_MATCHED,
     POKETRACE_NO_MATCH,
     PokeTraceProvider,
@@ -17,6 +18,11 @@ from .market_values.poketrace import (
 )
 from .market_values.poketrace_free import FreeTierPokeTraceProvider
 from .models import CardIdentity
+
+
+REQUEST_OK = "OK"
+REQUEST_ERROR = "ERROR"
+REQUEST_RATE_LIMITED = "RATE_LIMITED"
 
 
 @dataclass
@@ -91,8 +97,6 @@ def _set_similarity(expected: object, candidate_name: object, candidate_slug: ob
     intersection = len(expected_tokens & candidate_tokens)
     union = len(expected_tokens | candidate_tokens)
     jaccard = intersection / union if union else 0.0
-
-    # Safe alias case such as "Pokemon TCG Scarlet Violet 151" -> "151".
     shorter, longer = sorted((expected_tokens, candidate_tokens), key=len)
     containment = bool(shorter) and shorter.issubset(longer)
     if containment and intersection:
@@ -143,7 +147,6 @@ def _candidate_score(identity: CardIdentity, candidate: Mapping[str, object]) ->
     if expected_variant and candidate_variant and expected_variant != candidate_variant:
         return None
 
-    # Missing card name is only safe when set + number identify one candidate.
     if not expected_name and (not expected_number or set_similarity < 0.86):
         return None
 
@@ -173,12 +176,7 @@ def _resolved_identity(original: CardIdentity, card: Mapping[str, object]) -> Ca
 
 
 class PokeTraceIdentityResolver:
-    """Use the PokeTrace cards catalogue as a conservative identity resolver.
-
-    The same US card response is injected into the existing PokeTrace market
-    cache. A successful identity lookup therefore also supplies raw market data
-    later in the V5 pipeline without spending a second Free-tier request.
-    """
+    """Conservative PokeTrace catalogue resolver that reuses the price response."""
 
     def __init__(self, provider: PokeTraceProvider) -> None:
         self.provider = provider
@@ -199,11 +197,14 @@ class PokeTraceIdentityResolver:
 
         self.counters.queries += 1
         self._progress(f"PokeTrace identity {self.counters.queries}: query")
-        payload = self._request(identity)
-        if payload is None:
+        payload, request_status = self._request(identity)
+        if request_status != REQUEST_OK or payload is None:
             result = PokeTraceIdentityResolution(identity)
             self._cache[key] = result
-            self._prime_no_match(identity)
+            self._prime_unavailable(identity)
+            self._progress(
+                f"PokeTrace identity {self.counters.queries}: {request_status.casefold()}"
+            )
             return result
 
         data = payload.get("data")
@@ -220,6 +221,7 @@ class PokeTraceIdentityResolver:
 
         if not scored:
             self.counters.no_match += 1
+            self.provider.counters.no_match += 1
             result = PokeTraceIdentityResolution(identity)
             self._cache[key] = result
             self._prime_no_match(identity)
@@ -230,8 +232,10 @@ class PokeTraceIdentityResolver:
         best = tuple(candidate for score, candidate in scored if score == best_score)
         if len(best) != 1:
             self.counters.ambiguous += 1
+            self.provider.counters.ambiguous += 1
             result = PokeTraceIdentityResolution(identity, ambiguous=True)
             self._cache[key] = result
+            self._prime_unavailable(identity)
             self._progress(f"PokeTrace identity {self.counters.queries}: ambiguous")
             return result
 
@@ -245,11 +249,13 @@ class PokeTraceIdentityResolver:
         )
         if not result.matched:
             self.counters.no_match += 1
+            self.provider.counters.no_match += 1
             self._cache[key] = PokeTraceIdentityResolution(identity)
             self._prime_no_match(identity)
             return self._cache[key]
 
         self.counters.matches += 1
+        self.provider.counters.us_matches += 1
         self._cache[key] = result
         self._cache[_identity_key(resolved)] = result
         self._prime_market_snapshot(identity, resolved, card)
@@ -260,10 +266,14 @@ class PokeTraceIdentityResolver:
         source_result = self._cache.get(_identity_key(source))
         if source_result is not None and not source_result.matched:
             self._cache[_identity_key(target)] = source_result
-            if not source_result.ambiguous:
+            if source_result.ambiguous:
+                self._prime_unavailable(target)
+            else:
                 self._prime_no_match(target)
 
-    def _request(self, identity: CardIdentity) -> Optional[Mapping[str, object]]:
+    def _request(
+        self, identity: CardIdentity
+    ) -> tuple[Optional[Mapping[str, object]], str]:
         self.provider._respect_rate_limit()
         params = {
             "market": "US",
@@ -274,9 +284,6 @@ class PokeTraceIdentityResolver:
             params["search"] = str(identity.card_name).strip()
         if identity.card_number:
             params["card_number"] = str(identity.card_number).strip()
-        # PokeTrace documents `set` as a set slug. Only use it when the name is
-        # absent; with a card name present we prefer a wider result set and do
-        # conservative local set matching so eBay aliases do not zero results.
         if identity.set and not identity.card_name:
             params["set"] = _slugify(identity.set)
         game = _poketrace_game(identity.language)
@@ -298,24 +305,29 @@ class PokeTraceIdentityResolver:
         except Exception:
             self.provider.counters.request_failures += 1
             self.counters.request_failures += 1
-            return None
+            return None, REQUEST_ERROR
 
         status = getattr(response, "status_code", None)
         if status == 429:
             self.provider.counters.rate_limited += 1
             self.counters.rate_limited += 1
-            return None
+            return None, REQUEST_RATE_LIMITED
         if status != 200:
             self.provider.counters.request_failures += 1
             self.counters.request_failures += 1
-            return None
+            return None, REQUEST_ERROR
         try:
             payload = response.json()
         except Exception:
             self.provider.counters.request_failures += 1
             self.counters.request_failures += 1
-            return None
-        return payload if isinstance(payload, Mapping) else None
+            return None, REQUEST_ERROR
+        return (payload if isinstance(payload, Mapping) else None), REQUEST_OK
+
+    def _cache_snapshot(self, identity: CardIdentity, snapshot: PokeTraceSnapshot) -> None:
+        self.provider._cache[_identity_key(identity)] = snapshot
+        if isinstance(self.provider, FreeTierPokeTraceProvider):
+            self.provider._cache[("free",) + _identity_key(identity)] = snapshot
 
     def _prime_market_snapshot(
         self,
@@ -347,15 +359,15 @@ class PokeTraceIdentityResolver:
             us_values=values,
             cardmarket=None,
         )
-        for identity in (original, resolved):
-            self.provider._cache[("free",) + _identity_key(identity)] = snapshot
+        self._cache_snapshot(original, snapshot)
+        self._cache_snapshot(resolved, snapshot)
         self.counters.primed_market_snapshots += 1
 
     def _prime_no_match(self, identity: CardIdentity) -> None:
-        if isinstance(self.provider, FreeTierPokeTraceProvider):
-            self.provider._cache[("free",) + _identity_key(identity)] = PokeTraceSnapshot(
-                POKETRACE_NO_MATCH
-            )
+        self._cache_snapshot(identity, PokeTraceSnapshot(POKETRACE_NO_MATCH))
+
+    def _prime_unavailable(self, identity: CardIdentity) -> None:
+        self._cache_snapshot(identity, PokeTraceSnapshot(POKETRACE_DISABLED))
 
     @staticmethod
     def _progress(message: str) -> None:
