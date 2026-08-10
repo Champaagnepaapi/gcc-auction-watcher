@@ -2,6 +2,7 @@ import unittest
 from dataclasses import replace
 
 import watcher
+from v5.gcc_catalog_cache import GCCCatalogCandidate
 from v5.gcc_live_adapter import (
     GCCCatalogResolution,
     V4RenderedGCCHistorySource,
@@ -38,8 +39,31 @@ def _target(*, year=None):
     )
 
 
+class _MemoryCatalogIndex:
+    entries_loaded = 0
+    current_entries = 0
+    added_this_run = 0
+    updated_this_run = 0
+    lookup_hits = 0
+    load_failures = 0
+    save_failures = 0
+
+    def __init__(self, candidates=()):
+        self._candidates = tuple(candidates)
+
+    def candidates(self, _card_name):
+        self.lookup_hits += int(bool(self._candidates))
+        return self._candidates
+
+    def upsert(self, *_args, **_kwargs):
+        return True
+
+    def save(self):
+        return None
+
+
 class GCCRepresentativeSelectionTests(unittest.TestCase):
-    def _source(self, lots, catalog_resolver=None):
+    def _source(self, lots, catalog_resolver=None, catalog_index=None):
         opened = []
         bounds = []
 
@@ -59,6 +83,7 @@ class GCCRepresentativeSelectionTests(unittest.TestCase):
             item_inspector=inspect,
             history_extractor=lambda *_args, **_kwargs: (),
             catalog_resolver=catalog_resolver,
+            catalog_index=catalog_index or _MemoryCatalogIndex(),
         )
         return source, opened, bounds
 
@@ -94,6 +119,7 @@ class GCCRepresentativeSelectionTests(unittest.TestCase):
         self.assertEqual(source.live_calls, 0)
         self.assertEqual(opened, [])
         self.assertGreaterEqual(source.identity_conflicts, 1)
+        self.assertGreaterEqual(source.identity_conflict_fields["card_number"], 1)
         self.assertEqual(source.no_representative, 1)
 
     def test_exact_match_has_priority(self):
@@ -105,6 +131,25 @@ class GCCRepresentativeSelectionTests(unittest.TestCase):
         self.assertEqual(len(opened), 1)
         self.assertEqual(source.representative_exact, 1)
         self.assertEqual(source.representative_strong, 0)
+
+    def test_cumulative_cache_can_rescue_card_no_longer_on_sale(self):
+        cached_lot = _lot(set_name="Base Set", year=None)
+        cached_lot.source_type = "catalog_cache"
+        cache = _MemoryCatalogIndex(
+            (GCCCatalogCandidate(_target(year=None), cached_lot),)
+        )
+
+        def should_not_search(_identity):
+            self.fail("public Explore fallback should not run on a safe cache hit")
+
+        source, opened, _bounds = self._source(
+            [], catalog_resolver=should_not_search, catalog_index=cache
+        )
+        source.fetch(_target(year=None))
+        self.assertEqual(source.representative_exact, 1)
+        self.assertEqual(source.live_calls, 1)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(cache.lookup_hits, 1)
 
     def test_public_catalogue_exact_fallback_can_rescue_missing_on_sale_rep(self):
         resolved = _lot(
@@ -124,7 +169,6 @@ class GCCRepresentativeSelectionTests(unittest.TestCase):
         self.assertEqual(source.live_calls, 1)
         self.assertEqual(source.representative_exact, 1)
         self.assertEqual(source.no_representative, 0)
-        # The catalogue fallback already inspected the public item page.
         self.assertEqual(opened, [])
 
     def test_public_catalogue_unique_strong_fallback_is_accepted(self):
