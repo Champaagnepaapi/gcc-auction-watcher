@@ -74,7 +74,7 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           scan_exit_code=$?
           if [ "$scan_exit_code" -eq 0 ]; then
-            python watcher.py
+            python run_watcher_safe.py
             scan_exit_code=$?
           fi
           set -e
