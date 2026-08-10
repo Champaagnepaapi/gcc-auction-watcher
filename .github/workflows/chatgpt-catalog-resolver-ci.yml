@@ -1,0 +1,52 @@
+name: ChatGPT catalog resolver CI
+
+on:
+  push:
+    branches:
+      - chatgpt-gcc-catalog-resolver-20260810
+    paths:
+      - .github/workflows/chatgpt-catalog-resolver-ci.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: chatgpt-gcc-catalog-resolver-20260810
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
+
+      - name: Add aggregate catalogue diagnostics
+        run: python .github/scripts/chatgpt_add_catalog_diagnostics.py
+
+      - name: Run V4 tests
+        run: python -m unittest discover -s tests -p 'test*.py'
+
+      - name: Run V5 tests
+        run: python -m unittest discover -s tests_v5 -p 'test*.py'
+
+      - name: Compile changed modules
+        run: python -m py_compile v5/gcc_live_adapter.py v5/live_raw_pipeline.py tests_v5/test_gcc_live_adapter_matching.py
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Commit tested diagnostic wiring
+        run: |
+          git config user.name "chatgpt-maintenance[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add v5/live_raw_pipeline.py
+          git commit -m "diag: expose GCC public catalogue resolver counters"
+          git push origin HEAD:chatgpt-gcc-catalog-resolver-20260810
