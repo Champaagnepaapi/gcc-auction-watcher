@@ -5,6 +5,7 @@ import unittest
 from decimal import Decimal
 from unittest.mock import patch
 
+from v5.live_raw_pipeline_catalog import _PokeTracePrimaryMarketSource
 from v5.market_values.poketrace import PokeTraceConfig
 from v5.market_values.poketrace_free import (
     FreeTierPokeTraceProvider,
@@ -33,13 +34,13 @@ class FakeSession:
         return FakeResponse(200, self.payload)
 
 
-def identity():
+def identity(language="English"):
     return CardIdentity(
         game="Pokemon TCG",
         card_name="Charizard",
         set="Base Set",
         card_number="4/102",
-        language="English",
+        language=language,
         variant="Holofoil",
     )
 
@@ -69,17 +70,21 @@ def free_payload():
     }
 
 
+def provider_for(session):
+    return FreeTierPokeTraceProvider(
+        config=PokeTraceConfig(
+            enabled=True,
+            api_key="free-secret-key",
+            minimum_request_interval_seconds=2.05,
+        ),
+        session=session,
+    )
+
+
 class PokeTraceFreeTierTests(unittest.TestCase):
     def test_free_mode_performs_one_us_request_and_never_eu(self):
         session = FakeSession(free_payload())
-        provider = FreeTierPokeTraceProvider(
-            config=PokeTraceConfig(
-                enabled=True,
-                api_key="free-secret-key",
-                minimum_request_interval_seconds=2.05,
-            ),
-            session=session,
-        )
+        provider = provider_for(session)
 
         snapshot = provider.snapshot_for(identity())
 
@@ -98,18 +103,22 @@ class PokeTraceFreeTierTests(unittest.TestCase):
 
     def test_free_mode_caches_identity_without_spending_second_request(self):
         session = FakeSession(free_payload())
-        provider = FreeTierPokeTraceProvider(
-            config=PokeTraceConfig(
-                enabled=True,
-                api_key="free-secret-key",
-                minimum_request_interval_seconds=2.05,
-            ),
-            session=session,
-        )
+        provider = provider_for(session)
         provider.snapshot_for(identity())
         provider.snapshot_for(identity())
         self.assertEqual(len(session.calls), 1)
         self.assertEqual(provider.counters.cache_hits, 1)
+
+    def test_free_primary_source_skips_incompatible_language_without_api_call(self):
+        session = FakeSession(free_payload())
+        provider = provider_for(session)
+        source = _PokeTracePrimaryMarketSource(provider)
+
+        value = source.values_for(identity(language="French"))
+
+        self.assertIsNone(value)
+        self.assertEqual(session.calls, [])
+        self.assertEqual(provider.counters.live_calls, 0)
 
     def test_free_env_enforces_documented_burst_interval(self):
         with patch.dict(
@@ -127,14 +136,7 @@ class PokeTraceFreeTierTests(unittest.TestCase):
 
     def test_free_summary_never_prints_api_key_or_cardmarket_claims(self):
         session = FakeSession(free_payload())
-        provider = FreeTierPokeTraceProvider(
-            config=PokeTraceConfig(
-                enabled=True,
-                api_key="free-secret-key",
-                minimum_request_interval_seconds=2.05,
-            ),
-            session=session,
-        )
+        provider = provider_for(session)
         provider.snapshot_for(identity())
         rendered = render_free_poketrace_counters(provider)
         self.assertIn("plan mode: FREE_TEST", rendered)
