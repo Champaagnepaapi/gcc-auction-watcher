@@ -1,5 +1,6 @@
 import json
 import io
+import os
 import sys
 import tempfile
 import types
@@ -1360,6 +1361,24 @@ class GccDiagnosticsTests(unittest.TestCase):
         self.assertIn("actions/cache/save@v4", workflow)
         self.assertIn("path: state.json", workflow)
         self.assertIn('FIXED_REEVALUATION_TTL_HOURS: "24"', workflow)
+        self.assertIn("issues: write", workflow)
+        self.assertIn("id: scan", workflow)
+        self.assertIn("if: always()", workflow)
+        self.assertIn("actions/github-script@v7", workflow)
+        self.assertIn("issue_number: 1", workflow)
+        self.assertIn("github-token: ${{ secrets.GITHUB_TOKEN }}", workflow)
+        self.assertIn("steps.scan.outputs.final_opportunities", workflow)
+
+    def test_github_output_exposes_final_opportunities_without_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "github-output"
+            with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output_path)}):
+                watcher.write_github_output("final_opportunities", 3)
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                "final_opportunities=3\n",
+            )
 
 
 class StateCompatibilityTests(unittest.TestCase):

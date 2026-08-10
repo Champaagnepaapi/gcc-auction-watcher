@@ -1037,6 +1037,18 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def write_github_output(name: str, value: object) -> None:
+    """Expose une valeur structurée à GitHub Actions, sans affecter le scan."""
+    output_path = os.getenv("GITHUB_OUTPUT", "").strip()
+    if not output_path:
+        return
+    try:
+        with Path(output_path).open("a", encoding="utf-8") as output:
+            output.write(f"{name}={value}\n")
+    except OSError as error:
+        log(f"Sortie GitHub Actions indisponible: {type(error).__name__}")
+
+
 def load_state() -> dict:
     state = None
     if STATE_FILE.exists():
@@ -6265,6 +6277,11 @@ def main() -> int:
             except Exception:
                 pass
 
+            run_diagnostics.final_opportunities = len(final_opportunities)
+            write_github_output(
+                "final_opportunities", run_diagnostics.final_opportunities
+            )
+
             for op in sorted(final_opportunities, key=lambda x: x.discount_pct, reverse=True):
                 key = op.lot.url
                 prev = state["notified"].get(key)
@@ -6277,7 +6294,6 @@ def main() -> int:
                 else:
                     log(f"Pas de renotification: {op.lot.title} | aucun changement important")
 
-            run_diagnostics.final_opportunities = len(final_opportunities)
             run_diagnostics.finalize_coverage()
             maybe_notify_incomplete_coverage(
                 run_diagnostics, state, run_now
