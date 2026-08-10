@@ -88,6 +88,141 @@ def opportunity(minutes=30, price=42.0, max_recommended=70.0):
     )
 
 
+class ParsingRegressionTests(unittest.TestCase):
+    def test_impossible_grades_are_rejected_without_decimal_rewrite(self):
+        watcher.LOGGED_INVALID_GRADES.clear()
+        cases = (
+            ("BGS 48", "BGS", "48"),
+            ("CGC 50", "CGC", "50"),
+            ("BGS 75", "BGS", "75"),
+            ("PSA 0", "PSA", "0"),
+            ("BGS -1", "BGS", "-1"),
+        )
+        for text, expected_grader, raw_grade in cases:
+            with self.subTest(text=text):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    grader, grade = watcher.parse_grader_grade(text)
+                self.assertEqual(grader, expected_grader)
+                self.assertIsNone(grade)
+                self.assertIn(
+                    f"grade invalide ignoré: {expected_grader} {raw_grade}",
+                    output.getvalue(),
+                )
+
+    def test_real_decimal_and_ten_grades_are_accepted(self):
+        self.assertEqual(watcher.parse_grader_grade("BGS 9.5"), ("BGS", "9.5"))
+        self.assertEqual(watcher.parse_grader_grade("PSA 10"), ("PSA", "10"))
+        self.assertEqual(
+            watcher.parse_grader_grade("PSA 10 Dracaufeu Pop 282"),
+            ("PSA", "10"),
+        )
+        self.assertEqual(
+            watcher.parse_grader_grade("Grader: BGS\nPop 282\nGrade: 9.5"),
+            ("BGS", "9.5"),
+        )
+        self.assertEqual(
+            watcher.parse_grader_grade(
+                "Article\nGradation\nDétails\nBGS\n9.5\nPop 282"
+            ),
+            ("BGS", "9.5"),
+        )
+
+    def test_population_never_becomes_grade(self):
+        grader, grade = watcher.parse_grader_grade("Grader: BGS\nPopulation\nPop 282")
+        self.assertEqual(grader, "BGS")
+        self.assertIsNone(grade)
+
+    def test_population_never_becomes_card_title(self):
+        self.assertEqual(watcher.sanitize_card_title("Pop 15"), "")
+        self.assertEqual(watcher.sanitize_card_title("Pop 282"), "")
+        self.assertEqual(
+            watcher.extract_card_title(
+                page_heading="Pop 15",
+                listing_text="Pop 15\nPSA 10\nOtaquin\n42 €",
+            ),
+            "Otaquin",
+        )
+        self.assertEqual(
+            watcher.extract_card_title(
+                page_heading="Pop 15",
+                body="Nom de la carte: Otaquin\nPopulation: 15",
+            ),
+            "Otaquin",
+        )
+
+    def test_unidentified_pop_title_rejects_lot(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/pop-only",
+            title="Pop 15",
+            current_price=20,
+            source_type="auction",
+            body="Catégorie: Pokémon\nRéférence: #045/132",
+        )
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(watcher.is_valid_pokemon_card(lot))
+
+
+class TargetGradeSafetyTests(unittest.TestCase):
+    def test_missing_target_grade_cannot_mix_same_grader_sales(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/bgs-missing-grade",
+            title="Carte BGS au grade illisible",
+            current_price=20,
+            source_type="auction",
+            grader="BGS",
+            grade=None,
+        )
+        sales = [sale(50, grader="BGS", grade=8), sale(100, grader="BGS", grade=10)]
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = watcher.estimate_with_grade(lot, sales, NOW)
+        self.assertIsNone(result)
+        self.assertIn("grader/grade cible non lisible", output.getvalue())
+
+    def test_missing_grader_and_grade_returns_none(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/missing-grader-grade",
+            title="Carte sans grader ni grade",
+            current_price=20,
+            source_type="auction",
+            grader="",
+            grade=None,
+        )
+        with redirect_stdout(io.StringIO()):
+            self.assertIsNone(watcher.estimate_with_grade(lot, [sale(100)], NOW))
+
+    def test_valid_bgs_nine_point_five_still_works(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/bgs-nine-point-five",
+            title="BGS 9.5 Test",
+            current_price=20,
+            source_type="auction",
+            grader="BGS",
+            grade="9.5",
+        )
+        sales = [sale(price, grader="BGS", grade=9.5) for price in (50, 55, 60)]
+        opportunity = watcher.estimate_with_grade(lot, sales, NOW)
+        self.assertIsNotNone(opportunity)
+        self.assertEqual(opportunity.estimate.central, 55)
+
+    def test_parsed_bgs_48_cannot_create_end_to_end_opportunity(self):
+        with redirect_stdout(io.StringIO()):
+            grader, grade = watcher.parse_grader_grade("BGS 48")
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/bgs-48",
+            title="Carte BGS au grade impossible",
+            current_price=20,
+            source_type="auction",
+            grader=grader,
+            grade=grade,
+        )
+        sales = [sale(50, grader="BGS", grade=8), sale(100, grader="BGS", grade=10)]
+        self.assertEqual((grader, grade), ("BGS", None))
+        with redirect_stdout(io.StringIO()):
+            self.assertIsNone(watcher.estimate_with_grade(lot, sales, NOW))
+
+
 class EstimationTests(unittest.TestCase):
     def test_recency_weights_decrease_progressively(self):
         weights = [

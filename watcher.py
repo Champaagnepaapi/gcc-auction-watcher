@@ -71,6 +71,7 @@ SEALED_KEYWORDS = (
 
 GRADERS = ("PSA", "PCA", "CGC", "BGS", "BECKETT", "CCC", "CA", "PG")
 VALID_COMPARABLE_SOURCES = frozenset({"gcc", "ebay", "psa"})
+LOGGED_INVALID_GRADES: set[str] = set()
 
 
 @dataclass
@@ -84,7 +85,7 @@ class Lot:
     minutes_to_end: Optional[int] = None
     body: str = ""
     grader: str = ""
-    grade: str = ""
+    grade: Optional[str] = None
     listing_text: str = ""
 
 
@@ -434,6 +435,83 @@ def listing_is_pokemon_card(blob: str) -> bool:
     return True
 
 
+def sanitize_card_title(candidate: str) -> str:
+    """Retourne un vrai titre potentiel, jamais une ligne Pop/métadonnée."""
+    title = re.sub(r"\s+", " ", candidate or "").strip(" -–—|:")
+    title = re.sub(
+        r"^Pop(?:ulation)?\s*:?[ #]*(?:\d+)\s*[-–—|:]\s*",
+        "",
+        title,
+        flags=re.I,
+    ).strip()
+    if not title or len(title) > 180:
+        return ""
+    if title.upper() in {
+        "LIVE", "ENDED", "SOON", "AUCTION", "ENCHÈRE", "POKEMON", "POKÉMON",
+        "DÉTAILS", "DETAILS", "DESCRIPTION", "INFORMATIONS", "SALES HISTORY",
+        "HISTORIQUE DES VENTES",
+    }:
+        return ""
+    if re.fullmatch(r"Pop(?:ulation)?\s*:?[ #]*\d+", title, re.I):
+        return ""
+    if "€" in title or (
+        re.fullmatch(r"#?[A-Z0-9-]+(?:/[A-Z0-9-]+)?", title, re.I)
+        and re.search(r"\d", title)
+    ):
+        return ""
+    if re.fullmatch(
+        r"(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG)\s*(?:GRADE\s*)?\d{1,3}(?:[.,]\d{1,2})?\+?",
+        title,
+        re.I,
+    ):
+        return ""
+    if re.match(
+        r"^(?:Pop(?:ulation)?|Grade|Note|Grader|Gradation|Langue|Language|"
+        r"S[ée]rie|Set|Extension|Ann[ée]e|Year|R[ée]f[ée]rence|Reference|"
+        r"Certification|Cert(?:ificat)?|Prix|Price|Cat[ée]gorie|Category)\s*:?\b",
+        title,
+        re.I,
+    ):
+        return ""
+    if re.match(r"^Pok[ée]mon\b", title, re.I) and re.search(
+        r"[•|].*\b(?:French|Fran[çc]ais|English|Anglais|Japanese|Japonais)\b",
+        title,
+        re.I,
+    ):
+        return ""
+    if not re.search(r"[A-Za-zÀ-ÿ]{2,}", title):
+        return ""
+    return title
+
+
+def extract_card_title(
+    page_heading: str = "",
+    existing_title: str = "",
+    listing_text: str = "",
+    body: str = "",
+) -> str:
+    """Privilégie les labels de nom puis les titres GCC et le bloc de listing."""
+    explicit_text = f"{body[:8000]}\n{listing_text[:3000]}"
+    for pattern in (
+        r"(?:Nom de la carte|Nom de l'article|Nom du collectible|Card name|"
+        r"Item name|Collectible name|Nom|Titre|Title)\s*:\s*([^\n\r]{2,180})",
+        r"(?:Collectible)\s*:\s*([^\n\r]{2,180})",
+    ):
+        match = re.search(pattern, explicit_text, re.I)
+        if match:
+            title = sanitize_card_title(match.group(1))
+            if title:
+                return title
+
+    candidates = [existing_title, page_heading]
+    candidates.extend((listing_text or "").splitlines())
+    for candidate in candidates:
+        title = sanitize_card_title(candidate)
+        if title:
+            return title
+    return ""
+
+
 def collect_live_auction_urls(page) -> list[str]:
     log("Ouverture accueil GCC...")
     page.goto(BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
@@ -567,17 +645,10 @@ def collect_lots_from_listing(page, url: str, source_type: str) -> list[Lot]:
             if price is None or price < MIN_PRICE or price > MAX_PRICE:
                 continue
 
-            title = ""
-            for line in blob.splitlines():
-                s = line.strip()
-                if not s or "€" in s or s.upper() in {"LIVE", "ENDED", "SOON"}:
-                    continue
-                if len(s) >= 4:
-                    title = s
-                    break
-
-            if not title:
-                title = text.splitlines()[0].strip() if text else item_url.rsplit("/", 1)[-1]
+            title = extract_card_title(
+                existing_title="",
+                listing_text=f"{text}\n{blob}",
+            )
 
             lot = Lot(
                 url=item_url,
@@ -598,23 +669,115 @@ def collect_lots_from_listing(page, url: str, source_type: str) -> list[Lot]:
     return list(lots.values())
 
 
-def parse_grader_grade(text: str) -> tuple[str, str]:
-    head = (text or "")[:2500]
+def validate_grade_value(raw: str, grader: str = "", log_invalid: bool = True) -> Optional[str]:
+    cleaned = (raw or "").strip().replace(",", ".")
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return None
+    if value <= 0 or value > 10:
+        if log_invalid:
+            label = f"{grader} {raw}".strip()
+            if label not in LOGGED_INVALID_GRADES:
+                LOGGED_INVALID_GRADES.add(label)
+                log(f"grade invalide ignoré: {label}")
+        return None
+    return f"{value:g}"
 
-    for grader in GRADERS:
-        m = re.search(
-            rf"\b{re.escape(grader)}\s*(?:GRADE\s*)?(\d{{1,2}}(?:[.,]\d)?)\b",
-            head,
-            re.I,
-        )
-        if m:
-            return grader.upper(), m.group(1).replace(",", ".")
 
-    m = re.search(r"\b(?:Note|Grade)\s*:?\s*(\d{1,2}(?:[.,]\d)?)\b", head, re.I)
-    if m:
-        return "", m.group(1).replace(",", ".")
+def format_grade_label(grader: str, grade: Optional[str]) -> str:
+    return " ".join(part for part in (grader, grade or "") if part)
 
-    return "", ""
+
+def parse_grader_grade(text: str) -> tuple[str, Optional[str]]:
+    """Extrait un grade explicite/compact avant l'historique, toujours dans ]0, 10]."""
+    current = re.split(
+        r"Historique des ventes|Sales history",
+        text or "",
+        maxsplit=1,
+        flags=re.I,
+    )[0][:5000]
+    lines = [line.strip() for line in current.splitlines() if line.strip()]
+    grader_group = "|".join(re.escape(grader) for grader in GRADERS)
+    number = r"-?\d{1,3}(?:[.,]\d{1,2})?"
+
+    detected_match = re.search(rf"\b({grader_group})\b", current, re.I)
+    detected_grader = detected_match.group(1).upper() if detected_match else ""
+    invalid_seen = set()
+
+    def validated(raw: str, grader: str) -> Optional[str]:
+        key = (grader.upper(), raw.replace(",", "."))
+        result = validate_grade_value(raw, grader, log_invalid=key not in invalid_seen)
+        if result is None:
+            invalid_seen.add(key)
+        return result
+
+    # Priorité aux lignes portant réellement un label Grade/Note. Le grader
+    # peut être sur la même ligne ou dans les deux lignes structurées précédentes.
+    explicit_re = re.compile(
+        rf"\b(?:Grade|Note)\s*:?\s*(?:({grader_group})\s*)?({number})\b",
+        re.I,
+    )
+    for index, line in enumerate(lines):
+        match = explicit_re.search(line)
+        if not match:
+            continue
+        nearby = " ".join(lines[max(0, index - 2): index + 3])
+        grader_match = re.search(rf"\b({grader_group})\b", nearby, re.I)
+        grader = (match.group(1) or (grader_match.group(1) if grader_match else "")).upper()
+        grade = validated(match.group(2), grader)
+        if grade is not None:
+            return grader, grade
+
+    # GCC peut rendre les champs d'un bloc "Gradation" sur des lignes séparées.
+    # On accepte alors une valeur numérique isolée juste après le grader, mais
+    # uniquement si le contexte du bloc est explicitement celui de la gradation.
+    grader_only_re = re.compile(
+        rf"^(?:Grader|Soci[ée]t[ée](?: de gradation)?)?\s*:?[ ]*({grader_group})$",
+        re.I,
+    )
+    for index, line in enumerate(lines):
+        grader_match = grader_only_re.fullmatch(line)
+        if not grader_match:
+            continue
+        block_context = " ".join(lines[max(0, index - 4): index + 1])
+        if not re.search(r"\b(?:Gradation|Grading|Grade|Note)\b", block_context, re.I):
+            continue
+        for following in lines[index + 1: index + 3]:
+            if re.search(r"\bPop(?:ulation)?\b", following, re.I):
+                break
+            number_match = re.fullmatch(rf"({number})\+?", following)
+            if not number_match:
+                continue
+            grader = grader_match.group(1).upper()
+            grade = validated(number_match.group(1), grader)
+            if grade is not None:
+                return grader, grade
+            break
+
+    # Format compact de titre, par exemple "PSA 10 Dracaufeu" ou "BGS 9.5".
+    # Les lignes Population/Certification/Référence sont exclues avant lecture.
+    compact_re = re.compile(
+        rf"\b({grader_group})\s*(?:GRADE\s*)?[:#]?\s*({number})\b",
+        re.I,
+    )
+    ambiguous_prefix = re.compile(
+        r"^\s*(?:Pop(?:ulation)?|Certification|Cert(?:ificat)?|Serial|Référence|"
+        r"Reference|Année|Year|Prix|Price)\b",
+        re.I,
+    )
+    for line in lines:
+        if ambiguous_prefix.search(line):
+            continue
+        match = compact_re.search(line)
+        if not match:
+            continue
+        grader = match.group(1).upper()
+        grade = validated(match.group(2), grader)
+        if grade is not None:
+            return grader, grade
+
+    return detected_grader, None
 
 
 def parse_item_countdown_minutes(body: str) -> tuple[Optional[int], str]:
@@ -700,12 +863,18 @@ def inspect_item(page, lot: Lot) -> Lot:
         body = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
         lot.body = body
 
+        page_heading = ""
         try:
-            h1 = page.locator("h1").first.inner_text(timeout=800).strip()
-            if h1:
-                lot.title = h1
+            page_heading = page.locator("h1").first.inner_text(timeout=800).strip()
         except Exception:
             pass
+
+        lot.title = extract_card_title(
+            page_heading=page_heading,
+            existing_title=lot.title,
+            listing_text=lot.listing_text,
+            body=body,
+        )
 
         current_section = re.split(
             r"Historique des ventes|Sales history",
@@ -735,6 +904,12 @@ def inspect_item(page, lot: Lot) -> Lot:
 def is_valid_pokemon_card(lot: Lot) -> bool:
     body = lot.body or ""
     lower = body.lower()
+
+    clean_title = sanitize_card_title(lot.title)
+    if not clean_title:
+        log(f"Lot ignoré: nom de carte insuffisamment identifié ({lot.url})")
+        return False
+    lot.title = clean_title
 
     if not re.search(r"(Catégorie|Category)\s*:?\s*Pok[ée]mon\b", body, re.I):
         return False
@@ -780,24 +955,8 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
         end = min(len(section), price_match.end() + 380)
         context = section[start:end]
 
-        grader = ""
-        grade: Optional[float] = None
-
-        for g in GRADERS:
-            gm = re.search(
-                rf"\b{re.escape(g)}\s*(?:GRADE\s*)?(\d{{1,2}}(?:[.,]\d)?)\b",
-                context,
-                re.I,
-            )
-            if gm:
-                grader = g.upper()
-                grade = float(gm.group(1).replace(",", "."))
-                break
-
-        if grade is None:
-            gm = re.search(r"\b(?:Note|Grade)\s*:?\s*(\d{1,2}(?:[.,]\d)?)\b", context, re.I)
-            if gm:
-                grade = float(gm.group(1).replace(",", "."))
+        grader, grade_text = parse_grader_grade(context)
+        grade = float(grade_text) if grade_text is not None else None
 
         sales.append(
             ComparableSale(
@@ -1306,9 +1465,10 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
 
 def _target_grade(lot: Lot) -> Optional[float]:
     try:
-        return float(lot.grade) if lot.grade else None
-    except ValueError:
+        grade = float(lot.grade) if lot.grade is not None else None
+    except (TypeError, ValueError):
         return None
+    return grade if grade is not None and 0 < grade <= 10 else None
 
 
 def empirical_price_for_target_grader(
@@ -1405,16 +1565,13 @@ def _select_pricing_comparables(
     # elle ne peut créer ni valeur achetable ni arbitrage de grade.
     identity_candidates = exact_card
     target_grade = _target_grade(lot)
-    if target_grade is None:
-        same_grader = [sale for sale in identity_candidates if _same_target_grader(lot, sale)]
-        primary = same_grader if lot.grader else identity_candidates
-        secondary = [sale for sale in valid if sale not in primary]
+    if not lot.grader or target_grade is None:
         return ComparableSelection(
-            primary=primary if len(primary) >= 2 else [],
+            primary=[],
             lower_bounds=[],
             upper_bounds=[],
-            secondary=secondary,
-            rationale=f"{len(primary)} ventes comparables sans grade cible" if len(primary) >= 2 else "",
+            secondary=valid,
+            rationale="",
         )
 
     graded = [sale for sale in identity_candidates if sale.grade is not None]
@@ -1628,6 +1785,8 @@ def build_market_estimate(
     now: Optional[datetime] = None,
     grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
 ) -> Optional[MarketEstimate]:
+    if not lot.grader or _target_grade(lot) is None:
+        return None
     selection = _select_pricing_comparables(lot, sales, grader_ratios)
     if not selection.primary:
         return None
@@ -1843,6 +2002,9 @@ def estimate_with_grade(
     now: Optional[datetime] = None,
     grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
 ) -> Optional[Opportunity]:
+    if not lot.grader or _target_grade(lot) is None:
+        log(f"Rejet valeur: {lot.title} | grader/grade cible non lisible")
+        return None
     if lot.current_price is None or lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
         return None
     estimate = build_market_estimate(lot, sales, now, grader_ratios)
@@ -1978,7 +2140,7 @@ def notify(op: Opportunity, decision: NotificationDecision) -> None:
             ident.get("year") or "Année inconnue",
         )
     )
-    grade_line = f"{op.lot.grader} {op.lot.grade}".strip() or "Grade inconnu"
+    grade_line = format_grade_label(op.lot.grader, op.lot.grade) or "Grade inconnu"
     estimate = op.estimate
     gcc_count = _exact_count(op.lot, op.gcc_comparables)
     ebay_count = _exact_count(op.lot, op.ebay_comparables)
@@ -2152,7 +2314,8 @@ def main() -> int:
                 history = extract_historical_sales(lot)
                 log(
                     f"[fixe {fixed_inspected}] {lot.current_price:.2f} € | "
-                    f"{lot.grader} {lot.grade} | historique: {len(history)} ventes"
+                    f"{format_grade_label(lot.grader, lot.grade) or 'grade inconnu'} | "
+                    f"historique: {len(history)} ventes"
                 )
 
                 state["seen"][lot.url] = {
@@ -2160,7 +2323,7 @@ def main() -> int:
                     "seen_at": now,
                     "title": lot.title,
                     "source_type": lot.source_type,
-                    "grade": f"{lot.grader} {lot.grade}".strip(),
+                    "grade": format_grade_label(lot.grader, lot.grade),
                     "minutes_to_end": lot.minutes_to_end,
                 }
 
@@ -2299,7 +2462,8 @@ def main() -> int:
 
                 log(
                     f"[enchère {auction_inspected}] {lot.current_price:.2f} € | "
-                    f"fin {lot.end_text} | {lot.grader} {lot.grade} | "
+                    f"fin {lot.end_text} | "
+                    f"{format_grade_label(lot.grader, lot.grade) or 'grade inconnu'} | "
                     f"historique: {len(history)} ventes"
                 )
 
@@ -2308,7 +2472,7 @@ def main() -> int:
                     "seen_at": now,
                     "title": lot.title,
                     "source_type": lot.source_type,
-                    "grade": f"{lot.grader} {lot.grade}".strip(),
+                    "grade": format_grade_label(lot.grader, lot.grade),
                     "minutes_to_end": lot.minutes_to_end,
                 }
 
@@ -2361,7 +2525,6 @@ def main() -> int:
                     log(f"Pas de renotification: {op.lot.title} | aucun changement important")
 
             save_state(state)
-            log(f"Opportunités GCC avant eBay: {len(opportunities)}")
             log(f"Opportunités finales après eBay: {len(final_opportunities)}")
 
         finally:
