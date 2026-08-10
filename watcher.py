@@ -69,6 +69,9 @@ TEXT_TIMEOUT = 3000
 MAX_SCAN_SECONDS = 300
 MAX_AUCTION_CANDIDATES = 120
 MAX_FIXED_CANDIDATES = 120
+GCC_PAGE_RETRIES = int(os.getenv("GCC_PAGE_RETRIES", "2"))
+GCC_LISTING_SCROLL_LIMIT = 45
+GCC_TECH_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 
 MONEY_RE = re.compile(
     r"(?<!\d)(\d{1,3}(?:['’\s]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*€",
@@ -105,6 +108,7 @@ class Lot:
     grade: Optional[str] = None
     listing_text: str = ""
     page_title_raw: str = ""
+    inspection_error: str = ""
 
 
 @dataclass
@@ -252,6 +256,251 @@ REJECTION_INSUFFICIENT_DISCOUNT = "insufficient_discount"
 REJECTION_FIXED_ABOVE_MAX = "fixed_above_prudent_max"
 REJECTION_OTHER = "other"
 
+COVERAGE_COMPLETE = "COMPLETE"
+COVERAGE_INCOMPLETE = "INCOMPLETE"
+COVERAGE_UNKNOWN = "UNKNOWN"
+
+END_DECLARED_TOTAL_REACHED = "DECLARED_TOTAL_REACHED"
+END_EMPTY_PAGE_REACHED = "EMPTY_PAGE_REACHED"
+END_SHORT_FINAL_PAGE = "SHORT_FINAL_PAGE"
+END_NO_NEXT_PAGE = "NO_NEXT_PAGE"
+END_SCROLL_STABLE = "SCROLL_STABLE_REACHED"
+END_MAX_PAGE_LIMIT = "MAX_PAGE_LIMIT_REACHED"
+END_REPEATED_PAGE = "REPEATED_PAGE_DETECTED"
+END_PAGE_FAILED = "PAGE_FAILED"
+END_MALFORMED_RESPONSE = "MALFORMED_RESPONSE"
+END_UNKNOWN = "UNKNOWN"
+
+ACCOUNT_ECONOMICALLY_EVALUATED = "economically_evaluated"
+ACCOUNT_EXCLUDED_BY_RULES = "excluded_by_existing_rules"
+ACCOUNT_SPECIAL_QUALIFIER = "special_qualifier_excluded"
+ACCOUNT_PARSE_FAILURE = "parse_failure"
+ACCOUNT_UNSUPPORTED = "unsupported"
+ACCOUNT_INTERNAL_ERROR = "internal_error"
+ACCOUNT_PROCESSING_LIMIT = "processing_limit_excluded"
+ACCOUNT_DIAGNOSTIC_ONLY = "diagnostic_inventory_only"
+
+
+FIXED_DISCOVERY_FILTERS = (
+    "sellingType=FIXED_PRICE (GCC)",
+    "category=Pokemon card (local existing rule)",
+    f"price={MIN_PRICE:.0f}-{MAX_PRICE:.0f} EUR (local existing rule)",
+    "grader=ALL",
+    "grade=ALL",
+)
+AUCTION_DISCOVERY_FILTERS = (
+    "homepage link=/auction/ and (text LIVE or href contains AUCTION) (current V4 rule)",
+    f"remaining_time<={MAX_AUCTION_MINUTES} min (local existing rule)",
+    "category=Pokemon card (local existing rule)",
+    f"price={MIN_PRICE:.0f}-{MAX_PRICE:.0f} EUR (local existing rule)",
+    "grader=ALL",
+    "grade=ALL",
+)
+
+
+@dataclass
+class CoverageAudit:
+    """Comptabilise le protocole GCC existant sans influencer l'économie."""
+
+    label: str
+    discovery_filters: tuple[str, ...]
+    protocol: str = "GCC_CLIENT_RENDERED_INFINITE_SCROLL"
+    pages_requested: int = 0
+    pages_successful: int = 0
+    pages_failed: int = 0
+    retries: int = 0
+    rows_received: int = 0
+    duplicates: int = 0
+    first_page: str = ""
+    last_page: str = ""
+    expected_total: Optional[int] = None
+    page_size: Optional[int] = None
+    pagination_end_reason: str = END_UNKNOWN
+    unkeyed_rows: int = 0
+    unaccounted_reconciled: int = 0
+    listing_ids: set[str] = field(default_factory=set, repr=False)
+    terminal_statuses: dict[str, str] = field(default_factory=dict, repr=False)
+    incomplete_reasons: list[str] = field(default_factory=list, repr=False)
+    _page_fingerprints: set[tuple[str, ...]] = field(
+        default_factory=set, repr=False
+    )
+
+    def begin_page(self, page_label: str) -> None:
+        self.pages_requested += 1
+        if not self.first_page:
+            self.first_page = page_label
+        self.last_page = page_label
+
+    def record_retry(self) -> None:
+        self.retries += 1
+
+    def record_page_failure(self, reason: str = "page fetch failed") -> None:
+        self.pages_failed += 1
+        self.mark_incomplete(reason, END_PAGE_FAILED)
+
+    def record_malformed(self, reason: str = "malformed response") -> None:
+        self.mark_incomplete(reason, END_MALFORMED_RESPONSE)
+
+    def record_page_success(
+        self,
+        page_label: str,
+        row_ids: list[str],
+        *,
+        expected_total: Optional[int] = None,
+        page_size: Optional[int] = None,
+        accumulate_expected: bool = False,
+        detect_repeated_page: bool = False,
+    ) -> None:
+        self.pages_successful += 1
+        self.last_page = page_label
+        if not self.first_page:
+            self.first_page = page_label
+        if page_size is not None and page_size >= 0 and self.page_size is None:
+            self.page_size = page_size
+        if expected_total is not None and expected_total >= 0:
+            if accumulate_expected:
+                self.expected_total = (self.expected_total or 0) + expected_total
+            else:
+                self.expected_total = expected_total
+
+        fingerprint = tuple(row_ids)
+        if detect_repeated_page and fingerprint and fingerprint in self._page_fingerprints:
+            self.mark_incomplete("repeated page detected", END_REPEATED_PAGE)
+        self._page_fingerprints.add(fingerprint)
+
+        self.rows_received += len(row_ids)
+        for listing_id in row_ids:
+            if listing_id in self.listing_ids:
+                self.duplicates += 1
+            else:
+                self.listing_ids.add(listing_id)
+
+    def record_unkeyed_row(self, reason: str) -> None:
+        self.rows_received += 1
+        self.unkeyed_rows += 1
+        self.record_malformed(reason)
+
+    def record_terminal(self, listing_id: str, status: str) -> None:
+        if not listing_id:
+            self.record_unkeyed_row("terminal listing without stable GCC id")
+            return
+        self.listing_ids.add(listing_id)
+        previous = self.terminal_statuses.get(listing_id)
+        if previous is None:
+            self.terminal_statuses[listing_id] = status
+        elif previous != status:
+            self.mark_incomplete(
+                f"conflicting terminal statuses for {listing_id}",
+                END_MALFORMED_RESPONSE,
+            )
+
+    def mark_incomplete(self, reason: str, end_reason: Optional[str] = None) -> None:
+        if reason and reason not in self.incomplete_reasons:
+            self.incomplete_reasons.append(reason)
+        if end_reason:
+            self.pagination_end_reason = end_reason
+
+    def set_end_reason(self, reason: str) -> None:
+        if self.pagination_end_reason in {
+            END_PAGE_FAILED,
+            END_REPEATED_PAGE,
+            END_MAX_PAGE_LIMIT,
+            END_MALFORMED_RESPONSE,
+        }:
+            return
+        self.pagination_end_reason = reason
+
+    def finalize_pagination(self, reliable_end_reason: str = END_UNKNOWN) -> None:
+        if self.pagination_end_reason in {
+            END_PAGE_FAILED,
+            END_REPEATED_PAGE,
+            END_MAX_PAGE_LIMIT,
+            END_MALFORMED_RESPONSE,
+        }:
+            return
+        if self.expected_total is not None and self.unique_listings == self.expected_total:
+            self.pagination_end_reason = END_DECLARED_TOTAL_REACHED
+        else:
+            self.pagination_end_reason = reliable_end_reason
+
+    def reconcile_unaccounted(self) -> None:
+        missing = sorted(self.listing_ids.difference(self.terminal_statuses))
+        if not missing:
+            return
+        self.unaccounted_reconciled += len(missing)
+        self.mark_incomplete(
+            f"{len(missing)} listing(s) reached end of run without terminal status"
+        )
+        for listing_id in missing:
+            self.terminal_statuses[listing_id] = ACCOUNT_INTERNAL_ERROR
+
+    @property
+    def unique_listings(self) -> int:
+        return len(self.listing_ids)
+
+    @property
+    def accounted_listings(self) -> int:
+        return sum(key in self.terminal_statuses for key in self.listing_ids)
+
+    @property
+    def unaccounted_listings(self) -> int:
+        return self.unique_listings - self.accounted_listings
+
+    def terminal_count(self, status: str) -> int:
+        return sum(value == status for value in self.terminal_statuses.values())
+
+    @property
+    def parse_failures(self) -> int:
+        return self.terminal_count(ACCOUNT_PARSE_FAILURE) + self.unkeyed_rows
+
+    @property
+    def internal_errors(self) -> int:
+        return self.terminal_count(ACCOUNT_INTERNAL_ERROR)
+
+    @property
+    def missing_vs_declared_total(self) -> Optional[int]:
+        if self.expected_total is None:
+            return None
+        return max(0, self.expected_total - self.unique_listings)
+
+    @property
+    def coverage_ratio(self) -> Optional[float]:
+        if self.expected_total is None:
+            return None
+        if self.expected_total == 0:
+            return 100.0 if self.unique_listings == 0 else 0.0
+        return self.unique_listings / self.expected_total * 100.0
+
+    @property
+    def status(self) -> str:
+        hard_end = self.pagination_end_reason in {
+            END_PAGE_FAILED,
+            END_REPEATED_PAGE,
+            END_MAX_PAGE_LIMIT,
+            END_MALFORMED_RESPONSE,
+            END_UNKNOWN,
+        }
+        if (
+            self.incomplete_reasons
+            or self.pages_failed
+            or self.unaccounted_listings
+            or self.parse_failures
+            or self.internal_errors
+            or hard_end and self.pagination_end_reason != END_UNKNOWN
+        ):
+            return COVERAGE_INCOMPLETE
+        if self.expected_total is not None and self.unique_listings != self.expected_total:
+            return COVERAGE_INCOMPLETE
+        reliable_end = self.pagination_end_reason in {
+            END_DECLARED_TOTAL_REACHED,
+            END_EMPTY_PAGE_REACHED,
+            END_SHORT_FINAL_PAGE,
+            END_NO_NEXT_PAGE,
+        }
+        if reliable_end:
+            return COVERAGE_COMPLETE
+        return COVERAGE_UNKNOWN
+
 
 @dataclass
 class GccComparableDiagnostics:
@@ -306,6 +555,16 @@ class GradeUnreadableDiagnostic:
 
 @dataclass
 class RunDiagnostics:
+    fixed_coverage: CoverageAudit = field(
+        default_factory=lambda: CoverageAudit(
+            "FIXED PRICE", FIXED_DISCOVERY_FILTERS
+        )
+    )
+    auction_coverage: CoverageAudit = field(
+        default_factory=lambda: CoverageAudit(
+            "AUCTIONS", AUCTION_DISCOVERY_FILTERS
+        )
+    )
     fixed_candidates: int = 0
     auction_candidates_ending_soon: int = 0
     live_auction_urls: set[str] = field(default_factory=set)
@@ -329,8 +588,31 @@ class RunDiagnostics:
         self.ending_soon_sale_urls.add(url)
         self.cards_in_ending_sales.update(lot.url for lot in lots)
 
-    def record_valuation(self, lot: Lot, rejection: str = "") -> None:
+    def coverage_for(self, source_type: str) -> CoverageAudit:
+        return (
+            self.auction_coverage
+            if source_type == "auction"
+            else self.fixed_coverage
+        )
+
+    def record_valuation(
+        self,
+        lot: Lot,
+        rejection: str = "",
+        coverage_status: Optional[str] = None,
+    ) -> None:
         key = lot.url or f"{lot.source_type}:{lot.title}"
+        if coverage_status is None:
+            if rejection == REJECTION_SPECIAL_QUALIFIER:
+                coverage_status = ACCOUNT_SPECIAL_QUALIFIER
+            elif rejection in {
+                REJECTION_GRADER_GRADE,
+                REJECTION_INSUFFICIENT_IDENTITY,
+            }:
+                coverage_status = ACCOUNT_PARSE_FAILURE
+            else:
+                coverage_status = ACCOUNT_ECONOMICALLY_EVALUATED
+        self.coverage_for(lot.source_type).record_terminal(key, coverage_status)
         if key in self.valuation_outcomes:
             return
         self.valuation_outcomes[key] = rejection
@@ -374,6 +656,33 @@ class RunDiagnostics:
     def is_coherent(self) -> bool:
         return self.lots_analyzed == self.rejected_total + self.gcc_opportunities
 
+    @property
+    def overall_coverage_status(self) -> str:
+        statuses = {self.fixed_coverage.status, self.auction_coverage.status}
+        if COVERAGE_INCOMPLETE in statuses:
+            return COVERAGE_INCOMPLETE
+        if statuses == {COVERAGE_COMPLETE}:
+            return COVERAGE_COMPLETE
+        return COVERAGE_UNKNOWN
+
+    @property
+    def economic_result_trustworthy(self) -> bool:
+        return self.overall_coverage_status == COVERAGE_COMPLETE
+
+    def finalize_coverage(self) -> None:
+        if self.fixed_coverage.pages_requested == 0:
+            self.fixed_coverage.set_end_reason(END_UNKNOWN)
+        elif self.fixed_coverage.pagination_end_reason == END_UNKNOWN:
+            self.fixed_coverage.finalize_pagination(END_UNKNOWN)
+
+        if self.auction_coverage.pages_requested == 0:
+            self.auction_coverage.set_end_reason(END_UNKNOWN)
+        else:
+            self.auction_coverage.finalize_pagination(END_NO_NEXT_PAGE)
+
+        self.fixed_coverage.reconcile_unaccounted()
+        self.auction_coverage.reconcile_unaccounted()
+
 
 _PSA_APR_RATE_LOOKUP_DONE = False
 _PSA_APR_USD_PER_EUR: Optional[float] = None
@@ -399,6 +708,8 @@ def load_state() -> dict:
         state["notified"] = {}
     if not isinstance(state.get("seen"), dict):
         state["seen"] = {}
+    if not isinstance(state.get("technical_alerts"), dict):
+        state["technical_alerts"] = {}
     state["schema_version"] = 2
     return state
 
@@ -429,6 +740,49 @@ def parse_money(text: str) -> Optional[float]:
         except ValueError:
             pass
     return vals[0] if vals else None
+
+
+def parse_gcc_declared_total(text: str) -> Optional[int]:
+    """Lit uniquement le compteur officiel `N résultats/results` visible par GCC."""
+    match = re.search(
+        r"(?<!\d)(\d[\d'’\s\u00a0.]*)\s+(?:r[ée]sultats?|results?)\b",
+        text or "",
+        re.I,
+    )
+    if not match:
+        return None
+    digits = re.sub(r"\D", "", match.group(1))
+    return int(digits) if digits else None
+
+
+def _goto_with_coverage_retries(
+    page,
+    url: str,
+    coverage: CoverageAudit,
+) -> bool:
+    """Navigation Playwright avec comptage, sans modifier le contenu analysé."""
+    coverage.begin_page(url)
+    for attempt in range(GCC_PAGE_RETRIES + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            return True
+        except Exception as error:
+            if attempt < GCC_PAGE_RETRIES:
+                coverage.record_retry()
+                log(
+                    f"Retry GCC {attempt + 1}/{GCC_PAGE_RETRIES}: "
+                    f"{type(error).__name__} | {url}"
+                )
+                continue
+            coverage.record_page_failure(
+                f"page fetch failed after {GCC_PAGE_RETRIES} retries: "
+                f"{type(error).__name__}"
+            )
+            log(
+                f"Page GCC échouée après retries: "
+                f"{type(error).__name__} | {url}"
+            )
+            return False
 
 
 def parse_ecb_usd_per_eur(xml_text: str) -> Optional[float]:
@@ -770,15 +1124,41 @@ def extract_card_title(
     return ""
 
 
-def collect_live_auction_urls(page) -> list[str]:
+def collect_live_auction_urls(
+    page, run_diagnostics: Optional[RunDiagnostics] = None
+) -> list[str]:
     log("Ouverture accueil GCC...")
-    page.goto(BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-    page.wait_for_timeout(1500)
+    coverage = (
+        run_diagnostics.auction_coverage
+        if run_diagnostics is not None
+        else None
+    )
+    if coverage is not None:
+        if not _goto_with_coverage_retries(page, BASE, coverage):
+            return []
+    else:
+        page.goto(BASE, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    try:
+        page.wait_for_timeout(1500)
+    except Exception as error:
+        if coverage is not None:
+            coverage.record_malformed(
+                f"auction discovery wait failed: {type(error).__name__}"
+            )
 
-    links = page.locator("a[href]")
     urls = set()
+    try:
+        links = page.locator("a[href]")
+        link_count = links.count()
+    except Exception as error:
+        if coverage is not None:
+            coverage.record_malformed(
+                f"auction discovery DOM unreadable: {type(error).__name__}"
+            )
+            coverage.record_page_success(BASE, [])
+        return []
 
-    for i in range(links.count()):
+    for i in range(link_count):
         try:
             a = links.nth(i)
             href = a.get_attribute("href") or ""
@@ -789,9 +1169,15 @@ def collect_live_auction_urls(page) -> list[str]:
                     href = BASE + href
                 if href.startswith(BASE):
                     urls.add(href.split("?")[0])
-        except Exception:
+        except Exception as error:
+            if coverage is not None:
+                coverage.record_malformed(
+                    f"auction discovery link parse failed: {type(error).__name__}"
+                )
             continue
 
+    if coverage is not None:
+        coverage.record_page_success(BASE, [])
     return sorted(urls)
 
 
@@ -830,61 +1216,130 @@ def collect_lots_from_listing(
     run_diagnostics: Optional[RunDiagnostics] = None,
 ) -> list[Lot]:
     log(f"Ouverture listing {source_type}: {url}")
-    page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-    page.wait_for_timeout(1200)
+    coverage = (
+        run_diagnostics.coverage_for(source_type)
+        if run_diagnostics is not None
+        else None
+    )
+    if coverage is not None:
+        if not _goto_with_coverage_retries(page, url, coverage):
+            return []
+    else:
+        page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    try:
+        page.wait_for_timeout(1200)
+    except Exception as error:
+        if coverage is not None:
+            coverage.record_malformed(
+                f"listing wait failed: {type(error).__name__}"
+            )
+
+    body_top = ""
+    declared_total = None
+    try:
+        body_top = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
+        declared_total = parse_gcc_declared_total(body_top)
+    except Exception as error:
+        if coverage is not None:
+            coverage.record_malformed(
+                f"listing body unreadable: {type(error).__name__}"
+            )
 
     # Pour une vente aux enchères, si la vente globale finit dans >1h,
     # inutile de parcourir ses lots maintenant.
     sale_ends_soon = False
     if source_type == "auction":
-        try:
-            body_top = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
-            sale_minutes = parse_sale_countdown_minutes(body_top)
-            if sale_minutes is not None and sale_minutes > MAX_AUCTION_MINUTES:
-                log(f"Vente ignorée: fin dans ~{sale_minutes} min")
-                return []
-            sale_ends_soon = (
-                sale_minutes is not None and sale_minutes <= MAX_AUCTION_MINUTES
-            )
-        except Exception:
-            pass
+        sale_minutes = parse_sale_countdown_minutes(body_top)
+        if sale_minutes is not None and sale_minutes > MAX_AUCTION_MINUTES:
+            log(f"Vente ignorée: fin dans ~{sale_minutes} min")
+            if coverage is not None:
+                coverage.record_page_success(url, [], page_size=0)
+            return []
+        sale_ends_soon = (
+            sale_minutes is not None and sale_minutes <= MAX_AUCTION_MINUTES
+        )
+
+    try:
+        initial_item_count = page.locator('a[href*="/item/"]').count()
+    except Exception:
+        initial_item_count = None
 
     last_height = 0
     stable = 0
+    scroll_stable = False
+    scroll_failed = False
 
-    for _ in range(45):
-        page.mouse.wheel(0, 2600)
-        page.wait_for_timeout(120)
+    for _ in range(GCC_LISTING_SCROLL_LIMIT):
         try:
+            page.mouse.wheel(0, 2600)
+            page.wait_for_timeout(120)
             h = page.evaluate("document.body.scrollHeight")
-        except Exception:
+        except Exception as error:
+            scroll_failed = True
+            if coverage is not None:
+                coverage.record_malformed(
+                    f"scroll response unreadable: {type(error).__name__}"
+                )
             break
 
         if h == last_height:
             stable += 1
             if stable >= 3:
+                scroll_stable = True
                 break
         else:
             stable = 0
             last_height = h
+
+    if coverage is not None and not scroll_stable and not scroll_failed:
+        coverage.mark_incomplete(
+            f"infinite scroll safety limit {GCC_LISTING_SCROLL_LIMIT} reached",
+            END_MAX_PAGE_LIMIT,
+        )
 
     try:
         sale_name = page.locator("h1").first.inner_text(timeout=1000).strip()
     except Exception:
         sale_name = ""
 
-    anchors = page.locator('a[href*="/item/"]')
+    try:
+        anchors = page.locator('a[href*="/item/"]')
+        anchor_count = anchors.count()
+    except Exception as error:
+        if coverage is not None:
+            coverage.record_malformed(
+                f"listing rows unreadable: {type(error).__name__}"
+            )
+            coverage.record_page_success(
+                url,
+                [],
+                expected_total=declared_total,
+                page_size=initial_item_count,
+                accumulate_expected=source_type == "auction",
+            )
+        return []
     lots: dict[str, Lot] = {}
+    raw_row_ids: list[str] = []
+    processed_ids: set[str] = set()
 
-    for i in range(anchors.count()):
+    for i in range(anchor_count):
+        item_url = ""
         try:
             a = anchors.nth(i)
             href = a.get_attribute("href") or ""
             if not HREF_ITEM_RE.search(href):
+                if coverage is not None:
+                    coverage.record_unkeyed_row(
+                        "item anchor without stable GCC item UUID"
+                    )
                 continue
 
             item_url = BASE + href if href.startswith("/") else href
             item_url = item_url.split("?")[0]
+            raw_row_ids.append(item_url)
+            if item_url in processed_ids:
+                continue
+            processed_ids.add(item_url)
 
             text = (a.inner_text(timeout=500) or "").strip()
             candidate_texts = [text]
@@ -906,10 +1361,22 @@ def collect_lots_from_listing(
             )
 
             if not listing_is_pokemon_card(blob):
+                if coverage is not None:
+                    coverage.record_terminal(
+                        item_url, ACCOUNT_EXCLUDED_BY_RULES
+                    )
                 continue
 
             price = parse_money(blob)
-            if price is None or price < MIN_PRICE or price > MAX_PRICE:
+            if price is None:
+                if coverage is not None:
+                    coverage.record_terminal(item_url, ACCOUNT_PARSE_FAILURE)
+                continue
+            if price < MIN_PRICE or price > MAX_PRICE:
+                if coverage is not None:
+                    coverage.record_terminal(
+                        item_url, ACCOUNT_EXCLUDED_BY_RULES
+                    )
                 continue
 
             title = extract_card_title(
@@ -930,8 +1397,32 @@ def collect_lots_from_listing(
                 lot.minutes_to_end, lot.end_text = parse_listing_countdown_minutes(blob)
 
             lots[item_url] = lot
-        except Exception:
+        except Exception as error:
+            if coverage is not None:
+                if item_url:
+                    coverage.record_terminal(item_url, ACCOUNT_INTERNAL_ERROR)
+                else:
+                    coverage.record_unkeyed_row(
+                        f"item parse failed without stable id: {type(error).__name__}"
+                    )
+                coverage.mark_incomplete(
+                    f"listing parse failed: {type(error).__name__}"
+                )
+            log(f"Erreur parsing listing {type(error).__name__}: {url}")
             continue
+
+    if coverage is not None:
+        coverage.record_page_success(
+            url,
+            raw_row_ids,
+            expected_total=declared_total,
+            page_size=initial_item_count,
+            accumulate_expected=source_type == "auction",
+        )
+        if source_type == "fixed":
+            coverage.finalize_pagination(
+                END_SCROLL_STABLE if scroll_stable else END_UNKNOWN
+            )
 
     collected = list(lots.values())
     if run_diagnostics is not None and source_type == "auction" and sale_ends_soon:
@@ -1617,6 +2108,7 @@ def parse_listing_countdown_minutes(text: str) -> tuple[Optional[int], str]:
 
 def inspect_item(page, lot: Lot) -> Lot:
     try:
+        lot.inspection_error = ""
         page.goto(lot.url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
         page.wait_for_timeout(650)
 
@@ -1655,9 +2147,11 @@ def inspect_item(page, lot: Lot) -> Lot:
         return lot
 
     except PlaywrightTimeoutError:
+        lot.inspection_error = "PlaywrightTimeoutError"
         log(f"Timeout fiche: {lot.url}")
         return lot
     except Exception as e:
+        lot.inspection_error = type(e).__name__
         log(f"Erreur fiche {type(e).__name__}: {lot.url}")
         return lot
 
@@ -1673,19 +2167,25 @@ def is_valid_pokemon_card(
         log(f"Lot ignoré: nom de carte insuffisamment identifié ({lot.url})")
         if run_diagnostics is not None:
             run_diagnostics.record_valuation(
-                lot, REJECTION_INSUFFICIENT_IDENTITY
+                lot,
+                REJECTION_INSUFFICIENT_IDENTITY,
+                ACCOUNT_PARSE_FAILURE,
             )
         return False
     lot.title = clean_title
 
     if not re.search(r"(Catégorie|Category)\s*:?\s*Pok[ée]mon\b", body, re.I):
         if run_diagnostics is not None:
-            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
+            run_diagnostics.record_valuation(
+                lot, REJECTION_OTHER, ACCOUNT_EXCLUDED_BY_RULES
+            )
         return False
 
     if any(word in lower for word in SEALED_KEYWORDS):
         if run_diagnostics is not None:
-            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
+            run_diagnostics.record_valuation(
+                lot, REJECTION_OTHER, ACCOUNT_EXCLUDED_BY_RULES
+            )
         return False
 
     # On veut une carte, pas un produit scellé. La présence d'un bloc de gradation
@@ -1697,7 +2197,9 @@ def is_valid_pokemon_card(
         return True
 
     if run_diagnostics is not None:
-        run_diagnostics.record_valuation(lot, REJECTION_OTHER)
+        run_diagnostics.record_valuation(
+            lot, REJECTION_OTHER, ACCOUNT_UNSUPPORTED
+        )
     return False
 
 
@@ -3913,6 +4415,101 @@ def notify(op: Opportunity, decision: NotificationDecision) -> None:
             log(f"Notification ntfy échouée: {e}")
 
 
+def evaluate_gcc_candidate(
+    page,
+    lot: Lot,
+    position: int,
+    state: dict,
+    seen_at: str,
+    run_now: datetime,
+    run_diagnostics: RunDiagnostics,
+) -> Optional[Opportunity]:
+    """Exécute le chemin V4 existant et comptabilise toute exception par lot."""
+    try:
+        if lot.source_type == "fixed" or not lot.body:
+            lot = inspect_item(page, lot)
+
+        if lot.inspection_error:
+            coverage = run_diagnostics.coverage_for(lot.source_type)
+            coverage.mark_incomplete(
+                f"item inspection failed: {lot.inspection_error}"
+            )
+            run_diagnostics.record_valuation(
+                lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
+            )
+            return None
+
+        if not is_valid_pokemon_card(lot, run_diagnostics):
+            return None
+
+        if lot.current_price is None:
+            if lot.source_type == "fixed":
+                log(f"[fixe {position}] Ignoré: prix non lisible")
+            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
+            return None
+
+        if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+            if lot.source_type == "fixed":
+                log(
+                    f"[fixe {position}] Ignoré: prix {lot.current_price:.2f} € "
+                    f"hors tranche {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €"
+                )
+            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
+            return None
+
+        if lot.source_type == "auction" and (
+            lot.minutes_to_end is None
+            or lot.minutes_to_end > MAX_AUCTION_MINUTES
+        ):
+            run_diagnostics.record_valuation(
+                lot, REJECTION_OTHER, ACCOUNT_EXCLUDED_BY_RULES
+            )
+            return None
+
+        history = extract_historical_sales(lot)
+        if lot.source_type == "fixed":
+            log(
+                f"[fixe {position}] {lot.current_price:.2f} € | "
+                f"{format_grade_label(lot.grader, lot.grade) or 'grade inconnu'} | "
+                f"historique: {len(history)} ventes"
+            )
+        else:
+            log(
+                f"[enchère {position}] {lot.current_price:.2f} € | "
+                f"fin {lot.end_text} | "
+                f"{format_grade_label(lot.grader, lot.grade) or 'grade inconnu'} | "
+                f"historique: {len(history)} ventes"
+            )
+
+        state["seen"][lot.url] = {
+            "price": lot.current_price,
+            "seen_at": seen_at,
+            "title": lot.title,
+            "source_type": lot.source_type,
+            "grade": format_grade_label(lot.grader, lot.grade),
+            "minutes_to_end": lot.minutes_to_end,
+        }
+        return estimate_with_grade(
+            lot,
+            history,
+            run_now,
+            run_diagnostics=run_diagnostics,
+        )
+    except Exception as error:
+        coverage = run_diagnostics.coverage_for(lot.source_type)
+        coverage.mark_incomplete(
+            f"listing processing exception: {type(error).__name__}"
+        )
+        run_diagnostics.record_valuation(
+            lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
+        )
+        log(
+            f"Erreur interne lot {type(error).__name__}: "
+            f"{lot.url or lot.title}"
+        )
+        return None
+
+
 def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
     lines = [
         "=== DIAGNOSTIC RUN ===",
@@ -3992,6 +4589,222 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
     return "\n".join(lines)
 
 
+def _coverage_value(value) -> str:
+    return "UNKNOWN" if value is None or value == "" else str(value)
+
+
+def format_coverage_audit(audit: CoverageAudit) -> str:
+    ratio = (
+        "UNKNOWN"
+        if audit.coverage_ratio is None
+        else f"{audit.coverage_ratio:.1f}%"
+    )
+    return "\n".join(
+        (
+            audit.label,
+            f"discovery filters: [{'; '.join(audit.discovery_filters)}]",
+            f"protocol: {audit.protocol}",
+            f"pages requested: {audit.pages_requested}",
+            f"pages successful: {audit.pages_successful}",
+            f"pages failed: {audit.pages_failed}",
+            f"retries: {audit.retries}",
+            f"rows received: {audit.rows_received}",
+            f"unique listings: {audit.unique_listings}",
+            f"duplicates: {audit.duplicates}",
+            f"first page: {_coverage_value(audit.first_page)}",
+            f"last page: {_coverage_value(audit.last_page)}",
+            f"expected total: {_coverage_value(audit.expected_total)}",
+            f"page size: {_coverage_value(audit.page_size)}",
+            f"coverage ratio: {ratio}",
+            f"missing vs declared total: {_coverage_value(audit.missing_vs_declared_total)}",
+            f"accounted listings: {audit.accounted_listings}",
+            f"unaccounted listings: {audit.unaccounted_listings}",
+            f"unaccounted detected before reconciliation: {audit.unaccounted_reconciled}",
+            f"economically evaluated: {audit.terminal_count(ACCOUNT_ECONOMICALLY_EVALUATED)}",
+            f"excluded by existing rules: {audit.terminal_count(ACCOUNT_EXCLUDED_BY_RULES)}",
+            f"special qualifier excluded: {audit.terminal_count(ACCOUNT_SPECIAL_QUALIFIER)}",
+            f"parse failures: {audit.parse_failures}",
+            f"unsupported: {audit.terminal_count(ACCOUNT_UNSUPPORTED)}",
+            f"internal errors: {audit.internal_errors}",
+            f"processing limit excluded: {audit.terminal_count(ACCOUNT_PROCESSING_LIMIT)}",
+            f"diagnostic inventory only: {audit.terminal_count(ACCOUNT_DIAGNOSTIC_ONLY)}",
+            "incomplete reasons: "
+            + (
+                " | ".join(audit.incomplete_reasons)
+                if audit.incomplete_reasons
+                else "NONE"
+            ),
+            f"pagination end reason: {audit.pagination_end_reason}",
+            f"coverage status: {audit.status}",
+        )
+    )
+
+
+def format_scan_coverage(diagnostics: RunDiagnostics) -> str:
+    status = diagnostics.overall_coverage_status
+    trustworthy = "YES" if diagnostics.economic_result_trustworthy else "NO"
+    if diagnostics.final_opportunities == 0:
+        if status == COVERAGE_COMPLETE:
+            opportunity_note = (
+                "0 opportunities: aucune opportunité dans l'univers production "
+                "complètement parcouru"
+            )
+        elif status == COVERAGE_INCOMPLETE:
+            opportunity_note = "0 opportunities observed, but scan incomplete"
+        else:
+            opportunity_note = (
+                "0 opportunities observed; absolute completeness is not proven"
+            )
+    else:
+        opportunity_note = (
+            f"{diagnostics.final_opportunities} opportunity/opportunities observed"
+        )
+    return "\n\n".join(
+        (
+            "=== GCC SCAN COVERAGE ===",
+            format_coverage_audit(diagnostics.fixed_coverage),
+            format_coverage_audit(diagnostics.auction_coverage),
+            "\n".join(
+                (
+                    "OVERALL",
+                    "marketplace coverage: FILTERED PRODUCTION UNIVERSE; "
+                    "not a claim of all GCC",
+                    f"coverage status: {status}",
+                    f"economic opportunities: {diagnostics.final_opportunities}",
+                    f"economic result trustworthy: {trustworthy}",
+                    opportunity_note,
+                )
+            ),
+        )
+    )
+
+
+def log_scan_coverage(diagnostics: RunDiagnostics) -> None:
+    for line in format_scan_coverage(diagnostics).splitlines():
+        log(line) if line else print(flush=True)
+
+
+def _technical_coverage_signature(diagnostics: RunDiagnostics) -> str:
+    fixed = diagnostics.fixed_coverage
+    auction = diagnostics.auction_coverage
+    return "|".join(
+        (
+            fixed.status,
+            fixed.pagination_end_reason,
+            str(fixed.expected_total),
+            str(fixed.unique_listings),
+            str(fixed.pages_failed),
+            str(fixed.internal_errors),
+            auction.status,
+            auction.pagination_end_reason,
+            str(auction.expected_total),
+            str(auction.unique_listings),
+            str(auction.pages_failed),
+            str(auction.internal_errors),
+        )
+    )
+
+
+def maybe_notify_incomplete_coverage(
+    diagnostics: RunDiagnostics,
+    state: dict,
+    now: datetime,
+) -> bool:
+    """Alerte technique dédupliquée, séparée des notifications économiques."""
+    if diagnostics.overall_coverage_status != COVERAGE_INCOMPLETE or not NTFY_TOPIC:
+        return False
+
+    signature = _technical_coverage_signature(diagnostics)
+    previous = state.setdefault("technical_alerts", {}).get("gcc_coverage", {})
+    try:
+        previous_at = datetime.fromisoformat(previous.get("sent_at", ""))
+    except (TypeError, ValueError):
+        previous_at = None
+    if previous_at is not None:
+        try:
+            in_cooldown = (
+                now - previous_at
+            ).total_seconds() < GCC_TECH_ALERT_COOLDOWN_SECONDS
+        except TypeError:
+            in_cooldown = False
+        if in_cooldown:
+            qualifier = (
+                "identique "
+                if previous.get("signature") == signature
+                else ""
+            )
+            log(
+                f"Alerte technique couverture {qualifier}déjà envoyée "
+                "récemment"
+            )
+            return False
+
+    fixed = diagnostics.fixed_coverage
+    auction = diagnostics.auction_coverage
+    message = (
+        "GCC SCAN INCOMPLETE\n"
+        f"Fixed: {fixed.unique_listings} / "
+        f"{_coverage_value(fixed.expected_total)} | {fixed.status}\n"
+        f"Auctions: {auction.unique_listings} / "
+        f"{_coverage_value(auction.expected_total)} | {auction.status}\n"
+        f"Failed pages: {fixed.pages_failed + auction.pages_failed}\n"
+        "Unaccounted detected: "
+        f"{fixed.unaccounted_listings + auction.unaccounted_listings + fixed.unaccounted_reconciled + auction.unaccounted_reconciled}\n"
+        "Opportunity result may be incomplete."
+    )
+    try:
+        requests.post(
+            f"{NTFY_SERVER}/{NTFY_TOPIC}",
+            data=message.encode("utf-8"),
+            headers={
+                "Title": "GCC SCAN INCOMPLETE",
+                "Priority": "4",
+                "Tags": "warning,magnifying_glass_tilted_left",
+            },
+            timeout=10,
+        ).raise_for_status()
+        state["technical_alerts"]["gcc_coverage"] = {
+            "signature": signature,
+            "sent_at": now.isoformat(),
+        }
+        log("Alerte technique couverture ntfy envoyée")
+        return True
+    except Exception as error:
+        log(f"Alerte technique couverture ntfy échouée: {type(error).__name__}")
+        return False
+
+
+@dataclass(frozen=True)
+class MarketplaceCoverageComparison:
+    reference_available: bool
+    production_unique: int
+    reference_unique: Optional[int]
+    outside_production: Optional[int]
+    reason: str
+
+
+def compare_marketplace_inventory(
+    production_ids: set[str],
+    reference_ids: Optional[set[str]],
+) -> MarketplaceCoverageComparison:
+    """Compare uniquement des identifiants; aucune fonction économique n'est appelée."""
+    if reference_ids is None:
+        return MarketplaceCoverageComparison(
+            False,
+            len(production_ids),
+            None,
+            None,
+            "FULL_MARKETPLACE_REFERENCE_UNAVAILABLE",
+        )
+    return MarketplaceCoverageComparison(
+        True,
+        len(production_ids),
+        len(reference_ids),
+        len(reference_ids.difference(production_ids)),
+        "REFERENCE_IDS_COMPARED",
+    )
+
+
 def log_run_diagnostics(diagnostics: RunDiagnostics) -> None:
     for line in format_run_diagnostics(diagnostics).splitlines():
         log(line) if line else print(flush=True)
@@ -4015,6 +4828,12 @@ def main() -> int:
     log(
         "Valorisation: médiane pondérée par récence + MAD/IQR + "
         "validation PSA APR, fallback eBay public"
+    )
+    log(f"Discovery fixed: [{'; '.join(FIXED_DISCOVERY_FILTERS)}]")
+    log(f"Discovery auctions: [{'; '.join(AUCTION_DISCOVERY_FILTERS)}]")
+    log(
+        "Portée: audit de la requête production filtrée; "
+        "aucune affirmation de couverture de tout le marketplace GCC"
     )
 
     with sync_playwright() as p:
@@ -4046,54 +4865,37 @@ def main() -> int:
             # A) PRIX FIXES EN PREMIER
             # ============================================================
             log("=== Scan prix fixes ===")
-            fixed_list = collect_lots_from_listing(page, FIXED_PRICE_URL, "fixed")
-            fixed_list = sorted(
-                fixed_list,
+            fixed_discovered = sorted(
+                collect_lots_from_listing(
+                    page,
+                    FIXED_PRICE_URL,
+                    "fixed",
+                    run_diagnostics,
+                ),
                 key=lambda x: x.current_price if x.current_price is not None else 999999,
-            )[:MAX_FIXED_CANDIDATES]
+            )
+            fixed_list = fixed_discovered[:MAX_FIXED_CANDIDATES]
+            if len(fixed_discovered) > MAX_FIXED_CANDIDATES:
+                run_diagnostics.fixed_coverage.mark_incomplete(
+                    f"fixed candidate processing limit {MAX_FIXED_CANDIDATES} reached"
+                )
+                for skipped in fixed_discovered[MAX_FIXED_CANDIDATES:]:
+                    run_diagnostics.fixed_coverage.record_terminal(
+                        skipped.url, ACCOUNT_PROCESSING_LIMIT
+                    )
             run_diagnostics.fixed_candidates = len(fixed_list)
 
             log(f"Prix fixes candidats {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €: {len(fixed_list)}")
 
-            fixed_inspected = 0
-            for lot in fixed_list:
-                fixed_inspected += 1
-                lot = inspect_item(page, lot)
-
-                if not is_valid_pokemon_card(lot, run_diagnostics):
-                    continue
-
-                if lot.current_price is None:
-                    log(f"[fixe {fixed_inspected}] Ignoré: prix non lisible")
-                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
-                    continue
-
-                if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
-                    log(
-                        f"[fixe {fixed_inspected}] Ignoré: prix {lot.current_price:.2f} € "
-                        f"hors tranche {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €"
-                    )
-                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
-                    continue
-
-                history = extract_historical_sales(lot)
-                log(
-                    f"[fixe {fixed_inspected}] {lot.current_price:.2f} € | "
-                    f"{format_grade_label(lot.grader, lot.grade) or 'grade inconnu'} | "
-                    f"historique: {len(history)} ventes"
-                )
-
-                state["seen"][lot.url] = {
-                    "price": lot.current_price,
-                    "seen_at": now,
-                    "title": lot.title,
-                    "source_type": lot.source_type,
-                    "grade": format_grade_label(lot.grader, lot.grade),
-                    "minutes_to_end": lot.minutes_to_end,
-                }
-
-                op = estimate_with_grade(
-                    lot, history, run_now, run_diagnostics=run_diagnostics
+            for fixed_inspected, lot in enumerate(fixed_list, start=1):
+                op = evaluate_gcc_candidate(
+                    page,
+                    lot,
+                    fixed_inspected,
+                    state,
+                    now,
+                    run_now,
+                    run_diagnostics,
                 )
                 if op:
                     opportunities.append(op)
@@ -4107,7 +4909,7 @@ def main() -> int:
             # ============================================================
             log("=== Scan enchères ===")
             auction_candidates: dict[str, Lot] = {}
-            sales = collect_live_auction_urls(page)
+            sales = collect_live_auction_urls(page, run_diagnostics)
             run_diagnostics.record_live_sales(sales)
             log(f"Ventes live détectées: {len(sales)}")
 
@@ -4120,6 +4922,14 @@ def main() -> int:
                         auction_candidates.setdefault(lot.url, lot)
                 except PlaywrightTimeoutError:
                     log(f"Timeout vente: {sale}")
+                    run_diagnostics.auction_coverage.record_page_failure(
+                        "auction sale timeout escaped collector"
+                    )
+                except Exception as error:
+                    log(f"Erreur vente {type(error).__name__}: {sale}")
+                    run_diagnostics.auction_coverage.record_page_failure(
+                        f"auction sale exception: {type(error).__name__}"
+                    )
 
             raw_auction_list = list(auction_candidates.values())
             log(f"Enchères Pokémon/prix avant filtre temps: {len(raw_auction_list)}")
@@ -4144,6 +4954,10 @@ def main() -> int:
 
                 if lot.minutes_to_end <= MAX_AUCTION_MINUTES:
                     ending_soon.append(lot)
+                else:
+                    run_diagnostics.auction_coverage.record_terminal(
+                        lot.url, ACCOUNT_EXCLUDED_BY_RULES
+                    )
 
             log(
                 f"Timer lisible sur listing: "
@@ -4155,17 +4969,35 @@ def main() -> int:
             for idx, lot in enumerate(fallback_needed, start=1):
                 lot = inspect_item(page, lot)
 
-                if not is_valid_pokemon_card(lot):
+                if lot.inspection_error:
+                    run_diagnostics.auction_coverage.mark_incomplete(
+                        f"item inspection failed: {lot.inspection_error}"
+                    )
+                    run_diagnostics.record_valuation(
+                        lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
+                    )
+                    continue
+
+                if not is_valid_pokemon_card(lot, run_diagnostics):
                     continue
 
                 if lot.current_price is None:
+                    run_diagnostics.auction_coverage.record_terminal(
+                        lot.url, ACCOUNT_PARSE_FAILURE
+                    )
                     continue
 
                 if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+                    run_diagnostics.auction_coverage.record_terminal(
+                        lot.url, ACCOUNT_EXCLUDED_BY_RULES
+                    )
                     continue
 
                 if lot.minutes_to_end is None:
                     log(f"[fallback {idx}] temps non lisible -> IGNORÉ")
+                    run_diagnostics.auction_coverage.record_terminal(
+                        lot.url, ACCOUNT_PARSE_FAILURE
+                    )
                     continue
 
                 action = "GARDÉ" if lot.minutes_to_end <= MAX_AUCTION_MINUTES else "IGNORÉ"
@@ -4176,6 +5008,10 @@ def main() -> int:
 
                 if lot.minutes_to_end <= MAX_AUCTION_MINUTES:
                     ending_soon.append(lot)
+                else:
+                    run_diagnostics.auction_coverage.record_terminal(
+                        lot.url, ACCOUNT_EXCLUDED_BY_RULES
+                    )
 
             # Déduplication
             dedup = {}
@@ -4203,55 +5039,26 @@ def main() -> int:
                     f"Analyse de valeur limitée aux {MAX_AUCTION_CANDIDATES} "
                     "enchères qui finissent le plus tôt."
                 )
+                run_diagnostics.auction_coverage.mark_incomplete(
+                    f"auction candidate processing limit {MAX_AUCTION_CANDIDATES} reached"
+                )
+                for skipped in ending_soon[MAX_AUCTION_CANDIDATES:]:
+                    run_diagnostics.auction_coverage.record_terminal(
+                        skipped.url, ACCOUNT_PROCESSING_LIMIT
+                    )
 
             # ============================================================
             # C) HISTORIQUE + GRADE + DÉCOTE SEULEMENT SUR LES <= 60 MIN
             # ============================================================
-            auction_inspected = 0
-            for lot in auction_list:
-                auction_inspected += 1
-
-                # Si le lot n'a pas été ouvert pendant le fallback, on l'ouvre maintenant
-                # uniquement parce qu'il a déjà passé le filtre temps.
-                if not lot.body:
-                    lot = inspect_item(page, lot)
-
-                if not is_valid_pokemon_card(lot, run_diagnostics):
-                    continue
-
-                if lot.current_price is None:
-                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
-                    continue
-
-                if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
-                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
-                    continue
-
-                # Double sécurité.
-                if lot.minutes_to_end is None or lot.minutes_to_end > MAX_AUCTION_MINUTES:
-                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
-                    continue
-
-                history = extract_historical_sales(lot)
-
-                log(
-                    f"[enchère {auction_inspected}] {lot.current_price:.2f} € | "
-                    f"fin {lot.end_text} | "
-                    f"{format_grade_label(lot.grader, lot.grade) or 'grade inconnu'} | "
-                    f"historique: {len(history)} ventes"
-                )
-
-                state["seen"][lot.url] = {
-                    "price": lot.current_price,
-                    "seen_at": now,
-                    "title": lot.title,
-                    "source_type": lot.source_type,
-                    "grade": format_grade_label(lot.grader, lot.grade),
-                    "minutes_to_end": lot.minutes_to_end,
-                }
-
-                op = estimate_with_grade(
-                    lot, history, run_now, run_diagnostics=run_diagnostics
+            for auction_inspected, lot in enumerate(auction_list, start=1):
+                op = evaluate_gcc_candidate(
+                    page,
+                    lot,
+                    auction_inspected,
+                    state,
+                    now,
+                    run_now,
+                    run_diagnostics,
                 )
                 if op:
                     opportunities.append(op)
@@ -4295,12 +5102,18 @@ def main() -> int:
                 else:
                     log(f"Pas de renotification: {op.lot.title} | aucun changement important")
 
-            save_state(state)
             run_diagnostics.final_opportunities = len(final_opportunities)
+            run_diagnostics.finalize_coverage()
+            maybe_notify_incomplete_coverage(
+                run_diagnostics, state, run_now
+            )
+            save_state(state)
             log(f"Opportunités finales après validations: {len(final_opportunities)}")
 
         finally:
+            run_diagnostics.finalize_coverage()
             log_run_diagnostics(run_diagnostics)
+            log_scan_coverage(run_diagnostics)
             browser.close()
 
     log(f"=== Scan terminé en {time.monotonic() - started:.1f}s ===")

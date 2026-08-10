@@ -1376,5 +1376,343 @@ class StateCompatibilityTests(unittest.TestCase):
             watcher.STATE_FILE = old_file
 
 
+class GccCoverageAuditTests(unittest.TestCase):
+    def complete_audit(self, label="TEST", ids=None):
+        ids = ids or ["item-1", "item-2"]
+        audit = watcher.CoverageAudit(label, ("status=test",))
+        audit.begin_page("page-1")
+        audit.record_page_success(
+            "page-1", ids, expected_total=len(ids), page_size=len(ids)
+        )
+        for item_id in ids:
+            audit.record_terminal(
+                item_id, watcher.ACCOUNT_ECONOMICALLY_EVALUATED
+            )
+        audit.finalize_pagination(watcher.END_NO_NEXT_PAGE)
+        return audit
+
+    def test_normal_pagination_and_declared_total_are_complete(self):
+        audit = self.complete_audit()
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
+        self.assertEqual(
+            audit.pagination_end_reason,
+            watcher.END_DECLARED_TOTAL_REACHED,
+        )
+        self.assertEqual(audit.coverage_ratio, 100.0)
+        self.assertEqual(audit.unaccounted_listings, 0)
+
+    def test_declared_total_mismatch_is_incomplete(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("page-1")
+        audit.record_page_success("page-1", ["one", "two"], expected_total=3)
+        for item_id in audit.listing_ids:
+            audit.record_terminal(
+                item_id, watcher.ACCOUNT_ECONOMICALLY_EVALUATED
+            )
+        audit.finalize_pagination(watcher.END_NO_NEXT_PAGE)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(audit.missing_vs_declared_total, 1)
+
+    def test_intermediate_page_failure_is_incomplete(self):
+        audit = self.complete_audit()
+        audit.record_page_failure("page 2 failed after retries")
+        self.assertEqual(audit.pages_failed, 1)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(audit.pagination_end_reason, watcher.END_PAGE_FAILED)
+
+    def test_successful_retry_can_remain_complete(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("page-1")
+        audit.record_retry()
+        audit.record_page_success("page-1", ["one"], expected_total=1)
+        audit.record_terminal("one", watcher.ACCOUNT_ECONOMICALLY_EVALUATED)
+        audit.finalize_pagination(watcher.END_NO_NEXT_PAGE)
+        self.assertEqual(audit.retries, 1)
+        self.assertEqual(audit.pages_failed, 0)
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
+
+    def test_real_navigation_helper_counts_retry_without_failed_page(self):
+        page = Mock()
+        page.goto.side_effect = [TimeoutError("temporary"), None]
+        audit = watcher.CoverageAudit("TEST", ())
+        with patch.object(watcher, "GCC_PAGE_RETRIES", 2):
+            with redirect_stdout(io.StringIO()):
+                success = watcher._goto_with_coverage_retries(
+                    page, "https://gcc.test/page", audit
+                )
+        self.assertTrue(success)
+        self.assertEqual(page.goto.call_count, 2)
+        self.assertEqual(audit.pages_requested, 1)
+        self.assertEqual(audit.retries, 1)
+        self.assertEqual(audit.pages_failed, 0)
+
+    def test_real_navigation_helper_marks_final_failure(self):
+        page = Mock()
+        page.goto.side_effect = TimeoutError("persistent")
+        audit = watcher.CoverageAudit("TEST", ())
+        with patch.object(watcher, "GCC_PAGE_RETRIES", 2):
+            with redirect_stdout(io.StringIO()):
+                success = watcher._goto_with_coverage_retries(
+                    page, "https://gcc.test/page", audit
+                )
+        self.assertFalse(success)
+        self.assertEqual(page.goto.call_count, 3)
+        self.assertEqual(audit.retries, 2)
+        self.assertEqual(audit.pages_failed, 1)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_max_page_limit_is_never_complete(self):
+        audit = self.complete_audit()
+        audit.mark_incomplete(
+            "safety limit reached", watcher.END_MAX_PAGE_LIMIT
+        )
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_repeated_page_is_incomplete(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        for page in ("page-1", "page-2"):
+            audit.begin_page(page)
+            audit.record_page_success(
+                page, ["one", "two"], detect_repeated_page=True
+            )
+        for item_id in audit.listing_ids:
+            audit.record_terminal(
+                item_id, watcher.ACCOUNT_ECONOMICALLY_EVALUATED
+            )
+        self.assertEqual(audit.duplicates, 2)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(
+            audit.pagination_end_reason, watcher.END_REPEATED_PAGE
+        )
+
+    def test_malformed_response_is_incomplete(self):
+        audit = self.complete_audit()
+        audit.record_malformed("missing stable listing id")
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(
+            audit.pagination_end_reason, watcher.END_MALFORMED_RESPONSE
+        )
+
+    def test_empty_final_page_is_a_reliable_end(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("page-1")
+        audit.record_page_success("page-1", ["one", "two"], page_size=2)
+        audit.begin_page("page-2")
+        audit.record_page_success("page-2", [])
+        for item_id in audit.listing_ids:
+            audit.record_terminal(
+                item_id, watcher.ACCOUNT_ECONOMICALLY_EVALUATED
+            )
+        audit.finalize_pagination(watcher.END_EMPTY_PAGE_REACHED)
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
+
+    def test_short_final_page_is_a_reliable_end(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("page-1")
+        audit.record_page_success("page-1", ["one", "two"], page_size=2)
+        audit.begin_page("page-2")
+        audit.record_page_success("page-2", ["three"])
+        for item_id in audit.listing_ids:
+            audit.record_terminal(
+                item_id, watcher.ACCOUNT_ECONOMICALLY_EVALUATED
+            )
+        audit.finalize_pagination(watcher.END_SHORT_FINAL_PAGE)
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
+
+    def test_duplicate_is_counted_and_terminalized_once(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("page-1")
+        audit.record_page_success("page-1", ["one", "two"])
+        audit.begin_page("page-2")
+        audit.record_page_success("page-2", ["two", "three"])
+        for item_id in ("one", "two", "three", "two"):
+            audit.record_terminal(
+                item_id, watcher.ACCOUNT_ECONOMICALLY_EVALUATED
+            )
+        audit.finalize_pagination(watcher.END_SHORT_FINAL_PAGE)
+        self.assertEqual(audit.rows_received, 4)
+        self.assertEqual(audit.unique_listings, 3)
+        self.assertEqual(audit.duplicates, 1)
+        self.assertEqual(audit.accounted_listings, 3)
+
+    def test_economic_rejection_and_qualifier_are_accounted(self):
+        diagnostics = watcher.RunDiagnostics()
+        rejected = watcher.Lot(
+            url="fixed-rejected",
+            title="PSA 10 Test",
+            current_price=50,
+            source_type="fixed",
+        )
+        qualifier = watcher.Lot(
+            url="fixed-qualifier",
+            title="PCA A Test",
+            current_price=50,
+            source_type="fixed",
+        )
+        diagnostics.record_valuation(
+            rejected, watcher.REJECTION_INSUFFICIENT_DISCOUNT
+        )
+        diagnostics.record_valuation(
+            qualifier, watcher.REJECTION_SPECIAL_QUALIFIER
+        )
+        coverage = diagnostics.fixed_coverage
+        self.assertEqual(coverage.accounted_listings, 2)
+        self.assertEqual(
+            coverage.terminal_count(watcher.ACCOUNT_ECONOMICALLY_EVALUATED),
+            1,
+        )
+        self.assertEqual(
+            coverage.terminal_count(watcher.ACCOUNT_SPECIAL_QUALIFIER), 1
+        )
+
+    def test_parse_failure_and_listing_exception_are_accounted(self):
+        parse_audit = watcher.CoverageAudit("TEST", ())
+        parse_audit.record_terminal("bad-grade", watcher.ACCOUNT_PARSE_FAILURE)
+        self.assertEqual(parse_audit.accounted_listings, 1)
+
+        diagnostics = watcher.RunDiagnostics()
+        lot = watcher.Lot(
+            url="https://gcc.test/item/error",
+            title="Test",
+            current_price=20,
+            source_type="fixed",
+        )
+        diagnostics.fixed_coverage.listing_ids.add(lot.url)
+        with patch.object(watcher, "inspect_item", side_effect=RuntimeError("boom")):
+            with redirect_stdout(io.StringIO()):
+                result = watcher.evaluate_gcc_candidate(
+                    Mock(),
+                    lot,
+                    1,
+                    {"seen": {}},
+                    NOW.isoformat(),
+                    NOW,
+                    diagnostics,
+                )
+        self.assertIsNone(result)
+        self.assertEqual(diagnostics.fixed_coverage.internal_errors, 1)
+        self.assertEqual(
+            diagnostics.fixed_coverage.status, watcher.COVERAGE_INCOMPLETE
+        )
+
+    def test_unaccounted_listing_is_incomplete_then_reconciled(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("page-1")
+        audit.record_page_success("page-1", ["one"])
+        audit.finalize_pagination(watcher.END_NO_NEXT_PAGE)
+        self.assertEqual(audit.unaccounted_listings, 1)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+        audit.reconcile_unaccounted()
+        self.assertEqual(audit.unaccounted_listings, 0)
+        self.assertEqual(audit.unaccounted_reconciled, 1)
+        self.assertEqual(audit.internal_errors, 1)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_unknown_total_never_gets_a_fake_ratio(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("page-1")
+        audit.record_page_success("page-1", [])
+        audit.finalize_pagination(watcher.END_SCROLL_STABLE)
+        self.assertIsNone(audit.expected_total)
+        self.assertIsNone(audit.coverage_ratio)
+        self.assertEqual(audit.status, watcher.COVERAGE_UNKNOWN)
+        self.assertIn("coverage ratio: UNKNOWN", watcher.format_coverage_audit(audit))
+
+    def test_zero_opportunities_distinguishes_complete_and_incomplete(self):
+        complete = watcher.RunDiagnostics(
+            fixed_coverage=self.complete_audit("FIXED"),
+            auction_coverage=self.complete_audit("AUCTIONS"),
+        )
+        complete.final_opportunities = 0
+        complete_summary = watcher.format_scan_coverage(complete)
+        self.assertIn("economic result trustworthy: YES", complete_summary)
+        self.assertIn("complètement parcouru", complete_summary)
+
+        incomplete_fixed = self.complete_audit("FIXED")
+        incomplete_fixed.record_page_failure("failed")
+        incomplete = watcher.RunDiagnostics(
+            fixed_coverage=incomplete_fixed,
+            auction_coverage=self.complete_audit("AUCTIONS"),
+        )
+        incomplete_summary = watcher.format_scan_coverage(incomplete)
+        self.assertIn("economic result trustworthy: NO", incomplete_summary)
+        self.assertIn(
+            "0 opportunities observed, but scan incomplete",
+            incomplete_summary,
+        )
+
+    def test_declared_total_parser_uses_only_explicit_result_label(self):
+        self.assertEqual(
+            watcher.parse_gcc_declared_total("Filtres\n7'697 résultats"),
+            7697,
+        )
+        self.assertEqual(
+            watcher.parse_gcc_declared_total("Auctions • 25 articles"), None
+        )
+
+    def test_marketplace_inventory_comparison_is_ids_only(self):
+        with patch.object(watcher, "build_market_estimate") as economic:
+            unavailable = watcher.compare_marketplace_inventory(
+                {"one", "two"}, None
+            )
+            compared = watcher.compare_marketplace_inventory(
+                {"one", "two"}, {"one", "two", "three"}
+            )
+        economic.assert_not_called()
+        self.assertFalse(unavailable.reference_available)
+        self.assertEqual(
+            unavailable.reason, "FULL_MARKETPLACE_REFERENCE_UNAVAILABLE"
+        )
+        self.assertEqual(compared.outside_production, 1)
+
+    def test_coverage_logs_do_not_contain_session_or_secret_values(self):
+        diagnostics = watcher.RunDiagnostics(
+            fixed_coverage=self.complete_audit("FIXED"),
+            auction_coverage=self.complete_audit("AUCTIONS"),
+        )
+        summary = watcher.format_scan_coverage(diagnostics)
+        self.assertNotIn("GCC_SESSION_B64", summary)
+        self.assertNotIn("cookie", summary.lower())
+        self.assertNotIn("authorization", summary.lower())
+
+    def test_technical_alert_is_separate_and_deduplicated(self):
+        fixed = self.complete_audit("FIXED")
+        fixed.record_page_failure("failed")
+        diagnostics = watcher.RunDiagnostics(
+            fixed_coverage=fixed,
+            auction_coverage=self.complete_audit("AUCTIONS"),
+        )
+        response = Mock()
+        response.raise_for_status.return_value = None
+        state = {"technical_alerts": {}}
+        with patch.object(watcher, "NTFY_TOPIC", "diagnostic-topic"):
+            with patch.object(watcher.requests, "post", return_value=response) as post:
+                first = watcher.maybe_notify_incomplete_coverage(
+                    diagnostics, state, NOW
+                )
+                second = watcher.maybe_notify_incomplete_coverage(
+                    diagnostics, state, NOW + timedelta(minutes=1)
+                )
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Title"],
+            "GCC SCAN INCOMPLETE",
+        )
+
+    def test_manual_workflow_is_dispatch_only_and_script_has_no_valuation(self):
+        root = Path(__file__).parents[1]
+        workflow = (root / ".github/workflows/v4-gcc-coverage-audit.yml").read_text(
+            encoding="utf-8"
+        )
+        script = (root / "v4_gcc_coverage_audit.py").read_text(encoding="utf-8")
+        self.assertIn("name: V4 GCC Coverage Audit", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("estimate_with_grade", script)
+        self.assertNotIn("build_market_estimate", script)
+
+
 if __name__ == "__main__":
     unittest.main()

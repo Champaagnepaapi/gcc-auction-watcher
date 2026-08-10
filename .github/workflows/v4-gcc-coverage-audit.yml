@@ -1,0 +1,41 @@
+name: V4 GCC Coverage Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverage-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run V4 GCC coverage audit
+        env:
+          HEADLESS: "true"
+          GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
+          MAX_PRICE_EUR: "100"
+          MIN_DISCOUNT_PCT: "30"
+          MAX_AUCTION_MINUTES: "60"
+          EBAY_ENABLED: "false"
+          PSA_APR_ENABLED: "false"
+        run: |
+          if [ -n "$GCC_SESSION_B64" ]; then
+            printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
+          fi
+          python v4_gcc_coverage_audit.py
