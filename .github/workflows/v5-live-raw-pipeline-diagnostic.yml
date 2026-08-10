@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
 
       - name: Restore cumulative GCC catalogue
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: gcc_catalog_index.json
           key: v5-gcc-catalog-${{ github.run_id }}
@@ -72,6 +72,13 @@ jobs:
 
       - name: Run aggregate-only V5 live raw pipeline
         run: python -m v5.live_raw_pipeline
+
+      - name: Save cumulative GCC catalogue even after diagnostic failure
+        if: ${{ always() && hashFiles('gcc_catalog_index.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: gcc_catalog_index.json
+          key: v5-gcc-catalog-${{ github.run_id }}
 
       - name: Remove ephemeral GCC session
         if: always()
