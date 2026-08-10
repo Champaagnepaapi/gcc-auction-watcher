@@ -18,7 +18,7 @@ jobs:
       POKETRACE_ENABLED: "true"
       POKETRACE_PLAN: "free"
       POKETRACE_RESULT_LIMIT: "20"
-      POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.05"
+      POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.25"
       POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
       POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
       V5_PROGRESS_LOGS: "true"
@@ -70,7 +70,9 @@ jobs:
       - name: Install read-only diagnostic dependencies
         run: |
           python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
-          playwright install --with-deps chromium
+          if [ "${V5_SKIP_GCC_LIVE_FOR_POKETRACE_VALIDATION}" != "true" ]; then
+            playwright install --with-deps chromium
+          fi
 
       - name: Prepare existing authenticated GCC session
         shell: bash
