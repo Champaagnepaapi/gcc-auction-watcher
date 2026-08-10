@@ -19,6 +19,10 @@ jobs:
       POKETRACE_PLAN: "free"
       POKETRACE_RESULT_LIMIT: "20"
       POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.05"
+      # Dormant in Free mode; preserves the project's agreed minimum discount
+      # threshold for the later Pro/CardMarket phase.
+      POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
+      POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
       V5_LIVE_RAW_RESULT_LIMIT: "20"
       V5_LIVE_INCLUDE_EBAY_CH: "false"
       PRICECHARTING_ENABLED: "false"
