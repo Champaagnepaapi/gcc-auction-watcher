@@ -106,7 +106,7 @@ SEALED_KEYWORDS = (
     "collection box", "trainer box", "tripack", "3-pack", "duopack",
 )
 
-GRADERS = ("PSA", "PCA", "CGC", "BGS", "BECKETT", "CCC", "CA", "PG")
+GRADERS = ("PSA", "PCA", "CGC", "BGS", "BECKETT", "CCC", "CA", "PG", "SGC", "SFG", "SGS", "SCA", "TCC")
 VALID_COMPARABLE_SOURCES = frozenset({"gcc", "ebay", "psa"})
 LOGGED_INVALID_GRADES: set[str] = set()
 
@@ -1525,7 +1525,7 @@ def sanitize_card_title(candidate: str) -> str:
     ):
         return ""
     if re.fullmatch(
-        r"(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG)\s*(?:GRADE\s*)?\d{1,3}(?:[.,]\d{1,2})?\+?",
+        r"(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG|SGC|SFG|SGS|SCA|TCC)\s*(?:GRADE\s*)?\d{1,3}(?:[.,]\d{1,2})?\+?",
         title,
         re.I,
     ):
@@ -1674,6 +1674,9 @@ def _gcc_fixed_result_to_lot(
     result: dict,
     item_url: str,
     coverage: CoverageAudit,
+    *,
+    min_price: Optional[float] = MIN_PRICE,
+    max_price: Optional[float] = MAX_PRICE,
 ) -> Optional[Lot]:
     """Convertit une ligne de l'API publique GCC sans changer les filtres locaux."""
     item = result.get("item")
@@ -1729,7 +1732,10 @@ def _gcc_fixed_result_to_lot(
     if price is None:
         coverage.record_terminal(item_url, ACCOUNT_PARSE_FAILURE)
         return None
-    if price < MIN_PRICE or price > MAX_PRICE:
+    if min_price is not None and price < min_price:
+        coverage.record_terminal(item_url, ACCOUNT_EXCLUDED_BY_RULES)
+        return None
+    if max_price is not None and price > max_price:
         coverage.record_terminal(item_url, ACCOUNT_EXCLUDED_BY_RULES)
         return None
 
@@ -1768,6 +1774,8 @@ def collect_fixed_lots_from_api(
     http_get=None,
     page_size: int = GCC_FIXED_PAGE_SIZE,
     max_pages: int = GCC_FIXED_MAX_PAGES,
+    min_price: Optional[float] = MIN_PRICE,
+    max_price: Optional[float] = MAX_PRICE,
 ) -> list[Lot]:
     """Parcourt le flux public utilisé par GCC jusqu'à une fin démontrée."""
     coverage = (
@@ -1794,12 +1802,14 @@ def collect_fixed_lots_from_api(
             "sellingTypes": "FIXED_PRICE",
             "categories": "Pokemon",
             "itemTypes": "CARDS",
-            "minPriceInCents": round(MIN_PRICE * 100),
-            "maxPriceInCents": round(MAX_PRICE * 100),
             "page": page_number,
             "limit": page_size,
             "includeCounts": "true" if page_number == 1 else "false",
         }
+        if min_price is not None:
+            params["minPriceInCents"] = round(min_price * 100)
+        if max_price is not None:
+            params["maxPriceInCents"] = round(max_price * 100)
 
         response = None
         for attempt in range(GCC_PAGE_RETRIES + 1):
@@ -1900,7 +1910,13 @@ def collect_fixed_lots_from_api(
             if item_url in lots or item_url in coverage.terminal_statuses:
                 continue
             try:
-                lot = _gcc_fixed_result_to_lot(result, item_url, coverage)
+                lot = _gcc_fixed_result_to_lot(
+                    result,
+                    item_url,
+                    coverage,
+                    min_price=min_price,
+                    max_price=max_price,
+                )
                 if lot is not None:
                     lots[item_url] = lot
             except Exception as error:
@@ -2443,7 +2459,7 @@ def _grade_label_context(text: str, pattern: str) -> str:
 def _grade_raw_excerpt(text: str) -> str:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     keyword_re = re.compile(
-        r"\b(?:PSA|PCA|CCC|BGS|CGC|SGC|Grade|Note|Gradation|Grading|"
+        r"\b(?:PSA|PCA|CCC|BGS|CGC|SGC|SFG|SGS|SCA|TCC|Grade|Note|Gradation|Grading|"
         r"Off[ -]?Center|Miscut|Error|Staining|Print[ -]?Defect|"
         r"Out[ -]?of[ -]?Focus|Authentic|Authentique|Altered)\b",
         re.I,
@@ -2491,7 +2507,7 @@ def _find_special_grade_qualifier(
     if not context_grader:
         grader_match = re.search(
             r"\b(?:Soci[ée]t[ée]\s+de\s+gradation|Grader)\s*:?\s*"
-            r"(PSA|PCA|CCC|BGS|CGC|SGC|CA|PG)\b",
+            r"(PSA|PCA|CCC|BGS|CGC|SGC|CA|PG|SFG|SGS|SCA|TCC)\b",
             parser_text,
             re.I,
         )
@@ -2914,7 +2930,33 @@ def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
         if page_price is not None:
             lot.current_price = page_price
 
-        lot.grader, lot.grade = parse_grader_grade(f"{lot.title}\n{body}")
+        # The public GCC inventory already exposes gradingCompany + grade.
+        # Treat that structured pair as authoritative for fixed listings instead
+        # of erasing it when the rendered item page omits grading metadata.
+        structured_grader = (lot.grader or "").strip().upper()
+        structured_grade_raw = (
+            str(lot.grade).strip() if lot.grade is not None else ""
+        )
+        parsed_grader, parsed_grade = parse_grader_grade(f"{lot.title}\n{body}")
+        if structured_grader in GRADERS and structured_grade_raw:
+            lot.grader = structured_grader
+            lot.grade = (
+                validate_grade_value(
+                    structured_grade_raw,
+                    structured_grader,
+                    log_invalid=False,
+                )
+                or structured_grade_raw
+            )
+        elif structured_grader in GRADERS:
+            lot.grader = structured_grader
+            lot.grade = (
+                parsed_grade
+                if not parsed_grader or parsed_grader == structured_grader
+                else None
+            )
+        else:
+            lot.grader, lot.grade = parsed_grader, parsed_grade
 
         if lot.source_type == "auction":
             lot.minutes_to_end, lot.end_text = parse_item_countdown_minutes(body)
@@ -3172,7 +3214,7 @@ def extract_card_identity(lot: Lot) -> dict:
             flags=re.I,
         )
     core = re.sub(
-        r"^\s*(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG)\s*\d+(?:[.,]\d)?\+?\s*",
+        r"^\s*(?:PSA|PCA|CGC|BGS|BECKETT|CCC|CA|PG|SGC|SFG|SGS|SCA|TCC)\s*\d+(?:[.,]\d)?\+?\s*",
         "",
         core,
         flags=re.I,

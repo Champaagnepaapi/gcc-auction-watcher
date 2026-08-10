@@ -222,6 +222,10 @@ class ProviderAggregate:
     gcc_live_identities_queried: int = 0
     gcc_inventory_pages_requested: int = 0
     gcc_identity_conflicts: int = 0
+    gcc_representative_exact: int = 0
+    gcc_representative_strong: int = 0
+    gcc_representative_ambiguous: int = 0
+    gcc_no_representative: int = 0
     gcc_records_with_grader: int = 0
     gcc_records_with_numeric_grade: int = 0
     gcc_grade_unknown: int = 0
@@ -617,6 +621,18 @@ class LiveRawPipelineDiagnostic:
                 gcc_identity_conflicts=getattr(
                     gcc_source, "identity_conflicts", 0
                 ),
+                gcc_representative_exact=getattr(
+                    gcc_source, "representative_exact", 0
+                ),
+                gcc_representative_strong=getattr(
+                    gcc_source, "representative_strong", 0
+                ),
+                gcc_representative_ambiguous=getattr(
+                    gcc_source, "representative_ambiguous", 0
+                ),
+                gcc_no_representative=getattr(
+                    gcc_source, "no_representative", 0
+                ),
                 gcc_records_with_grader=getattr(
                     parsing, "transactions_with_grader", 0
                 ),
@@ -734,6 +750,13 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
                 "public inventory pages requested: "
                 f"{summary.providers.gcc_inventory_pages_requested}"
             ),
+            f"representative exact: {summary.providers.gcc_representative_exact}",
+            f"representative strong: {summary.providers.gcc_representative_strong}",
+            (
+                "representative ambiguous: "
+                f"{summary.providers.gcc_representative_ambiguous}"
+            ),
+            f"no representative: {summary.providers.gcc_no_representative}",
             f"cache hits: {summary.providers.gcc_history_cache_hits}",
             (
                 "historical records received: "

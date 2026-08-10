@@ -1,9 +1,11 @@
 """Explicit V5 adapter for the already-existing V4 GCC access path.
 
-Inventory is read from the public on-sale-items endpoint already used by V4.
-For an exact identity present in that inventory, one normal authenticated GCC
-item page is rendered and its sales-history text is parsed by the shared V4/V5
-extractor.  No private endpoint, stealth mode, persistence, or bypass is used.
+Inventory is read from the public on-sale-items endpoint already used by V4,
+without reusing V4's 0-100 EUR economic price window for identity lookup. For an
+exact identity, or one unique strong identity with no known conflict, one normal
+authenticated GCC item page is rendered and its sales-history text is parsed by
+the shared V4/V5 extractor. No private endpoint, stealth mode, persistence, or
+bypass is used.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from .market_values.gcc_history.models import CanonicalCollectible, MatchClass
 
 
 GCC_V4_ACCESS_MECHANISM = (
-    "V4 public on-sale-items inventory + normal authenticated Playwright item page rendered history"
+    "V4 public on-sale-items identity index without economic price cap + normal authenticated Playwright item page rendered history"
 )
 
 
@@ -80,6 +82,10 @@ class V4RenderedGCCHistorySource:
         self.identity_cache_hits = 0
         self.inventory_pages_requested = 0
         self.identity_conflicts = 0
+        self.representative_exact = 0
+        self.representative_strong = 0
+        self.representative_ambiguous = 0
+        self.no_representative = 0
         self.parsing = HistoricalParsingDiagnostics()
 
     def _load_inventory(self) -> None:
@@ -88,12 +94,19 @@ class V4RenderedGCCHistorySource:
         self._inventory_loaded = True
         diagnostics = watcher.RunDiagnostics()
         lots = tuple(
-            _call_without_v4_detail_logs(self._inventory_fetcher, diagnostics)
+            _call_without_v4_detail_logs(
+                self._inventory_fetcher,
+                diagnostics,
+                min_price=0.0,
+                max_price=None,
+            )
         )
         self.inventory_pages_requested = diagnostics.fixed_coverage.pages_requested
         for lot in lots:
             identity = _lot_identity(lot)
-            if not identity.minimum_identity_complete or not identity.card_name:
+            # Exact matching needs name+set+number, but a safe STRONG_MATCH can
+            # legitimately be name+number (or name+set with discriminator).
+            if not identity.card_name or not (identity.card_number or identity.set_name):
                 continue
             self._by_name.setdefault(identity.card_name, []).append((identity, lot))
 
@@ -104,23 +117,44 @@ class V4RenderedGCCHistorySource:
             return self._fetch_cache[canonical.key]
         self.identities_queried += 1
         self._load_inventory()
-        matches: list[watcher.Lot] = []
+        exact_matches: list[watcher.Lot] = []
+        strong_matches: dict[tuple[object, ...], watcher.Lot] = {}
+        ambiguous_seen = False
         for candidate_identity, lot in self._by_name.get(canonical.card_name or "", ()):
             result = match_identity(canonical, candidate_identity)
             if result.match_class is MatchClass.EXACT_MATCH:
-                matches.append(lot)
+                exact_matches.append(lot)
+            elif result.match_class is MatchClass.STRONG_MATCH:
+                # Multiple listings of the same canonical collectible are not
+                # ambiguous; distinct strong identities are.
+                strong_matches.setdefault(candidate_identity.key, lot)
+            elif result.match_class is MatchClass.AMBIGUOUS:
+                ambiguous_seen = True
             elif result.conflicts:
                 self.identity_conflicts += 1
-        if not matches:
+
+        selected: watcher.Lot | None = None
+        if exact_matches:
+            selected = exact_matches[0]
+            self.representative_exact += 1
+        elif len(strong_matches) == 1:
+            selected = next(iter(strong_matches.values()))
+            self.representative_strong += 1
+        elif len(strong_matches) > 1 or ambiguous_seen:
+            self.representative_ambiguous += 1
+        else:
+            self.no_representative += 1
+
+        if selected is None:
             self._fetch_cache[canonical.key] = ()
             return ()
 
-        # One exact page per identity is the minimum real mechanism.  Its
-        # rendered history already contains the comparable transactions.
+        # One representative page per identity is enough: its rendered history
+        # already contains the comparable transactions for that collectible.
         inspected = _call_without_v4_detail_logs(
             self._item_inspector,
             self._page,
-            replace(matches[0]),
+            replace(selected),
             log_listing_errors=False,
         )
         self.live_calls += 1
