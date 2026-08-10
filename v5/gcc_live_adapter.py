@@ -6,12 +6,14 @@ graded-card Explore UI, enables completed sales, searches the collectible,
 opens a small bounded set of public item pages, and applies the same
 exact/unique-strong identity policy before reading rendered sales history.
 
-No private endpoint, stealth mode, persistence, access-control bypass, or
-CAPTCHA circumvention is used.
+A GCC-only cumulative identity catalogue is also used as a persistent lookup
+cache. It never contains eBay listing data. No private endpoint, stealth mode,
+access-control bypass, or CAPTCHA circumvention is used.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import Callable, Mapping, Sequence
@@ -20,6 +22,7 @@ from urllib.parse import urljoin
 import watcher
 from gcc_history_shared import HistoricalParsingDiagnostics
 
+from .gcc_catalog_cache import GCCCatalogIndex, canonical_from_gcc_lot
 from .market_values.gcc_history.identity import canonicalize_collectible, match_identity
 from .market_values.gcc_history.models import CanonicalCollectible, MatchClass
 
@@ -27,7 +30,7 @@ from .market_values.gcc_history.models import CanonicalCollectible, MatchClass
 GCC_EXPLORE_URL = "https://gradedcardcenter.com/en/filters/explore/cards-graded"
 GCC_CATALOG_CANDIDATE_LIMIT = 8
 GCC_V4_ACCESS_MECHANISM = (
-    "V4 public on-sale-items fast path + GCC public graded-card Explore/Completed Sales local-search fallback + normal authenticated Playwright item page rendered history"
+    "V4 public on-sale-items fast path + cumulative GCC-only identity catalogue + GCC public graded-card Explore/Completed Sales local-search fallback + normal authenticated Playwright item page rendered history"
 )
 
 
@@ -43,22 +46,7 @@ def _call_without_v4_detail_logs(function, *args, **kwargs):
 
 
 def _lot_identity(lot: watcher.Lot) -> CanonicalCollectible:
-    parsed = watcher.extract_card_identity(lot)
-    core = parsed.get("core") or lot.title
-    set_name = lot.card_set or parsed.get("series") or ""
-    card_number = lot.card_number or parsed.get("ref") or ""
-    return canonicalize_collectible(
-        CanonicalCollectible(
-            card_name=core or None,
-            set_name=set_name or None,
-            card_number=card_number or None,
-            language=(lot.language or parsed.get("language") or None),
-            variant=lot.variant or None,
-            year=lot.year,
-            set_family=lot.set_family or set_name or None,
-            category="pokemon",
-        )
-    )
+    return canonical_from_gcc_lot(lot)
 
 
 @dataclass(frozen=True)
@@ -81,12 +69,14 @@ class V4RenderedGCCHistorySource:
         item_inspector: Callable[..., watcher.Lot] = watcher.inspect_item,
         history_extractor: Callable[..., Sequence[watcher.HistoricalSale]] = watcher.extract_historical_sales,
         catalog_resolver: Callable[[CanonicalCollectible], GCCCatalogResolution] | None = None,
+        catalog_index: GCCCatalogIndex | None = None,
     ) -> None:
         self._page = page
         self._inventory_fetcher = inventory_fetcher
         self._item_inspector = item_inspector
         self._history_extractor = history_extractor
         self._catalog_resolver = catalog_resolver or self._resolve_from_public_explore
+        self._catalog_index = catalog_index or GCCCatalogIndex()
         self._inventory_loaded = False
         self._by_name: dict[str, list[tuple[CanonicalCollectible, watcher.Lot]]] = {}
         self._records: list[Mapping[str, object]] = []
@@ -96,6 +86,7 @@ class V4RenderedGCCHistorySource:
         self.identity_cache_hits = 0
         self.inventory_pages_requested = 0
         self.identity_conflicts = 0
+        self.identity_conflict_fields: Counter[str] = Counter()
         self.representative_exact = 0
         self.representative_strong = 0
         self.representative_ambiguous = 0
@@ -105,6 +96,31 @@ class V4RenderedGCCHistorySource:
         self.catalog_completed_sales_enabled = 0
         self.catalog_search_failures = 0
         self.parsing = HistoricalParsingDiagnostics()
+
+    def _record_identity_conflict(self, result) -> None:
+        if not result.conflicts:
+            return
+        self.identity_conflicts += 1
+        self.identity_conflict_fields.update(result.conflicts)
+
+    def persist_catalog_index(self) -> None:
+        self._catalog_index.save()
+        conflict_summary = " | ".join(
+            f"{field}: {count}"
+            for field, count in sorted(self.identity_conflict_fields.items())
+        ) or "none"
+        print("=== V5 GCC IDENTITY CONFLICT DIAGNOSTIC ===")
+        print(f"conflicting candidate pages: {self.identity_conflicts}")
+        print(f"conflict fields: {conflict_summary}")
+        print("=== V5 GCC CUMULATIVE CATALOGUE ===")
+        print(f"entries loaded: {self._catalog_index.entries_loaded}")
+        print(f"entries current: {self._catalog_index.current_entries}")
+        print(f"added this run: {self._catalog_index.added_this_run}")
+        print(f"updated this run: {self._catalog_index.updated_this_run}")
+        print(f"lookup hits: {self._catalog_index.lookup_hits}")
+        print(f"load failures: {self._catalog_index.load_failures}")
+        print(f"save failures: {self._catalog_index.save_failures}")
+        print("Persisted eBay records in GCC catalogue: 0")
 
     def _load_inventory(self) -> None:
         if self._inventory_loaded:
@@ -125,6 +141,7 @@ class V4RenderedGCCHistorySource:
             if not identity.card_name or not (identity.card_number or identity.set_name):
                 continue
             self._by_name.setdefault(identity.card_name, []).append((identity, lot))
+            self._catalog_index.upsert(identity, lot, source="on_sale")
 
     @staticmethod
     def _first_visible(locator):
@@ -177,9 +194,8 @@ class V4RenderedGCCHistorySource:
 
     def _catalog_search_box(self):
         # GCC exposes a site-wide search and a separate local Search control on
-        # the graded-card Explore view.  Never fall back to a generic
-        # input[type=search], because that can select the global header search
-        # while leaving the Explore result list unchanged.
+        # the graded-card Explore view. Never fall back to a generic
+        # input[type=search], because that can select the global header search.
         selectors = (
             'input[placeholder="Search"]',
             'input[placeholder="Rechercher"]',
@@ -245,12 +261,7 @@ class V4RenderedGCCHistorySource:
     def _resolve_from_public_explore(
         self, canonical: CanonicalCollectible
     ) -> GCCCatalogResolution:
-        """Resolve a representative through GCC's normal public Explore UI.
-
-        The UI visibly exposes a Completed Sales filter and a local Search field
-        on the graded-card Explore view.  Every candidate item page is then
-        verified with the strict V5 identity matcher before acceptance.
-        """
+        """Resolve a representative through GCC's normal public Explore UI."""
 
         exact: watcher.Lot | None = None
         strong: dict[tuple[object, ...], watcher.Lot] = {}
@@ -276,9 +287,6 @@ class V4RenderedGCCHistorySource:
                 self.catalog_searches += 1
                 urls = self._wait_for_local_catalogue_change(before_urls)
 
-                # Some form implementations only commit the local filter on
-                # Enter.  Retry once, but only after selecting the explicit
-                # local Search field above.
                 if urls == before_urls:
                     try:
                         search_box.press("Enter")
@@ -286,9 +294,6 @@ class V4RenderedGCCHistorySource:
                     except Exception:
                         pass
 
-                # A search that leaves exactly the same first candidates is not
-                # treated as valid evidence; otherwise we would repeatedly open
-                # unrelated catalogue entries and count their identity conflicts.
                 if urls == before_urls:
                     self.catalog_search_failures += 1
                     continue
@@ -325,15 +330,24 @@ class V4RenderedGCCHistorySource:
                 elif result.match_class is MatchClass.AMBIGUOUS:
                     ambiguous_seen = True
                 elif result.conflicts:
-                    self.identity_conflicts += 1
+                    self._record_identity_conflict(result)
             if exact is not None:
                 break
 
         if exact is not None:
+            self._catalog_index.upsert(
+                _lot_identity(exact), exact, source="completed_sales"
+            )
             return GCCCatalogResolution(exact, MatchClass.EXACT_MATCH, False)
         if len(strong) == 1:
+            selected_strong = next(iter(strong.values()))
+            self._catalog_index.upsert(
+                _lot_identity(selected_strong),
+                selected_strong,
+                source="completed_sales",
+            )
             return GCCCatalogResolution(
-                next(iter(strong.values())), MatchClass.STRONG_MATCH, False
+                selected_strong, MatchClass.STRONG_MATCH, False
             )
         if len(strong) > 1 or ambiguous_seen:
             return GCCCatalogResolution(None, None, True)
@@ -350,7 +364,15 @@ class V4RenderedGCCHistorySource:
         exact_matches: list[watcher.Lot] = []
         strong_matches: dict[tuple[object, ...], watcher.Lot] = {}
         inventory_ambiguous = False
-        for candidate_identity, lot in self._by_name.get(canonical.card_name or "", ()):
+        candidate_pool = list(self._by_name.get(canonical.card_name or "", ()))
+        seen_urls = {lot.url for _identity, lot in candidate_pool}
+        for cached in self._catalog_index.candidates(canonical.card_name):
+            if cached.lot.url in seen_urls:
+                continue
+            candidate_pool.append((cached.identity, cached.lot))
+            seen_urls.add(cached.lot.url)
+
+        for candidate_identity, lot in candidate_pool:
             result = match_identity(canonical, candidate_identity)
             if result.match_class is MatchClass.EXACT_MATCH:
                 exact_matches.append(lot)
@@ -359,7 +381,7 @@ class V4RenderedGCCHistorySource:
             elif result.match_class is MatchClass.AMBIGUOUS:
                 inventory_ambiguous = True
             elif result.conflicts:
-                self.identity_conflicts += 1
+                self._record_identity_conflict(result)
 
         selected: watcher.Lot | None = None
         selected_inspected = False
@@ -460,6 +482,7 @@ class V4GCCBrowserSession(AbstractContextManager[V4RenderedGCCHistorySource]):
         self._playwright = None
         self._browser = None
         self._context = None
+        self._source = None
 
     def __enter__(self) -> V4RenderedGCCHistorySource:
         try:
@@ -473,13 +496,16 @@ class V4GCCBrowserSession(AbstractContextManager[V4RenderedGCCHistorySource]):
             page = self._context.new_page()
             page.set_default_timeout(watcher.TEXT_TIMEOUT)
             page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
-            return V4RenderedGCCHistorySource(page)
+            self._source = V4RenderedGCCHistorySource(page)
+            return self._source
         except Exception:
             self.__exit__(None, None, None)
             raise
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         del exc_type, exc_value, traceback
+        if self._source is not None:
+            self._source.persist_catalog_index()
         if self._context is not None:
             self._context.close()
         if self._browser is not None:
