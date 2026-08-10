@@ -896,6 +896,183 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(decision.final_alert)
 
 
+class GccDiagnosticsTests(unittest.TestCase):
+    def diagnostic_lot(self, **kwargs):
+        return watcher.Lot(
+            url=kwargs.pop("url", "https://gradedcardcenter.com/item/diag"),
+            title=kwargs.pop("title", "PSA 10 Diagnostic"),
+            current_price=kwargs.pop("current_price", 20.0),
+            source_type=kwargs.pop("source_type", "auction"),
+            grader=kwargs.pop("grader", "PSA"),
+            grade=kwargs.pop("grade", "10"),
+            **kwargs,
+        )
+
+    def test_diagnostics_never_change_opportunity_or_market_estimate(self):
+        lot = self.diagnostic_lot()
+        sales = [sale(90), sale(100), sale(110)]
+        baseline_estimate = watcher.build_market_estimate(lot, sales, NOW)
+        diagnostics = watcher.diagnose_gcc_comparables(
+            lot, sales, baseline_estimate, NOW
+        )
+        estimate_after_diagnostics = watcher.build_market_estimate(lot, sales, NOW)
+        self.assertEqual(baseline_estimate, estimate_after_diagnostics)
+        self.assertEqual(diagnostics.kept_count, 3)
+
+        with redirect_stdout(io.StringIO()):
+            baseline_opportunity = watcher.estimate_with_grade(lot, sales, NOW)
+            run_diagnostics = watcher.RunDiagnostics()
+            instrumented_opportunity = watcher.estimate_with_grade(
+                lot, sales, NOW, run_diagnostics=run_diagnostics
+            )
+        self.assertEqual(baseline_opportunity, instrumented_opportunity)
+        self.assertEqual(run_diagnostics.gcc_opportunities, 1)
+
+    def test_six_sales_without_exact_grade_explain_the_rejection(self):
+        lot = self.diagnostic_lot(
+            title="PCA 10 Mimiqui",
+            current_price=50.0,
+            grader="PCA",
+        )
+        sales = [
+            sale(30, grader="PCA", grade=9.0),
+            sale(31, grader="PCA", grade=9.0),
+            sale(32, grader="PCA", grade=9.0),
+            sale(90, grader="PSA", grade=10.0),
+            sale(100, grader="PSA", grade=10.0),
+            sale(110, grader="PSA", grade=10.0),
+        ]
+        diagnostics = watcher.diagnose_gcc_comparables(lot, sales, now=NOW)
+        self.assertEqual(diagnostics.raw_count, 6)
+        self.assertEqual(diagnostics.identity_count, 6)
+        self.assertEqual(diagnostics.same_grader_count, 3)
+        self.assertEqual(diagnostics.exact_grade_count, 0)
+        self.assertEqual(diagnostics.lower_grade_count, 3)
+        self.assertEqual(diagnostics.inter_grader_candidates, 3)
+        self.assertEqual(diagnostics.normalized_count, 0)
+        self.assertEqual(diagnostics.ratio_rejected_count, 3)
+
+        output = io.StringIO()
+        run_diagnostics = watcher.RunDiagnostics()
+        with redirect_stdout(output):
+            result = watcher.estimate_with_grade(
+                lot, sales, NOW, run_diagnostics=run_diagnostics
+            )
+        self.assertIsNone(result)
+        self.assertIn("brut 6", output.getvalue())
+        self.assertIn("grade exact 0", output.getvalue())
+        self.assertIn("aucun comparable exact/normalisable", output.getvalue())
+        self.assertEqual(
+            run_diagnostics.rejection_count(
+                watcher.REJECTION_INSUFFICIENT_COMPARABLES
+            ),
+            1,
+        )
+
+    def test_rejected_outlier_is_counted(self):
+        lot = self.diagnostic_lot()
+        sales = [sale(99), sale(100), sale(101), sale(1000)]
+        estimate = watcher.build_market_estimate(lot, sales, NOW)
+        diagnostics = watcher.diagnose_gcc_comparables(
+            lot, sales, estimate, NOW
+        )
+        self.assertIsNotNone(estimate)
+        self.assertEqual(diagnostics.outlier_count, 1)
+        self.assertEqual(diagnostics.kept_count, 3)
+        self.assertEqual(diagnostics.dated_count, 3)
+
+    def test_invalid_sale_fields_and_identity_rejections_are_explained(self):
+        lot = self.diagnostic_lot()
+        sales = [
+            sale(90, grader="", grade=10.0),
+            sale(100, grader="PSA", grade=None),
+            sale(110, grader="PSA", grade=10.0, exact_card=False),
+        ]
+        diagnostics = watcher.diagnose_gcc_comparables(lot, sales, now=NOW)
+        self.assertEqual(diagnostics.raw_count, 3)
+        self.assertEqual(diagnostics.identity_count, 2)
+        self.assertEqual(diagnostics.invalid_grader_count, 1)
+        self.assertEqual(diagnostics.invalid_grade_count, 1)
+        self.assertEqual(diagnostics.insufficient_identity_count, 1)
+
+    def test_kept_comparable_dates_are_split_into_real_age_buckets(self):
+        lot = self.diagnostic_lot()
+        sales = [
+            sale(100, days_ago=10),
+            sale(101, days_ago=60),
+            sale(102, days_ago=120),
+            watcher.ComparableSale(
+                price=103,
+                source="gcc",
+                grader="PSA",
+                grade=10.0,
+                sold_at=None,
+            ),
+        ]
+        estimate = watcher.build_market_estimate(lot, sales, NOW)
+        diagnostics = watcher.diagnose_gcc_comparables(
+            lot, sales, estimate, NOW
+        )
+        self.assertEqual(diagnostics.kept_count, 4)
+        self.assertEqual(diagnostics.dated_count, 3)
+        self.assertEqual(diagnostics.under_30_days_count, 1)
+        self.assertEqual(diagnostics.days_30_to_90_count, 1)
+        self.assertEqual(diagnostics.over_90_days_count, 1)
+
+    def test_primary_rejection_reason_is_counted_once(self):
+        lot = self.diagnostic_lot()
+        diagnostics = watcher.RunDiagnostics()
+        diagnostics.record_valuation(lot, watcher.REJECTION_EMPTY_HISTORY)
+        diagnostics.record_valuation(lot, watcher.REJECTION_OTHER)
+        self.assertEqual(diagnostics.lots_analyzed, 1)
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_EMPTY_HISTORY), 1
+        )
+        self.assertEqual(diagnostics.rejection_count(watcher.REJECTION_OTHER), 0)
+        self.assertTrue(diagnostics.is_coherent)
+
+    def test_global_run_summary_is_coherent(self):
+        diagnostics = watcher.RunDiagnostics(fixed_candidates=4)
+        diagnostics.record_live_sales(["sale-1", "sale-2"])
+        auction_lot = self.diagnostic_lot(url="auction-1")
+        diagnostics.record_ending_sale("sale-1", [auction_lot])
+        diagnostics.auction_candidates_ending_soon = 1
+        diagnostics.record_valuation(
+            self.diagnostic_lot(url="fixed-1", source_type="fixed"),
+            watcher.REJECTION_EMPTY_HISTORY,
+        )
+        diagnostics.record_valuation(
+            self.diagnostic_lot(url="fixed-2", source_type="fixed"),
+            watcher.REJECTION_INSUFFICIENT_COMPARABLES,
+        )
+        diagnostics.record_valuation(
+            self.diagnostic_lot(url="auction-2"),
+            watcher.REJECTION_INSUFFICIENT_DISCOUNT,
+        )
+        successful = self.diagnostic_lot(url="auction-3")
+        diagnostics.record_valuation(successful)
+        diagnostics.record_external_rejection(successful)
+        diagnostics.final_opportunities = 0
+
+        summary = watcher.format_run_diagnostics(diagnostics)
+        self.assertTrue(diagnostics.is_coherent)
+        self.assertEqual(diagnostics.lots_analyzed, 4)
+        self.assertEqual(diagnostics.rejected_total, 3)
+        self.assertEqual(diagnostics.gcc_opportunities, 1)
+        self.assertIn("Ventes live GCC: 2", summary)
+        self.assertIn("Ventes terminant <=60 min: 1", summary)
+        self.assertIn("Lots réellement analysés: 2", summary)
+        self.assertIn("Rejetées validation externe: 1", summary)
+
+    def test_main_workflow_serializes_scans_without_removing_schedule(self):
+        workflow = (
+            Path(__file__).parents[1] / ".github" / "workflows" / "watcher.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("group: gcc-auction-watcher", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertIn('cron: "3,13,23,33,43,53 * * * *"', workflow)
+
+
 class StateCompatibilityTests(unittest.TestCase):
     def test_load_state_preserves_v1_entries(self):
         old_file = watcher.STATE_FILE

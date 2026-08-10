@@ -6,6 +6,10 @@ on:
   schedule:
     - cron: "3,13,23,33,43,53 * * * *"
 
+concurrency:
+  group: gcc-auction-watcher
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-latest

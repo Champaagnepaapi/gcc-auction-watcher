@@ -242,6 +242,92 @@ class ValidationBudgets:
     ebay_cards: int = 0
 
 
+REJECTION_GRADER_GRADE = "grader_grade_unreadable"
+REJECTION_EMPTY_HISTORY = "empty_history"
+REJECTION_INSUFFICIENT_COMPARABLES = "insufficient_comparables"
+REJECTION_INSUFFICIENT_IDENTITY = "insufficient_identity"
+REJECTION_INSUFFICIENT_DISCOUNT = "insufficient_discount"
+REJECTION_FIXED_ABOVE_MAX = "fixed_above_prudent_max"
+REJECTION_OTHER = "other"
+
+
+@dataclass
+class GccComparableDiagnostics:
+    raw_count: int = 0
+    identity_count: int = 0
+    same_grader_count: int = 0
+    exact_grade_count: int = 0
+    lower_grade_count: int = 0
+    higher_grade_count: int = 0
+    nearest_neighbor_count: int = 0
+    inter_grader_candidates: int = 0
+    normalized_count: int = 0
+    invalid_grader_count: int = 0
+    invalid_grade_count: int = 0
+    insufficient_identity_count: int = 0
+    ratio_rejected_count: int = 0
+    outlier_count: int = 0
+    kept_count: int = 0
+    dated_count: int = 0
+    under_30_days_count: int = 0
+    days_30_to_90_count: int = 0
+    over_90_days_count: int = 0
+    grade_arbitrage: bool = False
+
+
+@dataclass
+class RunDiagnostics:
+    fixed_candidates: int = 0
+    auction_candidates_ending_soon: int = 0
+    live_auction_urls: set[str] = field(default_factory=set)
+    ending_soon_sale_urls: set[str] = field(default_factory=set)
+    cards_in_ending_sales: set[str] = field(default_factory=set)
+    valuation_outcomes: dict[str, str] = field(default_factory=dict)
+    valuation_sources: dict[str, str] = field(default_factory=dict)
+    external_rejections: set[str] = field(default_factory=set)
+    final_opportunities: int = 0
+
+    def record_live_sales(self, urls: list[str]) -> None:
+        self.live_auction_urls.update(urls)
+
+    def record_ending_sale(self, url: str, lots: list[Lot]) -> None:
+        self.ending_soon_sale_urls.add(url)
+        self.cards_in_ending_sales.update(lot.url for lot in lots)
+
+    def record_valuation(self, lot: Lot, rejection: str = "") -> None:
+        key = lot.url or f"{lot.source_type}:{lot.title}"
+        if key in self.valuation_outcomes:
+            return
+        self.valuation_outcomes[key] = rejection
+        self.valuation_sources[key] = lot.source_type
+
+    def record_external_rejection(self, lot: Lot) -> None:
+        self.external_rejections.add(lot.url or f"{lot.source_type}:{lot.title}")
+
+    @property
+    def lots_analyzed(self) -> int:
+        return len(self.valuation_outcomes)
+
+    @property
+    def auction_lots_analyzed(self) -> int:
+        return sum(source == "auction" for source in self.valuation_sources.values())
+
+    @property
+    def gcc_opportunities(self) -> int:
+        return sum(not rejection for rejection in self.valuation_outcomes.values())
+
+    def rejection_count(self, reason: str) -> int:
+        return sum(value == reason for value in self.valuation_outcomes.values())
+
+    @property
+    def rejected_total(self) -> int:
+        return sum(bool(value) for value in self.valuation_outcomes.values())
+
+    @property
+    def is_coherent(self) -> bool:
+        return self.lots_analyzed == self.rejected_total + self.gcc_opportunities
+
+
 _PSA_APR_RATE_LOOKUP_DONE = False
 _PSA_APR_USD_PER_EUR: Optional[float] = None
 
@@ -690,13 +776,19 @@ def parse_sale_countdown_minutes(body: str) -> Optional[int]:
     )
 
 
-def collect_lots_from_listing(page, url: str, source_type: str) -> list[Lot]:
+def collect_lots_from_listing(
+    page,
+    url: str,
+    source_type: str,
+    run_diagnostics: Optional[RunDiagnostics] = None,
+) -> list[Lot]:
     log(f"Ouverture listing {source_type}: {url}")
     page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
     page.wait_for_timeout(1200)
 
     # Pour une vente aux enchères, si la vente globale finit dans >1h,
     # inutile de parcourir ses lots maintenant.
+    sale_ends_soon = False
     if source_type == "auction":
         try:
             body_top = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
@@ -704,6 +796,9 @@ def collect_lots_from_listing(page, url: str, source_type: str) -> list[Lot]:
             if sale_minutes is not None and sale_minutes > MAX_AUCTION_MINUTES:
                 log(f"Vente ignorée: fin dans ~{sale_minutes} min")
                 return []
+            sale_ends_soon = (
+                sale_minutes is not None and sale_minutes <= MAX_AUCTION_MINUTES
+            )
         except Exception:
             pass
 
@@ -791,7 +886,10 @@ def collect_lots_from_listing(page, url: str, source_type: str) -> list[Lot]:
         except Exception:
             continue
 
-    return list(lots.values())
+    collected = list(lots.values())
+    if run_diagnostics is not None and source_type == "auction" and sale_ends_soon:
+        run_diagnostics.record_ending_sale(url, collected)
+    return collected
 
 
 def validate_grade_value(raw: str, grader: str = "", log_invalid: bool = True) -> Optional[str]:
@@ -1026,20 +1124,30 @@ def inspect_item(page, lot: Lot) -> Lot:
         return lot
 
 
-def is_valid_pokemon_card(lot: Lot) -> bool:
+def is_valid_pokemon_card(
+    lot: Lot, run_diagnostics: Optional[RunDiagnostics] = None
+) -> bool:
     body = lot.body or ""
     lower = body.lower()
 
     clean_title = sanitize_card_title(lot.title)
     if not clean_title:
         log(f"Lot ignoré: nom de carte insuffisamment identifié ({lot.url})")
+        if run_diagnostics is not None:
+            run_diagnostics.record_valuation(
+                lot, REJECTION_INSUFFICIENT_IDENTITY
+            )
         return False
     lot.title = clean_title
 
     if not re.search(r"(Catégorie|Category)\s*:?\s*Pok[ée]mon\b", body, re.I):
+        if run_diagnostics is not None:
+            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
         return False
 
     if any(word in lower for word in SEALED_KEYWORDS):
+        if run_diagnostics is not None:
+            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
         return False
 
     # On veut une carte, pas un produit scellé. La présence d'un bloc de gradation
@@ -1050,6 +1158,8 @@ def is_valid_pokemon_card(lot: Lot) -> bool:
     if re.search(r"(Réf[ée]rence|Reference)\s*:?\s*#?\s*[A-Z0-9]+(?:/[A-Z0-9]+)+", body, re.I):
         return True
 
+    if run_diagnostics is not None:
+        run_diagnostics.record_valuation(lot, REJECTION_OTHER)
     return False
 
 
@@ -2245,6 +2355,127 @@ def _select_pricing_comparables(
     return ComparableSelection([], [], [], valid, "")
 
 
+def diagnose_gcc_comparables(
+    lot: Lot,
+    sales: list[ComparableSale],
+    estimate: Optional[MarketEstimate] = None,
+    now: Optional[datetime] = None,
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+) -> GccComparableDiagnostics:
+    """Observe les étapes GCC existantes sans participer à la valorisation."""
+    valid = [sale for sale in sales if sale.price > 0]
+    identity = [sale for sale in valid if sale.exact_card]
+    graded = [sale for sale in identity if sale.grade is not None]
+    target_grade = _target_grade(lot)
+    same_grader = [
+        sale for sale in graded
+        if lot.grader and _same_target_grader(lot, sale)
+    ]
+    exact_grade = [
+        sale for sale in same_grader
+        if target_grade is not None and sale.grade == target_grade
+    ]
+    lower_grade = [
+        sale for sale in same_grader
+        if target_grade is not None and sale.grade < target_grade
+    ]
+    higher_grade = [
+        sale for sale in same_grader
+        if target_grade is not None and sale.grade > target_grade
+    ]
+    nearest_lower = (
+        _nearest_grade_group(same_grader, target_grade, lower=True)
+        if target_grade is not None else []
+    )
+    nearest_higher = (
+        _nearest_grade_group(same_grader, target_grade, lower=False)
+        if target_grade is not None else []
+    )
+    known_graders = {grader.upper() for grader in GRADERS}
+    invalid_grader = [
+        sale for sale in identity
+        if not sale.grader or sale.grader.upper() not in known_graders
+    ]
+    other_exact = [
+        sale for sale in graded
+        if target_grade is not None
+        and sale.grade == target_grade
+        and sale not in same_grader
+        and sale not in invalid_grader
+    ]
+    normalized = (
+        normalize_comparables_for_target_grader(
+            other_exact, lot.grader, target_grade, grader_ratios or []
+        )
+        if lot.grader and target_grade is not None else []
+    )
+    kept = estimate.kept_comparables if estimate is not None else []
+    ages = [sale_age_days(sale, now) for sale in kept if sale.sold_at is not None]
+
+    selection = _select_pricing_comparables(lot, sales, grader_ratios)
+    return GccComparableDiagnostics(
+        raw_count=len(sales),
+        identity_count=len(identity),
+        same_grader_count=len(same_grader),
+        exact_grade_count=len(exact_grade),
+        lower_grade_count=len(lower_grade),
+        higher_grade_count=len(higher_grade),
+        nearest_neighbor_count=len(nearest_lower) + len(nearest_higher),
+        inter_grader_candidates=len(other_exact),
+        normalized_count=len(normalized),
+        invalid_grader_count=len(invalid_grader),
+        invalid_grade_count=len(identity) - len(graded),
+        insufficient_identity_count=len(valid) - len(identity),
+        ratio_rejected_count=max(0, len(other_exact) - len(normalized)),
+        outlier_count=(
+            len(estimate.rejected_outliers) if estimate is not None else 0
+        ),
+        kept_count=len(kept),
+        dated_count=len(ages),
+        under_30_days_count=sum(age is not None and age < 30 for age in ages),
+        days_30_to_90_count=sum(
+            age is not None and 30 <= age <= 90 for age in ages
+        ),
+        over_90_days_count=sum(age is not None and age > 90 for age in ages),
+        grade_arbitrage=selection.grade_arbitrage,
+    )
+
+
+def format_gcc_comparable_diagnostics(
+    lot: Lot, diagnostics: GccComparableDiagnostics
+) -> str:
+    card_name = extract_card_identity(lot)["core"] or lot.title or "lot inconnu"
+    return "\n".join(
+        (
+            f"DIAG GCC {card_name}: brut {diagnostics.raw_count} → "
+            f"identité {diagnostics.identity_count} → "
+            f"même grader {diagnostics.same_grader_count} → "
+            f"grade exact {diagnostics.exact_grade_count}",
+            f"grades inf/sup {diagnostics.lower_grade_count}/"
+            f"{diagnostics.higher_grade_count} → "
+            f"voisins {diagnostics.nearest_neighbor_count} → "
+            f"inter-graders {diagnostics.inter_grader_candidates} → "
+            f"normalisés {diagnostics.normalized_count} → "
+            f"outliers {diagnostics.outlier_count} → retenus {diagnostics.kept_count}",
+            f"Rejets: grader {diagnostics.invalid_grader_count} | "
+            f"grade {diagnostics.invalid_grade_count} | "
+            f"identité {diagnostics.insufficient_identity_count} | "
+            f"ratio inter-grader {diagnostics.ratio_rejected_count}",
+            f"Dates retenues: connues {diagnostics.dated_count} | "
+            f"<30j {diagnostics.under_30_days_count} | "
+            f"30–90j {diagnostics.days_30_to_90_count} | "
+            f">90j {diagnostics.over_90_days_count}",
+        )
+    )
+
+
+def log_gcc_comparable_diagnostics(
+    lot: Lot, diagnostics: GccComparableDiagnostics
+) -> None:
+    for line in format_gcc_comparable_diagnostics(lot, diagnostics).splitlines():
+        log(line)
+
+
 def _comparable_weight(lot: Lot, sale: ComparableSale, now: Optional[datetime]) -> float:
     weight = recency_weight(sale.sold_at, now)
     if not sale.exact_card:
@@ -2541,6 +2772,36 @@ def opportunity_rejection_reason(op: Opportunity) -> str:
     return ""
 
 
+def _estimate_failure_diagnostic(
+    diagnostics: GccComparableDiagnostics,
+) -> tuple[str, str]:
+    if diagnostics.raw_count == 0:
+        return "historique vide", REJECTION_EMPTY_HISTORY
+    if diagnostics.identity_count == 0:
+        return "identité carte insuffisante", REJECTION_INSUFFICIENT_IDENTITY
+    if (
+        diagnostics.exact_grade_count == 0
+        and diagnostics.normalized_count == 0
+        and not diagnostics.grade_arbitrage
+    ):
+        return (
+            "aucun comparable exact/normalisable",
+            REJECTION_INSUFFICIENT_COMPARABLES,
+        )
+    return (
+        "comparables insuffisants ou grades non exploitables",
+        REJECTION_INSUFFICIENT_COMPARABLES,
+    )
+
+
+def _opportunity_rejection_category(op: Opportunity, reason: str) -> str:
+    if reason.startswith("décote "):
+        return REJECTION_INSUFFICIENT_DISCOUNT
+    if op.lot.source_type == "fixed" and "prix max prudent" in reason:
+        return REJECTION_FIXED_ABOVE_MAX
+    return REJECTION_OTHER
+
+
 def _log_estimate(prefix: str, op: Opportunity) -> None:
     estimate = op.estimate
     mode = "grade arbitrage" if estimate.grade_arbitrage else "décote classique"
@@ -2800,15 +3061,35 @@ def estimate_with_grade(
     sales: list[ComparableSale],
     now: Optional[datetime] = None,
     grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+    run_diagnostics: Optional[RunDiagnostics] = None,
 ) -> Optional[Opportunity]:
     if not lot.grader or _target_grade(lot) is None:
+        diagnostics = diagnose_gcc_comparables(
+            lot, sales, now=now, grader_ratios=grader_ratios
+        )
+        log_gcc_comparable_diagnostics(lot, diagnostics)
         log(f"Rejet valeur: {lot.title} | grader/grade cible non lisible")
+        if run_diagnostics is not None:
+            run_diagnostics.record_valuation(lot, REJECTION_GRADER_GRADE)
         return None
     if lot.current_price is None or lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+        diagnostics = diagnose_gcc_comparables(
+            lot, sales, now=now, grader_ratios=grader_ratios
+        )
+        log_gcc_comparable_diagnostics(lot, diagnostics)
+        if run_diagnostics is not None:
+            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
         return None
     estimate = build_market_estimate(lot, sales, now, grader_ratios)
+    diagnostics = diagnose_gcc_comparables(
+        lot, sales, estimate, now, grader_ratios
+    )
+    log_gcc_comparable_diagnostics(lot, diagnostics)
     if estimate is None or estimate.central <= 0:
-        log(f"Rejet valeur: {lot.title} | comparables insuffisants ou grades non exploitables")
+        reason, category = _estimate_failure_diagnostic(diagnostics)
+        log(f"Rejet valeur: {lot.title} | {reason}")
+        if run_diagnostics is not None:
+            run_diagnostics.record_valuation(lot, category)
         return None
 
     op = _opportunity_from_estimate(lot, estimate, sales)
@@ -2816,7 +3097,13 @@ def estimate_with_grade(
     rejection = opportunity_rejection_reason(op)
     if rejection:
         log(f"Rejet opportunité: {lot.title} | {rejection}")
+        if run_diagnostics is not None:
+            run_diagnostics.record_valuation(
+                lot, _opportunity_rejection_category(op, rejection)
+            )
         return None
+    if run_diagnostics is not None:
+        run_diagnostics.record_valuation(lot)
     log(
         f"Opportunité retenue ({lot.source_type}): {lot.title} | "
         f"décote {op.discount_pct:.1f}% | prix max {op.max_recommended:.2f} €"
@@ -3074,11 +3361,72 @@ def notify(op: Opportunity, decision: NotificationDecision) -> None:
             log(f"Notification ntfy échouée: {e}")
 
 
+def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
+    lines = [
+        "=== DIAGNOSTIC RUN ===",
+        f"Prix fixes candidats: {diagnostics.fixed_candidates}",
+        (
+            f"Enchères candidates <={MAX_AUCTION_MINUTES} min: "
+            f"{diagnostics.auction_candidates_ending_soon}"
+        ),
+        f"Lots analysés: {diagnostics.lots_analyzed}",
+        "",
+        "Rejetés:",
+        (
+            "- grader/grade illisible: "
+            f"{diagnostics.rejection_count(REJECTION_GRADER_GRADE)}"
+        ),
+        (
+            "- historique vide: "
+            f"{diagnostics.rejection_count(REJECTION_EMPTY_HISTORY)}"
+        ),
+        (
+            "- comparables insuffisants: "
+            f"{diagnostics.rejection_count(REJECTION_INSUFFICIENT_COMPARABLES)}"
+        ),
+        (
+            "- identité insuffisante: "
+            f"{diagnostics.rejection_count(REJECTION_INSUFFICIENT_IDENTITY)}"
+        ),
+        (
+            "- décote insuffisante: "
+            f"{diagnostics.rejection_count(REJECTION_INSUFFICIENT_DISCOUNT)}"
+        ),
+        (
+            "- prix fixe > prix max prudent: "
+            f"{diagnostics.rejection_count(REJECTION_FIXED_ABOVE_MAX)}"
+        ),
+        f"- autres motifs: {diagnostics.rejection_count(REJECTION_OTHER)}",
+        "",
+        f"Opportunités GCC: {diagnostics.gcc_opportunities}",
+        f"Rejetées validation externe: {len(diagnostics.external_rejections)}",
+        f"Opportunités finales: {diagnostics.final_opportunities}",
+        "",
+        f"Ventes live GCC: {len(diagnostics.live_auction_urls)}",
+        (
+            f"Ventes terminant <={MAX_AUCTION_MINUTES} min: "
+            f"{len(diagnostics.ending_soon_sale_urls)}"
+        ),
+        (
+            f"Cartes Pokémon {MIN_PRICE:.0f}–{MAX_PRICE:.0f} € dans ces ventes: "
+            f"{len(diagnostics.cards_in_ending_sales)}"
+        ),
+        f"Lots réellement analysés: {diagnostics.auction_lots_analyzed}",
+    ]
+    return "\n".join(lines)
+
+
+def log_run_diagnostics(diagnostics: RunDiagnostics) -> None:
+    for line in format_run_diagnostics(diagnostics).splitlines():
+        log(line) if line else print(flush=True)
+
+
 def main() -> int:
     started = time.monotonic()
     state = load_state()
     run_now = datetime.now(timezone.utc)
     now = run_now.isoformat()
+    run_diagnostics = RunDiagnostics()
 
     log("=== GCC Watcher V4 (valorisation robuste + alertes intelligentes) démarré ===")
     log("Ordre: prix fixes d'abord, puis enchères")
@@ -3127,6 +3475,7 @@ def main() -> int:
                 fixed_list,
                 key=lambda x: x.current_price if x.current_price is not None else 999999,
             )[:MAX_FIXED_CANDIDATES]
+            run_diagnostics.fixed_candidates = len(fixed_list)
 
             log(f"Prix fixes candidats {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €: {len(fixed_list)}")
 
@@ -3135,11 +3484,12 @@ def main() -> int:
                 fixed_inspected += 1
                 lot = inspect_item(page, lot)
 
-                if not is_valid_pokemon_card(lot):
+                if not is_valid_pokemon_card(lot, run_diagnostics):
                     continue
 
                 if lot.current_price is None:
                     log(f"[fixe {fixed_inspected}] Ignoré: prix non lisible")
+                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
                     continue
 
                 if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
@@ -3147,6 +3497,7 @@ def main() -> int:
                         f"[fixe {fixed_inspected}] Ignoré: prix {lot.current_price:.2f} € "
                         f"hors tranche {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €"
                     )
+                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
                     continue
 
                 history = extract_historical_sales(lot)
@@ -3165,7 +3516,9 @@ def main() -> int:
                     "minutes_to_end": lot.minutes_to_end,
                 }
 
-                op = estimate_with_grade(lot, history, run_now)
+                op = estimate_with_grade(
+                    lot, history, run_now, run_diagnostics=run_diagnostics
+                )
                 if op:
                     opportunities.append(op)
 
@@ -3179,11 +3532,14 @@ def main() -> int:
             log("=== Scan enchères ===")
             auction_candidates: dict[str, Lot] = {}
             sales = collect_live_auction_urls(page)
+            run_diagnostics.record_live_sales(sales)
             log(f"Ventes live détectées: {len(sales)}")
 
             for sale in sales:
                 try:
-                    lots = collect_lots_from_listing(page, sale, "auction")
+                    lots = collect_lots_from_listing(
+                        page, sale, "auction", run_diagnostics
+                    )
                     for lot in lots:
                         auction_candidates.setdefault(lot.url, lot)
                 except PlaywrightTimeoutError:
@@ -3250,6 +3606,7 @@ def main() -> int:
             for lot in ending_soon:
                 dedup[lot.url] = lot
             ending_soon = list(dedup.values())
+            run_diagnostics.auction_candidates_ending_soon = len(ending_soon)
 
             ending_soon.sort(
                 key=lambda x: (
@@ -3283,17 +3640,20 @@ def main() -> int:
                 if not lot.body:
                     lot = inspect_item(page, lot)
 
-                if not is_valid_pokemon_card(lot):
+                if not is_valid_pokemon_card(lot, run_diagnostics):
                     continue
 
                 if lot.current_price is None:
+                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
                     continue
 
                 if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
                     continue
 
                 # Double sécurité.
                 if lot.minutes_to_end is None or lot.minutes_to_end > MAX_AUCTION_MINUTES:
+                    run_diagnostics.record_valuation(lot, REJECTION_OTHER)
                     continue
 
                 history = extract_historical_sales(lot)
@@ -3314,7 +3674,9 @@ def main() -> int:
                     "minutes_to_end": lot.minutes_to_end,
                 }
 
-                op = estimate_with_grade(lot, history, run_now)
+                op = estimate_with_grade(
+                    lot, history, run_now, run_diagnostics=run_diagnostics
+                )
                 if op:
                     opportunities.append(op)
 
@@ -3337,6 +3699,8 @@ def main() -> int:
 
                 if validated is not None:
                     final_opportunities.append(validated)
+                else:
+                    run_diagnostics.record_external_rejection(op.lot)
 
             try:
                 validation_page.close()
@@ -3356,9 +3720,11 @@ def main() -> int:
                     log(f"Pas de renotification: {op.lot.title} | aucun changement important")
 
             save_state(state)
+            run_diagnostics.final_opportunities = len(final_opportunities)
             log(f"Opportunités finales après validations: {len(final_opportunities)}")
 
         finally:
+            log_run_diagnostics(run_diagnostics)
             browser.close()
 
     log(f"=== Scan terminé en {time.monotonic() - started:.1f}s ===")
