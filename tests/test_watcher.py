@@ -234,6 +234,224 @@ class TargetGradeSafetyTests(unittest.TestCase):
             self.assertIsNone(watcher.estimate_with_grade(lot, sales, NOW))
 
 
+class UnreadableGradeDiagnosticsTests(unittest.TestCase):
+    def unreadable_lot(self, **kwargs):
+        return watcher.Lot(
+            url=kwargs.pop(
+                "url", "https://gradedcardcenter.com/item/unreadable-grade"
+            ),
+            title=kwargs.pop("title", "Mimiqui"),
+            current_price=kwargs.pop("current_price", 20.0),
+            source_type=kwargs.pop("source_type", "fixed"),
+            grader=kwargs.pop("grader", "BGS"),
+            grade=kwargs.pop("grade", None),
+            **kwargs,
+        )
+
+    def test_invalid_grade_diagnostic_contains_requested_raw_context(self):
+        lot = self.unreadable_lot(
+            page_title_raw="Mimiqui BGS 48",
+            body=(
+                "Mimiqui\nArticle Gradation Détails\n"
+                "Société de gradation: BGS\nGrade: 48\n"
+                "Certification: 12345678\nPopulation: 15\n"
+                "Authorization: Bearer NE_JAMAIS_AFFICHER"
+            ),
+        )
+        diagnostic = watcher.diagnose_unreadable_grade(lot)
+        formatted = watcher.format_unreadable_grade_diagnostic(diagnostic)
+
+        self.assertEqual(
+            diagnostic.reason, watcher.GRADE_UNREADABLE_GRADE_INVALID
+        )
+        self.assertIn("=== DIAG GRADE ILLISIBLE ===", formatted)
+        self.assertIn("Titre brut de la page: Mimiqui BGS 48", formatted)
+        self.assertIn("Société de gradation: BGS", formatted)
+        self.assertIn("Grade: 48", formatted)
+        self.assertIn("Certification: 12345678", formatted)
+        self.assertIn("Motif: grade présent mais invalide", formatted)
+        self.assertNotIn("NE_JAMAIS_AFFICHER", formatted)
+        self.assertNotIn("Bearer", formatted)
+
+    def test_all_unreadable_grade_reasons_are_distinguished(self):
+        cases = (
+            (
+                self.unreadable_lot(grader="", body="Catégorie: Pokémon"),
+                watcher.GRADE_UNREADABLE_GRADER_ABSENT,
+            ),
+            (
+                self.unreadable_lot(body="Société de gradation: BGS"),
+                watcher.GRADE_UNREADABLE_GRADE_ABSENT,
+            ),
+            (
+                self.unreadable_lot(
+                    title="Mimiqui BGS 48", body="Article Gradation\nBGS 48"
+                ),
+                watcher.GRADE_UNREADABLE_GRADE_INVALID,
+            ),
+            (
+                self.unreadable_lot(body="Grader: BGS\nGrade: 9\nNote: 9.5"),
+                watcher.GRADE_UNREADABLE_CONFLICT,
+            ),
+            (
+                self.unreadable_lot(
+                    body=(
+                        "Article Gradation Détails\nBGS\nSurface\n"
+                        "Centres\n9.5"
+                    )
+                ),
+                watcher.GRADE_UNREADABLE_AMBIGUOUS,
+            ),
+            (
+                self.unreadable_lot(grader="XYZ", body="Grader: XYZ"),
+                watcher.GRADE_UNREADABLE_OTHER,
+            ),
+        )
+        for lot, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(
+                    watcher.diagnose_unreadable_grade(lot).reason, expected
+                )
+
+    def test_item_grading_block_is_preferred_over_navigation_label(self):
+        lot = self.unreadable_lot(
+            title="Mimiqui BGS 48",
+            body=(
+                "Gradation\nVends tes articles\nMimiqui BGS 48\n"
+                "Historique des ventes\nBGS 9 Mimiqui\n"
+                "Description\nArticle\nGradation\nDétails\n"
+                "Personnage\nMimiqui\nCatégorie\nPokemon"
+            ),
+        )
+        diagnostic = watcher.diagnose_unreadable_grade(lot)
+        self.assertIn("Article\nGradation\nDétails", diagnostic.grading_block_raw)
+        self.assertNotIn("Vends tes articles", diagnostic.grading_block_raw)
+        self.assertEqual(
+            diagnostic.reason, watcher.GRADE_UNREADABLE_GRADE_INVALID
+        )
+
+    def test_explicit_non_numeric_grading_qualifiers_are_excluded(self):
+        cases = (
+            ("Grade: OC", "OC / Off Center"),
+            ("Note: Off Center", "OC / Off Center"),
+            ("Grade: miscut", "Miscut"),
+            ("BGS ERROR Pikachu", "Error"),
+            ("Qualifier: Print Defect", "Print Defect"),
+        )
+        for raw, expected_qualifier in cases:
+            with self.subTest(raw=raw):
+                lot = self.unreadable_lot(body=f"Grader: BGS\n{raw}")
+                diagnostic = watcher.diagnose_unreadable_grade(lot)
+                self.assertEqual(
+                    diagnostic.reason, watcher.GRADE_SPECIAL_QUALIFIER
+                )
+                self.assertEqual(
+                    diagnostic.special_qualifier, expected_qualifier
+                )
+
+    def test_special_qualifier_is_rejected_without_economic_valuation(self):
+        lot = self.unreadable_lot(
+            url="https://gcc.test/item/psa-oc",
+            title="PSA OC Pikachu",
+            grader="PSA",
+            body="Article Gradation Détails\nGrader: PSA\nGrade: OC",
+        )
+        sales = [sale(100), sale(110), sale(120)]
+        diagnostics = watcher.RunDiagnostics()
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            result = watcher.estimate_with_grade(
+                lot, sales, NOW, run_diagnostics=diagnostics
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_SPECIAL_QUALIFIER),
+            1,
+        )
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_GRADER_GRADE), 0
+        )
+        self.assertEqual(len(diagnostics.unreadable_grade_lots), 0)
+        self.assertEqual(len(diagnostics.special_qualifier_lots), 1)
+        self.assertIn("=== DIAG QUALIFIER SPÉCIAL EXCLU ===", output.getvalue())
+        self.assertIn("Rejet valeur: PSA OC Pikachu | qualifier spécial exclu", output.getvalue())
+
+        summary = watcher.format_run_diagnostics(diagnostics)
+        self.assertIn("- grader/grade illisible: 0", summary)
+        self.assertIn("- qualifier spécial exclu: 1", summary)
+        self.assertIn("Nombre de lots qualifier spécial exclu: 1", summary)
+
+    def test_error_word_outside_grading_value_is_not_a_qualifier(self):
+        lot = self.unreadable_lot(
+            title="Error Pikachu",
+            body=(
+                "Société de gradation: BGS\n"
+                "Description: Error card edition"
+            ),
+        )
+        diagnostic = watcher.diagnose_unreadable_grade(lot)
+        self.assertEqual(
+            diagnostic.reason, watcher.GRADE_UNREADABLE_GRADE_ABSENT
+        )
+        self.assertEqual(diagnostic.special_qualifier, "")
+
+    def test_rejected_lot_is_logged_and_recorded_once_without_value_change(self):
+        lot = self.unreadable_lot(
+            title="Mimiqui BGS 48",
+            body="Article Gradation Détails\nGrader: BGS\nGrade: 48",
+        )
+        sales = [sale(50, grader="BGS", grade=8), sale(100, grader="BGS")]
+        diagnostics = watcher.RunDiagnostics()
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            first = watcher.estimate_with_grade(
+                lot, sales, NOW, run_diagnostics=diagnostics
+            )
+            second = watcher.estimate_with_grade(
+                lot, sales, NOW, run_diagnostics=diagnostics
+            )
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_GRADER_GRADE), 1
+        )
+        self.assertEqual(len(diagnostics.unreadable_grade_lots), 1)
+        self.assertEqual(
+            output.getvalue().count("=== DIAG GRADE ILLISIBLE ==="), 2
+        )
+
+    def test_run_summary_lists_each_unreadable_lot_with_reason(self):
+        diagnostics = watcher.RunDiagnostics()
+        first = self.unreadable_lot(url="https://gcc.test/item/one")
+        second = self.unreadable_lot(
+            url="https://gcc.test/item/two",
+            title="Zorua",
+            body="BGS 48",
+        )
+        for lot in (first, second):
+            detail = watcher.diagnose_unreadable_grade(lot)
+            diagnostics.record_unreadable_grade(lot, detail)
+            diagnostics.record_valuation(lot, watcher.REJECTION_GRADER_GRADE)
+
+        summary = watcher.format_run_diagnostics(diagnostics)
+        self.assertIn("Nombre de lots grade illisible: 2", summary)
+        self.assertIn(
+            "https://gcc.test/item/one | Mimiqui | motif: "
+            "grader reconnu mais grade absent",
+            summary,
+        )
+        self.assertIn(
+            "https://gcc.test/item/two | Zorua | motif: "
+            "grade présent mais invalide",
+            summary,
+        )
+        self.assertTrue(diagnostics.is_coherent)
+
+
 class PsaAprParsingTests(unittest.TestCase):
     def setUp(self):
         self.lot = apr_ready_opportunity().lot

@@ -104,6 +104,7 @@ class Lot:
     grader: str = ""
     grade: Optional[str] = None
     listing_text: str = ""
+    page_title_raw: str = ""
 
 
 @dataclass
@@ -243,6 +244,7 @@ class ValidationBudgets:
 
 
 REJECTION_GRADER_GRADE = "grader_grade_unreadable"
+REJECTION_SPECIAL_QUALIFIER = "special_qualifier_excluded"
 REJECTION_EMPTY_HISTORY = "empty_history"
 REJECTION_INSUFFICIENT_COMPARABLES = "insufficient_comparables"
 REJECTION_INSUFFICIENT_IDENTITY = "insufficient_identity"
@@ -275,6 +277,33 @@ class GccComparableDiagnostics:
     grade_arbitrage: bool = False
 
 
+GRADE_UNREADABLE_GRADER_ABSENT = "grader absent"
+GRADE_UNREADABLE_GRADE_ABSENT = "grader reconnu mais grade absent"
+GRADE_UNREADABLE_GRADE_INVALID = "grade présent mais invalide"
+GRADE_UNREADABLE_CONFLICT = "conflit entre plusieurs valeurs"
+GRADE_UNREADABLE_AMBIGUOUS = "parsing ambigu"
+GRADE_UNREADABLE_OTHER = "autre"
+GRADE_SPECIAL_QUALIFIER = "qualifier spécial exclu"
+
+
+@dataclass(frozen=True)
+class GradeUnreadableDiagnostic:
+    title: str
+    url: str
+    price: Optional[float]
+    source_type: str
+    extracted_grader: str
+    extracted_grade: Optional[str]
+    page_title_raw: str
+    grading_block_raw: str
+    label_contexts: tuple[tuple[str, str], ...]
+    raw_excerpt: str
+    reason: str
+    observed_graders: tuple[str, ...] = ()
+    observed_grades: tuple[str, ...] = ()
+    special_qualifier: str = ""
+
+
 @dataclass
 class RunDiagnostics:
     fixed_candidates: int = 0
@@ -285,6 +314,12 @@ class RunDiagnostics:
     valuation_outcomes: dict[str, str] = field(default_factory=dict)
     valuation_sources: dict[str, str] = field(default_factory=dict)
     external_rejections: set[str] = field(default_factory=set)
+    unreadable_grade_lots: dict[str, GradeUnreadableDiagnostic] = field(
+        default_factory=dict
+    )
+    special_qualifier_lots: dict[str, GradeUnreadableDiagnostic] = field(
+        default_factory=dict
+    )
     final_opportunities: int = 0
 
     def record_live_sales(self, urls: list[str]) -> None:
@@ -303,6 +338,18 @@ class RunDiagnostics:
 
     def record_external_rejection(self, lot: Lot) -> None:
         self.external_rejections.add(lot.url or f"{lot.source_type}:{lot.title}")
+
+    def record_unreadable_grade(
+        self, lot: Lot, diagnostic: GradeUnreadableDiagnostic
+    ) -> None:
+        key = lot.url or f"{lot.source_type}:{lot.title}"
+        self.unreadable_grade_lots.setdefault(key, diagnostic)
+
+    def record_special_qualifier(
+        self, lot: Lot, diagnostic: GradeUnreadableDiagnostic
+    ) -> None:
+        key = lot.url or f"{lot.source_type}:{lot.title}"
+        self.special_qualifier_lots.setdefault(key, diagnostic)
 
     @property
     def lots_analyzed(self) -> int:
@@ -1003,6 +1050,467 @@ def parse_grader_grade(text: str) -> tuple[str, Optional[str]]:
     return detected_grader, None
 
 
+_GRADE_DIAGNOSTIC_SENSITIVE_RE = re.compile(
+    r"\b(?:authorization|bearer|cookie|set-cookie|token|mot de passe|password|"
+    r"session(?:[_ -]?id)?|api[_ -]?key|secret)\b",
+    re.I,
+)
+_GRADE_DIAGNOSTIC_EMAIL_RE = re.compile(
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I
+)
+_GRADE_DIAGNOSTIC_GRADERS = tuple(dict.fromkeys((*GRADERS, "SGC")))
+_SPECIAL_GRADE_QUALIFIERS = (
+    (
+        "OC / Off Center",
+        r"(?:OC|OFF[ -]?CENT(?:ER|RE)(?:ED)?|HORS[ -]?CENTRAGE)"
+        r"(?:\s*\(\s*OC\s*\))?",
+    ),
+    ("Miscut", r"(?:MC|MIS[ -]?CUT)(?:\s*\(\s*MC\s*\))?"),
+    ("Error", r"(?:ERROR|ERREUR)"),
+    ("Staining", r"(?:ST|STAIN(?:ING)?)"),
+    ("Print Defect", r"(?:PD|PRINT[ -]?DEFECT)"),
+    ("Out of Focus", r"(?:OF|OUT[ -]?OF[ -]?FOCUS)"),
+    ("Marks", r"(?:MK|MARKS?)"),
+    (
+        "Authentic / Altered",
+        r"(?:AUTHENTIC(?:[ -]?ALTERED)?|ALTERED|TRIMMED|RECOLORED|"
+        r"MINIMUM[ -]?SIZE|EVIDENCE[ -]?OF[ -]?TRIMMING)",
+    ),
+)
+
+
+def _safe_grade_diagnostic_text(raw: str, limit: int = 260) -> str:
+    """Nettoie une ligne visible sans jamais reproduire un secret d'authentification."""
+    text = re.sub(r"\s+", " ", raw or "").strip()
+    if not text:
+        return ""
+    if _GRADE_DIAGNOSTIC_SENSITIVE_RE.search(text):
+        return "[information d'authentification masquée]"
+    text = _GRADE_DIAGNOSTIC_EMAIL_RE.sub("[email masqué]", text)
+    if len(text) > limit:
+        return f"{text[:limit - 1].rstrip()}…"
+    return text
+
+
+def _grade_diagnostic_full_text(lot: Lot) -> str:
+    return "\n".join(
+        value
+        for value in (
+            lot.page_title_raw,
+            lot.title,
+            lot.listing_text,
+            lot.body,
+        )
+        if value
+    )[:32000]
+
+
+def _grade_diagnostic_current_text(lot: Lot) -> str:
+    raw = _grade_diagnostic_full_text(lot)
+    return re.split(
+        r"Historique des ventes|Sales history",
+        raw,
+        maxsplit=1,
+        flags=re.I,
+    )[0][:16000]
+
+
+def _extract_grading_block_raw(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    candidates = []
+    for index, line in enumerate(lines):
+        is_grading_heading = re.search(r"\b(?:Gradation|Grading)\b", line, re.I)
+        is_grade_label = re.search(
+            r"\b(?:Soci[ée]t[ée]\s+de\s+gradation|Grader|Grade|Note)\s*:?",
+            line,
+            re.I,
+        )
+        if not is_grading_heading and not is_grade_label:
+            continue
+        nearby = " ".join(lines[max(0, index - 2):index + 3])
+        score = 1
+        if re.search(r"\bArticle\b", nearby, re.I):
+            score += 4
+        if re.search(r"\bD[ée]tails?\b", nearby, re.I):
+            score += 4
+        if is_grade_label:
+            score += 3
+        candidates.append((score, index))
+    if not candidates:
+        return ""
+    _, heading_index = max(candidates, key=lambda item: (item[0], -item[1]))
+    start = max(0, heading_index - 2)
+    selected = []
+    for line in lines[start:start + 24]:
+        if selected and re.search(
+            r"Historique des ventes|Sales history|Articles? similaires?",
+            line,
+            re.I,
+        ):
+            break
+        clean = _safe_grade_diagnostic_text(line)
+        if clean:
+            selected.append(clean)
+    return "\n".join(selected)
+
+
+def _grade_label_context(text: str, pattern: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    matches = []
+    label_re = re.compile(pattern, re.I)
+    for index, line in enumerate(lines):
+        if not label_re.search(line):
+            continue
+        context = [line]
+        suffix = label_re.sub("", line, count=1).strip(" :–—-")
+        if not suffix and index + 1 < len(lines):
+            context.append(lines[index + 1])
+        clean = _safe_grade_diagnostic_text(" | ".join(context))
+        if clean and clean not in matches:
+            matches.append(clean)
+        if len(matches) == 3:
+            break
+    return " || ".join(matches)
+
+
+def _grade_raw_excerpt(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    keyword_re = re.compile(
+        r"\b(?:PSA|PCA|CCC|BGS|CGC|SGC|Grade|Note|Gradation|Grading|"
+        r"Off[ -]?Center|Miscut|Error|Staining|Print[ -]?Defect|"
+        r"Out[ -]?of[ -]?Focus|Authentic|Altered)\b",
+        re.I,
+    )
+    selected = []
+    selected_indexes = set()
+    for index, line in enumerate(lines):
+        if not keyword_re.search(line):
+            continue
+        for nearby in range(max(0, index - 1), min(len(lines), index + 2)):
+            if nearby in selected_indexes:
+                continue
+            clean = _safe_grade_diagnostic_text(lines[nearby])
+            if clean:
+                selected.append(clean)
+                selected_indexes.add(nearby)
+            if len(selected) == 18:
+                return "\n".join(selected)
+    return "\n".join(selected)
+
+
+def _match_special_grade_qualifier(raw: str) -> str:
+    value = re.sub(r"\s+", " ", raw or "").strip(" :–—-+")
+    if not value:
+        return ""
+    for label, pattern in _SPECIAL_GRADE_QUALIFIERS:
+        if re.fullmatch(
+            rf"(?:{pattern})(?:\s+(?:QUALIFIER|QUALIFICATIF))?",
+            value,
+            re.I,
+        ):
+            return label
+    return ""
+
+
+def _find_special_grade_qualifier(
+    lot: Lot, parser_text: str, grading_block: str
+) -> str:
+    """Reconnaît seulement un qualifier explicitement placé comme valeur de grade."""
+    if lot.grade is not None:
+        matched = _match_special_grade_qualifier(str(lot.grade))
+        if matched:
+            return matched
+
+    grader_group = "|".join(
+        re.escape(grader) for grader in _GRADE_DIAGNOSTIC_GRADERS
+    )
+    lines = [
+        line.strip()
+        for line in f"{parser_text}\n{grading_block}".splitlines()
+        if line.strip()
+    ]
+    value_label_re = re.compile(
+        r"\b(?:Grade|Note|Qualifier|Qualificatif)\s*:?\s*(.*)$",
+        re.I,
+    )
+    for index, line in enumerate(lines):
+        label_match = value_label_re.search(line)
+        if label_match:
+            candidate = label_match.group(1).strip()
+            if not candidate and index + 1 < len(lines):
+                candidate = lines[index + 1]
+            candidate = re.sub(
+                rf"^(?:{grader_group})\s*", "", candidate, flags=re.I
+            )
+            matched = _match_special_grade_qualifier(candidate)
+            if matched:
+                return matched
+
+        for qualifier_label, qualifier_pattern in _SPECIAL_GRADE_QUALIFIERS:
+            if re.search(
+                rf"\b(?:{grader_group})\b\s*(?:GRADE\s*)?[:#]?\s*"
+                rf"(?:{qualifier_pattern})\b",
+                line,
+                re.I,
+            ):
+                return qualifier_label
+
+        matched = _match_special_grade_qualifier(line)
+        if not matched:
+            continue
+        nearby = " ".join(lines[max(0, index - 3):index])
+        if re.search(
+            rf"\b(?:{grader_group}|Grade|Note|Gradation|Grading|"
+            r"Qualifier|Qualificatif)\b",
+            nearby,
+            re.I,
+        ):
+            return matched
+    return ""
+
+
+def _grade_diagnostic_observations(
+    lot: Lot, text: str, grading_block: str
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[float, ...], bool]:
+    grader_group = "|".join(
+        re.escape(grader) for grader in _GRADE_DIAGNOSTIC_GRADERS
+    )
+    number = r"-?\d{1,3}(?:[.,]\d{1,2})?"
+    graders = []
+    raw_grades = []
+    numeric_grades = []
+    nonnumeric_current_grade = False
+
+    def add_grader(raw: str) -> None:
+        grader = (raw or "").upper()
+        if grader and grader not in graders:
+            graders.append(grader)
+
+    def add_grade(raw: str) -> None:
+        nonlocal nonnumeric_current_grade
+        cleaned = (raw or "").strip().replace(",", ".")
+        if not cleaned:
+            return
+        if cleaned not in raw_grades:
+            raw_grades.append(cleaned)
+        try:
+            value = float(cleaned)
+        except ValueError:
+            nonnumeric_current_grade = True
+            return
+        if value not in numeric_grades:
+            numeric_grades.append(value)
+
+    if lot.grader.upper() in _GRADE_DIAGNOSTIC_GRADERS:
+        add_grader(lot.grader)
+    if lot.grade is not None:
+        add_grade(str(lot.grade))
+
+    for match in re.finditer(
+        rf"\b(?:Soci[ée]t[ée]\s+de\s+gradation|Grader)\s*:?\s*"
+        rf"({grader_group})\b",
+        text,
+        re.I,
+    ):
+        add_grader(match.group(1))
+
+    explicit_re = re.compile(
+        rf"\b(?:Grade|Note)\s*:?\s*(?:({grader_group})\s*)?({number})\b",
+        re.I,
+    )
+    for match in explicit_re.finditer(text):
+        if match.group(1):
+            add_grader(match.group(1))
+        add_grade(match.group(2))
+
+    compact_re = re.compile(
+        rf"\b({grader_group})\s*(?:GRADE\s*)?[:#]?\s*({number})\b",
+        re.I,
+    )
+    for line in text.splitlines():
+        if re.match(
+            r"^\s*(?:Pop(?:ulation)?|Certification|Cert(?:ificat)?|Serial|"
+            r"R[ée]f[ée]rence|Reference|Ann[ée]e|Year|Prix|Price)\b",
+            line,
+            re.I,
+        ):
+            continue
+        for match in compact_re.finditer(line):
+            add_grader(match.group(1))
+            add_grade(match.group(2))
+
+    block_lines = [
+        line.strip() for line in (grading_block or "").splitlines() if line.strip()
+    ]
+    for index, line in enumerate(block_lines):
+        for match in re.finditer(rf"\b({grader_group})\b", line, re.I):
+            add_grader(match.group(1))
+        number_match = re.fullmatch(rf"({number})\+?", line)
+        if not number_match:
+            continue
+        previous = block_lines[index - 1] if index else ""
+        if re.search(
+            r"\b(?:Pop(?:ulation)?|Certification|Cert(?:ificat)?|Serial|"
+            r"R[ée]f[ée]rence|Reference|Ann[ée]e|Year|Prix|Price)\b",
+            previous,
+            re.I,
+        ):
+            continue
+        add_grade(number_match.group(1))
+
+    if not graders:
+        detected = re.search(rf"\b({grader_group})\b", text, re.I)
+        if detected:
+            add_grader(detected.group(1))
+
+    return (
+        tuple(graders),
+        tuple(raw_grades),
+        tuple(numeric_grades),
+        nonnumeric_current_grade,
+    )
+
+
+def diagnose_unreadable_grade(lot: Lot) -> GradeUnreadableDiagnostic:
+    """Décrit un échec de lecture sans intervenir dans le parseur ou la valeur."""
+    full_text = _grade_diagnostic_full_text(lot)
+    parser_text = _grade_diagnostic_current_text(lot)
+    grading_block = _extract_grading_block_raw(full_text)
+    special_qualifier = _find_special_grade_qualifier(
+        lot, parser_text, grading_block
+    )
+    graders, raw_grades, numeric_grades, nonnumeric_grade = (
+        _grade_diagnostic_observations(lot, parser_text, grading_block)
+    )
+    current_grader = (lot.grader or "").upper()
+    known_current_grader = current_grader in GRADERS
+    distinct_numeric = set(numeric_grades)
+    invalid_numeric = [value for value in numeric_grades if value <= 0 or value > 10]
+    valid_numeric = [value for value in numeric_grades if 0 < value <= 10]
+
+    if special_qualifier:
+        reason = GRADE_SPECIAL_QUALIFIER
+    elif not current_grader:
+        if len(graders) > 1:
+            reason = GRADE_UNREADABLE_CONFLICT
+        elif graders:
+            reason = GRADE_UNREADABLE_AMBIGUOUS
+        else:
+            reason = GRADE_UNREADABLE_GRADER_ABSENT
+    elif not known_current_grader:
+        reason = GRADE_UNREADABLE_OTHER
+    elif len(graders) > 1 or len(distinct_numeric) > 1:
+        reason = GRADE_UNREADABLE_CONFLICT
+    elif nonnumeric_grade or (invalid_numeric and not valid_numeric):
+        reason = GRADE_UNREADABLE_GRADE_INVALID
+    elif lot.grade is None and not raw_grades:
+        reason = GRADE_UNREADABLE_GRADE_ABSENT
+    elif lot.grade is None and valid_numeric:
+        reason = GRADE_UNREADABLE_AMBIGUOUS
+    elif lot.grade is not None and _target_grade(lot) is None:
+        reason = GRADE_UNREADABLE_GRADE_INVALID
+    else:
+        reason = GRADE_UNREADABLE_OTHER
+
+    label_specs = (
+        ("Société de gradation", r"\bSoci[ée]t[ée]\s+de\s+gradation\s*:?\s*"),
+        ("Grader", r"\bGrader\s*:?\s*"),
+        ("Grade", r"\bGrade\s*:?\s*"),
+        ("Note", r"\bNote\s*:?\s*"),
+        (
+            "Certification / numéro de série",
+            r"\b(?:Certification|Cert(?:ificat|ificate)?(?:\s+Number)?|PSA\s+Cert|"
+            r"Num[ée]ro\s+de\s+(?:certification|s[ée]rie)|Serial(?:\s+Number)?)\s*:?\s*",
+        ),
+    )
+    label_contexts = tuple(
+        (label, _grade_label_context(full_text, pattern) or "<absent>")
+        for label, pattern in label_specs
+    )
+    safe_url = (lot.url or "<absent>").split("?", 1)[0].split("#", 1)[0]
+    return GradeUnreadableDiagnostic(
+        title=_safe_grade_diagnostic_text(lot.title) or "<absent>",
+        url=safe_url,
+        price=lot.current_price,
+        source_type=lot.source_type or "<absent>",
+        extracted_grader=_safe_grade_diagnostic_text(lot.grader) or "<absent>",
+        extracted_grade=(
+            _safe_grade_diagnostic_text(str(lot.grade))
+            if lot.grade is not None else None
+        ),
+        page_title_raw=(
+            _safe_grade_diagnostic_text(lot.page_title_raw) or "<absent>"
+        ),
+        grading_block_raw=grading_block or "<absent>",
+        label_contexts=label_contexts,
+        raw_excerpt=_grade_raw_excerpt(full_text) or "<absent>",
+        reason=reason,
+        observed_graders=graders,
+        observed_grades=raw_grades,
+        special_qualifier=special_qualifier,
+    )
+
+
+def format_unreadable_grade_diagnostic(
+    diagnostic: GradeUnreadableDiagnostic,
+) -> str:
+    price = (
+        f"{diagnostic.price:.2f} €"
+        if diagnostic.price is not None else "<illisible>"
+    )
+    special_qualifier = diagnostic.reason == GRADE_SPECIAL_QUALIFIER
+    lines = [
+        (
+            "=== DIAG QUALIFIER SPÉCIAL EXCLU ==="
+            if special_qualifier else "=== DIAG GRADE ILLISIBLE ==="
+        ),
+        f"Titre: {diagnostic.title}",
+        f"URL: {diagnostic.url}",
+        f"Prix: {price}",
+        f"Type: {diagnostic.source_type}",
+        "",
+        f"grader brut actuellement extrait: {diagnostic.extracted_grader}",
+        (
+            "grade brut actuellement extrait: "
+            f"{diagnostic.extracted_grade or '<absent>'}"
+        ),
+        "",
+        f"Titre brut de la page: {diagnostic.page_title_raw}",
+        "Bloc de grading brut:",
+    ]
+    lines.extend(
+        f"  {line}" for line in diagnostic.grading_block_raw.splitlines()
+    )
+    lines.append("Texte autour des labels:")
+    lines.extend(
+        f"- {label}: {context}"
+        for label, context in diagnostic.label_contexts
+    )
+    lines.append("Extrait brut pertinent de la fiche:")
+    lines.extend(f"  {line}" for line in diagnostic.raw_excerpt.splitlines())
+    observed_graders = ", ".join(diagnostic.observed_graders) or "<aucun>"
+    observed_grades = ", ".join(diagnostic.observed_grades) or "<aucun>"
+    lines.extend(
+        (
+            f"Candidats observés: graders {observed_graders} | "
+            f"grades {observed_grades}",
+            *(
+                (f"Qualifier spécial: {diagnostic.special_qualifier}",)
+                if special_qualifier else ()
+            ),
+            f"Motif: {diagnostic.reason}",
+        )
+    )
+    return "\n".join(lines)
+
+
+def log_unreadable_grade_diagnostic(
+    diagnostic: GradeUnreadableDiagnostic,
+) -> None:
+    for line in format_unreadable_grade_diagnostic(diagnostic).splitlines():
+        log(line) if line else print(flush=True)
+
+
 def parse_item_countdown_minutes(body: str) -> tuple[Optional[int], str]:
     head = body or ""
     values = {}
@@ -1091,6 +1599,7 @@ def inspect_item(page, lot: Lot) -> Lot:
             page_heading = page.locator("h1").first.inner_text(timeout=800).strip()
         except Exception:
             pass
+        lot.page_title_raw = page_heading
 
         lot.title = extract_card_title(
             page_heading=page_heading,
@@ -3064,13 +3573,27 @@ def estimate_with_grade(
     run_diagnostics: Optional[RunDiagnostics] = None,
 ) -> Optional[Opportunity]:
     if not lot.grader or _target_grade(lot) is None:
+        grade_diagnostic = diagnose_unreadable_grade(lot)
+        special_qualifier = grade_diagnostic.reason == GRADE_SPECIAL_QUALIFIER
+        log_unreadable_grade_diagnostic(grade_diagnostic)
         diagnostics = diagnose_gcc_comparables(
             lot, sales, now=now, grader_ratios=grader_ratios
         )
         log_gcc_comparable_diagnostics(lot, diagnostics)
-        log(f"Rejet valeur: {lot.title} | grader/grade cible non lisible")
+        rejection_message = (
+            "qualifier spécial exclu"
+            if special_qualifier else "grader/grade cible non lisible"
+        )
+        log(f"Rejet valeur: {lot.title} | {rejection_message}")
         if run_diagnostics is not None:
-            run_diagnostics.record_valuation(lot, REJECTION_GRADER_GRADE)
+            if special_qualifier:
+                run_diagnostics.record_special_qualifier(lot, grade_diagnostic)
+                run_diagnostics.record_valuation(
+                    lot, REJECTION_SPECIAL_QUALIFIER
+                )
+            else:
+                run_diagnostics.record_unreadable_grade(lot, grade_diagnostic)
+                run_diagnostics.record_valuation(lot, REJECTION_GRADER_GRADE)
         return None
     if lot.current_price is None or lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
         diagnostics = diagnose_gcc_comparables(
@@ -3377,6 +3900,10 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
             f"{diagnostics.rejection_count(REJECTION_GRADER_GRADE)}"
         ),
         (
+            "- qualifier spécial exclu: "
+            f"{diagnostics.rejection_count(REJECTION_SPECIAL_QUALIFIER)}"
+        ),
+        (
             "- historique vide: "
             f"{diagnostics.rejection_count(REJECTION_EMPTY_HISTORY)}"
         ),
@@ -3412,7 +3939,27 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
             f"{len(diagnostics.cards_in_ending_sales)}"
         ),
         f"Lots réellement analysés: {diagnostics.auction_lots_analyzed}",
+        "",
+        (
+            "Nombre de lots grade illisible: "
+            f"{len(diagnostics.unreadable_grade_lots)}"
+        ),
     ]
+    lines.extend(
+        f"- {item.url} | {item.title} | motif: {item.reason}"
+        for item in diagnostics.unreadable_grade_lots.values()
+    )
+    lines.extend(
+        (
+            "",
+            "Nombre de lots qualifier spécial exclu: "
+            f"{len(diagnostics.special_qualifier_lots)}",
+        )
+    )
+    lines.extend(
+        f"- {item.url} | {item.title} | qualifier: {item.special_qualifier}"
+        for item in diagnostics.special_qualifier_lots.values()
+    )
     return "\n".join(lines)
 
 
