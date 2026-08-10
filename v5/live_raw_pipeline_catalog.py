@@ -193,10 +193,17 @@ def main() -> int:
     workflow_authorized = (
         os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
     )
+    skip_gcc_live = (
+        os.getenv(
+            "V5_SKIP_GCC_LIVE_FOR_POKETRACE_VALIDATION", "false"
+        ).strip().casefold()
+        == "true"
+    )
     _progress("starting eBay discovery -> identity -> PokeTrace market validation")
     try:
         gcc_live_requested = (
             os.getenv("GCC_HISTORY_ENABLED", "false").strip().casefold() == "true"
+            and not skip_gcc_live
         )
         session_file = Path("gcc_session.json")
         if gcc_live_requested and workflow_authorized and session_file.is_file():
@@ -217,7 +224,10 @@ def main() -> int:
                 )
                 summary = diagnostic.run()
         else:
-            _progress("GCC live fallback disabled; measuring identity + PokeTrace only")
+            if skip_gcc_live:
+                _progress("GCC live fallback intentionally skipped for PokeTrace validation")
+            else:
+                _progress("GCC live fallback unavailable for this run")
             diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
                 client_id,
                 client_secret,
