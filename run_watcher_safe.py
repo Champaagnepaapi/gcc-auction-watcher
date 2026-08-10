@@ -75,10 +75,14 @@ def guarded_validate_secondary_sources(
     return validated
 
 
-# Keep V4 discovery/valuation intact; harden only the final validation gate used
-# by the production workflow before ntfy notification.
-watcher.validate_secondary_sources = guarded_validate_secondary_sources
+def install_grade_arbitrage_guard() -> None:
+    """Install only for the production entrypoint, never merely on import."""
+
+    watcher.validate_secondary_sources = guarded_validate_secondary_sources
 
 
 if __name__ == "__main__":
+    # Keep V4 discovery/valuation intact; harden only the final validation gate
+    # used by the production workflow before ntfy notification.
+    install_grade_arbitrage_guard()
     raise SystemExit(watcher.main())
