@@ -2,9 +2,9 @@
 
 The public on-sale-items inventory remains a fast path. When no safe
 representative is currently on sale, V5 falls back to GCC's normal public
-Explore UI, enables completed sales, searches the collectible, opens a small
-bounded set of public item pages, and applies the same exact/unique-strong
-identity policy before reading rendered sales history.
+graded-card Explore UI, enables completed sales, searches the collectible,
+opens a small bounded set of public item pages, and applies the same
+exact/unique-strong identity policy before reading rendered sales history.
 
 No private endpoint, stealth mode, persistence, access-control bypass, or
 CAPTCHA circumvention is used.
@@ -12,7 +12,6 @@ CAPTCHA circumvention is used.
 
 from __future__ import annotations
 
-import re
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import Callable, Mapping, Sequence
@@ -25,10 +24,10 @@ from .market_values.gcc_history.identity import canonicalize_collectible, match_
 from .market_values.gcc_history.models import CanonicalCollectible, MatchClass
 
 
-GCC_EXPLORE_URL = "https://gradedcardcenter.com/en/filters/explore/pokemon"
+GCC_EXPLORE_URL = "https://gradedcardcenter.com/en/filters/explore/cards-graded"
 GCC_CATALOG_CANDIDATE_LIMIT = 8
 GCC_V4_ACCESS_MECHANISM = (
-    "V4 public on-sale-items fast path + GCC public Explore/Completed Sales catalogue fallback + normal authenticated Playwright item page rendered history"
+    "V4 public on-sale-items fast path + GCC public graded-card Explore/Completed Sales local-search fallback + normal authenticated Playwright item page rendered history"
 )
 
 
@@ -177,11 +176,14 @@ class V4RenderedGCCHistorySource:
         return False
 
     def _catalog_search_box(self):
+        # GCC exposes a site-wide search and a separate local Search control on
+        # the graded-card Explore view.  Never fall back to a generic
+        # input[type=search], because that can select the global header search
+        # while leaving the Explore result list unchanged.
         selectors = (
             'input[placeholder="Search"]',
             'input[placeholder="Rechercher"]',
             'input[placeholder="Recherche"]',
-            'input[type="search"]',
         )
         for selector in selectors:
             try:
@@ -229,14 +231,25 @@ class V4RenderedGCCHistorySource:
                 values.append(clean)
         return tuple(values[:3])
 
+    def _wait_for_local_catalogue_change(
+        self, before_urls: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        urls = before_urls
+        for _ in range(10):
+            self._page.wait_for_timeout(250)
+            urls = self._catalog_item_urls()
+            if urls != before_urls:
+                return urls
+        return urls
+
     def _resolve_from_public_explore(
         self, canonical: CanonicalCollectible
     ) -> GCCCatalogResolution:
         """Resolve a representative through GCC's normal public Explore UI.
 
-        The UI visibly exposes a Completed Sales filter. We use only that public
-        interface and then verify every candidate item page with the strict V5
-        identity matcher before accepting it.
+        The UI visibly exposes a Completed Sales filter and a local Search field
+        on the graded-card Explore view.  Every candidate item page is then
+        verified with the strict V5 identity matcher before acceptance.
         """
 
         exact: watcher.Lot | None = None
@@ -257,14 +270,28 @@ class V4RenderedGCCHistorySource:
                 if search_box is None:
                     self.catalog_search_failures += 1
                     continue
+
+                before_urls = self._catalog_item_urls()
                 search_box.fill(query)
-                try:
-                    search_box.press("Enter")
-                except Exception:
-                    pass
                 self.catalog_searches += 1
-                self._page.wait_for_timeout(1200)
-                urls = self._catalog_item_urls()
+                urls = self._wait_for_local_catalogue_change(before_urls)
+
+                # Some form implementations only commit the local filter on
+                # Enter.  Retry once, but only after selecting the explicit
+                # local Search field above.
+                if urls == before_urls:
+                    try:
+                        search_box.press("Enter")
+                        urls = self._wait_for_local_catalogue_change(before_urls)
+                    except Exception:
+                        pass
+
+                # A search that leaves exactly the same first candidates is not
+                # treated as valid evidence; otherwise we would repeatedly open
+                # unrelated catalogue entries and count their identity conflicts.
+                if urls == before_urls:
+                    self.catalog_search_failures += 1
+                    continue
             except Exception:
                 self.catalog_search_failures += 1
                 continue
@@ -288,12 +315,13 @@ class V4RenderedGCCHistorySource:
                 self.catalog_candidate_pages_opened += 1
                 if inspected.inspection_error:
                     continue
-                result = match_identity(canonical, _lot_identity(inspected))
+                candidate_identity = _lot_identity(inspected)
+                result = match_identity(canonical, candidate_identity)
                 if result.match_class is MatchClass.EXACT_MATCH:
                     exact = inspected
                     break
                 if result.match_class is MatchClass.STRONG_MATCH:
-                    strong.setdefault(_lot_identity(inspected).key, inspected)
+                    strong.setdefault(candidate_identity.key, inspected)
                 elif result.match_class is MatchClass.AMBIGUOUS:
                     ambiguous_seen = True
                 elif result.conflicts:
