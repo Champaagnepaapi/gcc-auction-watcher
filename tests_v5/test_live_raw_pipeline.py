@@ -387,14 +387,17 @@ class MemoryAndPrivacyTests(unittest.TestCase):
 
 
 class LiveRawWorkflowTests(unittest.TestCase):
-    def test_workflow_is_manual_read_only_and_has_no_persistence(self):
+    def test_workflow_is_manual_read_only_and_persists_only_gcc_catalog(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("name: V5 Live Raw Pipeline Diagnostic", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertNotIn("schedule:", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("persist-credentials: false", workflow)
-        self.assertNotIn("actions/cache", workflow)
+        self.assertIn("actions/cache/restore@v4", workflow)
+        self.assertIn("actions/cache/save@v4", workflow)
+        self.assertIn("path: gcc_catalog_index.json", workflow)
+        self.assertNotIn("state.json", workflow)
         self.assertNotIn("upload-artifact", workflow)
 
     def test_workflow_has_required_read_only_secrets_and_all_safety_locks(self):
@@ -402,6 +405,10 @@ class LiveRawWorkflowTests(unittest.TestCase):
         self.assertIn("secrets.EBAY_CLIENT_ID", workflow)
         self.assertIn("secrets.EBAY_CLIENT_SECRET", workflow)
         self.assertIn("secrets.GCC_SESSION_B64", workflow)
+        self.assertIn("secrets.POKETRACE_API_KEY", workflow)
+        self.assertIn('POKETRACE_PLAN: "free"', workflow)
+        self.assertIn('POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.05"', workflow)
+        self.assertIn('POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"', workflow)
         self.assertNotIn("PRICECHARTING_TOKEN", workflow)
         self.assertNotIn("CARDGRADER_API_KEY", workflow)
         self.assertIn('PRICECHARTING_ENABLED: "false"', workflow)
