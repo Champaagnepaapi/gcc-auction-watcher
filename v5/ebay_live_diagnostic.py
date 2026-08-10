@@ -13,8 +13,8 @@ import re
 import sys
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
-from urllib.parse import quote
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -22,9 +22,20 @@ from .ebay import (
     OAUTH_SCOPE,
     PRODUCTION_BROWSE_BASE,
     PRODUCTION_IDENTITY_BASE,
+    CARD_NAME_SOURCE_LOCALIZED,
+    CARD_NAME_SOURCE_SET_NUMBER,
+    CARD_NAME_SOURCE_TITLE,
     EbayApiError,
-    card_identity_from_ebay_payload,
+    NullSetNumberCardNameResolver,
+    SetNumberCardNameResolver,
     parse_ebay_item,
+    resolve_card_identity,
+)
+from .image_detection import (
+    BACK_IMAGE_CANDIDATE,
+    BACK_IMAGE_CONFIRMED,
+    BACK_IMAGE_UNKNOWN,
+    LocalPokemonBackDetector,
 )
 from .models import CardIdentity, CostInputs, GradeImagePair
 from .scanner import MARKET_DATA_UNAVAILABLE, RawCardScanner, SafeguardConfig, ScanRequest
@@ -38,6 +49,8 @@ DEFAULT_CATEGORY_TREE_URL = f"{TAXONOMY_BASE}/get_default_category_tree_id"
 CATEGORY_SUGGESTIONS_URL = f"{TAXONOMY_BASE}/category_tree/{{tree_id}}/get_category_suggestions"
 RAW_CONDITION_ID = "4000"
 RESULT_LIMIT = 20
+MAX_VISUAL_IMAGES_PER_ITEM = 6
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MARKETPLACES = ("EBAY_US", "EBAY_CH")
 CATEGORY_QUERY = "Pokémon CCG Individual Cards"
 
@@ -75,6 +88,7 @@ class MarketplaceAggregate:
     get_item_calls: int = 0
     get_item_success: int = 0
     get_item_failure: int = 0
+    empty_reason: str = "autre"
 
 
 @dataclass
@@ -102,6 +116,10 @@ class IdentityAggregate:
     missing_card_number: int = 0
     missing_language: int = 0
     ambiguous: int = 0
+    resolved_localized_aspects: int = 0
+    resolved_title_fallback: int = 0
+    resolved_set_number: int = 0
+    score_total: int = 0
 
 
 @dataclass
@@ -153,11 +171,19 @@ class EbayLiveDiagnostic:
         client_secret: str,
         session: Optional[requests.Session] = None,
         timeout_seconds: float = 20.0,
+        set_number_resolver: Optional[SetNumberCardNameResolver] = None,
+        back_detector: Optional[LocalPokemonBackDetector] = None,
+        image_fetcher: Optional[Callable[[str], Optional[bytes]]] = None,
     ) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
         self._session = session or requests.Session()
         self._timeout_seconds = timeout_seconds
+        self._set_number_resolver = (
+            set_number_resolver or NullSetNumberCardNameResolver()
+        )
+        self._back_detector = back_detector or LocalPokemonBackDetector()
+        self._image_fetcher = image_fetcher or self._fetch_image_in_memory
 
     def run(self) -> LiveDiagnosticSummary:
         token, oauth = self._application_token()
@@ -323,15 +349,25 @@ class EbayLiveDiagnostic:
         except requests.RequestException as exc:
             aggregate.http_status = "REQUEST_ERROR"
             aggregate.error_type = _technical_identifier(type(exc).__name__)
+            if marketplace_id == "EBAY_CH":
+                aggregate.empty_reason = "API error"
             return aggregate, []
 
         aggregate.http_status = str(response.status_code)
         payload = _safe_json(response)
         if response.status_code != 200:
             aggregate.error_type, aggregate.error_code = _error_metadata(payload)
+            if marketplace_id == "EBAY_CH":
+                aggregate.empty_reason = (
+                    "unsupported filter"
+                    if _payload_mentions_filter(payload)
+                    else "API error"
+                )
             return aggregate, []
         if not isinstance(payload, Mapping):
             aggregate.error_type = "INVALID_JSON"
+            if marketplace_id == "EBAY_CH":
+                aggregate.empty_reason = "API error"
             return aggregate, []
 
         aggregate.total_announced = _safe_nonnegative_int(payload.get("total")) or 0
@@ -352,7 +388,52 @@ class EbayLiveDiagnostic:
                 )
             )
         aggregate.results_received = len(records)
+        if marketplace_id == "EBAY_CH":
+            aggregate.empty_reason = (
+                self._diagnose_empty_ch(token, category_id)
+                if aggregate.results_received == 0
+                else "autre"
+            )
         return aggregate, records
+
+    def _diagnose_empty_ch(self, token: str, category_id: Optional[str]) -> str:
+        if not category_id:
+            return "autre"
+        combined = self._probe_search_total(
+            token, {"q": "Pokémon", "category_ids": category_id, "limit": "1"}
+        )
+        if combined is None:
+            return "API error"
+        if combined > 0:
+            return "no inventory"
+        # Ces deux requetes sont uniquement des sondes agregées: la recherche
+        # de decouverte conserve toujours la categorie resolue initialement.
+        category_only = self._probe_search_total(
+            token, {"category_ids": category_id, "limit": "1"}
+        )
+        query_only = self._probe_search_total(token, {"q": "Pokémon", "limit": "1"})
+        if category_only is None or query_only is None:
+            return "API error"
+        if category_only > 0 and query_only > 0:
+            return "query/category mismatch"
+        return "no inventory"
+
+    def _probe_search_total(
+        self, token: str, params: Mapping[str, str]
+    ) -> Optional[int]:
+        try:
+            response = self._session.get(
+                SEARCH_URL,
+                headers=self._headers(token, "EBAY_CH"),
+                params=dict(params),
+                timeout=self._timeout_seconds,
+            )
+        except requests.RequestException:
+            return None
+        payload = _safe_json(response)
+        if response.status_code != 200 or not isinstance(payload, Mapping):
+            return None
+        return _safe_nonnegative_int(payload.get("total")) or 0
 
     def _enrich_unique_items(
         self,
@@ -417,15 +498,21 @@ class EbayLiveDiagnostic:
         detail = _safe_json(response)
         return (True, detail) if isinstance(detail, Mapping) else (False, {})
 
-    @staticmethod
     def _aggregate_record(
+        self,
         record: _DiscoveryRecord,
         identity_aggregate: IdentityAggregate,
         images: ImageAggregate,
         cheap_filter: CheapFilterAggregate,
     ) -> None:
-        before_identity = card_identity_from_ebay_payload(record.summary)
-        after_identity = card_identity_from_ebay_payload(record.enriched)
+        before_resolution = resolve_card_identity(
+            record.summary, set_number_resolver=self._set_number_resolver
+        )
+        after_resolution = resolve_card_identity(
+            record.enriched, set_number_resolver=self._set_number_resolver
+        )
+        before_identity = before_resolution.identity
+        after_identity = after_resolution.identity
         if before_identity.is_unambiguous_pokemon():
             identity_aggregate.before_usable += 1
         else:
@@ -435,6 +522,13 @@ class EbayLiveDiagnostic:
         else:
             identity_aggregate.after_insufficient += 1
         _aggregate_identity(after_identity, identity_aggregate)
+        identity_aggregate.score_total += after_resolution.score
+        if after_resolution.card_name_source == CARD_NAME_SOURCE_LOCALIZED:
+            identity_aggregate.resolved_localized_aspects += 1
+        elif after_resolution.card_name_source == CARD_NAME_SOURCE_TITLE:
+            identity_aggregate.resolved_title_fallback += 1
+        elif after_resolution.card_name_source == CARD_NAME_SOURCE_SET_NUMBER:
+            identity_aggregate.resolved_set_number += 1
 
         if _has_localized_aspects(record.enriched):
             identity_aggregate.localized_aspects_available += 1
@@ -446,10 +540,10 @@ class EbayLiveDiagnostic:
         images.get_item_primary += int(_primary_image_url(record.detail) is not None)
         images.get_item_additional += int(bool(_additional_images(record.detail)))
         images.total_images += len(_all_image_urls(record.detail))
-        image_state, confirmed_back_url = _back_image_state(record.enriched)
-        if image_state == "CONFIRMED":
+        image_state, confirmed_back_url = self._back_image_state(record.enriched)
+        if image_state == BACK_IMAGE_CONFIRMED:
             images.back_confirmed += 1
-        elif image_state == "CANDIDATE":
+        elif image_state == BACK_IMAGE_CANDIDATE:
             images.back_candidate += 1
         else:
             images.back_unknown += 1
@@ -458,7 +552,11 @@ class EbayLiveDiagnostic:
         raw = condition_id is not None and str(condition_id) == RAW_CONDITION_ID
         if not raw or not after_identity.is_unambiguous_pokemon():
             cheap_filter.reject_identity += 1
-        if raw and after_identity.is_unambiguous_pokemon() and image_state != "CONFIRMED":
+        if (
+            raw
+            and after_identity.is_unambiguous_pokemon()
+            and image_state != BACK_IMAGE_CONFIRMED
+        ):
             cheap_filter.reject_images += 1
 
         try:
@@ -493,6 +591,82 @@ class EbayLiveDiagnostic:
             cheap_filter.passed += 1
         if MARKET_DATA_UNAVAILABLE in result.reasons:
             cheap_filter.market_values_missing += 1
+
+    def _back_image_state(
+        self, payload: Mapping[str, object]
+    ) -> Tuple[str, Optional[str]]:
+        additions = _additional_images(payload)
+        explicit_back_markers = {
+            "back",
+            "card back",
+            "reverse",
+            "verso",
+            "ruckseite",
+            "retro",
+        }
+        marker_keys = ("imageType", "type", "role", "label", "imageLabel")
+        for image in additions:
+            if any(
+                _normalized_marker(image.get(key)) in explicit_back_markers
+                for key in marker_keys
+                if image.get(key) is not None
+            ):
+                image_url = image.get("imageUrl")
+                return (
+                    BACK_IMAGE_CONFIRMED,
+                    str(image_url) if image_url else None,
+                )
+
+        for image in additions[:MAX_VISUAL_IMAGES_PER_ITEM]:
+            image_url = image.get("imageUrl")
+            if not image_url:
+                continue
+            image_bytes = self._image_fetcher(str(image_url))
+            if image_bytes is None:
+                continue
+            assessment = self._back_detector.assess_bytes(image_bytes)
+            if assessment.state == BACK_IMAGE_CONFIRMED:
+                return BACK_IMAGE_CONFIRMED, str(image_url)
+        if any(image.get("imageUrl") for image in additions):
+            return BACK_IMAGE_CANDIDATE, None
+        return BACK_IMAGE_UNKNOWN, None
+
+    def _fetch_image_in_memory(self, image_url: str) -> Optional[bytes]:
+        parsed = urlparse(image_url)
+        hostname = (parsed.hostname or "").casefold()
+        if parsed.scheme != "https" or not (
+            hostname == "ebayimg.com" or hostname.endswith(".ebayimg.com")
+        ):
+            return None
+        try:
+            response = self._session.get(
+                image_url,
+                headers={"Accept": "image/*"},
+                timeout=self._timeout_seconds,
+                stream=True,
+            )
+        except requests.RequestException:
+            return None
+        try:
+            if response.status_code != 200:
+                return None
+            raw_length = getattr(response, "headers", {}).get("Content-Length")
+            if raw_length and int(raw_length) > MAX_IMAGE_BYTES:
+                return None
+            content = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                content.extend(chunk)
+                if len(content) > MAX_IMAGE_BYTES:
+                    return None
+            return bytes(content) if content else None
+        except (AttributeError, TypeError, ValueError):
+            return None
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
 
 
 def _aggregate_identity(identity: CardIdentity, aggregate: IdentityAggregate) -> None:
@@ -567,30 +741,6 @@ def _normalized_marker(value: object) -> str:
     )
 
 
-def _back_image_state(payload: Mapping[str, object]) -> Tuple[str, Optional[str]]:
-    additions = _additional_images(payload)
-    explicit_back_markers = {
-        "back",
-        "card back",
-        "reverse",
-        "verso",
-        "ruckseite",
-        "retro",
-    }
-    marker_keys = ("imageType", "type", "role", "label", "imageLabel")
-    for image in additions:
-        if any(
-            _normalized_marker(image.get(key)) in explicit_back_markers
-            for key in marker_keys
-            if image.get(key) is not None
-        ):
-            image_url = image.get("imageUrl")
-            return "CONFIRMED", str(image_url) if image_url else None
-    if any(image.get("imageUrl") for image in additions):
-        return "CANDIDATE", None
-    return "UNKNOWN", None
-
-
 def _safe_json(response: object) -> object:
     try:
         return response.json()  # type: ignore[attr-defined]
@@ -630,81 +780,52 @@ def _error_metadata(payload: object) -> Tuple[Optional[str], Optional[str]]:
     )
 
 
+def _payload_mentions_filter(payload: object) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    errors = payload.get("errors")
+    if not isinstance(errors, list):
+        return False
+    for error in errors:
+        if not isinstance(error, Mapping):
+            continue
+        technical_text = " ".join(
+            str(error.get(key, ""))
+            for key in ("domain", "category", "name", "message")
+        ).casefold()
+        if "filter" in technical_text or "conditionid" in technical_text:
+            return True
+    return False
+
+
 def render_live_summary(summary: LiveDiagnosticSummary) -> str:
     aggregates = {value.marketplace_id: value for value in summary.marketplaces}
+    ch = aggregates.get("EBAY_CH", MarketplaceAggregate("EBAY_CH"))
     lines: List[str] = [
-        "=== V5 EBAY ENRICHMENT SUMMARY ===",
+        "=== V5 EBAY IDENTITY/BACK SUMMARY ===",
         "",
         f"OAuth: {'OK' if summary.oauth.token_obtained else 'FAIL'}",
+        "",
+        f"identity exploitable before: {summary.identity.before_usable}",
+        f"identity exploitable after: {summary.identity.after_usable}",
+        f"card_name coverage: {summary.identity.card_name}",
+        f"resolved via localizedAspects: {summary.identity.resolved_localized_aspects}",
+        f"resolved via title fallback: {summary.identity.resolved_title_fallback}",
+        f"resolved via set+number: {summary.identity.resolved_set_number}",
+        f"ambiguous: {summary.identity.ambiguous}",
+        "",
+        f"BACK_IMAGE_CONFIRMED: {summary.images.back_confirmed}",
+        f"BACK_IMAGE_CANDIDATE: {summary.images.back_candidate}",
+        f"BACK_IMAGE_UNKNOWN: {summary.images.back_unknown}",
+        "",
+        f"EBAY_CH reason: {ch.empty_reason}",
+        "",
+        "CardGrader calls: 0",
+        "Purchases: 0",
+        "Bids: 0",
+        "Checkout: 0",
+        "Persisted eBay records: 0",
     ]
-    for marketplace_id in MARKETPLACES:
-        aggregate = aggregates.get(marketplace_id, MarketplaceAggregate(marketplace_id))
-        lines.extend(
-            [
-                "",
-                f"{marketplace_id}:",
-                f"search results: {aggregate.results_received}",
-                f"getItem success: {aggregate.get_item_success}",
-                f"taxonomy: {'OK' if aggregate.taxonomy_ok else 'FAIL'}",
-            ]
-        )
-        if aggregate.taxonomy_error_type:
-            lines.append(f"taxonomy error type: {aggregate.taxonomy_error_type}")
-        if aggregate.taxonomy_error_code:
-            lines.append(f"taxonomy error code: {aggregate.taxonomy_error_code}")
-        if aggregate.error_type:
-            lines.append(f"search error type: {aggregate.error_type}")
-        if aggregate.error_code:
-            lines.append(f"search error code: {aggregate.error_code}")
-    lines.extend(
-        [
-            "",
-            "Cross-market:",
-            f"duplicates: {summary.duplicate_items}",
-            f"unique: {summary.unique_items}",
-            f"same category ID: {'YES' if summary.same_category_id else 'NO'}",
-            "",
-            "IDENTITY:",
-            f"before enrichment exploitable: {summary.identity.before_usable}",
-            f"after enrichment exploitable: {summary.identity.after_usable}",
-            f"card_name coverage: {summary.identity.card_name}",
-            f"set coverage: {summary.identity.set_name}",
-            f"card_number coverage: {summary.identity.card_number}",
-            f"year coverage: {summary.identity.year}",
-            f"language coverage: {summary.identity.language}",
-            f"variant coverage: {summary.identity.variant}",
-            f"localizedAspects coverage: {summary.identity.localized_aspects_available}",
-            f"product data coverage: {summary.identity.product_data_available}",
-            f"card name missing: {summary.identity.missing_card_name}",
-            f"set missing: {summary.identity.missing_set}",
-            f"card number missing: {summary.identity.missing_card_number}",
-            f"language missing: {summary.identity.missing_language}",
-            f"game missing: {summary.identity.missing_game}",
-            f"ambiguous: {summary.identity.ambiguous}",
-            "",
-            "IMAGES:",
-            f"search primary: {summary.images.search_primary}",
-            f"search additional: {summary.images.search_additional}",
-            f"getItem primary: {summary.images.get_item_primary}",
-            f"getItem additional: {summary.images.get_item_additional}",
-            f"getItem total images: {summary.images.total_images}",
-            f"BACK_IMAGE_CONFIRMED: {summary.images.back_confirmed}",
-            f"BACK_IMAGE_CANDIDATE: {summary.images.back_candidate}",
-            f"BACK_IMAGE_UNKNOWN: {summary.images.back_unknown}",
-            "",
-            "CHEAP FILTER:",
-            f"pass: {summary.cheap_filter.passed}",
-            f"reject identity: {summary.cheap_filter.reject_identity}",
-            f"reject images: {summary.cheap_filter.reject_images}",
-            f"market-values-missing: {summary.cheap_filter.market_values_missing}",
-            "",
-            "CardGrader calls: 0",
-            "Purchases: 0",
-            "Bids: 0",
-            "Checkout: 0",
-            "Persisted eBay records: 0",
-        ]
-    )
     return "\n".join(lines)
 
 

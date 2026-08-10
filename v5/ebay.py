@@ -6,7 +6,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 from urllib.parse import quote
 
 import requests
@@ -350,17 +350,6 @@ def grading_status_from_ebay_data(
 
 IDENTITY_ALIASES = {
     "game": ("Game", "Jeu", "Franchise", "Spiel", "Gioco"),
-    "card_name": (
-        "Card Name",
-        "Nom de la carte",
-        "Character",
-        "Personnage",
-        "Pokémon",
-        "Pokemon",
-        "Kartenname",
-        "Nome carta",
-        "Personaggio",
-    ),
     "set": (
         "Set",
         "Card Set",
@@ -414,6 +403,140 @@ IDENTITY_ALIASES = {
     "illustrator": ("Illustrator", "Illustrateur", "Illustratore"),
 }
 
+DIRECT_CARD_NAME_ALIASES = (
+    "Card Name",
+    "Nom de la carte",
+    "Pokémon",
+    "Pokemon",
+    "Kartenname",
+    "Nome carta",
+)
+CHARACTER_CARD_NAME_ALIASES = (
+    "Character",
+    "Personnage",
+    "Personaggio",
+    "Charakter",
+)
+CONTEXTUAL_CARD_NAME_ALIASES = (
+    "Card",
+    "Carte",
+    "Subject",
+    "Sujet",
+    "Motiv",
+    "Soggetto",
+)
+
+CARD_NAME_SOURCE_LOCALIZED = "localizedAspects"
+CARD_NAME_SOURCE_TITLE = "title fallback"
+CARD_NAME_SOURCE_SET_NUMBER = "set+number"
+
+IDENTITY_SCORE_WEIGHTS = {
+    "card_name": 30,
+    "set": 20,
+    "card_number": 20,
+    "language": 10,
+    "year": 10,
+    "variant": 10,
+}
+
+
+@dataclass(frozen=True)
+class CardNameLookupResult:
+    card_name: Optional[str]
+    ambiguous: bool = False
+
+
+class SetNumberCardNameResolver(Protocol):
+    """Future resolution exacte, sans imposer de fournisseur externe."""
+
+    def resolve(
+        self,
+        set_name: str,
+        card_number: str,
+        language: Optional[str],
+        year: Optional[int],
+        variant: Optional[str],
+    ) -> CardNameLookupResult:
+        ...
+
+
+class NullSetNumberCardNameResolver:
+    def resolve(
+        self,
+        set_name: str,
+        card_number: str,
+        language: Optional[str],
+        year: Optional[int],
+        variant: Optional[str],
+    ) -> CardNameLookupResult:
+        return CardNameLookupResult(None)
+
+
+@dataclass(frozen=True)
+class IdentityResolution:
+    identity: CardIdentity
+    score: int
+    score_components: Tuple[str, ...]
+    card_name_source: Optional[str]
+
+
+def _single_card_name(
+    aspects: Mapping[str, Tuple[str, ...]], aliases: Sequence[str]
+) -> Tuple[Optional[str], bool]:
+    values = tuple(
+        dict.fromkeys(value for value in _matching_values(aspects, aliases) if value)
+    )
+    if len(values) == 1:
+        return values[0], False
+    return None, len(values) > 1
+
+
+def _card_name_from_aspects(
+    aspects: Mapping[str, Tuple[str, ...]],
+    set_name: Optional[str],
+    card_number: Optional[str],
+) -> Tuple[Optional[str], Tuple[str, ...]]:
+    direct, direct_ambiguous = _single_card_name(aspects, DIRECT_CARD_NAME_ALIASES)
+    if direct_ambiguous:
+        return None, ("card_name: plusieurs noms directs",)
+    if direct:
+        return direct, ()
+
+    character, character_ambiguous = _single_card_name(
+        aspects, CHARACTER_CARD_NAME_ALIASES
+    )
+    if character and re.search(r"[,;|]", character):
+        character = None
+        character_ambiguous = True
+    if character_ambiguous:
+        return None, ("card_name: plusieurs personnages",)
+    if character:
+        return character, ()
+
+    contextual, contextual_ambiguous = _single_card_name(
+        aspects, CONTEXTUAL_CARD_NAME_ALIASES
+    )
+    if contextual_ambiguous:
+        return None, ("card_name: plusieurs sujets",)
+    generic_values = {
+        "card",
+        "carte",
+        "single card",
+        "individual card",
+        "trading card",
+        "pokemon card",
+        "collectible card",
+        "collectible",
+    }
+    if (
+        contextual
+        and _normalize(contextual) not in generic_values
+        and set_name
+        and card_number
+    ):
+        return contextual, ()
+    return None, ()
+
 
 def card_identity_from_aspects(
     aspects: Mapping[str, Tuple[str, ...]]
@@ -437,9 +560,14 @@ def card_identity_from_aspects(
         except ValueError:
             ambiguities.append(f"year: valeur illisible ({extracted['year']})")
 
+    card_name, card_name_ambiguities = _card_name_from_aspects(
+        aspects, extracted["set"], extracted["card_number"]
+    )
+    ambiguities.extend(card_name_ambiguities)
+
     return CardIdentity(
         game=extracted["game"],
-        card_name=extracted["card_name"],
+        card_name=card_name,
         set=extracted["set"],
         card_number=extracted["card_number"],
         year=year,
@@ -454,7 +582,6 @@ def card_identity_from_aspects(
 
 
 _TITLE_LABELS = {
-    "card_name": ("card name", "nom de la carte", "kartenname", "nome carta"),
     "set": ("set", "series", "serie", "série", "extension", "erweiterung"),
     "card_number": (
         "card number",
@@ -491,7 +618,9 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
             values[field_name] = value
 
     if "card_number" not in values:
-        number_match = re.search(r"(?<![A-Za-z0-9])([A-Z]{0,4}\d{1,4}/\d{1,4})(?!\d)", title)
+        number_match = re.search(
+            r"(?<![A-Za-z0-9])([A-Z]{0,4}\d{1,4}/\d{1,4})(?!\d)", title
+        )
         if number_match:
             values["card_number"] = number_match.group(1)
     year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)
@@ -522,14 +651,124 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
     return values
 
 
-def card_identity_from_ebay_payload(
-    payload: Mapping[str, object], aspects: Optional[Mapping[str, Tuple[str, ...]]] = None
-) -> CardIdentity:
-    structured = card_identity_from_aspects(aspects if aspects is not None else _aspects(payload))
+def _safe_title_card_name(
+    title: str, structured: CardIdentity
+) -> Tuple[Optional[str], bool]:
+    """Retourne un nom verbatim seulement si les aspects verrouillent l'identite."""
+
+    if not structured.set or not structured.card_number:
+        return None, False
+    if not (structured.language or structured.year or structured.variant):
+        return None, False
+
+    labelled = _labelled_title_value(
+        title,
+        (
+            "card name",
+            "nom de la carte",
+            "character",
+            "personnage",
+            "kartenname",
+            "nome carta",
+        ),
+    )
+    if labelled:
+        if re.search(r"[,;]|\s(?:and|et|und|e)\s", labelled, flags=re.IGNORECASE):
+            return None, True
+        return labelled, False
+
+    number_match = re.search(
+        re.escape(structured.card_number), title, flags=re.IGNORECASE
+    )
+    if not number_match:
+        return None, False
+    candidate = title[: number_match.start()]
+    removable = (
+        structured.set,
+        structured.language,
+        str(structured.year) if structured.year else None,
+        structured.variant,
+        "Pokémon TCG",
+        "Pokemon TCG",
+        "Pokémon",
+        "Pokemon",
+        "Trading Card Game",
+        "JCC",
+        "TCG",
+    )
+    for value in removable:
+        if value:
+            candidate = re.sub(re.escape(value), " ", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(
+        r"\b(?:card|carte|single|raw|ungraded|holo|reverse|rare|mint|nm)\b",
+        " ",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = " ".join(candidate.strip(" -–—:|[](){}").split())
+    if not candidate:
+        return None, False
+    unsafe = (
+        len(candidate) > 60
+        or not 1 <= len(candidate.split()) <= 4
+        or bool(
+            re.search(
+                r"[,;/+&]|\b(?:lot|bundle|collection|mystery|proxy|custom)\b",
+                candidate,
+                re.IGNORECASE,
+            )
+        )
+        or not any(character.isalpha() for character in candidate)
+    )
+    return (None, True) if unsafe else (candidate, False)
+
+
+def _identity_score(identity: CardIdentity) -> Tuple[int, Tuple[str, ...]]:
+    values = {
+        "card_name": identity.card_name,
+        "set": identity.set,
+        "card_number": identity.card_number,
+        "language": identity.language,
+        "year": identity.year,
+        "variant": identity.variant,
+    }
+    components = tuple(
+        f"{field_name}:+{IDENTITY_SCORE_WEIGHTS[field_name]}"
+        for field_name, value in values.items()
+        if value is not None and value != ""
+    )
+    score = sum(
+        IDENTITY_SCORE_WEIGHTS[field_name]
+        for field_name, value in values.items()
+        if value is not None and value != ""
+    )
+    if identity.ambiguities:
+        score = max(0, score - 25)
+        components += ("ambiguity:-25",)
+    return score, components
+
+
+def resolve_card_identity(
+    payload: Mapping[str, object],
+    aspects: Optional[Mapping[str, Tuple[str, ...]]] = None,
+    set_number_resolver: Optional[SetNumberCardNameResolver] = None,
+) -> IdentityResolution:
+    structured = card_identity_from_aspects(
+        aspects if aspects is not None else _aspects(payload)
+    )
     product = payload.get("product")
     product_title = product.get("title") if isinstance(product, Mapping) else None
-    title = str(product_title or payload.get("title") or "")
-    fallback = _title_fallbacks(title)
+    titles = tuple(
+        dict.fromkeys(
+            str(value).strip()
+            for value in (product_title, payload.get("title"))
+            if value and str(value).strip()
+        )
+    )
+    fallback: Dict[str, object] = {}
+    for title in titles:
+        for name, value in _title_fallbacks(title).items():
+            fallback.setdefault(name, value)
     fields = {
         "game": structured.game,
         "card_name": structured.card_name,
@@ -544,9 +783,52 @@ def card_identity_from_ebay_payload(
         "illustrator": structured.illustrator,
     }
     for name, value in fallback.items():
-        if name in fields and fields[name] is None:
+        if name in fields and name != "card_name" and fields[name] is None:
             fields[name] = value
-    return CardIdentity(**fields, ambiguities=structured.ambiguities)
+
+    card_name_source = (
+        CARD_NAME_SOURCE_LOCALIZED if structured.card_name is not None else None
+    )
+    ambiguities = list(structured.ambiguities)
+    resolver = set_number_resolver or NullSetNumberCardNameResolver()
+    if fields["card_name"] is None and fields["set"] and fields["card_number"]:
+        lookup = resolver.resolve(
+            str(fields["set"]),
+            str(fields["card_number"]),
+            str(fields["language"]) if fields["language"] else None,
+            int(fields["year"]) if fields["year"] is not None else None,
+            str(fields["variant"]) if fields["variant"] else None,
+        )
+        if lookup.ambiguous:
+            ambiguities.append("card_name: resolution set+number ambigue")
+        elif lookup.card_name and lookup.card_name.strip():
+            fields["card_name"] = lookup.card_name.strip()
+            card_name_source = CARD_NAME_SOURCE_SET_NUMBER
+
+    if fields["card_name"] is None:
+        title_names = []
+        title_ambiguous = False
+        for title in titles:
+            title_name, ambiguous = _safe_title_card_name(title, structured)
+            title_ambiguous = title_ambiguous or ambiguous
+            if title_name:
+                title_names.append(title_name)
+        distinct_title_names = tuple(dict.fromkeys(title_names))
+        if title_ambiguous or len(distinct_title_names) > 1:
+            ambiguities.append("card_name: title fallback ambigu")
+        elif len(distinct_title_names) == 1:
+            fields["card_name"] = distinct_title_names[0]
+            card_name_source = CARD_NAME_SOURCE_TITLE
+
+    identity = CardIdentity(**fields, ambiguities=tuple(dict.fromkeys(ambiguities)))
+    score, components = _identity_score(identity)
+    return IdentityResolution(identity, score, components, card_name_source)
+
+
+def card_identity_from_ebay_payload(
+    payload: Mapping[str, object], aspects: Optional[Mapping[str, Tuple[str, ...]]] = None
+) -> CardIdentity:
+    return resolve_card_identity(payload, aspects).identity
 
 
 def _amount(payload: object) -> Optional[object]:

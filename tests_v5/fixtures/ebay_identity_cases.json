@@ -1,0 +1,133 @@
+[
+  {
+    "case": "card_name",
+    "title": "Pokémon listing",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokémon TCG"},
+      {"name": "Card Name", "value": "Pikachu"},
+      {"name": "Set", "value": "Base Set"},
+      {"name": "Card Number", "value": "58/102"},
+      {"name": "Language", "value": "English"}
+    ],
+    "expected_name": "Pikachu",
+    "expected_source": "localizedAspects",
+    "ambiguous": false
+  },
+  {
+    "case": "character_single",
+    "title": "Pokémon listing",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokémon TCG"},
+      {"name": "Character", "value": "Eevee"},
+      {"name": "Set", "value": "Jungle"},
+      {"name": "Card Number", "value": "51/64"},
+      {"name": "Language", "value": "English"}
+    ],
+    "expected_name": "Eevee",
+    "expected_source": "localizedAspects",
+    "ambiguous": false
+  },
+  {
+    "case": "character_multiple",
+    "title": "Pokémon listing",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokémon TCG"},
+      {"name": "Set", "value": "Test Set"},
+      {"name": "Card Number", "value": "1/10"},
+      {"name": "Language", "value": "English"}
+    ],
+    "product": {
+      "aspectGroups": [
+        {
+          "aspects": [
+            {"localizedName": "Character", "localizedValues": ["Pikachu", "Raichu"]}
+          ]
+        }
+      ]
+    },
+    "expected_name": null,
+    "expected_source": null,
+    "ambiguous": true
+  },
+  {
+    "case": "pokemon_label",
+    "title": "Pokémon listing",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokémon TCG"},
+      {"name": "Pokémon", "value": "Dracaufeu"},
+      {"name": "Série", "value": "Set de Base"},
+      {"name": "Numéro de carte", "value": "4/102"},
+      {"name": "Langue", "value": "Français"}
+    ],
+    "expected_name": "Dracaufeu",
+    "expected_source": "localizedAspects",
+    "ambiguous": false
+  },
+  {
+    "case": "pokemon_ascii_label",
+    "title": "Pokemon listing",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokemon TCG"},
+      {"name": "Pokemon", "value": "Mewtwo"},
+      {"name": "Set", "value": "Base Set"},
+      {"name": "Card Number", "value": "10/102"},
+      {"name": "Language", "value": "English"}
+    ],
+    "expected_name": "Mewtwo",
+    "expected_source": "localizedAspects",
+    "ambiguous": false
+  },
+  {
+    "case": "french_card_label",
+    "title": "Pokémon listing",
+    "localizedAspects": [
+      {"name": "Jeu", "value": "Pokémon JCC"},
+      {"name": "Carte", "value": "Carapuce"},
+      {"name": "Extension", "value": "Set de Base"},
+      {"name": "Numéro de carte", "value": "63/102"},
+      {"name": "Langue", "value": "Français"}
+    ],
+    "expected_name": "Carapuce",
+    "expected_source": "localizedAspects",
+    "ambiguous": false
+  },
+  {
+    "case": "set_number_without_name",
+    "title": "Pokémon card",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokémon TCG"},
+      {"name": "Set", "value": "Base Set"},
+      {"name": "Card Number", "value": "58/102"},
+      {"name": "Language", "value": "English"}
+    ],
+    "expected_name": null,
+    "expected_source": null,
+    "ambiguous": false
+  },
+  {
+    "case": "title_fallback_clear",
+    "title": "Pokémon Pikachu 58/102 Base Set English",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokémon TCG"},
+      {"name": "Set", "value": "Base Set"},
+      {"name": "Card Number", "value": "58/102"},
+      {"name": "Language", "value": "English"}
+    ],
+    "expected_name": "Pikachu",
+    "expected_source": "title fallback",
+    "ambiguous": false
+  },
+  {
+    "case": "title_fallback_ambiguous",
+    "title": "Pokémon Pikachu & Raichu 1/10 Test Set English",
+    "localizedAspects": [
+      {"name": "Game", "value": "Pokémon TCG"},
+      {"name": "Set", "value": "Test Set"},
+      {"name": "Card Number", "value": "1/10"},
+      {"name": "Language", "value": "English"}
+    ],
+    "expected_name": null,
+    "expected_source": null,
+    "ambiguous": true
+  }
+]
