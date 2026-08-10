@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 from ecb_fx import ECBCurrencyConverter
 
 from .card_identity_catalog import (
+    HybridPokemonCardResolver,
     MultilingualPokemonCardResolver,
     render_card_catalog_counters,
 )
@@ -35,6 +36,10 @@ from .market_values.poketrace_free import (
     FreeTierPokeTraceProvider,
     free_tier_config_from_env,
     render_free_poketrace_counters,
+)
+from .poketrace_identity import (
+    PokeTraceIdentityResolver,
+    render_poketrace_identity_counters,
 )
 
 
@@ -67,13 +72,9 @@ class _PokeTracePrimaryMarketSource:
             isinstance(self.provider, FreeTierPokeTraceProvider)
             and language not in self._SUPPORTED_US_LANGUAGES
         ):
-            # Free is US-only. Do not spend quota on a US request whose value
-            # would be rejected immediately for language incompatibility.
             return None
         snapshot = self.provider.snapshot_for(identity)
         if language not in self._SUPPORTED_US_LANGUAGES:
-            # In paid mode the snapshot may still carry a useful separate EU /
-            # CardMarket signal, but US values never enter the USD aggregator.
             return None
         return snapshot.us_values
 
@@ -102,14 +103,17 @@ def _render_poketrace(provider: PokeTraceProvider) -> str:
     return render_poketrace_counters(provider)
 
 
-class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
-    """V5 pipeline with canonical identity resolution and PokeTrace market data.
+def _progress(message: str) -> None:
+    if os.getenv("V5_PROGRESS_LOGS", "false").strip().casefold() == "true":
+        print(f"[V5] {message}", flush=True)
 
-    TCGdex remains the multilingual identity resolver, with Pokémon TCG API as
-    the English/unknown-language fallback. PokeTrace is the primary V5 market
-    data source when configured; GCC remains a complementary graded-history
-    source. During FREE_TEST, PokeTrace is deliberately restricted to US RAW
-    prices and does not call EU/CardMarket. No listing record is persisted.
+
+class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
+    """V5 pipeline with hybrid canonical identity and PokeTrace market data.
+
+    Identity chain: TCGdex -> PokeTrace -> Pokemon TCG API. A successful
+    PokeTrace identity lookup primes the Free market-data cache from the same
+    response, so valuation does not spend another request for that card.
     """
 
     def __init__(
@@ -125,6 +129,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         self.card_catalog_resolver = card_catalog_resolver
         self.poketrace = poketrace_provider or _build_poketrace_provider()
         self.poketrace_market_source = _PokeTracePrimaryMarketSource(self.poketrace)
+        self._identity_records_seen = 0
         super().__init__(
             client_id,
             client_secret,
@@ -140,16 +145,17 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         identity_counts: PipelineIdentityAggregate,
         image_counts: PipelineImageAggregate,
     ) -> Tuple[object, bool]:
+        self._identity_records_seen += 1
         candidate, raw = super()._candidate_from_record(
             record, identity_counts, image_counts
         )
         if candidate is None:
+            _progress(
+                f"identity record {self._identity_records_seen}: "
+                f"{'raw but unresolved' if raw else 'not eligible'}"
+            )
             return None, raw
 
-        # The base resolver already rescues missing card names from set+number.
-        # Run the full resolver here as well when eBay supplied a name, so a
-        # French listing such as "Ekans" can be canonicalised to the French
-        # TCGdex identity without changing its language discriminator.
         resolved = self.card_catalog_resolver.resolve_identity(candidate.identity)
         if (
             resolved.matched
@@ -157,8 +163,10 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             and identity_status(resolved.identity) == IDENTITY_OK
         ):
             candidate = replace(candidate, identity=resolved.identity)
-        # An external catalogue ambiguity must never turn a previously clean
-        # eBay identity into a guessed identity. Keep the original candidate.
+        _progress(
+            f"identity record {self._identity_records_seen}: usable "
+            f"via {resolved.source if resolved.matched else 'eBay structured identity'}"
+        )
         return candidate, raw
 
 
@@ -176,18 +184,23 @@ def main() -> int:
     config = LiveRawPipelineConfig.from_env()
     client_id = os.getenv("EBAY_CLIENT_ID", "").strip()
     client_secret = os.getenv("EBAY_CLIENT_SECRET", "").strip()
-    resolver = MultilingualPokemonCardResolver()
     poketrace = _build_poketrace_provider()
+    poketrace_identity = PokeTraceIdentityResolver(poketrace)
+    resolver = HybridPokemonCardResolver(
+        poketrace_identity_resolver=poketrace_identity
+    )
 
     workflow_authorized = (
         os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
     )
+    _progress("starting eBay discovery -> identity -> PokeTrace market validation")
     try:
         gcc_live_requested = (
             os.getenv("GCC_HISTORY_ENABLED", "false").strip().casefold() == "true"
         )
         session_file = Path("gcc_session.json")
         if gcc_live_requested and workflow_authorized and session_file.is_file():
+            _progress("GCC live history enabled for this run")
             with V4GCCBrowserSession(str(session_file)) as source:
                 gcc_provider = GCCHistoryProvider(
                     config=GCCProviderConfig.from_env(),
@@ -204,6 +217,7 @@ def main() -> int:
                 )
                 summary = diagnostic.run()
         else:
+            _progress("GCC live fallback disabled; measuring identity + PokeTrace only")
             diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
                 client_id,
                 client_secret,
@@ -215,7 +229,9 @@ def main() -> int:
     except Exception:
         summary = _fallback_summary(config)
 
+    _progress("diagnostic completed")
     print(render_card_catalog_counters(resolver))
+    print(render_poketrace_identity_counters(poketrace_identity))
     print(_render_poketrace(poketrace))
     print("=== V5 EBAY OAUTH OBSERVABILITY ===")
     print(
