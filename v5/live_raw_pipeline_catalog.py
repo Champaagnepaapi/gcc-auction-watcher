@@ -33,6 +33,37 @@ from .market_values.poketrace import (
 )
 
 
+class _PokeTracePrimaryMarketSource:
+    """Expose only language-safe PokeTrace US values to the USD aggregator."""
+
+    _SUPPORTED_US_LANGUAGES = {
+        "english",
+        "anglais",
+        "en",
+        "japanese",
+        "japonais",
+        "ja",
+        "jp",
+        "chinese",
+        "chinois",
+        "zh",
+        "thai",
+        "th",
+        "indonesian",
+        "id",
+    }
+
+    def __init__(self, provider: PokeTraceProvider) -> None:
+        self.provider = provider
+
+    def values_for(self, identity):
+        snapshot = self.provider.snapshot_for(identity)
+        language = str(identity.language or "").strip().casefold()
+        if language not in self._SUPPORTED_US_LANGUAGES:
+            return None
+        return snapshot.us_values
+
+
 class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
     """V5 pipeline with canonical identity resolution and PokeTrace market data.
 
@@ -62,13 +93,14 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
                 poketrace_config = replace(poketrace_config, enabled=False)
             poketrace_provider = PokeTraceProvider(config=poketrace_config)
         self.poketrace = poketrace_provider
+        self.poketrace_market_source = _PokeTracePrimaryMarketSource(self.poketrace)
         super().__init__(
             client_id,
             client_secret,
             config=config,
             set_number_resolver=card_catalog_resolver,
             gcc_history_provider=gcc_history_provider,
-            offline_market_sources=(self.poketrace,),
+            offline_market_sources=(self.poketrace_market_source,),
         )
 
     def _candidate_from_record(
