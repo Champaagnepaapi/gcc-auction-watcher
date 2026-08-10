@@ -168,6 +168,7 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
     def test_rejection_reasons_are_counted_without_relaxing_acceptance(self):
         wrong_number = card_payload(card_number="5/102")["data"][0]
         wrong_set = card_payload(set_name="Jungle")["data"][0]
+        wrong_set["set"]["slug"] = "jungle"
         session = PokeTraceSession([
             Response(200, {"data": [wrong_number, wrong_set]}),
             Response(200, {"data": []}),
