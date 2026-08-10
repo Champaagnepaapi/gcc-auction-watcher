@@ -82,7 +82,7 @@ HISTORY_BODY = (
 def source_for(lot=None, body=HISTORY_BODY):
     chosen = lot or inventory_lot()
 
-    def inventory(diagnostics):
+    def inventory(diagnostics, **_bounds):
         diagnostics.fixed_coverage.pages_requested = 1
         return (chosen,)
 

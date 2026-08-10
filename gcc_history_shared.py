@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-HISTORY_GRADERS = ("PSA", "PCA", "CGC", "BGS", "BECKETT", "CCC", "CA", "PG", "SGC")
+HISTORY_GRADERS = ("PSA", "PCA", "CGC", "BGS", "BECKETT", "CCC", "CA", "PG", "SGC", "SFG", "SGS", "SCA", "TCC")
 
 NON_GRADE_PRICE = "PRICE"
 NON_GRADE_COUNTER = "COUNTER"
