@@ -138,7 +138,8 @@ class GCCHistoryProvider:
         calibration_sales, _ = self._parser.parse_records(
             self.source.calibration_records()
         )
-        self._ratio_model = CrossGraderRatioModel(calibration_sales)
+        self._calibration_sales = list(calibration_sales)
+        self._ratio_model = CrossGraderRatioModel(self._calibration_sales)
 
     @property
     def mode(self) -> str:
@@ -187,6 +188,12 @@ class GCCHistoryProvider:
             self.counters.records_received += len(records)
         sales, invalid = self._parser.parse_records(records)
         self.counters.records_invalid += invalid
+        for sale in sales:
+            if sale not in self._calibration_sales:
+                self._calibration_sales.append(sale)
+        # Live records become eligible empirical calibration only after they
+        # have actually been observed.  No static grader ratio is introduced.
+        self._ratio_model = CrossGraderRatioModel(self._calibration_sales)
         matched_sales_values = []
         for sale in sales:
             identity_match = match_identity(canonical, sale)
@@ -285,8 +292,12 @@ class GCCHistoryProvider:
                 "no asking-price records used",
             ),
             limitations=(
-                "no documented stable GCC live interface is configured",
-                "different grades are diagnostic only and never converted",
+                (
+                    "live access is limited to identities represented by the existing V4 on-sale inventory path"
+                    if self.source.live_available
+                    else "no documented stable GCC live interface is configured"
+                ),
+                "different grades remain separate; cross-grader values require empirical paired observations",
             ),
         )
         for valuation in valuations.values():

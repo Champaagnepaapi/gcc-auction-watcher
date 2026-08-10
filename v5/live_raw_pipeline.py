@@ -11,6 +11,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 from typing import Callable, Dict, Optional, Protocol, Sequence, Tuple
 
 from .ebay import (
@@ -45,7 +46,10 @@ from .market_values.economic import (
     evaluate_economic_pre_filter,
 )
 from .market_values.gcc_history.models import Grader, ValuationType
-from .market_values.gcc_history.provider import GCCHistoryProvider
+from .market_values.gcc_history.provider import (
+    GCCProviderConfig,
+    GCCHistoryProvider,
+)
 from .market_values.models import (
     MARKET_VALUE_CONFLICT,
     MARKET_VALUES_MISSING,
@@ -214,6 +218,26 @@ class ProviderAggregate:
     gcc_history_cache_hits: int = 0
     gcc_history_records_received: int = 0
     gcc_history_exact_matches: int = 0
+    gcc_history_access_mechanism: str = "UNAVAILABLE"
+    gcc_live_identities_queried: int = 0
+    gcc_inventory_pages_requested: int = 0
+    gcc_identity_conflicts: int = 0
+    gcc_records_with_grader: int = 0
+    gcc_records_with_numeric_grade: int = 0
+    gcc_grade_unknown: int = 0
+    gcc_grade_ambiguous: int = 0
+    gcc_non_grade_numeric_rejected: int = 0
+    gcc_invalid_over_ten_tokens: int = 0
+    gcc_special_qualifiers_excluded: int = 0
+    fx_provider: str = "UNAVAILABLE"
+    fx_source_url: str = "UNAVAILABLE"
+    fx_rates_fetched: int = 0
+    fx_cache_hits: int = 0
+    fx_source_currency: str = "EUR"
+    fx_target_currency: str = "USD"
+    fx_rate: Optional[str] = None
+    fx_rate_date: Optional[str] = None
+    fx_failures: int = 0
 
 
 @dataclass(frozen=True)
@@ -548,6 +572,15 @@ class LiveRawPipelineDiagnostic:
         economic: Optional[PipelineEconomicAggregate] = None,
         seen_mode: str = NO_PERSISTENCE_MODE,
     ) -> LiveRawPipelineSummary:
+        gcc_source = self.gcc_history.source
+        parsing = getattr(gcc_source, "parsing", None)
+        converter = self.gcc_history.converter
+        snapshot = getattr(converter, "snapshot", None)
+        fx_rate = (
+            snapshot.rate("EUR", self.gcc_history.config.default_currency)
+            if snapshot is not None
+            else None
+        )
         return LiveRawPipelineSummary(
             oauth=oauth,
             marketplaces=marketplaces,
@@ -572,6 +605,48 @@ class LiveRawPipelineDiagnostic:
                 gcc_history_cache_hits=self.gcc_history.counters.cache_hits,
                 gcc_history_records_received=self.gcc_history.counters.records_received,
                 gcc_history_exact_matches=self.gcc_history.counters.exact_matches,
+                gcc_history_access_mechanism=getattr(
+                    gcc_source, "access_mechanism", "UNAVAILABLE"
+                ),
+                gcc_live_identities_queried=getattr(
+                    gcc_source, "identities_queried", 0
+                ),
+                gcc_inventory_pages_requested=getattr(
+                    gcc_source, "inventory_pages_requested", 0
+                ),
+                gcc_identity_conflicts=getattr(
+                    gcc_source, "identity_conflicts", 0
+                ),
+                gcc_records_with_grader=getattr(
+                    parsing, "transactions_with_grader", 0
+                ),
+                gcc_records_with_numeric_grade=getattr(
+                    parsing, "transactions_with_numeric_grade", 0
+                ),
+                gcc_grade_unknown=getattr(parsing, "grade_absent", 0),
+                gcc_grade_ambiguous=getattr(parsing, "grade_ambiguous", 0),
+                gcc_non_grade_numeric_rejected=getattr(
+                    parsing, "non_grade_numeric_rejected", 0
+                ),
+                gcc_invalid_over_ten_tokens=getattr(
+                    parsing, "invalid_over_ten_tokens", 0
+                ),
+                gcc_special_qualifiers_excluded=getattr(
+                    parsing, "special_qualifiers_excluded", 0
+                ),
+                fx_provider=(
+                    getattr(snapshot, "provider", None)
+                    or getattr(converter, "method", "UNAVAILABLE")
+                ),
+                fx_source_url=getattr(snapshot, "source_url", "UNAVAILABLE"),
+                fx_rates_fetched=getattr(converter, "fetches", 0),
+                fx_cache_hits=getattr(converter, "cache_hits", 0),
+                fx_target_currency=self.gcc_history.config.default_currency,
+                fx_rate=(str(fx_rate) if fx_rate is not None else None),
+                fx_rate_date=(
+                    snapshot.rate_date.isoformat() if snapshot is not None else None
+                ),
+                fx_failures=getattr(converter, "failures", 0),
             ),
             seen_item_store_mode=seen_mode,
         )
@@ -592,19 +667,18 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
     )
     return "\n".join(
         (
-            "=== V5 LIVE RAW PIPELINE SUMMARY ===",
+            "=== V5 LIVE RAW → GCC MARKET SUMMARY ===",
             "",
+            "EBAY:",
             f"OAuth: {'OK' if summary.oauth.token_obtained else 'FAIL'}",
-            "",
-            "Marketplace:",
-            f"EBAY_US search results: {us.results_received}",
+            f"search results: {us.results_received}",
             f"getItem success: {us.get_item_success}",
-            f"raw condition accepted: {summary.raw_condition_accepted}",
+            f"raw accepted: {summary.raw_condition_accepted}",
             "",
             "IDENTITY:",
-            f"identity ok: {summary.identity.ok}",
-            f"identity ambiguous: {summary.identity.ambiguous}",
-            f"identity insufficient: {summary.identity.insufficient}",
+            f"identity exact/usable: {summary.identity.ok}",
+            f"ambiguous: {summary.identity.ambiguous}",
+            f"insufficient: {summary.identity.insufficient}",
             f"card_name coverage: {summary.identity.card_name}",
             f"set coverage: {summary.identity.set_name}",
             f"card_number coverage: {summary.identity.card_number}",
@@ -626,65 +700,93 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             "MARKET VALUES:",
             f"identities evaluated: {summary.market.identities_evaluated}",
             f"market values found: {summary.market.values_found}",
-            f"market values missing: {summary.market.values_missing}",
-            f"market value conflicts: {summary.market.value_conflicts}",
+            f"insufficient: {summary.market.values_missing}",
+            f"identity conflicts: {summary.providers.gcc_identity_conflicts}",
             (
                 "manual market validation required: "
                 f"{summary.market.manual_validation_required}"
             ),
-            (
-                "manual Product Research queries possible: "
-                f"{summary.market.manual_product_research_queries_possible}"
-            ),
-            f"raw direct values found: {summary.market.gcc_raw_direct_values}",
-            f"PSA9 direct values found: {summary.market.gcc_psa9_direct_values}",
-            f"PSA10 direct values found: {summary.market.gcc_psa10_direct_values}",
-            f"cross-grader proxy values found: {summary.market.gcc_proxy_values}",
+            f"RAW direct: {summary.market.gcc_raw_direct_values}",
+            f"PSA9 direct: {summary.market.gcc_psa9_direct_values}",
+            f"PSA10 direct: {summary.market.gcc_psa10_direct_values}",
+            f"cross-grader proxies: {summary.market.gcc_proxy_values}",
             "",
             "GCC HISTORY:",
+            (
+                "enabled: "
+                f"{str(summary.providers.gcc_history_enabled).lower()}"
+            ),
             (
                 "GCC History enabled: "
                 f"{str(summary.providers.gcc_history_enabled).lower()}"
             ),
             f"mode: {summary.providers.gcc_history_mode}",
+            (
+                "access mechanism: "
+                f"{summary.providers.gcc_history_access_mechanism}"
+            ),
+            (
+                "live identities queried: "
+                f"{summary.providers.gcc_live_identities_queried}"
+            ),
             f"live calls: {summary.providers.gcc_history_live_calls}",
-            f"queries: {summary.providers.gcc_history_queries}",
-            f"query cache hits: {summary.providers.gcc_history_cache_hits}",
-            f"records received: {summary.providers.gcc_history_records_received}",
+            (
+                "public inventory pages requested: "
+                f"{summary.providers.gcc_inventory_pages_requested}"
+            ),
+            f"cache hits: {summary.providers.gcc_history_cache_hits}",
+            (
+                "historical records received: "
+                f"{summary.providers.gcc_history_records_received}"
+            ),
             (
                 "exact collectible matches: "
                 f"{summary.providers.gcc_history_exact_matches}"
             ),
             "",
-            "ECONOMIC FILTER:",
+            "GCC PARSING:",
+            f"records with grader: {summary.providers.gcc_records_with_grader}",
+            (
+                "records with numeric grade: "
+                f"{summary.providers.gcc_records_with_numeric_grade}"
+            ),
+            f"grade unknown: {summary.providers.gcc_grade_unknown}",
+            f"grade ambiguous: {summary.providers.gcc_grade_ambiguous}",
+            (
+                "ambiguous numeric tokens rejected: "
+                f"{summary.providers.gcc_non_grade_numeric_rejected}"
+            ),
+            (
+                "invalid >10 tokens ignored as non-grade: "
+                f"{summary.providers.gcc_invalid_over_ten_tokens}"
+            ),
+            (
+                "special qualifiers excluded: "
+                f"{summary.providers.gcc_special_qualifiers_excluded}"
+            ),
+            "",
+            "FX:",
+            f"provider: {summary.providers.fx_provider}",
+            f"source: {summary.providers.fx_source_url}",
+            f"rates fetched: {summary.providers.fx_rates_fetched}",
+            f"cache hits: {summary.providers.fx_cache_hits}",
+            (
+                f"{summary.providers.fx_source_currency}→"
+                f"{summary.providers.fx_target_currency} rate: "
+                f"{summary.providers.fx_rate or 'UNAVAILABLE'}"
+            ),
+            f"rate date: {summary.providers.fx_rate_date or 'UNAVAILABLE'}",
+            f"FX failures: {summary.providers.fx_failures}",
+            "",
+            "ECONOMIC:",
             f"raw arbitrage: {summary.economic.raw_arbitrage}",
             f"grade9 profitable: {summary.economic.grade9_profitable}",
             f"psa10 dependent: {summary.economic.psa10_dependent}",
             f"economic reject even psa10: {summary.economic.reject_even_psa10}",
             f"cost model incomplete: {summary.economic.cost_model_incomplete}",
-            "",
-            "PROVIDERS:",
             (
-                "PriceCharting enabled: "
-                f"{str(summary.providers.pricecharting_enabled).lower()}"
-            ),
-            f"PriceCharting live calls: {summary.providers.pricecharting_live_calls}",
-            "",
-            (
-                "Marketplace Insights enabled: "
-                f"{str(summary.providers.marketplace_insights_enabled).lower()}"
-            ),
-            (
-                "Marketplace Insights live calls: "
-                f"{summary.providers.marketplace_insights_live_calls}"
-            ),
-            "",
-            f"PSA Sales status: {summary.providers.psa_sales_status}",
-            "",
-            f"Product Research mode: {summary.providers.product_research_mode}",
-            (
-                "Product Research automated calls: "
-                f"{summary.providers.product_research_automated_calls}"
+                "manual validation required: "
+                f"{summary.market.manual_validation_required}"
             ),
             "",
             "SAFETY:",
@@ -702,8 +804,36 @@ def main() -> int:
     client_id = os.getenv("EBAY_CLIENT_ID", "").strip()
     client_secret = os.getenv("EBAY_CLIENT_SECRET", "").strip()
     try:
-        diagnostic = LiveRawPipelineDiagnostic(client_id, client_secret, config=config)
-        summary = diagnostic.run()
+        gcc_live_requested = (
+            os.getenv("GCC_HISTORY_ENABLED", "false").strip().casefold()
+            == "true"
+        )
+        workflow_authorized = (
+            os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
+        )
+        session_file = Path("gcc_session.json")
+        if gcc_live_requested and workflow_authorized and session_file.is_file():
+            from ecb_fx import ECBCurrencyConverter
+            from .gcc_live_adapter import V4GCCBrowserSession
+
+            with V4GCCBrowserSession(str(session_file)) as source:
+                gcc_provider = GCCHistoryProvider(
+                    config=GCCProviderConfig.from_env(),
+                    source=source,
+                    converter=ECBCurrencyConverter(),
+                )
+                diagnostic = LiveRawPipelineDiagnostic(
+                    client_id,
+                    client_secret,
+                    config=config,
+                    gcc_history_provider=gcc_provider,
+                )
+                summary = diagnostic.run()
+        else:
+            diagnostic = LiveRawPipelineDiagnostic(
+                client_id, client_secret, config=config
+            )
+            summary = diagnostic.run()
     except Exception:
         summary = LiveRawPipelineSummary(
             OAuthAggregate("INTERNAL_ERROR", False, None),

@@ -9,18 +9,30 @@ permissions:
 jobs:
   diagnose-live-raw-pipeline-v5:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
       EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
       V5_LIVE_RAW_RESULT_LIMIT: "20"
       V5_LIVE_INCLUDE_EBAY_CH: "false"
       PRICECHARTING_ENABLED: "false"
       MARKETPLACE_INSIGHTS_ENABLED: "false"
-      GCC_HISTORY_ENABLED: "false"
+      GCC_HISTORY_ENABLED: "true"
+      GCC_HISTORY_CURRENCY: "USD"
       PRODUCT_RESEARCH_MODE: "MANUAL_VALIDATION_ONLY"
       RAW_MAX_PAID_GRADINGS_PER_RUN: "0"
       CARDGRADER_V5_ALLOW_PAID_CALLS: "false"
+      BUYER_FEES: ${{ vars.V5_BUYER_FEES_USD }}
+      DOMESTIC_SHIPPING: ${{ vars.V5_DOMESTIC_SHIPPING_USD }}
+      INTERNATIONAL_SHIPPING: ${{ vars.V5_INTERNATIONAL_SHIPPING_USD }}
+      GRADING_FEE: ${{ vars.V5_GRADING_FEE_USD }}
+      GRADING_SHIPPING: ${{ vars.V5_GRADING_SHIPPING_USD }}
+      VAULT_FEE: ${{ vars.V5_VAULT_FEE_USD }}
+      SELLING_FEE_PCT: ${{ vars.V5_SELLING_FEE_PCT }}
+      SELLING_FIXED_FEE: ${{ vars.V5_SELLING_FIXED_FEE_USD }}
+      FX_BUFFER_PCT: ${{ vars.V5_FX_BUFFER_PCT }}
+      OTHER_COSTS: ${{ vars.V5_OTHER_COSTS_USD }}
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
@@ -35,7 +47,23 @@ jobs:
           python-version: "3.12"
 
       - name: Install read-only diagnostic dependencies
-        run: python -m pip install --disable-pip-version-check requests==2.32.4 Pillow==12.3.0
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
+          playwright install --with-deps chromium
+
+      - name: Prepare existing authenticated GCC session
+        shell: bash
+        run: |
+          if [ -z "${GCC_SESSION_B64:-}" ]; then
+            echo "GCC authenticated session: MISSING"
+            exit 1
+          fi
+          printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
+          echo "GCC authenticated session: READY"
 
       - name: Run aggregate-only V5 live raw pipeline
         run: python -m v5.live_raw_pipeline
+
+      - name: Remove ephemeral GCC session
+        if: always()
+        run: rm -f gcc_session.json

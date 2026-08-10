@@ -15,6 +15,7 @@ from v5.market_values.economic import (
     GRADE9_PROFITABLE,
     GRADING_VISUAL_CONFIDENCE_REDUCED,
     PSA10_DEPENDENT,
+    RAW_ARBITRAGE,
     CostModel,
     evaluate_economic_pre_filter,
 )
@@ -283,6 +284,30 @@ class EconomicPreFilterTests(unittest.TestCase):
             BACK_IMAGE_CONFIRMED,
         )
         self.assertIn(MARKET_VALUES_MISSING, result.signals)
+
+    def test_missing_raw_does_not_block_grade9_market_economics(self):
+        result = evaluate_economic_pre_filter(
+            self.aggregate(
+                values_for(identity(), raw=None, grade8=None, grade9="55", psa10="100")
+            ),
+            costs("10", "20", "5"),
+            BACK_IMAGE_CONFIRMED,
+        )
+        self.assertTrue(result.can_continue)
+        self.assertIn(GRADE9_PROFITABLE, result.signals)
+        self.assertNotIn(MARKET_VALUES_MISSING, result.signals)
+
+    def test_missing_psa10_does_not_block_direct_raw_arbitrage(self):
+        result = evaluate_economic_pre_filter(
+            self.aggregate(
+                values_for(identity(), raw="55", grade8=None, grade9=None, psa10=None)
+            ),
+            costs("10", "20", "5"),
+            BACK_IMAGE_CONFIRMED,
+        )
+        self.assertTrue(result.can_continue)
+        self.assertIn(RAW_ARBITRAGE, result.signals)
+        self.assertNotIn(MARKET_VALUES_MISSING, result.signals)
 
     def test_incomplete_cost_model_is_blocking(self):
         result = evaluate_economic_pre_filter(

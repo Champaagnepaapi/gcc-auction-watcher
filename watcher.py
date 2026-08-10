@@ -6,7 +6,6 @@ import os
 import re
 import time
 import unicodedata
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.header import Header
@@ -18,6 +17,12 @@ from urllib.parse import quote_plus, urljoin
 import requests
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+from ecb_fx import ECB_DAILY_RATES_URL, parse_ecb_snapshot
+from gcc_history_shared import (
+    HistoricalParsingDiagnostics,
+    parse_historical_grade,
+)
 
 load_dotenv()
 
@@ -58,9 +63,6 @@ PSA_APR_NAV_TIMEOUT = int(os.getenv("PSA_APR_NAV_TIMEOUT", "6000"))
 PSA_APR_USD_PER_EUR_FALLBACK = os.getenv(
     "PSA_APR_USD_PER_EUR_FALLBACK", ""
 ).strip()
-ECB_DAILY_RATES_URL = (
-    "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
-)
 PSA_APR_MATCH_MIN_SCORE = 75
 MIN_EMPIRICAL_GRADER_RATIO_SALES = int(
     os.getenv("MIN_EMPIRICAL_GRADER_RATIO_SALES", "10")
@@ -89,7 +91,7 @@ GCC_FIXED_MAX_PAGES = 500
 GCC_TECH_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 
 MONEY_RE = re.compile(
-    r"(?<!\d)(\d{1,3}(?:['’\s]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*€",
+    r"(?<!\d)(\d{1,3}(?:['’ \u00a0]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)[ \t\u00a0]*€",
     re.I,
 )
 EBAY_MONEY_RE = re.compile(
@@ -124,6 +126,12 @@ class Lot:
     listing_text: str = ""
     page_title_raw: str = ""
     inspection_error: str = ""
+    card_set: str = ""
+    card_number: str = ""
+    language: str = ""
+    year: Optional[int] = None
+    variant: str = ""
+    set_family: str = ""
 
 
 @dataclass
@@ -138,6 +146,7 @@ class ComparableSale:
     context: str = ""
     exact_card: bool = True
     match_score: int = 100
+    grade_qualifier: Optional[str] = None
 
 
 # Alias conservé pour les intégrations qui importeraient encore l'ancien nom.
@@ -870,6 +879,9 @@ class RunDiagnostics:
     heavy_analysis_seconds: float = 0.0
     total_seconds: float = 0.0
     state_issue: str = ""
+    gcc_history_parsing: HistoricalParsingDiagnostics = field(
+        default_factory=HistoricalParsingDiagnostics
+    )
 
     def record_live_sales(self, urls: list[str]) -> None:
         self.live_auction_urls.update(urls)
@@ -1236,19 +1248,11 @@ def _goto_with_coverage_retries(
 
 def parse_ecb_usd_per_eur(xml_text: str) -> Optional[float]:
     """Lit le taux ECB coté comme nombre de dollars pour un euro."""
-    try:
-        root = ET.fromstring(xml_text or "")
-    except ET.ParseError:
+    snapshot = parse_ecb_snapshot(xml_text)
+    if snapshot is None:
         return None
-    for element in root.iter():
-        if element.attrib.get("currency", "").upper() != "USD":
-            continue
-        try:
-            rate = float(element.attrib.get("rate", ""))
-        except (TypeError, ValueError):
-            return None
-        return rate if rate > 0 else None
-    return None
+    rate = snapshot.units_per_eur.get("USD")
+    return float(rate) if rate is not None else None
 
 
 def _configured_usd_per_eur_fallback() -> Optional[float]:
@@ -1737,6 +1741,11 @@ def _gcc_fixed_result_to_lot(
         listing_text=listing_text,
         grader=grader,
         grade=grade or None,
+        card_set=set_name or extension,
+        card_number=reference,
+        language=language,
+        year=(int(year) if re.fullmatch(r"(?:19|20)\d{2}", year) else None),
+        set_family=extension or set_name,
     )
 
 
@@ -2287,6 +2296,17 @@ def parse_grader_grade(text: str) -> tuple[str, Optional[str]]:
             continue
         match = compact_re.search(line)
         if not match:
+            continue
+        # A number visibly carrying price/date/counter/chart semantics is not
+        # grading evidence.  In particular, rendered history may place
+        # ``PCA 20 €`` or ``CA 50 ventes`` on one line.
+        suffix = line[match.end():]
+        if re.match(
+            r"\s*(?:€|\$|EUR\b|USD\b|CHF\b|%|[/.-]\d|ventes?\b|sales?\b|"
+            r"transactions?\b|items?\b)",
+            suffix,
+            re.I,
+        ):
             continue
         grader = match.group(1).upper()
         grade = validated(match.group(2), grader)
@@ -2861,7 +2881,7 @@ def parse_listing_countdown_minutes(text: str) -> tuple[Optional[int], str]:
     return None, ""
 
 
-def inspect_item(page, lot: Lot) -> Lot:
+def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
     try:
         lot.inspection_error = ""
         page.goto(lot.url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
@@ -2903,11 +2923,13 @@ def inspect_item(page, lot: Lot) -> Lot:
 
     except PlaywrightTimeoutError:
         lot.inspection_error = "PlaywrightTimeoutError"
-        log(f"Timeout fiche: {lot.url}")
+        if log_listing_errors:
+            log(f"Timeout fiche: {lot.url}")
         return lot
     except Exception as e:
         lot.inspection_error = type(e).__name__
-        log(f"Erreur fiche {type(e).__name__}: {lot.url}")
+        if log_listing_errors:
+            log(f"Erreur fiche {type(e).__name__}: {lot.url}")
         return lot
 
 
@@ -2958,7 +2980,16 @@ def is_valid_pokemon_card(
     return False
 
 
-def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
+def extract_historical_sales(
+    lot: Lot,
+    parsing_diagnostics: Optional[HistoricalParsingDiagnostics] = None,
+) -> list[HistoricalSale]:
+    """Extract rendered GCC transactions without guessing their grade.
+
+    Monetary entries remain diagnostic transactions when grader/grade evidence
+    is absent.  Only a strict, explicitly associated grade can later enter an
+    exact-grade comparable bucket.
+    """
     body = lot.body or ""
 
     m = re.search(r"(Historique des ventes|Sales history)(.*)", body, re.I | re.S)
@@ -2971,8 +3002,43 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
         return []
 
     sales: list[HistoricalSale] = []
+    price_matches = list(MONEY_RE.finditer(section))
 
-    for price_match in MONEY_RE.finditer(section):
+    before_contexts = [
+        section[
+            (price_matches[index - 1].end() if index else 0) : price_match.end()
+        ]
+        for index, price_match in enumerate(price_matches)
+    ]
+    after_contexts = [
+        section[
+            price_match.start() : (
+                price_matches[index + 1].start()
+                if index + 1 < len(price_matches)
+                else len(section)
+            )
+        ]
+        for index, price_match in enumerate(price_matches)
+    ]
+    before_evidence = [parse_historical_grade(value) for value in before_contexts]
+    after_evidence = [parse_historical_grade(value) for value in after_contexts]
+
+    def evidence_score(values) -> int:
+        return sum(
+            value.grade is not None
+            or value.qualifier is not None
+            or value.grader == "RAW"
+            for value in values
+        )
+
+    # Rendered GCC layouts may put the price before or after the grading fields.
+    # Select one orientation for the whole history instead of borrowing an
+    # arbitrary nearby grader transaction by transaction.
+    price_first_layout = evidence_score(after_evidence) > evidence_score(
+        before_evidence
+    )
+
+    for index, price_match in enumerate(price_matches):
         try:
             price = normalize_money(price_match.group(1))
         except ValueError:
@@ -2981,23 +3047,46 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
         if not 1 <= price <= 50000:
             continue
 
-        start = max(0, price_match.start() - 380)
-        end = min(len(section), price_match.end() + 380)
-        context = section[start:end]
-
-        grader, grade_text = parse_grader_grade(context)
-        grade = float(grade_text) if grade_text is not None else None
+        # GCC does not expose a transaction id in the rendered text.  Adjacent
+        # price anchors are therefore the safest available transaction
+        # boundaries and prevent a grader from a neighbouring sale leaking in.
+        context = (
+            after_contexts[index] if price_first_layout else before_contexts[index]
+        )
+        evidence = (
+            after_evidence[index] if price_first_layout else before_evidence[index]
+        )
+        alternate_evidence = (
+            before_evidence[index] if price_first_layout else after_evidence[index]
+        )
+        evidence = replace(
+            evidence,
+            rejected_numeric_kinds=tuple(
+                dict.fromkeys(
+                    evidence.rejected_numeric_kinds
+                    + alternate_evidence.rejected_numeric_kinds
+                )
+            ),
+            invalid_over_ten_tokens=max(
+                evidence.invalid_over_ten_tokens,
+                alternate_evidence.invalid_over_ten_tokens,
+            ),
+        )
+        if parsing_diagnostics is not None:
+            parsing_diagnostics.record(evidence)
+        grade = float(evidence.grade) if evidence.grade is not None else None
 
         sales.append(
             ComparableSale(
                 price=price,
                 source="gcc",
-                grader=grader,
+                grader=evidence.grader,
                 grade=grade,
                 sold_at=parse_sale_date(context),
                 context=context.replace("\n", " ")[:300],
                 exact_card=True,
                 match_score=100,
+                grade_qualifier=evidence.qualifier,
             )
         )
 
@@ -3006,13 +3095,29 @@ def extract_historical_sales(lot: Lot) -> list[HistoricalSale]:
     seen = set()
     for s in sales:
         sold_day = s.sold_at.date().isoformat() if s.sold_at else ""
-        key = (round(s.price, 2), s.grader, s.grade, sold_day)
+        key = (
+            round(s.price, 2),
+            s.grader,
+            s.grade,
+            s.grade_qualifier,
+            sold_day,
+        )
         if key in seen:
             continue
         seen.add(key)
         deduped.append(s)
 
-    return deduped[:40]
+    final_sales = deduped[:40]
+    if parsing_diagnostics is not None:
+        parsing_diagnostics.usable_comparables += sum(
+            sale.grade_qualifier is None
+            and (
+                sale.grade is not None
+                or (sale.grader.upper() == "RAW" and sale.grade is None)
+            )
+            for sale in final_sales
+        )
+    return final_sales
 
 
 
@@ -5219,7 +5324,9 @@ def evaluate_gcc_candidate(
             )
             return None
 
-        history = extract_historical_sales(lot)
+        history = extract_historical_sales(
+            lot, run_diagnostics.gcc_history_parsing
+        )
         if lot.source_type == "fixed":
             log(
                 f"[fixe {position}] {lot.current_price:.2f} € | "
@@ -5556,6 +5663,7 @@ def format_fixed_economic_queue(
 
 def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
     fixed_economic = diagnostics.fixed_economic_coverage
+    history = diagnostics.gcc_history_parsing
     lines = [
         "=== DIAGNOSTIC RUN ===",
         f"Prix fixes découverts: {_coverage_value(fixed_economic.discovered_listings)}",
@@ -5614,6 +5722,26 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
             f"{len(diagnostics.cards_in_ending_sales)}"
         ),
         f"Lots réellement analysés: {diagnostics.auction_lots_analyzed}",
+        "",
+        "Parsing historique GCC:",
+        f"- transactions reçues: {history.transactions_received}",
+        f"- grader reconnu: {history.transactions_with_grader}",
+        f"- grade numérique reconnu: {history.transactions_with_numeric_grade}",
+        f"- grade ambigu: {history.grade_ambiguous}",
+        f"- grade absent: {history.grade_absent}",
+        (
+            "- nombres non-grade rejetés: "
+            f"{history.non_grade_numeric_rejected}"
+        ),
+        (
+            "- tokens >10 ignorés comme non-grade: "
+            f"{history.invalid_over_ten_tokens}"
+        ),
+        (
+            "- qualifiers spéciaux exclus: "
+            f"{history.special_qualifiers_excluded}"
+        ),
+        f"- comparables utilisables: {history.usable_comparables}",
         "",
         (
             "Nombre de lots grade illisible: "

@@ -711,9 +711,12 @@ class GCCProviderIntegrationTests(unittest.TestCase):
         self.assertIn("python -m v5.gcc_history_diagnostic", workflow)
         self.assertIn('GCC_HISTORY_ENABLED: "false"', workflow)
 
-    def test_live_workflow_cannot_enable_gcc_fixture_or_live_access(self):
+    def test_live_workflow_enables_only_existing_v4_live_access(self):
         workflow = LIVE_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn('GCC_HISTORY_ENABLED: "false"', workflow)
+        self.assertIn('GCC_HISTORY_ENABLED: "true"', workflow)
+        self.assertIn("secrets.GCC_SESSION_B64", workflow)
+        self.assertIn("playwright install --with-deps chromium", workflow)
+        self.assertIn("python -m v5.live_raw_pipeline", workflow)
         self.assertNotIn("offline_sales.json", workflow)
 
     def test_gcc_modules_contain_no_hidden_network_or_persistence_calls(self):

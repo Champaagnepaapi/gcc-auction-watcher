@@ -208,21 +208,6 @@ def evaluate_economic_pre_filter(
             False,
         )
 
-    required = tuple(
-        level for level in MarketLevel if market.level(level).central_value is None
-    )
-    if required:
-        return EconomicPreFilterResult(
-            False,
-            (MARKET_VALUES_MISSING,) + tuple(level.value for level in required),
-            risk_flags,
-            costs.all_in_cost_if_graded(),
-            {},
-            None,
-            None,
-            False,
-        )
-
     all_in = costs.all_in_cost_if_graded()
     scenarios = {}
     for level in MarketLevel:
@@ -234,7 +219,21 @@ def evaluate_economic_pre_filter(
         roi = profit / all_in * Decimal("100") if all_in > 0 else None
         scenarios[level] = EconomicScenario(level, market_value, net_sale, profit, roi)
 
+    if not scenarios:
+        return EconomicPreFilterResult(
+            False,
+            (MARKET_VALUES_MISSING,),
+            risk_flags,
+            all_in,
+            {},
+            None,
+            None,
+            False,
+        )
+
     def profitable(level: MarketLevel) -> bool:
+        if level not in scenarios:
+            return False
         scenario = scenarios[level]
         roi_ok = (
             scenario.roi_percent is not None
@@ -243,29 +242,36 @@ def evaluate_economic_pre_filter(
         return scenario.profit >= thresholds.minimum_profit and roi_ok
 
     signals = []
+    raw_profitable = profitable(MarketLevel.UNGRADED)
+    grade9_available = MarketLevel.GRADE9_GENERIC in scenarios
+    grade9_profitable = profitable(MarketLevel.GRADE9_GENERIC)
+    psa10_available = MarketLevel.PSA10 in scenarios
     psa10_profitable = profitable(MarketLevel.PSA10)
-    if not psa10_profitable:
+    if raw_profitable:
+        signals.append(RAW_ARBITRAGE)
+    if grade9_profitable:
+        signals.append(GRADE9_PROFITABLE)
+    if psa10_available and psa10_profitable and grade9_available and not grade9_profitable:
+        signals.append(PSA10_DEPENDENT)
+    if psa10_available and not psa10_profitable and not (raw_profitable or grade9_profitable):
         signals.append(ECONOMIC_REJECT_EVEN_PSA10)
-    else:
-        if profitable(MarketLevel.UNGRADED):
-            signals.append(RAW_ARBITRAGE)
-        if profitable(MarketLevel.GRADE9_GENERIC):
-            signals.append(GRADE9_PROFITABLE)
-        else:
-            signals.append(PSA10_DEPENDENT)
+    if not signals:
+        signals.append(MARKET_VALUES_MISSING)
 
     return EconomicPreFilterResult(
-        can_continue=psa10_profitable,
+        can_continue=raw_profitable or grade9_profitable or psa10_profitable,
         signals=tuple(signals),
         risk_flags=risk_flags,
         all_in_cost=all_in,
         scenarios=scenarios,
         psa10_upside_multiple=(
-            scenarios[MarketLevel.PSA10].market_value / all_in if all_in > 0 else None
+            scenarios[MarketLevel.PSA10].market_value / all_in
+            if all_in > 0 and MarketLevel.PSA10 in scenarios
+            else None
         ),
         grade9_upside_multiple=(
             scenarios[MarketLevel.GRADE9_GENERIC].market_value / all_in
-            if all_in > 0
+            if all_in > 0 and MarketLevel.GRADE9_GENERIC in scenarios
             else None
         ),
         back_missing_but_economic_analysis_continued=reduced_visual_confidence,

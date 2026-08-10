@@ -397,10 +397,11 @@ class LiveRawWorkflowTests(unittest.TestCase):
         self.assertNotIn("actions/cache", workflow)
         self.assertNotIn("upload-artifact", workflow)
 
-    def test_workflow_has_only_ebay_secrets_and_all_safety_locks(self):
+    def test_workflow_has_required_read_only_secrets_and_all_safety_locks(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("secrets.EBAY_CLIENT_ID", workflow)
         self.assertIn("secrets.EBAY_CLIENT_SECRET", workflow)
+        self.assertIn("secrets.GCC_SESSION_B64", workflow)
         self.assertNotIn("PRICECHARTING_TOKEN", workflow)
         self.assertNotIn("CARDGRADER_API_KEY", workflow)
         self.assertIn('PRICECHARTING_ENABLED: "false"', workflow)
@@ -409,6 +410,8 @@ class LiveRawWorkflowTests(unittest.TestCase):
         self.assertIn('CARDGRADER_V5_ALLOW_PAID_CALLS: "false"', workflow)
         self.assertIn('V5_LIVE_RAW_RESULT_LIMIT: "20"', workflow)
         self.assertIn('V5_LIVE_INCLUDE_EBAY_CH: "false"', workflow)
+        self.assertIn('GCC_HISTORY_ENABLED: "true"', workflow)
+        self.assertIn("rm -f gcc_session.json", workflow)
 
     def test_future_interval_is_documented_but_not_scheduled(self):
         self.assertEqual(RAW_DISCOVERY_INTERVAL_MINUTES, 10)
