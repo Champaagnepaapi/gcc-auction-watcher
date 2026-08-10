@@ -13,6 +13,7 @@ jobs:
     env:
       EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
       EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       POKETRACE_ENABLED: "true"
       POKETRACE_PLAN: "free"
@@ -25,10 +26,11 @@ jobs:
       V5_LIVE_INCLUDE_EBAY_CH: "false"
       PRICECHARTING_ENABLED: "false"
       MARKETPLACE_INSIGHTS_ENABLED: "false"
-      # Temporary diagnostic isolation: GCC catalogue is restored/saved but
-      # rendered-history Playwright fallback is disabled so this run measures
-      # eBay -> identity -> PokeTrace without the 8-minute GCC search fan-out.
-      GCC_HISTORY_ENABLED: "false"
+      GCC_HISTORY_ENABLED: "true"
+      # Temporary validation switch: keep the existing GCC workflow contract
+      # and cumulative cache, but do not execute the expensive Playwright
+      # representative/history fallback while measuring PokeTrace identity.
+      V5_SKIP_GCC_LIVE_FOR_POKETRACE_VALIDATION: "true"
       GCC_HISTORY_CURRENCY: "USD"
       GCC_CATALOG_INDEX_FILE: gcc_catalog_index.json
       PRODUCT_RESEARCH_MODE: "MANUAL_VALIDATION_ONLY"
@@ -66,7 +68,19 @@ jobs:
           python-version: "3.12"
 
       - name: Install read-only diagnostic dependencies
-        run: python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
+          playwright install --with-deps chromium
+
+      - name: Prepare existing authenticated GCC session
+        shell: bash
+        run: |
+          if [ -z "${GCC_SESSION_B64:-}" ]; then
+            echo "GCC authenticated session: MISSING"
+            exit 1
+          fi
+          printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
+          echo "GCC authenticated session: READY"
 
       - name: Run fast V5 PokeTrace Free identity and market diagnostic
         run: python -m v5.live_raw_pipeline_catalog
@@ -77,3 +91,7 @@ jobs:
         with:
           path: gcc_catalog_index.json
           key: v5-gcc-catalog-${{ github.run_id }}
+
+      - name: Remove ephemeral GCC session
+        if: always()
+        run: rm -f gcc_session.json
