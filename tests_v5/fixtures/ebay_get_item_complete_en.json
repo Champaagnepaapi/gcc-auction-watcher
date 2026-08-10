@@ -1,0 +1,47 @@
+{
+  "itemId": "v1|900000000001|0",
+  "title": "Pokemon card fixture complete",
+  "itemWebUrl": "https://example.invalid/item/complete",
+  "price": {"value": "12.50", "currency": "USD"},
+  "buyingOptions": ["FIXED_PRICE"],
+  "itemEndDate": "2026-08-12T18:30:00.000Z",
+  "conditionId": "4000",
+  "condition": "Ungraded",
+  "seller": {
+    "username": "private-fixture-seller",
+    "feedbackPercentage": "99.1",
+    "feedbackScore": 101
+  },
+  "image": {"imageUrl": "https://example.invalid/images/primary.jpg"},
+  "additionalImages": [
+    {"imageUrl": "https://example.invalid/images/second.jpg"},
+    {"imageUrl": "https://example.invalid/images/third.jpg"}
+  ],
+  "categories": [
+    {"categoryId": "183454", "categoryName": "Single Trading Cards"}
+  ],
+  "localizedAspects": [
+    {"name": "Game", "value": "Pokémon TCG"},
+    {"name": "Card Name", "value": "Fixturemon"},
+    {"name": "Set", "value": "Fixture Set"},
+    {"name": "Card Number", "value": "7/100"},
+    {"name": "Year Manufactured", "value": "2024"},
+    {"name": "Language", "value": "English"},
+    {"name": "Rarity", "value": "Rare"},
+    {"name": "Finish", "value": "Holo"},
+    {"name": "Edition", "value": "Unlimited"},
+    {"name": "Illustrator", "value": "Fixture Artist"},
+    {"name": "Graded", "value": "No"}
+  ],
+  "product": {
+    "title": "Pokemon card fixture product",
+    "aspectGroups": [
+      {
+        "localizedGroupName": "Product Identifiers",
+        "aspects": [
+          {"localizedName": "Parallel/Variety", "localizedValues": ["Standard"]}
+        ]
+      }
+    ]
+  }
+}

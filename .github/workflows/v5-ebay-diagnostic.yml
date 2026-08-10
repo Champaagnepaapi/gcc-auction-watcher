@@ -1,4 +1,4 @@
-name: V5 eBay Production Diagnostic
+name: V5 eBay Enrichment Diagnostic
 
 on:
   workflow_dispatch:
@@ -31,5 +31,5 @@ jobs:
       - name: Install read-only HTTP dependency
         run: python -m pip install --disable-pip-version-check requests==2.32.4
 
-      - name: Run aggregate-only V5 eBay diagnostic
+      - name: Run aggregate-only V5 eBay enrichment diagnostic
         run: python -m v5.ebay_live_diagnostic

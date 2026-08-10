@@ -1,0 +1,31 @@
+{
+  "itemId": "v1|900000000002|0",
+  "title": "Pokémon | nom de la carte: Testmon | numéro de carte: 9/99",
+  "itemWebUrl": "https://example.invalid/item/partial",
+  "price": {"value": "4.00", "currency": "CHF"},
+  "buyingOptions": ["FIXED_PRICE"],
+  "conditionId": "4000",
+  "condition": "Non gradée",
+  "image": {"imageUrl": "https://example.invalid/images/fr-primary.jpg"},
+  "additionalImages": [
+    {"imageUrl": "https://example.invalid/images/fr-extra.jpg"}
+  ],
+  "localizedAspects": [
+    {"name": "Jeu", "value": "Pokémon JCC"},
+    {"name": "Nom de la carte", "value": "Testmon"},
+    {"name": "Numéro de carte", "value": "9/99"},
+    {"name": "Rareté", "value": "Rare"},
+    {"name": "Finition", "value": "Holographique"},
+    {"name": "Gradée", "value": "Non"}
+  ],
+  "product": {
+    "aspectGroups": [
+      {
+        "localizedGroupName": "Détails",
+        "aspects": [
+          {"localizedName": "Illustrateur", "localizedValues": ["Artiste Test"]}
+        ]
+      }
+    ]
+  }
+}

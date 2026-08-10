@@ -40,6 +40,10 @@ class CardIdentity:
     year: Optional[int] = None
     language: Optional[str] = None
     variant: Optional[str] = None
+    rarity: Optional[str] = None
+    finish: Optional[str] = None
+    edition: Optional[str] = None
+    illustrator: Optional[str] = None
     ambiguities: Tuple[str, ...] = ()
 
     def missing_required_fields(self) -> Tuple[str, ...]:

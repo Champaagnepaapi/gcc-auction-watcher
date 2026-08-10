@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -219,25 +220,52 @@ def _normalize(value: object) -> str:
     )
 
 
+def _append_aspect(
+    aspects: Dict[str, Tuple[str, ...]], name: object, raw_values: object
+) -> None:
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        return
+    if isinstance(raw_values, (list, tuple)):
+        values = tuple(str(value).strip() for value in raw_values if str(value).strip())
+    elif raw_values is None:
+        values = ()
+    else:
+        values = (str(raw_values).strip(),)
+    if values:
+        aspects[clean_name] = tuple(
+            dict.fromkeys(aspects.get(clean_name, ()) + values)
+        )
+
+
 def _aspects(payload: Mapping[str, object]) -> Dict[str, Tuple[str, ...]]:
+    """Fusionne les aspects structures Search/getItem et Product en memoire."""
+
     aspects: Dict[str, Tuple[str, ...]] = {}
     for raw_aspect in payload.get("localizedAspects", []) or []:
         if not isinstance(raw_aspect, Mapping):
             continue
-        name = str(raw_aspect.get("name", "")).strip()
-        if not name:
-            continue
         raw_values = raw_aspect.get("value")
         if raw_values is None:
             raw_values = raw_aspect.get("values")
-        if isinstance(raw_values, (list, tuple)):
-            values = tuple(str(value).strip() for value in raw_values if str(value).strip())
-        elif raw_values is None:
-            values = ()
-        else:
-            values = (str(raw_values).strip(),)
-        if values:
-            aspects[name] = tuple(dict.fromkeys(aspects.get(name, ()) + values))
+        _append_aspect(aspects, raw_aspect.get("name"), raw_values)
+
+    product = payload.get("product")
+    if isinstance(product, Mapping):
+        for group in product.get("aspectGroups", []) or []:
+            if not isinstance(group, Mapping):
+                continue
+            for raw_aspect in group.get("aspects", []) or []:
+                if not isinstance(raw_aspect, Mapping):
+                    continue
+                values = raw_aspect.get("localizedValues")
+                if values is None:
+                    values = raw_aspect.get("values")
+                _append_aspect(
+                    aspects,
+                    raw_aspect.get("localizedName") or raw_aspect.get("name"),
+                    values,
+                )
     return aspects
 
 
@@ -321,21 +349,69 @@ def grading_status_from_ebay_data(
 
 
 IDENTITY_ALIASES = {
-    "game": ("Game", "Jeu", "Franchise"),
-    "card_name": ("Card Name", "Nom de la carte", "Character", "Personnage"),
-    "set": ("Set", "Card Set", "Series", "Serie", "Série", "Extension"),
-    "card_number": ("Card Number", "Numero de carte", "Numéro de carte"),
-    "year": ("Year Manufactured", "Year", "Annee de fabrication", "Année"),
-    "language": ("Language", "Langue"),
+    "game": ("Game", "Jeu", "Franchise", "Spiel", "Gioco"),
+    "card_name": (
+        "Card Name",
+        "Nom de la carte",
+        "Character",
+        "Personnage",
+        "Pokémon",
+        "Pokemon",
+        "Kartenname",
+        "Nome carta",
+        "Personaggio",
+    ),
+    "set": (
+        "Set",
+        "Card Set",
+        "Series",
+        "Serie",
+        "Série",
+        "Extension",
+        "Erweiterung",
+        "Kartenset",
+        "Espansione",
+    ),
+    "card_number": (
+        "Card Number",
+        "Numero de carte",
+        "Numéro de carte",
+        "Kartennummer",
+        "Numero della carta",
+    ),
+    "year": (
+        "Year Manufactured",
+        "Year",
+        "Annee de fabrication",
+        "Année",
+        "Herstellungsjahr",
+        "Anno di fabbricazione",
+    ),
+    "language": ("Language", "Langue", "Sprache", "Lingua"),
     "variant": (
         "Parallel/Variety",
         "Variante",
-        "Finish",
-        "Finition",
+        "Parallelita/Varieta",
         "Features",
         "Caracteristiques",
         "Caractéristiques",
+        "Merkmale",
+        "Besonderheiten",
     ),
+    "rarity": ("Rarity", "Rareté", "Rarite", "Seltenheit", "Rarità", "Rarita"),
+    "finish": (
+        "Finish",
+        "Finition",
+        "Holo",
+        "Holographic",
+        "Reverse Holo",
+        "Holographique",
+        "Oberfläche",
+        "Oberflache",
+        "Finitura",
+    ),
+    "edition": ("Edition", "Édition", "Edizione", "Ausgabe"),
+    "illustrator": ("Illustrator", "Illustrateur", "Illustratore"),
 }
 
 
@@ -369,8 +445,108 @@ def card_identity_from_aspects(
         year=year,
         language=extracted["language"],
         variant=extracted["variant"],
+        rarity=extracted["rarity"],
+        finish=extracted["finish"],
+        edition=extracted["edition"],
+        illustrator=extracted["illustrator"],
         ambiguities=tuple(ambiguities),
     )
+
+
+_TITLE_LABELS = {
+    "card_name": ("card name", "nom de la carte", "kartenname", "nome carta"),
+    "set": ("set", "series", "serie", "série", "extension", "erweiterung"),
+    "card_number": (
+        "card number",
+        "numero de carte",
+        "numéro de carte",
+        "kartennummer",
+        "numero della carta",
+    ),
+    "language": ("language", "langue", "sprache", "lingua"),
+    "variant": ("variant", "variante", "parallel/variety"),
+}
+
+
+def _labelled_title_value(title: str, labels: Sequence[str]) -> Optional[str]:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?:^|[|;,])\s*(?:{label_pattern})\s*[:=]\s*([^|;,]{{1,80}})",
+        title,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else None
+
+
+def _title_fallbacks(title: str) -> Dict[str, object]:
+    """Extrait seulement des signaux explicites ou des motifs tres bornes."""
+
+    values: Dict[str, object] = {}
+    normalized = _normalize(title)
+    if "pokemon" in normalized:
+        values["game"] = "Pokémon TCG"
+    for field_name, labels in _TITLE_LABELS.items():
+        value = _labelled_title_value(title, labels)
+        if value:
+            values[field_name] = value
+
+    if "card_number" not in values:
+        number_match = re.search(r"(?<![A-Za-z0-9])([A-Z]{0,4}\d{1,4}/\d{1,4})(?!\d)", title)
+        if number_match:
+            values["card_number"] = number_match.group(1)
+    year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)
+    if year_match:
+        values["year"] = int(year_match.group(1))
+
+    language_names = {
+        "english": "English",
+        "anglais": "English",
+        "french": "French",
+        "francais": "French",
+        "franzosisch": "French",
+        "german": "German",
+        "allemand": "German",
+        "deutsch": "German",
+        "italian": "Italian",
+        "italien": "Italian",
+        "italiano": "Italian",
+        "japanese": "Japanese",
+        "japonais": "Japanese",
+        "japanisch": "Japanese",
+    }
+    if "language" not in values:
+        for signal, canonical in language_names.items():
+            if re.search(rf"\b{re.escape(signal)}\b", normalized):
+                values["language"] = canonical
+                break
+    return values
+
+
+def card_identity_from_ebay_payload(
+    payload: Mapping[str, object], aspects: Optional[Mapping[str, Tuple[str, ...]]] = None
+) -> CardIdentity:
+    structured = card_identity_from_aspects(aspects if aspects is not None else _aspects(payload))
+    product = payload.get("product")
+    product_title = product.get("title") if isinstance(product, Mapping) else None
+    title = str(product_title or payload.get("title") or "")
+    fallback = _title_fallbacks(title)
+    fields = {
+        "game": structured.game,
+        "card_name": structured.card_name,
+        "set": structured.set,
+        "card_number": structured.card_number,
+        "year": structured.year,
+        "language": structured.language,
+        "variant": structured.variant,
+        "rarity": structured.rarity,
+        "finish": structured.finish,
+        "edition": structured.edition,
+        "illustrator": structured.illustrator,
+    }
+    for name, value in fallback.items():
+        if name in fields and fields[name] is None:
+            fields[name] = value
+    return CardIdentity(**fields, ambiguities=structured.ambiguities)
 
 
 def _amount(payload: object) -> Optional[object]:
@@ -476,5 +652,5 @@ def parse_ebay_item(payload: Mapping[str, object]) -> EbayListing:
         category_id=(str(category_id) if category_id else None),
         category_name=(str(category_name) if category_name else None),
         aspects=aspects,
-        identity=card_identity_from_aspects(aspects),
+        identity=card_identity_from_ebay_payload(payload, aspects),
     )
