@@ -226,6 +226,10 @@ class ProviderAggregate:
     gcc_representative_strong: int = 0
     gcc_representative_ambiguous: int = 0
     gcc_no_representative: int = 0
+    gcc_catalog_searches: int = 0
+    gcc_catalog_candidate_pages_opened: int = 0
+    gcc_catalog_completed_sales_enabled: int = 0
+    gcc_catalog_search_failures: int = 0
     gcc_records_with_grader: int = 0
     gcc_records_with_numeric_grade: int = 0
     gcc_grade_unknown: int = 0
@@ -633,6 +637,18 @@ class LiveRawPipelineDiagnostic:
                 gcc_no_representative=getattr(
                     gcc_source, "no_representative", 0
                 ),
+                gcc_catalog_searches=getattr(
+                    gcc_source, "catalog_searches", 0
+                ),
+                gcc_catalog_candidate_pages_opened=getattr(
+                    gcc_source, "catalog_candidate_pages_opened", 0
+                ),
+                gcc_catalog_completed_sales_enabled=getattr(
+                    gcc_source, "catalog_completed_sales_enabled", 0
+                ),
+                gcc_catalog_search_failures=getattr(
+                    gcc_source, "catalog_search_failures", 0
+                ),
                 gcc_records_with_grader=getattr(
                     parsing, "transactions_with_grader", 0
                 ),
@@ -757,6 +773,16 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
                 f"{summary.providers.gcc_representative_ambiguous}"
             ),
             f"no representative: {summary.providers.gcc_no_representative}",
+            f"catalog searches: {summary.providers.gcc_catalog_searches}",
+            (
+                "catalog candidate pages opened: "
+                f"{summary.providers.gcc_catalog_candidate_pages_opened}"
+            ),
+            (
+                "completed-sales filter enabled: "
+                f"{summary.providers.gcc_catalog_completed_sales_enabled}"
+            ),
+            f"catalog search failures: {summary.providers.gcc_catalog_search_failures}",
             f"cache hits: {summary.providers.gcc_history_cache_hits}",
             (
                 "historical records received: "
