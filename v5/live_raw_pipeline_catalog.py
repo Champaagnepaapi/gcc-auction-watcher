@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from dataclasses import replace
@@ -48,6 +49,10 @@ from .models import StructuredGradingStatus
 from .poketrace_identity import (
     PokeTraceIdentityResolver,
     render_poketrace_identity_counters,
+)
+from .visual_identity import (
+    LocalVisualIdentityResolver,
+    render_visual_identity_counters,
 )
 
 
@@ -117,13 +122,13 @@ def _progress(message: str) -> None:
 
 
 class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
-    """V5 pipeline with hybrid canonical identity and PokeTrace market data.
+    """V5 pipeline with hybrid catalogue + local visual identity rescue.
 
-    Identity chain: TCGdex -> PokeTrace -> Pokemon TCG API. The hybrid resolver
-    is applied before V5 rejects an incomplete RAW identity, allowing a unique
-    catalogue match to recover one missing core discriminator. A successful
-    PokeTrace identity lookup primes the Free market-data cache from the same
-    response, so valuation does not spend another request for that card.
+    Normal identity chain remains TCGdex -> PokeTrace -> Pokemon TCG API. RAW
+    records that are still ambiguous/incomplete then receive one conservative
+    local visual pass against PokeTrace canonical scans. The final IDENTITY_OK
+    gate is unchanged: visual evidence must resolve the ambiguity before any
+    valuation happens.
     """
 
     def __init__(
@@ -135,11 +140,13 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         config: Optional[LiveRawPipelineConfig] = None,
         gcc_history_provider: Optional[GCCHistoryProvider] = None,
         poketrace_provider: Optional[PokeTraceProvider] = None,
+        visual_identity_resolver: Optional[LocalVisualIdentityResolver] = None,
     ) -> None:
         self.card_catalog_resolver = card_catalog_resolver
         self.poketrace = poketrace_provider or _build_poketrace_provider()
         self.poketrace_market_source = _PokeTracePrimaryMarketSource(self.poketrace)
         self._identity_records_seen = 0
+        self._sample_item_ids: set[str] = set()
         super().__init__(
             client_id,
             client_secret,
@@ -148,6 +155,25 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             gcc_history_provider=gcc_history_provider,
             offline_market_sources=(self.poketrace_market_source,),
         )
+        if visual_identity_resolver is not None:
+            self.visual_identity = visual_identity_resolver
+        elif isinstance(card_catalog_resolver, HybridPokemonCardResolver):
+            self.visual_identity = LocalVisualIdentityResolver(
+                card_catalog_resolver.poketrace_identity,
+                ebay_image_fetcher=self.discovery._image_fetcher,
+            )
+        else:
+            self.visual_identity = None
+
+    def sample_fingerprint(self) -> str:
+        """Anonymous in-log fingerprint to detect whether two runs saw one sample."""
+
+        if not self._sample_item_ids:
+            return "EMPTY"
+        digest = hashlib.sha256(
+            "\n".join(sorted(self._sample_item_ids)).encode("utf-8")
+        ).hexdigest()
+        return digest[:16]
 
     def _candidate_from_record(
         self,
@@ -155,16 +181,10 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         identity_counts: PipelineIdentityAggregate,
         image_counts: PipelineImageAggregate,
     ) -> Tuple[object, bool]:
-        """Resolve catalogue identity before applying the final identity gate.
-
-        The base V5 implementation counts/rejects an insufficient identity
-        immediately. For the catalog-aware diagnostic we instead give TCGdex /
-        PokeTrace one conservative chance to fill a missing core field first.
-        This does not relax IDENTITY_OK: the final identity must still be
-        complete, unambiguous and have a front image before valuation.
-        """
-
         self._identity_records_seen += 1
+        if record.item_id:
+            self._sample_item_ids.add(record.item_id)
+
         initial = resolve_card_identity(
             record.enriched,
             set_number_resolver=self.discovery._set_number_resolver,
@@ -176,17 +196,8 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         if resolved.matched and not resolved.ambiguous:
             identity = resolved.identity
             source = resolved.source
-
-        identity_counts.card_name += int(identity.card_name is not None)
-        identity_counts.set_name += int(identity.set is not None)
-        identity_counts.card_number += int(identity.card_number is not None)
-        status = identity_status(identity)
-        if status == IDENTITY_OK:
-            identity_counts.ok += 1
-        elif status == IDENTITY_AMBIGUOUS:
-            identity_counts.ambiguous += 1
-        else:
-            identity_counts.insufficient += 1
+        elif resolved.ambiguous and not identity.ambiguities:
+            identity = replace(identity, ambiguities=("catalog_identity_ambiguous",))
 
         try:
             listing = parse_ebay_item(record.enriched)
@@ -194,15 +205,14 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             _progress(
                 f"identity record {self._identity_records_seen}: listing parse failed"
             )
+            # Keep identity accounting coherent even when listing parsing fails.
+            self._count_identity(identity, identity_counts)
             return None, False
 
         raw = bool(
             listing.condition_id == RAW_CONDITION_ID
             and listing.grading_status is StructuredGradingStatus.RAW
         )
-        if not raw:
-            _progress(f"identity record {self._identity_records_seen}: not eligible")
-            return None, False
 
         image_counts.front_available += int(listing.primary_image_url is not None)
         back_state, _ = self.discovery._back_image_state(record.enriched)
@@ -212,6 +222,33 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             image_counts.back_candidate += 1
         else:
             image_counts.back_unknown += 1
+
+        status_before_visual = identity_status(identity)
+        if (
+            raw
+            and listing.primary_image_url is not None
+            and status_before_visual != IDENTITY_OK
+            and self.visual_identity is not None
+        ):
+            _progress(
+                f"identity record {self._identity_records_seen}: local visual rescue"
+            )
+            visual = self.visual_identity.resolve_identity(
+                identity,
+                listing.image_urls,
+            )
+            if visual.matched:
+                identity = visual.identity
+                source = "VISUAL_POKETRACE"
+                _progress(
+                    f"identity record {self._identity_records_seen}: visual rescue accepted"
+                )
+
+        status = self._count_identity(identity, identity_counts)
+
+        if not raw:
+            _progress(f"identity record {self._identity_records_seen}: not eligible")
+            return None, False
 
         if status != IDENTITY_OK or listing.primary_image_url is None:
             reason = "ambiguous" if status == IDENTITY_AMBIGUOUS else "raw but unresolved"
@@ -224,6 +261,23 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             f"identity record {self._identity_records_seen}: usable via {source}"
         )
         return _PipelineCandidate(listing, identity, back_state), True
+
+    @staticmethod
+    def _count_identity(
+        identity,
+        identity_counts: PipelineIdentityAggregate,
+    ) -> str:
+        identity_counts.card_name += int(identity.card_name is not None)
+        identity_counts.set_name += int(identity.set is not None)
+        identity_counts.card_number += int(identity.card_number is not None)
+        status = identity_status(identity)
+        if status == IDENTITY_OK:
+            identity_counts.ok += 1
+        elif status == IDENTITY_AMBIGUOUS:
+            identity_counts.ambiguous += 1
+        else:
+            identity_counts.insufficient += 1
+        return status
 
 
 def _fallback_summary(config: LiveRawPipelineConfig) -> LiveRawPipelineSummary:
@@ -256,6 +310,7 @@ def main() -> int:
         == "true"
     )
     _progress("starting eBay discovery -> identity -> PokeTrace market validation")
+    diagnostic = None
     try:
         gcc_live_requested = (
             os.getenv("GCC_HISTORY_ENABLED", "false").strip().casefold() == "true"
@@ -298,7 +353,17 @@ def main() -> int:
     _progress("diagnostic completed")
     print(render_card_catalog_counters(resolver))
     print(render_poketrace_identity_counters(poketrace_identity))
+    if diagnostic is not None and diagnostic.visual_identity is not None:
+        print(render_visual_identity_counters(diagnostic.visual_identity))
     print(_render_poketrace(poketrace))
+    print("=== V5 LIVE SAMPLE ===")
+    print(
+        "sample fingerprint: "
+        + (diagnostic.sample_fingerprint() if diagnostic is not None else "UNAVAILABLE")
+    )
+    print(
+        "sample item ids printed/persisted: 0"
+    )
     print("=== V5 EBAY OAUTH OBSERVABILITY ===")
     print(
         "credentials present: "
