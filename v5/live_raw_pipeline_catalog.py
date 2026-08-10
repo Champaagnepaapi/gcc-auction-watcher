@@ -31,6 +31,11 @@ from .market_values.poketrace import (
     PokeTraceProvider,
     render_poketrace_counters,
 )
+from .market_values.poketrace_free import (
+    FreeTierPokeTraceProvider,
+    free_tier_config_from_env,
+    render_free_poketrace_counters,
+)
 
 
 class _PokeTracePrimaryMarketSource:
@@ -64,13 +69,38 @@ class _PokeTracePrimaryMarketSource:
         return snapshot.us_values
 
 
+def _workflow_safe_poketrace_config(config: PokeTraceConfig) -> PokeTraceConfig:
+    workflow_authorized = (
+        os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
+    )
+    if not workflow_authorized and config.enabled:
+        return replace(config, enabled=False)
+    return config
+
+
+def _build_poketrace_provider() -> PokeTraceProvider:
+    plan_mode = os.getenv("POKETRACE_PLAN", "free").strip().casefold()
+    if plan_mode == "free":
+        config = _workflow_safe_poketrace_config(free_tier_config_from_env())
+        return FreeTierPokeTraceProvider(config=config)
+    config = _workflow_safe_poketrace_config(PokeTraceConfig.from_env())
+    return PokeTraceProvider(config=config)
+
+
+def _render_poketrace(provider: PokeTraceProvider) -> str:
+    if isinstance(provider, FreeTierPokeTraceProvider):
+        return render_free_poketrace_counters(provider)
+    return render_poketrace_counters(provider)
+
+
 class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
     """V5 pipeline with canonical identity resolution and PokeTrace market data.
 
     TCGdex remains the multilingual identity resolver, with Pokémon TCG API as
     the English/unknown-language fallback. PokeTrace is the primary V5 market
     data source when configured; GCC remains a complementary graded-history
-    source. No eBay, PokeTrace or CardMarket listing record is persisted.
+    source. During FREE_TEST, PokeTrace is deliberately restricted to US RAW
+    prices and does not call EU/CardMarket. No listing record is persisted.
     """
 
     def __init__(
@@ -84,15 +114,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         poketrace_provider: Optional[PokeTraceProvider] = None,
     ) -> None:
         self.card_catalog_resolver = card_catalog_resolver
-        if poketrace_provider is None:
-            poketrace_config = PokeTraceConfig.from_env()
-            workflow_authorized = (
-                os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
-            )
-            if not workflow_authorized and poketrace_config.enabled:
-                poketrace_config = replace(poketrace_config, enabled=False)
-            poketrace_provider = PokeTraceProvider(config=poketrace_config)
-        self.poketrace = poketrace_provider
+        self.poketrace = poketrace_provider or _build_poketrace_provider()
         self.poketrace_market_source = _PokeTracePrimaryMarketSource(self.poketrace)
         super().__init__(
             client_id,
@@ -146,15 +168,11 @@ def main() -> int:
     client_id = os.getenv("EBAY_CLIENT_ID", "").strip()
     client_secret = os.getenv("EBAY_CLIENT_SECRET", "").strip()
     resolver = MultilingualPokemonCardResolver()
+    poketrace = _build_poketrace_provider()
 
-    poketrace_config = PokeTraceConfig.from_env()
     workflow_authorized = (
         os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
     )
-    if not workflow_authorized and poketrace_config.enabled:
-        poketrace_config = replace(poketrace_config, enabled=False)
-    poketrace = PokeTraceProvider(config=poketrace_config)
-
     try:
         gcc_live_requested = (
             os.getenv("GCC_HISTORY_ENABLED", "false").strip().casefold() == "true"
@@ -189,7 +207,7 @@ def main() -> int:
         summary = _fallback_summary(config)
 
     print(render_card_catalog_counters(resolver))
-    print(render_poketrace_counters(poketrace))
+    print(_render_poketrace(poketrace))
     print("=== V5 EBAY OAUTH OBSERVABILITY ===")
     print(
         "credentials present: "
