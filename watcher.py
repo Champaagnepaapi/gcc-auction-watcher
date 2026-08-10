@@ -1059,6 +1059,7 @@ _GRADE_DIAGNOSTIC_EMAIL_RE = re.compile(
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I
 )
 _GRADE_DIAGNOSTIC_GRADERS = tuple(dict.fromkeys((*GRADERS, "SGC")))
+_PCA_AUTHENTIC_QUALIFIER = "PCA A / Authentique"
 _SPECIAL_GRADE_QUALIFIERS = (
     (
         "OC / Off Center",
@@ -1178,7 +1179,7 @@ def _grade_raw_excerpt(text: str) -> str:
     keyword_re = re.compile(
         r"\b(?:PSA|PCA|CCC|BGS|CGC|SGC|Grade|Note|Gradation|Grading|"
         r"Off[ -]?Center|Miscut|Error|Staining|Print[ -]?Defect|"
-        r"Out[ -]?of[ -]?Focus|Authentic|Altered)\b",
+        r"Out[ -]?of[ -]?Focus|Authentic|Authentique|Altered)\b",
         re.I,
     )
     selected = []
@@ -1198,10 +1199,14 @@ def _grade_raw_excerpt(text: str) -> str:
     return "\n".join(selected)
 
 
-def _match_special_grade_qualifier(raw: str) -> str:
+def _match_special_grade_qualifier(raw: str, grader: str = "") -> str:
     value = re.sub(r"\s+", " ", raw or "").strip(" :–—-+")
     if not value:
         return ""
+    if re.fullmatch(r"AUTHENTIQUE", value, re.I) or (
+        (grader or "").upper() == "PCA" and re.fullmatch(r"A", value, re.I)
+    ):
+        return _PCA_AUTHENTIC_QUALIFIER
     for label, pattern in _SPECIAL_GRADE_QUALIFIERS:
         if re.fullmatch(
             rf"(?:{pattern})(?:\s+(?:QUALIFIER|QUALIFICATIF))?",
@@ -1216,8 +1221,20 @@ def _find_special_grade_qualifier(
     lot: Lot, parser_text: str, grading_block: str
 ) -> str:
     """Reconnaît seulement un qualifier explicitement placé comme valeur de grade."""
+    context_grader = (lot.grader or "").upper()
+    if not context_grader:
+        grader_match = re.search(
+            r"\b(?:Soci[ée]t[ée]\s+de\s+gradation|Grader)\s*:?\s*"
+            r"(PSA|PCA|CCC|BGS|CGC|SGC|CA|PG)\b",
+            parser_text,
+            re.I,
+        )
+        if grader_match:
+            context_grader = grader_match.group(1).upper()
     if lot.grade is not None:
-        matched = _match_special_grade_qualifier(str(lot.grade))
+        matched = _match_special_grade_qualifier(
+            str(lot.grade), context_grader
+        )
         if matched:
             return matched
 
@@ -1242,9 +1259,18 @@ def _find_special_grade_qualifier(
             candidate = re.sub(
                 rf"^(?:{grader_group})\s*", "", candidate, flags=re.I
             )
-            matched = _match_special_grade_qualifier(candidate)
+            matched = _match_special_grade_qualifier(
+                candidate, context_grader
+            )
             if matched:
                 return matched
+
+        if re.search(
+            r"\bPCA\b\s*(?:GRADE\s*|NOTE\s*)?[:#]?\s*A\b",
+            line,
+            re.I,
+        ):
+            return _PCA_AUTHENTIC_QUALIFIER
 
         for qualifier_label, qualifier_pattern in _SPECIAL_GRADE_QUALIFIERS:
             if re.search(
@@ -1255,10 +1281,13 @@ def _find_special_grade_qualifier(
             ):
                 return qualifier_label
 
-        matched = _match_special_grade_qualifier(line)
+        nearby = " ".join(lines[max(0, index - 3):index])
+        nearby_grader = (
+            "PCA" if re.search(r"\bPCA\b", nearby, re.I) else context_grader
+        )
+        matched = _match_special_grade_qualifier(line, nearby_grader)
         if not matched:
             continue
-        nearby = " ".join(lines[max(0, index - 3):index])
         if re.search(
             rf"\b(?:{grader_group}|Grade|Note|Gradation|Grading|"
             r"Qualifier|Qualificatif)\b",

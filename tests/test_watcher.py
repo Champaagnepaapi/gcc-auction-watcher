@@ -349,6 +349,73 @@ class UnreadableGradeDiagnosticsTests(unittest.TestCase):
                     diagnostic.special_qualifier, expected_qualifier
                 )
 
+    def test_pca_a_and_authentique_are_special_qualifiers(self):
+        cases = (
+            self.unreadable_lot(
+                grader="PCA", body="Grader: PCA\nNote : A"
+            ),
+            self.unreadable_lot(
+                title="PCA A Florizarre Holo",
+                grader="PCA",
+                body="Grader: PCA",
+            ),
+            self.unreadable_lot(
+                grader="PCA", body="Grader: PCA\nNote: Authentique"
+            ),
+        )
+        for lot in cases:
+            with self.subTest(title=lot.title, body=lot.body):
+                diagnostic = watcher.diagnose_unreadable_grade(lot)
+                self.assertEqual(
+                    diagnostic.reason, watcher.GRADE_SPECIAL_QUALIFIER
+                )
+                self.assertEqual(
+                    diagnostic.special_qualifier,
+                    "PCA A / Authentique",
+                )
+
+        self.assertEqual(
+            watcher.parse_grader_grade("PCA A Florizarre Holo"),
+            ("PCA", None),
+        )
+
+    def test_pca_a_is_excluded_end_to_end_and_counted_separately(self):
+        lot = self.unreadable_lot(
+            url="https://gcc.test/item/pca-a-florizarre",
+            title="PCA A Florizarre Holo",
+            grader="PCA",
+            body="Article Gradation Détails\nGrader: PCA\nNote : A",
+        )
+        diagnostics = watcher.RunDiagnostics()
+        with redirect_stdout(io.StringIO()):
+            result = watcher.estimate_with_grade(
+                lot,
+                [sale(100, grader="PCA"), sale(110, grader="PCA")],
+                NOW,
+                run_diagnostics=diagnostics,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_SPECIAL_QUALIFIER),
+            1,
+        )
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_GRADER_GRADE), 0
+        )
+        self.assertEqual(len(diagnostics.special_qualifier_lots), 1)
+        self.assertEqual(len(diagnostics.unreadable_grade_lots), 0)
+
+    def test_a_is_not_a_generic_qualifier_for_other_graders(self):
+        lot = self.unreadable_lot(
+            grader="BGS", body="Grader: BGS\nNote : A"
+        )
+        diagnostic = watcher.diagnose_unreadable_grade(lot)
+        self.assertNotEqual(
+            diagnostic.reason, watcher.GRADE_SPECIAL_QUALIFIER
+        )
+        self.assertEqual(diagnostic.special_qualifier, "")
+
     def test_special_qualifier_is_rejected_without_economic_valuation(self):
         lot = self.unreadable_lot(
             url="https://gcc.test/item/psa-oc",
