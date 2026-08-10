@@ -22,6 +22,7 @@ load_dotenv()
 
 BASE = "https://gradedcardcenter.com"
 FIXED_PRICE_URL = 'https://gradedcardcenter.com/filtres?sellingTypes=%5B%22FIXED_PRICE%22%5D'
+GCC_ON_SALE_ITEMS_API_URL = "https://api.gradedcardcenter.com/on-sale-items"
 
 MIN_PRICE = 0.0
 MAX_PRICE = float(os.getenv("MAX_PRICE_EUR", "100"))
@@ -71,6 +72,8 @@ MAX_AUCTION_CANDIDATES = 120
 MAX_FIXED_CANDIDATES = 120
 GCC_PAGE_RETRIES = int(os.getenv("GCC_PAGE_RETRIES", "2"))
 GCC_LISTING_SCROLL_LIMIT = 45
+GCC_FIXED_PAGE_SIZE = 100
+GCC_FIXED_MAX_PAGES = 500
 GCC_TECH_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 
 MONEY_RE = re.compile(
@@ -269,7 +272,13 @@ END_MAX_PAGE_LIMIT = "MAX_PAGE_LIMIT_REACHED"
 END_REPEATED_PAGE = "REPEATED_PAGE_DETECTED"
 END_PAGE_FAILED = "PAGE_FAILED"
 END_MALFORMED_RESPONSE = "MALFORMED_RESPONSE"
+END_NO_PROGRESS = "NO_PROGRESS"
+END_TOTAL_NOT_REACHED = "TOTAL_NOT_REACHED"
 END_UNKNOWN = "UNKNOWN"
+
+EXPECTED_TOTAL_SAME_QUERY = "SAME_QUERY"
+EXPECTED_TOTAL_DIFFERENT_SCOPE = "DIFFERENT_SCOPE"
+EXPECTED_TOTAL_SCOPE_UNKNOWN = "UNKNOWN"
 
 ACCOUNT_ECONOMICALLY_EVALUATED = "economically_evaluated"
 ACCOUNT_EXCLUDED_BY_RULES = "excluded_by_existing_rules"
@@ -282,10 +291,12 @@ ACCOUNT_DIAGNOSTIC_ONLY = "diagnostic_inventory_only"
 
 
 FIXED_DISCOVERY_FILTERS = (
-    "sellingType=FIXED_PRICE (GCC)",
-    "category=Pokemon card (local existing rule)",
-    f"min_price={MIN_PRICE:g} EUR (local existing rule)",
-    f"max_price={MAX_PRICE:g} EUR (local existing rule)",
+    "endpoint=/on-sale-items (official GCC API)",
+    "sellingTypes=FIXED_PRICE (GCC)",
+    "categories=Pokemon (GCC)",
+    "itemTypes=CARDS (GCC)",
+    f"min_price={MIN_PRICE:g} EUR (GCC + local defense)",
+    f"max_price={MAX_PRICE:g} EUR (GCC + local defense)",
     "grader=ALL",
     "grade=ALL",
 )
@@ -316,6 +327,7 @@ class CoverageAudit:
     first_page: str = ""
     last_page: str = ""
     expected_total: Optional[int] = None
+    expected_total_scope: str = EXPECTED_TOTAL_SCOPE_UNKNOWN
     page_size: Optional[int] = None
     pagination_end_reason: str = END_UNKNOWN
     unkeyed_rows: int = 0
@@ -349,6 +361,7 @@ class CoverageAudit:
         row_ids: list[str],
         *,
         expected_total: Optional[int] = None,
+        expected_total_scope: Optional[str] = None,
         page_size: Optional[int] = None,
         accumulate_expected: bool = False,
         detect_repeated_page: bool = False,
@@ -360,6 +373,16 @@ class CoverageAudit:
         if page_size is not None and page_size >= 0 and self.page_size is None:
             self.page_size = page_size
         if expected_total is not None and expected_total >= 0:
+            scope = expected_total_scope or EXPECTED_TOTAL_SAME_QUERY
+            if self.expected_total_scope not in {
+                EXPECTED_TOTAL_SCOPE_UNKNOWN,
+                scope,
+            }:
+                self.mark_incomplete(
+                    "conflicting expected_total scopes",
+                    END_MALFORMED_RESPONSE,
+                )
+            self.expected_total_scope = scope
             if accumulate_expected:
                 self.expected_total = (self.expected_total or 0) + expected_total
             else:
@@ -408,6 +431,8 @@ class CoverageAudit:
             END_REPEATED_PAGE,
             END_MAX_PAGE_LIMIT,
             END_MALFORMED_RESPONSE,
+            END_NO_PROGRESS,
+            END_TOTAL_NOT_REACHED,
         }:
             return
         self.pagination_end_reason = reason
@@ -418,9 +443,15 @@ class CoverageAudit:
             END_REPEATED_PAGE,
             END_MAX_PAGE_LIMIT,
             END_MALFORMED_RESPONSE,
+            END_NO_PROGRESS,
+            END_TOTAL_NOT_REACHED,
         }:
             return
-        if self.expected_total is not None and self.unique_listings == self.expected_total:
+        if (
+            self.expected_total_scope == EXPECTED_TOTAL_SAME_QUERY
+            and self.expected_total is not None
+            and self.unique_listings == self.expected_total
+        ):
             self.pagination_end_reason = END_DECLARED_TOTAL_REACHED
         else:
             self.pagination_end_reason = reliable_end_reason
@@ -461,13 +492,19 @@ class CoverageAudit:
 
     @property
     def missing_vs_declared_total(self) -> Optional[int]:
-        if self.expected_total is None:
+        if (
+            self.expected_total is None
+            or self.expected_total_scope != EXPECTED_TOTAL_SAME_QUERY
+        ):
             return None
         return max(0, self.expected_total - self.unique_listings)
 
     @property
     def coverage_ratio(self) -> Optional[float]:
-        if self.expected_total is None:
+        if (
+            self.expected_total is None
+            or self.expected_total_scope != EXPECTED_TOTAL_SAME_QUERY
+        ):
             return None
         if self.expected_total == 0:
             return 100.0 if self.unique_listings == 0 else 0.0
@@ -480,6 +517,8 @@ class CoverageAudit:
             END_REPEATED_PAGE,
             END_MAX_PAGE_LIMIT,
             END_MALFORMED_RESPONSE,
+            END_NO_PROGRESS,
+            END_TOTAL_NOT_REACHED,
             END_UNKNOWN,
         }
         if (
@@ -491,7 +530,11 @@ class CoverageAudit:
             or hard_end and self.pagination_end_reason != END_UNKNOWN
         ):
             return COVERAGE_INCOMPLETE
-        if self.expected_total is not None and self.unique_listings != self.expected_total:
+        if (
+            self.expected_total_scope == EXPECTED_TOTAL_SAME_QUERY
+            and self.expected_total is not None
+            and self.unique_listings != self.expected_total
+        ):
             return COVERAGE_INCOMPLETE
         reliable_end = self.pagination_end_reason in {
             END_DECLARED_TOTAL_REACHED,
@@ -679,8 +722,10 @@ class RunDiagnostics:
 
         if self.auction_coverage.pages_requested == 0:
             self.auction_coverage.set_end_reason(END_UNKNOWN)
-        else:
-            self.auction_coverage.finalize_pagination(END_NO_NEXT_PAGE)
+        elif self.auction_coverage.pagination_end_reason == END_UNKNOWN:
+            # L'accueil sans lien auction ne prouve ni une page finale vide,
+            # ni un total déclaré à zéro.
+            self.auction_coverage.finalize_pagination(END_UNKNOWN)
 
         self.fixed_coverage.reconcile_unaccounted()
         self.auction_coverage.reconcile_unaccounted()
@@ -1211,12 +1256,318 @@ def parse_sale_countdown_minutes(body: str) -> Optional[int]:
     )
 
 
+def _gcc_api_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float)):
+        return str(value).strip()
+    return ""
+
+
+def _gcc_fixed_result_to_lot(
+    result: dict,
+    item_url: str,
+    coverage: CoverageAudit,
+) -> Optional[Lot]:
+    """Convertit une ligne de l'API publique GCC sans changer les filtres locaux."""
+    item = result.get("item")
+    if not isinstance(item, dict):
+        coverage.record_terminal(item_url, ACCOUNT_PARSE_FAILURE)
+        return None
+    collectible = item.get("collectible")
+    if not isinstance(collectible, dict):
+        collectible = {}
+
+    title = _gcc_api_text(item.get("title"))
+    grader = _gcc_api_text(item.get("gradingCompany"))
+    grade = _gcc_api_text(item.get("grade"))
+    category = _gcc_api_text(collectible.get("category"))
+    language = _gcc_api_text(collectible.get("language"))
+    year = _gcc_api_text(collectible.get("yearOfDistribution"))
+    extension = _gcc_api_text(collectible.get("extension"))
+    set_name = _gcc_api_text(collectible.get("set"))
+    reference = _gcc_api_text(collectible.get("reference"))
+    item_type = _gcc_api_text(collectible.get("type"))
+
+    price = None
+    price_in_cents = result.get("priceInCents")
+    if isinstance(price_in_cents, (int, float)) and not isinstance(
+        price_in_cents, bool
+    ):
+        price = float(price_in_cents) / 100
+    else:
+        raw_price = result.get("price")
+        if isinstance(raw_price, (int, float)) and not isinstance(raw_price, bool):
+            price = float(raw_price)
+
+    metadata = " • ".join(
+        value
+        for value in (category, language, year, extension, set_name, reference)
+        if value
+    )
+    listing_text = "\n".join(
+        value
+        for value in (
+            title,
+            f"{grader} {grade}".strip(),
+            metadata,
+            f"Type: {item_type}" if item_type else "",
+            f"{price:g} €" if price is not None else "",
+        )
+        if value
+    )
+
+    if item_type.upper() != "CARDS" or not listing_is_pokemon_card(listing_text):
+        coverage.record_terminal(item_url, ACCOUNT_EXCLUDED_BY_RULES)
+        return None
+    if price is None:
+        coverage.record_terminal(item_url, ACCOUNT_PARSE_FAILURE)
+        return None
+    if price < MIN_PRICE or price > MAX_PRICE:
+        coverage.record_terminal(item_url, ACCOUNT_EXCLUDED_BY_RULES)
+        return None
+
+    return Lot(
+        url=item_url,
+        title=extract_card_title(existing_title=title, listing_text=listing_text),
+        current_price=price,
+        source_type="fixed",
+        listing_text=listing_text,
+        grader=grader,
+        grade=grade or None,
+    )
+
+
+def _log_gcc_numeric_rate_limits(response) -> None:
+    headers = getattr(response, "headers", {}) or {}
+    values = []
+    for name, value in headers.items():
+        if "ratelimit" not in str(name).lower():
+            continue
+        numbers = re.findall(r"\d+(?:\.\d+)?", str(value))
+        if numbers:
+            values.append(f"{name}={'/'.join(numbers)}")
+    if values:
+        log(f"GCC API rate limits: {' | '.join(values)}")
+
+
+def collect_fixed_lots_from_api(
+    run_diagnostics: Optional[RunDiagnostics] = None,
+    *,
+    http_get=None,
+    page_size: int = GCC_FIXED_PAGE_SIZE,
+    max_pages: int = GCC_FIXED_MAX_PAGES,
+) -> list[Lot]:
+    """Parcourt le flux public utilisé par GCC jusqu'à une fin démontrée."""
+    coverage = (
+        run_diagnostics.fixed_coverage
+        if run_diagnostics is not None
+        else CoverageAudit("FIXED PRICE", FIXED_DISCOVERY_FILTERS)
+    )
+    coverage.protocol = "GCC_PUBLIC_API_PAGE_NEXT_PAGE"
+    getter = http_get or requests.get
+    lots: dict[str, Lot] = {}
+    next_page = 1
+
+    if page_size <= 0 or max_pages <= 0:
+        coverage.record_malformed("invalid fixed API pagination configuration")
+        return []
+
+    for page_index in range(max_pages):
+        page_number = next_page
+        page_label = (
+            f"{GCC_ON_SALE_ITEMS_API_URL}?page={page_number}&limit={page_size}"
+        )
+        coverage.begin_page(page_label)
+        params = {
+            "sellingTypes": "FIXED_PRICE",
+            "categories": "Pokemon",
+            "itemTypes": "CARDS",
+            "minPriceInCents": round(MIN_PRICE * 100),
+            "maxPriceInCents": round(MAX_PRICE * 100),
+            "page": page_number,
+            "limit": page_size,
+            "includeCounts": "true" if page_number == 1 else "false",
+        }
+
+        response = None
+        for attempt in range(GCC_PAGE_RETRIES + 1):
+            try:
+                response = getter(
+                    GCC_ON_SALE_ITEMS_API_URL,
+                    params=params,
+                    headers={"Accept": "application/json", "x-device-platform": "web"},
+                    timeout=max(1.0, NAV_TIMEOUT / 1000),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except Exception as error:
+                if attempt < GCC_PAGE_RETRIES:
+                    coverage.record_retry()
+                    log(
+                        f"Retry GCC API {attempt + 1}/{GCC_PAGE_RETRIES}: "
+                        f"{type(error).__name__} | page {page_number}"
+                    )
+                    continue
+                coverage.record_page_failure(
+                    f"fixed API page {page_number} failed after "
+                    f"{GCC_PAGE_RETRIES} retries: {type(error).__name__}"
+                )
+                return list(lots.values())
+
+        if page_number == 1 and response is not None:
+            _log_gcc_numeric_rate_limits(response)
+        if not isinstance(payload, dict):
+            coverage.record_malformed(f"fixed API page {page_number}: payload is not an object")
+            return list(lots.values())
+        info = payload.get("info")
+        results = payload.get("results")
+        if not isinstance(info, dict) or not isinstance(results, list):
+            coverage.record_malformed(
+                f"fixed API page {page_number}: missing info/results"
+            )
+            return list(lots.values())
+        if info.get("currentPage") != page_number:
+            coverage.record_malformed(
+                f"fixed API page did not advance: requested {page_number}, "
+                f"received {info.get('currentPage')}"
+            )
+            return list(lots.values())
+
+        expected_total = None
+        if page_number == 1:
+            counts = info.get("counts")
+            if not isinstance(counts, dict):
+                coverage.record_malformed("fixed API first page has no official counts")
+                return list(lots.values())
+            expected_total = counts.get("total")
+            if (
+                not isinstance(expected_total, int)
+                or isinstance(expected_total, bool)
+                or expected_total < 0
+            ):
+                coverage.record_malformed("fixed API official total is invalid")
+                return list(lots.values())
+
+        row_ids: list[str] = []
+        keyed_results: list[tuple[str, dict]] = []
+        for result in results:
+            if not isinstance(result, dict):
+                coverage.record_unkeyed_row("fixed API row is not an object")
+                continue
+            result_id = result.get("id")
+            if not isinstance(result_id, str) or not result_id.strip():
+                coverage.record_unkeyed_row("fixed API row has no stable GCC id")
+                continue
+            item_url = f"{BASE}/item/{result_id.strip()}"
+            row_ids.append(item_url)
+            keyed_results.append((item_url, result))
+
+        previous_unique = coverage.unique_listings
+        coverage.record_page_success(
+            page_label,
+            row_ids,
+            expected_total=expected_total,
+            expected_total_scope=(
+                EXPECTED_TOTAL_SAME_QUERY if expected_total is not None else None
+            ),
+            page_size=page_size,
+            detect_repeated_page=True,
+        )
+        new_ids = coverage.unique_listings - previous_unique
+        if coverage.pagination_end_reason == END_REPEATED_PAGE:
+            return list(lots.values())
+        if row_ids and new_ids == 0:
+            coverage.mark_incomplete(
+                f"fixed API page {page_number} added no new listing id",
+                END_NO_PROGRESS,
+            )
+            return list(lots.values())
+
+        for item_url, result in keyed_results:
+            if item_url in lots or item_url in coverage.terminal_statuses:
+                continue
+            try:
+                lot = _gcc_fixed_result_to_lot(result, item_url, coverage)
+                if lot is not None:
+                    lots[item_url] = lot
+            except Exception as error:
+                coverage.record_terminal(item_url, ACCOUNT_INTERNAL_ERROR)
+                coverage.mark_incomplete(
+                    f"fixed API row parse failed: {type(error).__name__}"
+                )
+
+        if (
+            coverage.expected_total_scope == EXPECTED_TOTAL_SAME_QUERY
+            and coverage.expected_total is not None
+            and coverage.unique_listings == coverage.expected_total
+        ):
+            coverage.finalize_pagination(END_DECLARED_TOTAL_REACHED)
+            return list(lots.values())
+
+        raw_next_page = info.get("nextPage")
+        if raw_next_page is None:
+            if (
+                coverage.expected_total_scope == EXPECTED_TOTAL_SAME_QUERY
+                and coverage.expected_total is not None
+                and coverage.unique_listings != coverage.expected_total
+            ):
+                coverage.mark_incomplete(
+                    "fixed API ended before its declared total was reached",
+                    END_TOTAL_NOT_REACHED,
+                )
+            elif not results:
+                coverage.finalize_pagination(END_EMPTY_PAGE_REACHED)
+            elif len(results) < page_size:
+                coverage.finalize_pagination(END_SHORT_FINAL_PAGE)
+            else:
+                coverage.finalize_pagination(END_NO_NEXT_PAGE)
+            return list(lots.values())
+        if (
+            not isinstance(raw_next_page, int)
+            or isinstance(raw_next_page, bool)
+            or raw_next_page <= page_number
+        ):
+            coverage.record_malformed(
+                f"fixed API nextPage is invalid after page {page_number}"
+            )
+            return list(lots.values())
+        next_page = raw_next_page
+
+        if page_index + 1 == max_pages:
+            coverage.mark_incomplete(
+                f"fixed API safety limit {max_pages} pages reached",
+                END_MAX_PAGE_LIMIT,
+            )
+            return list(lots.values())
+
+    coverage.mark_incomplete(
+        f"fixed API safety limit {max_pages} pages reached",
+        END_MAX_PAGE_LIMIT,
+    )
+    return list(lots.values())
+
+
 def collect_lots_from_listing(
     page,
     url: str,
     source_type: str,
     run_diagnostics: Optional[RunDiagnostics] = None,
+    *,
+    fixed_http_get=None,
+    fixed_page_size: int = GCC_FIXED_PAGE_SIZE,
+    fixed_max_pages: int = GCC_FIXED_MAX_PAGES,
 ) -> list[Lot]:
+    if source_type == "fixed":
+        log(f"Ouverture listing fixed via API GCC: {GCC_ON_SALE_ITEMS_API_URL}")
+        return collect_fixed_lots_from_api(
+            run_diagnostics,
+            http_get=fixed_http_get,
+            page_size=fixed_page_size,
+            max_pages=fixed_max_pages,
+        )
+
     log(f"Ouverture listing {source_type}: {url}")
     coverage = (
         run_diagnostics.coverage_for(source_type)
@@ -4616,6 +4967,7 @@ def format_coverage_audit(audit: CoverageAudit) -> str:
             f"first page: {_coverage_value(audit.first_page)}",
             f"last page: {_coverage_value(audit.last_page)}",
             f"expected total: {_coverage_value(audit.expected_total)}",
+            f"expected total scope: {audit.expected_total_scope}",
             f"page size: {_coverage_value(audit.page_size)}",
             f"coverage ratio: {ratio}",
             f"missing vs declared total: {_coverage_value(audit.missing_vs_declared_total)}",

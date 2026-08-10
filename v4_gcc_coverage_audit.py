@@ -11,7 +11,7 @@ def main() -> int:
     diagnostics = watcher.RunDiagnostics()
     watcher.log("=== V4 GCC Coverage Audit (diagnostic manuel) ===")
     watcher.log(
-        f"Production fixed endpoint: {watcher.FIXED_PRICE_URL}"
+        f"Production fixed endpoint: {watcher.GCC_ON_SALE_ITEMS_API_URL}"
     )
     watcher.log(
         f"Production fixed filters: [{'; '.join(watcher.FIXED_DISCOVERY_FILTERS)}]"
@@ -75,9 +75,8 @@ def main() -> int:
     print("reference unique listings: UNKNOWN", flush=True)
     print("outside production universe: UNKNOWN", flush=True)
     print(
-        "reason: GCC expose des vues client filtrées avec défilement infini, "
-        "mais aucun endpoint documenté et stable d'inventaire complet n'est "
-        "utilisé par V4; aucune référence all-GCC n'est inventée.",
+        "reason: V4 utilise le flux public filtré de la requête production; "
+        "aucune référence distincte et exhaustive de tout GCC n'est inventée.",
         flush=True,
     )
     return 0

@@ -1377,6 +1377,63 @@ class StateCompatibilityTests(unittest.TestCase):
 
 
 class GccCoverageAuditTests(unittest.TestCase):
+    class ApiResponse:
+        def __init__(self, payload, headers=None):
+            self.payload = payload
+            self.headers = headers or {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    @staticmethod
+    def api_result(result_id, price_in_cents=5000):
+        return {
+            "id": str(result_id),
+            "priceInCents": price_in_cents,
+            "sellingType": "FIXED_PRICE",
+            "item": {
+                "title": f"PSA 10 Carte {result_id}",
+                "gradingCompany": "PSA",
+                "grade": "10",
+                "collectible": {
+                    "type": "CARDS",
+                    "category": "Pokemon",
+                    "language": "French",
+                    "reference": "#001/100",
+                    "yearOfDistribution": 2024,
+                },
+            },
+        }
+
+    def paginated_api_getter(self, total, *, repeated=False, reordered=False):
+        calls = []
+
+        def get(_url, **kwargs):
+            params = kwargs["params"]
+            page = params["page"]
+            limit = params["limit"]
+            start = (page - 1) * limit
+            stop = min(start + limit, total)
+            ids = list(range(start, stop))
+            if page == 2 and repeated:
+                ids = list(range(0, min(limit, total)))
+            elif page == 2 and reordered:
+                ids = list(reversed(range(0, min(limit, total))))
+            results = [self.api_result(item_id) for item_id in ids]
+            next_page = page + 1 if stop < total else None
+            if (repeated or reordered) and page == 2:
+                next_page = 3
+            calls.append((dict(params), len(results)))
+            info = {"currentPage": page, "nextPage": next_page}
+            if page == 1:
+                info["counts"] = {"total": total}
+            return self.ApiResponse({"info": info, "results": results})
+
+        return get, calls
+
     def complete_audit(self, label="TEST", ids=None):
         ids = ids or ["item-1", "item-2"]
         audit = watcher.CoverageAudit(label, ("status=test",))
@@ -1484,6 +1541,158 @@ class GccCoverageAuditTests(unittest.TestCase):
         self.assertEqual(
             audit.pagination_end_reason, watcher.END_REPEATED_PAGE
         )
+
+    def test_production_regression_7713_items_runs_past_three_pages(self):
+        getter, calls = self.paginated_api_getter(7713)
+        diagnostics = watcher.RunDiagnostics()
+        with redirect_stdout(io.StringIO()):
+            lots = watcher.collect_fixed_lots_from_api(
+                diagnostics,
+                http_get=getter,
+                page_size=24,
+                max_pages=400,
+            )
+        audit = diagnostics.fixed_coverage
+        for lot in lots:
+            audit.record_terminal(lot.url, watcher.ACCOUNT_DIAGNOSTIC_ONLY)
+
+        self.assertEqual(len(lots), 7713)
+        self.assertEqual(len(calls), 322)
+        self.assertGreater(len(calls), 3)
+        self.assertEqual(calls[2][1], 24)
+        self.assertEqual(calls[-1][1], 9)
+        self.assertEqual(audit.page_size, 24)
+        self.assertEqual(audit.expected_total, 7713)
+        self.assertEqual(
+            audit.expected_total_scope, watcher.EXPECTED_TOTAL_SAME_QUERY
+        )
+        self.assertEqual(
+            audit.pagination_end_reason, watcher.END_DECLARED_TOTAL_REACHED
+        )
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
+        self.assertEqual(watcher.GCC_FIXED_PAGE_SIZE, 100)
+        self.assertGreaterEqual(watcher.GCC_FIXED_MAX_PAGES, 78)
+        first_params = calls[0][0]
+        self.assertEqual(first_params["sellingTypes"], "FIXED_PRICE")
+        self.assertEqual(first_params["categories"], "Pokemon")
+        self.assertEqual(first_params["itemTypes"], "CARDS")
+        self.assertEqual(first_params["minPriceInCents"], 0)
+        self.assertEqual(first_params["maxPriceInCents"], 10000)
+
+    def test_fixed_api_repeated_page_stops_incomplete(self):
+        getter, calls = self.paginated_api_getter(4, repeated=True)
+        diagnostics = watcher.RunDiagnostics()
+        with redirect_stdout(io.StringIO()):
+            watcher.collect_fixed_lots_from_api(
+                diagnostics, http_get=getter, page_size=2, max_pages=10
+            )
+        audit = diagnostics.fixed_coverage
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(audit.duplicates, 2)
+        self.assertEqual(audit.pagination_end_reason, watcher.END_REPEATED_PAGE)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_fixed_api_reordered_duplicate_page_is_no_progress(self):
+        getter, calls = self.paginated_api_getter(4, reordered=True)
+        diagnostics = watcher.RunDiagnostics()
+        with redirect_stdout(io.StringIO()):
+            watcher.collect_fixed_lots_from_api(
+                diagnostics, http_get=getter, page_size=2, max_pages=10
+            )
+        audit = diagnostics.fixed_coverage
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(audit.pagination_end_reason, watcher.END_NO_PROGRESS)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_fixed_api_safety_limit_remains_incomplete(self):
+        getter, calls = self.paginated_api_getter(10)
+        diagnostics = watcher.RunDiagnostics()
+        with redirect_stdout(io.StringIO()):
+            watcher.collect_fixed_lots_from_api(
+                diagnostics, http_get=getter, page_size=2, max_pages=2
+            )
+        audit = diagnostics.fixed_coverage
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(audit.unique_listings, 4)
+        self.assertEqual(audit.pagination_end_reason, watcher.END_MAX_PAGE_LIMIT)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_fixed_api_no_next_before_total_is_total_not_reached(self):
+        payload = {
+            "info": {
+                "currentPage": 1,
+                "nextPage": None,
+                "counts": {"total": 3},
+            },
+            "results": [self.api_result("one"), self.api_result("two")],
+        }
+        diagnostics = watcher.RunDiagnostics()
+        with redirect_stdout(io.StringIO()):
+            watcher.collect_fixed_lots_from_api(
+                diagnostics,
+                http_get=lambda *_args, **_kwargs: self.ApiResponse(payload),
+                page_size=2,
+                max_pages=10,
+            )
+        audit = diagnostics.fixed_coverage
+        self.assertEqual(audit.pagination_end_reason, watcher.END_TOTAL_NOT_REACHED)
+        self.assertEqual(audit.missing_vs_declared_total, 1)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_expected_total_from_different_scope_is_not_used_as_denominator(self):
+        audit = watcher.CoverageAudit("TEST", ())
+        audit.begin_page("filtered-page")
+        audit.record_page_success(
+            "filtered-page",
+            ["one", "two"],
+            expected_total=7713,
+            expected_total_scope=watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE,
+        )
+        for item_id in audit.listing_ids:
+            audit.record_terminal(item_id, watcher.ACCOUNT_DIAGNOSTIC_ONLY)
+        audit.finalize_pagination(watcher.END_NO_NEXT_PAGE)
+        self.assertIsNone(audit.coverage_ratio)
+        self.assertIsNone(audit.missing_vs_declared_total)
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
+        self.assertIn(
+            "expected total scope: DIFFERENT_SCOPE",
+            watcher.format_coverage_audit(audit),
+        )
+
+    def test_72_of_same_query_total_7713_can_never_be_complete(self):
+        audit = watcher.CoverageAudit("FIXED", ())
+        ids = [f"item-{index}" for index in range(72)]
+        audit.begin_page("page-1")
+        audit.record_page_success(
+            "page-1",
+            ids,
+            expected_total=7713,
+            expected_total_scope=watcher.EXPECTED_TOTAL_SAME_QUERY,
+        )
+        for item_id in ids:
+            audit.record_terminal(item_id, watcher.ACCOUNT_DIAGNOSTIC_ONLY)
+        audit.finalize_pagination(watcher.END_NO_NEXT_PAGE)
+        self.assertEqual(audit.missing_vs_declared_total, 7641)
+        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_auction_zero_with_explicit_empty_end_is_complete(self):
+        diagnostics = watcher.RunDiagnostics()
+        audit = diagnostics.auction_coverage
+        audit.begin_page("auction-page-1")
+        audit.record_page_success("auction-page-1", [])
+        audit.finalize_pagination(watcher.END_EMPTY_PAGE_REACHED)
+        diagnostics.finalize_coverage()
+        self.assertEqual(audit.pagination_end_reason, watcher.END_EMPTY_PAGE_REACHED)
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
+
+    def test_auction_zero_without_end_proof_is_unknown(self):
+        diagnostics = watcher.RunDiagnostics()
+        audit = diagnostics.auction_coverage
+        audit.begin_page(watcher.BASE)
+        audit.record_page_success(watcher.BASE, [])
+        diagnostics.finalize_coverage()
+        self.assertEqual(audit.pagination_end_reason, watcher.END_UNKNOWN)
+        self.assertEqual(audit.status, watcher.COVERAGE_UNKNOWN)
 
     def test_malformed_response_is_incomplete(self):
         audit = self.complete_audit()
@@ -1824,12 +2033,35 @@ class ZeroPriceDiscoveryTests(unittest.TestCase):
         diagnostics = watcher.RunDiagnostics()
         with patch.object(watcher, "GCC_LISTING_SCROLL_LIMIT", 1):
             with redirect_stdout(io.StringIO()):
-                lots = watcher.collect_lots_from_listing(
-                    page,
-                    "https://gcc.test/listing",
-                    source_type,
-                    diagnostics,
-                )
+                if source_type == "fixed":
+                    response = GccCoverageAuditTests.ApiResponse(
+                        {
+                            "info": {
+                                "currentPage": 1,
+                                "nextPage": None,
+                                "counts": {"total": 1},
+                            },
+                            "results": [
+                                GccCoverageAuditTests.api_result(
+                                    f"{index:020x}", round(price * 100)
+                                )
+                            ],
+                        }
+                    )
+                    lots = watcher.collect_lots_from_listing(
+                        page,
+                        "https://gcc.test/listing",
+                        source_type,
+                        diagnostics,
+                        fixed_http_get=lambda *_args, **_kwargs: response,
+                    )
+                else:
+                    lots = watcher.collect_lots_from_listing(
+                        page,
+                        "https://gcc.test/listing",
+                        source_type,
+                        diagnostics,
+                    )
         return lots, diagnostics
 
     def test_fixed_and_auction_collectors_discover_zero_to_former_minimum(self):
