@@ -26,13 +26,20 @@ from .live_raw_pipeline import (
     IDENTITY_OK,
 )
 from .market_values.gcc_history.provider import GCCProviderConfig, GCCHistoryProvider
+from .market_values.poketrace import (
+    PokeTraceConfig,
+    PokeTraceProvider,
+    render_poketrace_counters,
+)
 
 
 class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
-    """Existing V5 pipeline with canonical Pokémon identity resolution first.
+    """V5 pipeline with canonical identity resolution and PokeTrace market data.
 
-    TCGdex is the primary multilingual resolver. Pokémon TCG API is the
-    English/unknown-language fallback. The resolver never persists eBay data.
+    TCGdex remains the multilingual identity resolver, with Pokémon TCG API as
+    the English/unknown-language fallback. PokeTrace is the primary V5 market
+    data source when configured; GCC remains a complementary graded-history
+    source. No eBay, PokeTrace or CardMarket listing record is persisted.
     """
 
     def __init__(
@@ -43,14 +50,25 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         card_catalog_resolver: MultilingualPokemonCardResolver,
         config: Optional[LiveRawPipelineConfig] = None,
         gcc_history_provider: Optional[GCCHistoryProvider] = None,
+        poketrace_provider: Optional[PokeTraceProvider] = None,
     ) -> None:
         self.card_catalog_resolver = card_catalog_resolver
+        if poketrace_provider is None:
+            poketrace_config = PokeTraceConfig.from_env()
+            workflow_authorized = (
+                os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
+            )
+            if not workflow_authorized and poketrace_config.enabled:
+                poketrace_config = replace(poketrace_config, enabled=False)
+            poketrace_provider = PokeTraceProvider(config=poketrace_config)
+        self.poketrace = poketrace_provider
         super().__init__(
             client_id,
             client_secret,
             config=config,
             set_number_resolver=card_catalog_resolver,
             gcc_history_provider=gcc_history_provider,
+            offline_market_sources=(self.poketrace,),
         )
 
     def _candidate_from_record(
@@ -97,12 +115,17 @@ def main() -> int:
     client_secret = os.getenv("EBAY_CLIENT_SECRET", "").strip()
     resolver = MultilingualPokemonCardResolver()
 
+    poketrace_config = PokeTraceConfig.from_env()
+    workflow_authorized = (
+        os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
+    )
+    if not workflow_authorized and poketrace_config.enabled:
+        poketrace_config = replace(poketrace_config, enabled=False)
+    poketrace = PokeTraceProvider(config=poketrace_config)
+
     try:
         gcc_live_requested = (
             os.getenv("GCC_HISTORY_ENABLED", "false").strip().casefold() == "true"
-        )
-        workflow_authorized = (
-            os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
         )
         session_file = Path("gcc_session.json")
         if gcc_live_requested and workflow_authorized and session_file.is_file():
@@ -118,6 +141,7 @@ def main() -> int:
                     config=config,
                     card_catalog_resolver=resolver,
                     gcc_history_provider=gcc_provider,
+                    poketrace_provider=poketrace,
                 )
                 summary = diagnostic.run()
         else:
@@ -126,12 +150,21 @@ def main() -> int:
                 client_secret,
                 config=config,
                 card_catalog_resolver=resolver,
+                poketrace_provider=poketrace,
             )
             summary = diagnostic.run()
     except Exception:
         summary = _fallback_summary(config)
 
     print(render_card_catalog_counters(resolver))
+    print(render_poketrace_counters(poketrace))
+    print("=== V5 EBAY OAUTH OBSERVABILITY ===")
+    print(
+        "credentials present: "
+        f"{str(bool(client_id and client_secret)).lower()}"
+    )
+    print(f"OAuth HTTP/status: {summary.oauth.http_status}")
+    print("secret values printed: 0")
     print(render_live_raw_pipeline_summary(summary))
     return 0 if summary.successful else 1
 
