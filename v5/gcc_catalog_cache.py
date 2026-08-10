@@ -47,11 +47,11 @@ class GCCCatalogCandidate:
 
 
 class GCCCatalogIndex:
-    """Small persistent GCC-only identity index.
+    """Persistent cumulative index containing GCC collectible identity only.
 
-    The file intentionally contains no eBay identifier, URL, title, price,
-    seller, image, aspect or payload.  It stores only GCC item URLs plus the
-    canonical collectible identity needed to find a representative page later.
+    It intentionally stores no eBay identifier, listing URL/title/price, seller,
+    image, aspects or API payload. The only URL stored is the GCC item page used
+    as a future representative for GCC sales-history lookup.
     """
 
     def __init__(self, path: Path | str | None = None) -> None:
@@ -135,11 +135,19 @@ class GCCCatalogIndex:
             current_price=None,
             source_type="catalog_cache",
             grader=str(entry.get("grader") or ""),
-            grade=(str(entry.get("grade")) if entry.get("grade") is not None else None),
+            grade=(
+                str(entry.get("grade"))
+                if entry.get("grade") is not None
+                else None
+            ),
             card_set=str(entry.get("set_name") or ""),
             card_number=str(entry.get("card_number") or ""),
             language=str(entry.get("language") or ""),
-            year=(entry.get("year") if isinstance(entry.get("year"), int) else None),
+            year=(
+                entry.get("year")
+                if isinstance(entry.get("year"), int)
+                else None
+            ),
             variant=str(entry.get("variant") or ""),
             set_family=str(entry.get("set_family") or ""),
         )
@@ -184,6 +192,11 @@ class GCCCatalogIndex:
         now = (seen_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         timestamp = now.isoformat()
         previous = self._items.get(url)
+        previous_name = (
+            self._identity_from_entry(previous).card_name
+            if isinstance(previous, Mapping)
+            else None
+        )
         first_seen = (
             str(previous.get("first_seen"))
             if isinstance(previous, Mapping) and previous.get("first_seen")
@@ -192,7 +205,9 @@ class GCCCatalogIndex:
         sources = []
         if isinstance(previous, Mapping):
             raw_sources = previous.get("sources")
-            if isinstance(raw_sources, Sequence) and not isinstance(raw_sources, str):
+            if isinstance(raw_sources, Sequence) and not isinstance(
+                raw_sources, str
+            ):
                 sources.extend(str(value) for value in raw_sources if value)
         if source and source not in sources:
             sources.append(source)
@@ -222,9 +237,18 @@ class GCCCatalogIndex:
             comparable_entry.pop("last_seen", None)
             if comparable_previous != comparable_entry:
                 self.updated_this_run += 1
+
         self._items[url] = entry
+        if previous_name and previous_name != identity.card_name:
+            old_bucket = self._by_name.get(previous_name, [])
+            if url in old_bucket:
+                old_bucket.remove(url)
+            if not old_bucket:
+                self._by_name.pop(previous_name, None)
+        bucket = self._by_name.setdefault(identity.card_name, [])
+        if url not in bucket:
+            bucket.append(url)
         self._dirty = True
-        self._rebuild_name_index()
         return True
 
     def add_lots(
@@ -232,13 +256,15 @@ class GCCCatalogIndex:
         lots: Iterable[watcher.Lot],
         *,
         source: str,
-        identity_builder: Callable[[watcher.Lot], CanonicalCollectible] = canonical_from_gcc_lot,
+        identity_builder: Callable[
+            [watcher.Lot], CanonicalCollectible
+        ] = canonical_from_gcc_lot,
     ) -> int:
-        added = 0
+        accepted = 0
         for lot in lots:
             if self.upsert(identity_builder(lot), lot, source=source):
-                added += 1
-        return added
+                accepted += 1
+        return accepted
 
     def save(self) -> None:
         if not self._dirty and self.path.exists():
