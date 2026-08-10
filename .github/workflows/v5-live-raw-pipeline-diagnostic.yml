@@ -20,6 +20,7 @@ jobs:
       MARKETPLACE_INSIGHTS_ENABLED: "false"
       GCC_HISTORY_ENABLED: "true"
       GCC_HISTORY_CURRENCY: "USD"
+      GCC_CATALOG_INDEX_FILE: gcc_catalog_index.json
       PRODUCT_RESEARCH_MODE: "MANUAL_VALIDATION_ONLY"
       RAW_MAX_PAID_GRADINGS_PER_RUN: "0"
       CARDGRADER_V5_ALLOW_PAID_CALLS: "false"
@@ -40,6 +41,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Restore cumulative GCC catalogue
+        uses: actions/cache@v4
+        with:
+          path: gcc_catalog_index.json
+          key: v5-gcc-catalog-${{ github.run_id }}
+          restore-keys: |
+            v5-gcc-catalog-
 
       - name: Set up Python
         uses: actions/setup-python@v5
