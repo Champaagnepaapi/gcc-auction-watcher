@@ -1356,6 +1356,10 @@ class GccDiagnosticsTests(unittest.TestCase):
         self.assertIn("group: gcc-auction-watcher", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn('cron: "3,13,23,33,43,53 * * * *"', workflow)
+        self.assertIn("actions/cache/restore@v4", workflow)
+        self.assertIn("actions/cache/save@v4", workflow)
+        self.assertIn("path: state.json", workflow)
+        self.assertIn('FIXED_REEVALUATION_TTL_HOURS: "24"', workflow)
 
 
 class StateCompatibilityTests(unittest.TestCase):
@@ -1371,7 +1375,22 @@ class StateCompatibilityTests(unittest.TestCase):
                 watcher.STATE_FILE = path
                 state = watcher.load_state()
                 self.assertEqual(state["notified"]["url"]["price"], 42)
-                self.assertEqual(state["schema_version"], 2)
+                self.assertEqual(state["schema_version"], 3)
+        finally:
+            watcher.STATE_FILE = old_file
+
+    def test_corrupt_json_state_is_recovered_without_marking_items_evaluated(self):
+        old_file = watcher.STATE_FILE
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "state.json"
+                path.write_text("{broken", encoding="utf-8")
+                watcher.STATE_FILE = path
+                with redirect_stdout(io.StringIO()):
+                    state = watcher.load_state()
+                self.assertTrue(state["_runtime_state_issue"])
+                self.assertEqual(state["seen"], {})
+                self.assertNotIn(watcher.FIXED_QUEUE_STATE_KEY, state)
         finally:
             watcher.STATE_FILE = old_file
 
@@ -1948,35 +1967,73 @@ class GccCoverageAuditTests(unittest.TestCase):
         self.assertNotIn("build_market_estimate", script)
 
 
-class FixedValuationCapCoverageTests(unittest.TestCase):
-    def candidates(self, count):
+class FixedIncrementalEconomicQueueTests(unittest.TestCase):
+    def candidates(self, count, prefix="item"):
         return [
             watcher.Lot(
-                url=f"https://gcc.test/item/{index:04d}",
+                url=f"https://gcc.test/item/{prefix}-{index:04d}",
                 title=f"PSA 10 Carte {index}",
-                current_price=index / 10,
+                current_price=float((index % 100) + 1),
                 source_type="fixed",
                 grader="PSA",
                 grade="10",
+                listing_text=f"Pokemon | Carte {index} | PSA 10",
             )
             for index in range(1, count + 1)
         ]
 
-    def run_cap(self, count, target_index):
-        candidates = self.candidates(count)
-        target = candidates[target_index - 1]
-        diagnostics = watcher.RunDiagnostics()
+    def initialized_state(self, items=None):
+        queue = watcher._new_fixed_queue_state(NOW - timedelta(days=1))
+        queue["items"] = items or {}
+        return {
+            "notified": {},
+            "seen": {},
+            "technical_alerts": {},
+            watcher.FIXED_QUEUE_STATE_KEY: queue,
+        }
 
+    def queue_record(
+        self,
+        lot,
+        *,
+        evaluated=True,
+        evaluated_at=None,
+        evaluated_fingerprint=None,
+        active=True,
+    ):
+        item_id = watcher.fixed_listing_id(lot)
+        fingerprint = watcher.fixed_metadata_fingerprint(lot)
+        evaluated_at = evaluated_at or NOW - timedelta(hours=1)
+        return {
+            "item_id": item_id,
+            "first_seen_at": (NOW - timedelta(days=2)).isoformat(),
+            "last_seen_at": (NOW - timedelta(minutes=10)).isoformat(),
+            "last_evaluated_at": evaluated_at.isoformat() if evaluated else None,
+            "last_price": lot.current_price,
+            "metadata_fingerprint": fingerprint,
+            "evaluated_fingerprint": (
+                evaluated_fingerprint
+                if evaluated_fingerprint is not None
+                else fingerprint if evaluated else None
+            ),
+            "evaluation_version": (
+                watcher.ECONOMIC_EVALUATION_VERSION if evaluated else None
+            ),
+            "last_evaluation_status": "empty_history" if evaluated else None,
+            "active": active,
+        }
+
+    def complete_diagnostics(self, candidates):
+        diagnostics = watcher.RunDiagnostics()
         fixed = diagnostics.fixed_coverage
         fixed.begin_page("fixed-api")
         fixed.record_page_success(
             "fixed-api",
             [lot.url for lot in candidates],
-            expected_total=count,
+            expected_total=len(candidates),
             page_size=100,
         )
         fixed.finalize_pagination(watcher.END_NO_NEXT_PAGE)
-
         auction = diagnostics.auction_coverage
         auction.begin_page("auction-empty")
         auction.record_page_success(
@@ -1987,10 +2044,22 @@ class FixedValuationCapCoverageTests(unittest.TestCase):
             [], discovered_listings=0, valuation_cap=watcher.MAX_AUCTION_CANDIDATES
         )
         diagnostics.auction_economic_coverage.finalize()
+        return diagnostics
 
+    def run_queue(
+        self,
+        candidates,
+        state,
+        *,
+        run_now=NOW,
+        budget=120,
+        target_url="",
+        evaluator=None,
+    ):
+        diagnostics = self.complete_diagnostics(candidates)
         called = []
 
-        def evaluator(
+        def default_evaluator(
             _page,
             lot,
             _position,
@@ -2001,7 +2070,7 @@ class FixedValuationCapCoverageTests(unittest.TestCase):
         ):
             called.append(lot.url)
             run_diagnostics.fixed_economic_coverage.record_valued(lot)
-            is_target = lot.url == target.url
+            is_target = lot.url == target_url
             run_diagnostics.record_valuation(
                 lot,
                 "" if is_target else watcher.REJECTION_EMPTY_HISTORY,
@@ -2011,76 +2080,326 @@ class FixedValuationCapCoverageTests(unittest.TestCase):
         opportunities = watcher.evaluate_fixed_candidates(
             Mock(),
             candidates,
-            {"seen": {}},
-            NOW.isoformat(),
-            NOW,
+            state,
+            run_now.isoformat(),
+            run_now,
             diagnostics,
-            evaluator=evaluator,
+            valuation_cap=budget,
+            evaluator=evaluator or default_evaluator,
         )
         diagnostics.finalize_coverage()
-        return diagnostics, candidates, target, called, opportunities
+        return diagnostics, called, opportunities
 
-    def test_below_120_evaluates_every_candidate_including_last_opportunity(self):
-        diagnostics, candidates, target, called, opportunities = self.run_cap(119, 119)
-        economic = diagnostics.fixed_economic_coverage
-        self.assertEqual(len(called), 119)
-        self.assertIn(target.url, called)
-        self.assertEqual(opportunities, [target])
-        self.assertEqual(economic.skipped_by_cap, 0)
-        self.assertEqual(economic.status, watcher.COVERAGE_COMPLETE)
-        self.assertEqual(diagnostics.scan_coverage_status, watcher.COVERAGE_COMPLETE)
+    def test_100_new_candidates_are_all_processed(self):
+        candidates = self.candidates(100)
+        diagnostics, called, _ = self.run_queue(
+            candidates, self.initialized_state()
+        )
+        self.assertEqual(len(called), 100)
+        self.assertEqual(diagnostics.fixed_queue.count(watcher.QUEUE_P0_NEW), 100)
+        self.assertEqual(diagnostics.fixed_queue.processed_this_run, 100)
+        self.assertEqual(diagnostics.fixed_queue.status, watcher.COVERAGE_COMPLETE)
 
-    def test_exactly_120_evaluates_every_candidate_including_last_opportunity(self):
-        diagnostics, candidates, target, called, opportunities = self.run_cap(120, 120)
-        economic = diagnostics.fixed_economic_coverage
+    def test_119_new_and_one_changed_are_all_processed(self):
+        new = self.candidates(119, "new")
+        changed = self.candidates(1, "changed")
+        item_id = watcher.fixed_listing_id(changed[0])
+        state = self.initialized_state(
+            {item_id: self.queue_record(changed[0], evaluated_fingerprint="old")}
+        )
+        diagnostics, called, _ = self.run_queue(new + changed, state)
         self.assertEqual(len(called), 120)
-        self.assertIn(target.url, called)
-        self.assertEqual(opportunities, [target])
-        self.assertEqual(economic.skipped_by_cap, 0)
-        self.assertEqual(economic.status, watcher.COVERAGE_COMPLETE)
+        self.assertEqual(diagnostics.fixed_queue.processed_count(watcher.QUEUE_P0_NEW), 119)
+        self.assertEqual(diagnostics.fixed_queue.processed_count(watcher.QUEUE_P1_CHANGED), 1)
 
-    def test_121st_potential_opportunity_is_explicitly_skipped_and_incomplete(self):
-        diagnostics, candidates, target, called, opportunities = self.run_cap(121, 121)
-        economic = diagnostics.fixed_economic_coverage
+    def test_exactly_120_new_are_all_processed(self):
+        candidates = self.candidates(120)
+        diagnostics, called, _ = self.run_queue(
+            candidates, self.initialized_state()
+        )
         self.assertEqual(len(called), 120)
-        self.assertNotIn(target.url, called)
-        self.assertEqual(opportunities, [])
-        self.assertIn(target.url, economic.skipped_cap_ids)
-        self.assertEqual(economic.skipped_by_cap, 1)
-        self.assertEqual(diagnostics.discovery_coverage_status, watcher.COVERAGE_COMPLETE)
-        self.assertEqual(economic.status, watcher.COVERAGE_INCOMPLETE)
-        self.assertEqual(diagnostics.scan_coverage_status, watcher.COVERAGE_INCOMPLETE)
-        summary = watcher.format_scan_coverage(diagnostics)
-        self.assertIn("discovery coverage status: COMPLETE", summary)
-        self.assertIn("skipped because valuation cap: 1", summary)
-        self.assertIn("economic coverage status: INCOMPLETE", summary)
+        self.assertEqual(diagnostics.fixed_queue.queued_backlog, 0)
 
-    def test_500th_potential_opportunity_is_never_silently_lost(self):
-        diagnostics, candidates, target, called, opportunities = self.run_cap(500, 500)
-        economic = diagnostics.fixed_economic_coverage
+    def test_121_new_leave_one_explicit_urgent_backlog_and_alert(self):
+        candidates = self.candidates(121)
+        state = self.initialized_state()
+        diagnostics, called, _ = self.run_queue(candidates, state)
         self.assertEqual(len(called), 120)
-        self.assertNotIn(target.url, called)
-        self.assertEqual(opportunities, [])
-        self.assertIn(target.url, economic.skipped_cap_ids)
-        self.assertEqual(economic.skipped_by_cap, 380)
-        self.assertEqual(economic.status, watcher.COVERAGE_INCOMPLETE)
-        self.assertTrue(economic.accounting_coherent)
+        self.assertEqual(
+            diagnostics.fixed_queue.budget_skipped_count(watcher.QUEUE_P0_NEW), 1
+        )
+        self.assertEqual(diagnostics.economic_coverage_status, watcher.COVERAGE_INCOMPLETE)
 
-    def test_economic_cap_incomplete_triggers_technical_alert(self):
-        diagnostics, *_ = self.run_cap(121, 121)
         response = Mock()
         response.raise_for_status.return_value = None
-        state = {"technical_alerts": {}}
         with patch.object(watcher, "NTFY_TOPIC", "diagnostic-topic"):
             with patch.object(watcher.requests, "post", return_value=response) as post:
-                sent = watcher.maybe_notify_incomplete_coverage(
-                    diagnostics, state, NOW
+                self.assertTrue(
+                    watcher.maybe_notify_incomplete_coverage(
+                        diagnostics, state, NOW
+                    )
                 )
-        self.assertTrue(sent)
         message = post.call_args.kwargs["data"].decode("utf-8")
-        self.assertIn("Discovery fixed: 121 / 121 | COMPLETE", message)
-        self.assertIn("Economic fixed: 120 / 121 | INCOMPLETE", message)
-        self.assertIn("cap skipped 1", message)
+        self.assertIn("Urgent fixed skipped: new 1 | changed 0", message)
+
+    def test_changed_skipped_by_urgent_budget_remains_changed_next_run(self):
+        new = self.candidates(120, "new")
+        changed = self.candidates(1, "changed")
+        item_id = watcher.fixed_listing_id(changed[0])
+        state = self.initialized_state(
+            {item_id: self.queue_record(changed[0], evaluated_fingerprint="old")}
+        )
+        first, called, _ = self.run_queue(new + changed, state)
+        self.assertNotIn(changed[0].url, called)
+        self.assertEqual(
+            first.fixed_queue.budget_skipped_count(watcher.QUEUE_P1_CHANGED), 1
+        )
+        second, called_again, _ = self.run_queue(
+            new + changed,
+            state,
+            run_now=NOW + timedelta(minutes=10),
+        )
+        self.assertEqual(called_again, [changed[0].url])
+        self.assertEqual(second.fixed_queue.count(watcher.QUEUE_P1_CHANGED), 1)
+
+    def test_priority_new_changed_then_never_evaluated(self):
+        new = self.candidates(5, "new")
+        changed = self.candidates(10, "changed")
+        never = self.candidates(500, "never")
+        items = {}
+        for lot in changed:
+            items[watcher.fixed_listing_id(lot)] = self.queue_record(
+                lot, evaluated_fingerprint="old"
+            )
+        for lot in never:
+            items[watcher.fixed_listing_id(lot)] = self.queue_record(
+                lot, evaluated=False
+            )
+        diagnostics, called, _ = self.run_queue(
+            new + changed + never, self.initialized_state(items)
+        )
+        self.assertEqual(called[:5], [lot.url for lot in new])
+        self.assertEqual(called[5:15], [lot.url for lot in changed])
+        self.assertEqual(len(called[15:]), 105)
+        self.assertEqual(
+            diagnostics.fixed_queue.processed_count(
+                watcher.QUEUE_P2_NEVER_EVALUATED
+            ),
+            105,
+        )
+
+    def test_expensive_new_precedes_cheap_stale(self):
+        expensive = self.candidates(1, "expensive")[0]
+        expensive.current_price = 90
+        cheap = self.candidates(1, "cheap")[0]
+        cheap.current_price = 5
+        item_id = watcher.fixed_listing_id(cheap)
+        stale_at = NOW - timedelta(hours=watcher.FIXED_REEVALUATION_TTL_HOURS + 1)
+        state = self.initialized_state(
+            {item_id: self.queue_record(cheap, evaluated_at=stale_at)}
+        )
+        _, called, _ = self.run_queue([cheap, expensive], state, budget=1)
+        self.assertEqual(called, [expensive.url])
+
+    def test_candidate_500_is_processed_in_a_later_run(self):
+        candidates = self.candidates(500)
+        target = candidates[499]
+        state = {"notified": {}, "seen": {}, "technical_alerts": {}}
+        target_seen = False
+        for run_index in range(5):
+            _, called, opportunities = self.run_queue(
+                candidates,
+                state,
+                run_now=NOW + timedelta(minutes=10 * run_index),
+                target_url=target.url,
+            )
+            if target.url in called:
+                target_seen = True
+                self.assertEqual(opportunities, [target])
+                break
+        self.assertTrue(target_seen)
+
+    def test_price_change_is_changed(self):
+        before = self.candidates(1)[0]
+        after = self.candidates(1)[0]
+        after.current_price = before.current_price + 10
+        item_id = watcher.fixed_listing_id(before)
+        state = self.initialized_state(
+            {item_id: self.queue_record(before)}
+        )
+        diagnostics, called, _ = self.run_queue([after], state)
+        self.assertEqual(called, [after.url])
+        self.assertEqual(diagnostics.fixed_queue.count(watcher.QUEUE_P1_CHANGED), 1)
+
+    def test_identical_metadata_is_fresh_and_does_not_open_detail(self):
+        lot = self.candidates(1)[0]
+        item_id = watcher.fixed_listing_id(lot)
+        state = self.initialized_state({item_id: self.queue_record(lot)})
+        diagnostics, called, _ = self.run_queue([lot], state)
+        self.assertEqual(called, [])
+        self.assertEqual(diagnostics.fixed_queue.fresh_already_evaluated, 1)
+        self.assertEqual(diagnostics.fixed_queue.status, watcher.COVERAGE_COMPLETE)
+
+    def test_absent_state_bootstraps_as_never_evaluated(self):
+        candidates = self.candidates(3)
+        state = {"notified": {}, "seen": {}, "technical_alerts": {}}
+        diagnostics, called, _ = self.run_queue(candidates, state)
+        self.assertEqual(len(called), 3)
+        self.assertTrue(diagnostics.fixed_queue.bootstrap)
+        self.assertEqual(
+            diagnostics.fixed_queue.count(watcher.QUEUE_P2_NEVER_EVALUATED), 3
+        )
+        self.assertEqual(diagnostics.fixed_queue.count(watcher.QUEUE_P0_NEW), 0)
+        item_id = watcher.fixed_listing_id(candidates[0])
+        record = state[watcher.FIXED_QUEUE_STATE_KEY]["items"][item_id]
+        self.assertEqual(
+            set(record),
+            {
+                "item_id",
+                "first_seen_at",
+                "last_seen_at",
+                "last_evaluated_at",
+                "last_price",
+                "metadata_fingerprint",
+                "evaluated_fingerprint",
+                "evaluation_version",
+                "last_evaluation_status",
+                "active",
+            },
+        )
+        self.assertNotIn("listing_text", record)
+        self.assertNotIn("history", record)
+
+    def test_corrupt_queue_falls_back_without_false_negative(self):
+        candidates = self.candidates(3)
+        state = {
+            "notified": {},
+            "seen": {},
+            "technical_alerts": {},
+            watcher.FIXED_QUEUE_STATE_KEY: "corrupt",
+        }
+        diagnostics, called, _ = self.run_queue(candidates, state)
+        self.assertEqual(len(called), 3)
+        self.assertTrue(diagnostics.state_issue)
+        self.assertTrue(watcher._technical_alert_required(diagnostics))
+
+    def test_stale_is_reevaluated_after_ttl(self):
+        lot = self.candidates(1)[0]
+        item_id = watcher.fixed_listing_id(lot)
+        stale_at = NOW - timedelta(hours=watcher.FIXED_REEVALUATION_TTL_HOURS + 1)
+        state = self.initialized_state(
+            {item_id: self.queue_record(lot, evaluated_at=stale_at)}
+        )
+        diagnostics, called, _ = self.run_queue([lot], state)
+        self.assertEqual(called, [lot.url])
+        self.assertEqual(diagnostics.fixed_queue.count(watcher.QUEUE_P3_STALE), 1)
+
+    def test_old_evaluation_version_is_never_evaluated_for_current_version(self):
+        lot = self.candidates(1)[0]
+        item_id = watcher.fixed_listing_id(lot)
+        record = self.queue_record(lot)
+        record["evaluation_version"] = watcher.ECONOMIC_EVALUATION_VERSION - 1
+        state = self.initialized_state({item_id: record})
+        diagnostics, called, _ = self.run_queue([lot], state)
+        self.assertEqual(called, [lot.url])
+        self.assertEqual(
+            diagnostics.fixed_queue.count(
+                watcher.QUEUE_P2_NEVER_EVALUATED
+            ),
+            1,
+        )
+
+    def test_disappeared_listing_returns_as_known_and_fresh(self):
+        lot = self.candidates(1)[0]
+        item_id = watcher.fixed_listing_id(lot)
+        state = self.initialized_state({item_id: self.queue_record(lot)})
+        self.run_queue([], state, run_now=NOW)
+        self.assertFalse(
+            state[watcher.FIXED_QUEUE_STATE_KEY]["items"][item_id]["active"]
+        )
+        diagnostics, called, _ = self.run_queue(
+            [lot], state, run_now=NOW + timedelta(minutes=10)
+        )
+        self.assertEqual(called, [])
+        self.assertEqual(diagnostics.fixed_queue.fresh_already_evaluated, 1)
+        self.assertTrue(
+            state[watcher.FIXED_QUEUE_STATE_KEY]["items"][item_id]["active"]
+        )
+
+    def test_bootstrap_never_evaluated_backlog_does_not_spam_alert(self):
+        candidates = self.candidates(121)
+        state = {"notified": {}, "seen": {}, "technical_alerts": {}}
+        diagnostics, _, _ = self.run_queue(candidates, state)
+        self.assertEqual(
+            diagnostics.fixed_queue.backlog_count(
+                watcher.QUEUE_P2_NEVER_EVALUATED
+            ),
+            1,
+        )
+        with patch.object(watcher, "NTFY_TOPIC", "diagnostic-topic"):
+            with patch.object(watcher.requests, "post") as post:
+                self.assertFalse(
+                    watcher.maybe_notify_incomplete_coverage(
+                        diagnostics, state, NOW
+                    )
+                )
+        post.assert_not_called()
+
+    def test_queue_accounting_invariant_and_summary(self):
+        candidates = self.candidates(121)
+        diagnostics, _, _ = self.run_queue(
+            candidates, self.initialized_state()
+        )
+        queue = diagnostics.fixed_queue
+        self.assertTrue(queue.accounting_coherent)
+        self.assertEqual(
+            queue.eligible_candidates,
+            queue.processed_this_run
+            + queue.fresh_already_evaluated
+            + queue.queued_backlog,
+        )
+        summary = watcher.format_fixed_economic_queue(queue)
+        self.assertIn("=== FIXED ECONOMIC QUEUE ===", summary)
+        self.assertIn("accounting invariant: OK", summary)
+        self.assertIn("estimated backlog runs remaining: 1", summary)
+
+    def test_queue_does_not_change_economic_result_for_processed_card(self):
+        lot = watcher.Lot(
+            url="https://gcc.test/item/economic-same",
+            title="PSA 10 Test",
+            current_price=20,
+            source_type="fixed",
+            grader="PSA",
+            grade="10",
+            listing_text="Pokemon | PSA 10 Test",
+        )
+        sales = [sale(95), sale(100), sale(105)]
+        with redirect_stdout(io.StringIO()):
+            baseline = watcher.estimate_with_grade(lot, sales, NOW)
+
+        def economic_evaluator(
+            _page,
+            selected,
+            _position,
+            _state,
+            _seen_at,
+            _run_now,
+            run_diagnostics,
+        ):
+            return watcher.estimate_with_grade(
+                selected,
+                sales,
+                NOW,
+                run_diagnostics=run_diagnostics,
+            )
+
+        with redirect_stdout(io.StringIO()):
+            _, _, opportunities = self.run_queue(
+                [lot],
+                self.initialized_state(),
+                evaluator=economic_evaluator,
+            )
+        self.assertEqual(opportunities, [baseline])
 
 
 class ZeroPriceDiscoveryTests(unittest.TestCase):

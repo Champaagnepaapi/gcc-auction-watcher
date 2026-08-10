@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import time
@@ -70,6 +71,17 @@ TEXT_TIMEOUT = 3000
 MAX_SCAN_SECONDS = 300
 MAX_AUCTION_CANDIDATES = 120
 MAX_FIXED_CANDIDATES = 120
+FIXED_REEVALUATION_TTL_HOURS = max(
+    1, int(os.getenv("FIXED_REEVALUATION_TTL_HOURS", "24"))
+)
+ECONOMIC_EVALUATION_VERSION = 1
+FIXED_QUEUE_SCHEMA_VERSION = 1
+FIXED_QUEUE_STATE_KEY = "fixed_economic_queue"
+QUEUE_P0_NEW = "P0_NEW"
+QUEUE_P1_CHANGED = "P1_CHANGED"
+QUEUE_P2_NEVER_EVALUATED = "P2_NEVER_EVALUATED"
+QUEUE_P3_STALE = "P3_STALE"
+QUEUE_FRESH = "FRESH_ALREADY_EVALUATED"
 GCC_PAGE_RETRIES = int(os.getenv("GCC_PAGE_RETRIES", "2"))
 GCC_LISTING_SCROLL_LIMIT = 45
 GCC_FIXED_PAGE_SIZE = 100
@@ -288,6 +300,7 @@ ACCOUNT_UNSUPPORTED = "unsupported"
 ACCOUNT_INTERNAL_ERROR = "internal_error"
 ACCOUNT_PROCESSING_LIMIT = "processing_limit_excluded"
 ACCOUNT_DIAGNOSTIC_ONLY = "diagnostic_inventory_only"
+ACCOUNT_FRESH_ALREADY_EVALUATED = "fresh_already_evaluated"
 
 
 FIXED_DISCOVERY_FILTERS = (
@@ -554,7 +567,10 @@ class EconomicCoverageAudit:
     attempted_ids: set[str] = field(default_factory=set, repr=False)
     valued_ids: set[str] = field(default_factory=set, repr=False)
     skipped_cap_ids: set[str] = field(default_factory=set, repr=False)
+    fresh_ids: set[str] = field(default_factory=set, repr=False)
+    coverage_backlog_ids: set[str] = field(default_factory=set, repr=False)
     failed_ids: set[str] = field(default_factory=set, repr=False)
+    incremental_queue: bool = False
     registered: bool = False
     finalized: bool = False
 
@@ -594,8 +610,17 @@ class EconomicCoverageAudit:
     def record_cap_skipped(self, lot: Lot) -> None:
         self.skipped_cap_ids.add(self.lot_key(lot))
 
+    def record_fresh(self, lot: Lot) -> None:
+        self.fresh_ids.add(self.lot_key(lot))
+
+    def record_coverage_backlog(self, lot: Lot) -> None:
+        self.coverage_backlog_ids.add(self.lot_key(lot))
+
     def record_failure(self, lot: Lot) -> None:
-        self.failed_ids.add(self.lot_key(lot))
+        key = self.lot_key(lot)
+        self.failed_ids.add(key)
+        if self.incremental_queue:
+            self.coverage_backlog_ids.add(key)
 
     def finalize(self) -> None:
         self.finalized = True
@@ -622,23 +647,134 @@ class EconomicCoverageAudit:
 
     @property
     def missing_attempts(self) -> int:
-        accounted = self.attempted_ids | self.skipped_cap_ids
+        accounted = self.attempted_ids | self.skipped_cap_ids | self.fresh_ids
         return len(self.candidate_ids.difference(accounted))
 
     @property
     def accounting_coherent(self) -> bool:
-        return self.candidates == self.attempted + self.skipped_by_cap
+        accounted = self.attempted_ids | self.skipped_cap_ids | self.fresh_ids
+        disjoint_total = self.attempted + self.skipped_by_cap + len(self.fresh_ids)
+        return self.candidates == len(accounted) == disjoint_total
 
     @property
     def status(self) -> str:
         if not self.finalized or not self.registered:
             return COVERAGE_UNKNOWN
-        if (
-            self.skipped_cap_ids
-            or self.missing_attempts
-            or self.failed_ids
-            or not self.accounting_coherent
-        ):
+        backlog = (
+            self.coverage_backlog_ids
+            if self.incremental_queue
+            else self.skipped_cap_ids
+        )
+        if backlog or self.missing_attempts or self.failed_ids or not self.accounting_coherent:
+            return COVERAGE_INCOMPLETE
+        return COVERAGE_COMPLETE
+
+
+@dataclass
+class FixedEconomicQueueDiagnostics:
+    """Comptabilité de la file fixed; aucune donnée ne modifie la valorisation."""
+
+    processing_budget: int = MAX_FIXED_CANDIDATES
+    category_ids: dict[str, set[str]] = field(
+        default_factory=lambda: {
+            QUEUE_P0_NEW: set(),
+            QUEUE_P1_CHANGED: set(),
+            QUEUE_P2_NEVER_EVALUATED: set(),
+            QUEUE_P3_STALE: set(),
+            QUEUE_FRESH: set(),
+        },
+        repr=False,
+    )
+    selected_ids: set[str] = field(default_factory=set, repr=False)
+    processed_ids: set[str] = field(default_factory=set, repr=False)
+    failed_ids: set[str] = field(default_factory=set, repr=False)
+    budget_skipped_ids: set[str] = field(default_factory=set, repr=False)
+    initialized: bool = False
+    bootstrap: bool = False
+    state_issue: str = ""
+
+    def register(self, item_id: str, category: str) -> None:
+        self.category_ids[category].add(item_id)
+
+    def record_selected(self, item_id: str) -> None:
+        self.selected_ids.add(item_id)
+
+    def record_processed(self, item_id: str) -> None:
+        self.processed_ids.add(item_id)
+
+    def record_failed(self, item_id: str) -> None:
+        self.failed_ids.add(item_id)
+
+    def record_budget_skipped(self, item_id: str) -> None:
+        self.budget_skipped_ids.add(item_id)
+
+    def count(self, category: str) -> int:
+        return len(self.category_ids[category])
+
+    def processed_count(self, category: str) -> int:
+        return len(self.category_ids[category] & self.processed_ids)
+
+    def budget_skipped_count(self, category: str) -> int:
+        return len(self.category_ids[category] & self.budget_skipped_ids)
+
+    def backlog_count(self, category: str) -> int:
+        return len(self.category_ids[category].difference(self.processed_ids))
+
+    @property
+    def eligible_candidates(self) -> int:
+        return sum(len(values) for values in self.category_ids.values())
+
+    @property
+    def processed_this_run(self) -> int:
+        return len(self.processed_ids)
+
+    @property
+    def fresh_already_evaluated(self) -> int:
+        return self.count(QUEUE_FRESH)
+
+    @property
+    def queued_backlog(self) -> int:
+        return sum(
+            self.backlog_count(category)
+            for category in (
+                QUEUE_P0_NEW,
+                QUEUE_P1_CHANGED,
+                QUEUE_P2_NEVER_EVALUATED,
+                QUEUE_P3_STALE,
+            )
+        )
+
+    @property
+    def coverage_backlog(self) -> int:
+        return sum(
+            self.backlog_count(category)
+            for category in (
+                QUEUE_P0_NEW,
+                QUEUE_P1_CHANGED,
+                QUEUE_P2_NEVER_EVALUATED,
+            )
+        )
+
+    @property
+    def estimated_backlog_runs(self) -> int:
+        if self.coverage_backlog <= 0:
+            return 0
+        return (self.coverage_backlog + self.processing_budget - 1) // self.processing_budget
+
+    @property
+    def accounting_coherent(self) -> bool:
+        return (
+            self.eligible_candidates
+            == self.processed_this_run
+            + self.fresh_already_evaluated
+            + self.queued_backlog
+        )
+
+    @property
+    def status(self) -> str:
+        if not self.initialized:
+            return COVERAGE_UNKNOWN
+        if self.coverage_backlog or self.failed_ids or not self.accounting_coherent:
             return COVERAGE_INCOMPLETE
         return COVERAGE_COMPLETE
 
@@ -712,6 +848,9 @@ class RunDiagnostics:
     auction_economic_coverage: EconomicCoverageAudit = field(
         default_factory=lambda: EconomicCoverageAudit("AUCTIONS")
     )
+    fixed_queue: FixedEconomicQueueDiagnostics = field(
+        default_factory=FixedEconomicQueueDiagnostics
+    )
     fixed_candidates: int = 0
     auction_candidates_ending_soon: int = 0
     live_auction_urls: set[str] = field(default_factory=set)
@@ -727,6 +866,10 @@ class RunDiagnostics:
         default_factory=dict
     )
     final_opportunities: int = 0
+    discovery_seconds: float = 0.0
+    heavy_analysis_seconds: float = 0.0
+    total_seconds: float = 0.0
+    state_issue: str = ""
 
     def record_live_sales(self, urls: list[str]) -> None:
         self.live_auction_urls.update(urls)
@@ -833,8 +976,13 @@ class RunDiagnostics:
 
     @property
     def economic_coverage_status(self) -> str:
+        fixed_status = (
+            self.fixed_queue.status
+            if self.fixed_queue.initialized
+            else self.fixed_economic_coverage.status
+        )
         statuses = {
-            self.fixed_economic_coverage.status,
+            fixed_status,
             self.auction_economic_coverage.status,
         }
         if COVERAGE_INCOMPLETE in statuses:
@@ -896,26 +1044,118 @@ def load_state() -> dict:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
             log(f"État illisible ({STATE_FILE}), nouvel état initialisé")
+            state = {"_runtime_state_issue": "state.json illisible"}
 
     # Compatibilité avec les anciens state.json: leurs champs sont conservés et
     # les nouvelles sections sont ajoutées sans migration destructive.
     if not isinstance(state, dict):
-        state = {}
+        state = {"_runtime_state_issue": "racine state.json invalide"}
     if not isinstance(state.get("notified"), dict):
         state["notified"] = {}
     if not isinstance(state.get("seen"), dict):
         state["seen"] = {}
     if not isinstance(state.get("technical_alerts"), dict):
         state["technical_alerts"] = {}
-    state["schema_version"] = 2
+    state["schema_version"] = 3
     return state
 
 
 def save_state(state: dict) -> None:
-    STATE_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
+    persisted = {
+        key: value for key, value in state.items() if not key.startswith("_runtime_")
+    }
+    temporary = STATE_FILE.with_name(f".{STATE_FILE.name}.tmp")
+    temporary.write_text(
+        json.dumps(persisted, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    temporary.replace(STATE_FILE)
+
+
+def fixed_listing_id(lot: Lot) -> str:
+    match = re.search(r"/item/([^/?#]+)", lot.url or "", re.I)
+    return match.group(1) if match else (lot.url or "")
+
+
+def fixed_metadata_fingerprint(lot: Lot) -> str:
+    """Empreinte cheap déterministe; aucun HTML détaillé n'est persisté."""
+    payload = {
+        "price_cents": (
+            round(lot.current_price * 100)
+            if lot.current_price is not None
+            else None
+        ),
+        "title": re.sub(r"\s+", " ", lot.title or "").strip(),
+        "grader": (lot.grader or "").strip().upper(),
+        "grade": str(lot.grade or "").strip(),
+        "selling_type": lot.source_type,
+        "cheap_metadata": re.sub(r"\s+", " ", lot.listing_text or "").strip(),
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _parse_state_datetime(value) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _new_fixed_queue_state(now: datetime) -> dict:
+    return {
+        "schema_version": FIXED_QUEUE_SCHEMA_VERSION,
+        "initialized_at": now.isoformat(),
+        "evaluation_version": ECONOMIC_EVALUATION_VERSION,
+        "items": {},
+    }
+
+
+def _ensure_fixed_queue_state(
+    state: dict,
+    now: datetime,
+    diagnostics: RunDiagnostics,
+) -> tuple[dict, bool]:
+    raw = state.get(FIXED_QUEUE_STATE_KEY)
+    if raw is None:
+        queue = _new_fixed_queue_state(now)
+        state[FIXED_QUEUE_STATE_KEY] = queue
+        return queue, True
+
+    valid = (
+        isinstance(raw, dict)
+        and raw.get("schema_version") == FIXED_QUEUE_SCHEMA_VERSION
+        and isinstance(raw.get("items"), dict)
+    )
+    if not valid:
+        issue = "state file fixed économique incompatible; bootstrap prudent"
+        log(f"État file fixed invalide: {issue}")
+        diagnostics.state_issue = issue
+        queue = _new_fixed_queue_state(now)
+        state[FIXED_QUEUE_STATE_KEY] = queue
+        return queue, True
+
+    items = raw["items"]
+    invalid_keys = [
+        key
+        for key, value in items.items()
+        if not isinstance(key, str) or not key or not isinstance(value, dict)
+    ]
+    if invalid_keys:
+        for key in invalid_keys:
+            items.pop(key, None)
+        issue = f"{len(invalid_keys)} entrée(s) fixed invalides récupérées"
+        log(f"État file fixed partiellement invalide: {issue}")
+        diagnostics.state_issue = issue
+    raw["evaluation_version"] = ECONOMIC_EVALUATION_VERSION
+    return raw, False
 
 
 def normalize_money(raw: str) -> float:
@@ -5007,6 +5247,174 @@ def evaluate_gcc_candidate(
         return None
 
 
+def _fixed_queue_category(
+    record: dict,
+    fingerprint: str,
+    now: datetime,
+) -> str:
+    last_evaluated = _parse_state_datetime(record.get("last_evaluated_at"))
+    evaluated_fingerprint = record.get("evaluated_fingerprint")
+    evaluation_version = record.get("evaluation_version")
+    if (
+        last_evaluated is None
+        or not isinstance(evaluated_fingerprint, str)
+        or not evaluated_fingerprint
+        or evaluation_version != ECONOMIC_EVALUATION_VERSION
+    ):
+        return QUEUE_P2_NEVER_EVALUATED
+    if evaluated_fingerprint != fingerprint:
+        return QUEUE_P1_CHANGED
+    age = now - last_evaluated
+    if age >= timedelta(hours=FIXED_REEVALUATION_TTL_HOURS):
+        return QUEUE_P3_STALE
+    return QUEUE_FRESH
+
+
+def _fixed_queue_sort_key(
+    lot: Lot,
+    category: str,
+    records: dict[str, dict],
+) -> tuple:
+    item_id = fixed_listing_id(lot)
+    record = records[item_id]
+    first_seen = _parse_state_datetime(record.get("first_seen_at"))
+    last_evaluated = _parse_state_datetime(record.get("last_evaluated_at"))
+    earliest = datetime.min.replace(tzinfo=timezone.utc)
+    if category == QUEUE_P2_NEVER_EVALUATED:
+        return (first_seen or earliest, item_id)
+    if category in {QUEUE_P1_CHANGED, QUEUE_P3_STALE}:
+        return (last_evaluated or earliest, first_seen or earliest, item_id)
+    return (first_seen or earliest, item_id)
+
+
+def _prepare_fixed_economic_queue(
+    candidates: list[Lot],
+    state: dict,
+    run_now: datetime,
+    run_diagnostics: RunDiagnostics,
+    valuation_cap: int,
+) -> tuple[list[Lot], dict[str, str], dict[str, dict]]:
+    queue, bootstrap = _ensure_fixed_queue_state(
+        state, run_now, run_diagnostics
+    )
+    records = queue["items"]
+    queue_diagnostics = run_diagnostics.fixed_queue
+    queue_diagnostics.processing_budget = valuation_cap
+    queue_diagnostics.bootstrap = bootstrap
+    queue_diagnostics.initialized = True
+    queue_diagnostics.state_issue = run_diagnostics.state_issue
+
+    by_id: dict[str, Lot] = {}
+    for lot in candidates:
+        item_id = fixed_listing_id(lot)
+        if item_id:
+            by_id.setdefault(item_id, lot)
+
+    if run_diagnostics.fixed_coverage.status == COVERAGE_COMPLETE:
+        for item_id, record in records.items():
+            if isinstance(record, dict) and item_id not in by_id:
+                record["active"] = False
+
+    category_by_id: dict[str, str] = {}
+    now_text = run_now.isoformat()
+    for item_id, lot in by_id.items():
+        fingerprint = fixed_metadata_fingerprint(lot)
+        existing = records.get(item_id)
+        if not isinstance(existing, dict):
+            existing = {
+                "item_id": item_id,
+                "first_seen_at": now_text,
+                "last_seen_at": now_text,
+                "last_evaluated_at": None,
+                "last_price": lot.current_price,
+                "metadata_fingerprint": fingerprint,
+                "evaluated_fingerprint": None,
+                "evaluation_version": None,
+                "last_evaluation_status": None,
+                "active": True,
+            }
+            records[item_id] = existing
+            category = (
+                QUEUE_P2_NEVER_EVALUATED if bootstrap else QUEUE_P0_NEW
+            )
+        else:
+            if _parse_state_datetime(existing.get("first_seen_at")) is None:
+                existing["first_seen_at"] = now_text
+                issue = "entrée fixed avec first_seen_at invalide récupérée"
+                run_diagnostics.state_issue = run_diagnostics.state_issue or issue
+                queue_diagnostics.state_issue = run_diagnostics.state_issue
+                log(f"État file fixed partiellement invalide: {issue}")
+            raw_last_evaluated = existing.get("last_evaluated_at")
+            if (
+                raw_last_evaluated not in {None, ""}
+                and _parse_state_datetime(raw_last_evaluated) is None
+            ):
+                issue = "entrée fixed avec last_evaluated_at invalide récupérée"
+                run_diagnostics.state_issue = run_diagnostics.state_issue or issue
+                queue_diagnostics.state_issue = run_diagnostics.state_issue
+                log(f"État file fixed partiellement invalide: {issue}")
+                existing["last_evaluated_at"] = None
+                existing["evaluated_fingerprint"] = None
+                existing["evaluation_version"] = None
+            category = _fixed_queue_category(existing, fingerprint, run_now)
+
+        existing.update(
+            {
+                "item_id": item_id,
+                "last_seen_at": now_text,
+                "last_price": lot.current_price,
+                "metadata_fingerprint": fingerprint,
+                "active": True,
+            }
+        )
+        category_by_id[item_id] = category
+        queue_diagnostics.register(item_id, category)
+
+    priority_order = (
+        QUEUE_P0_NEW,
+        QUEUE_P1_CHANGED,
+        QUEUE_P2_NEVER_EVALUATED,
+        QUEUE_P3_STALE,
+    )
+    ordered_queue: list[Lot] = []
+    for category in priority_order:
+        category_lots = [
+            by_id[item_id]
+            for item_id, value in category_by_id.items()
+            if value == category
+        ]
+        ordered_queue.extend(
+            sorted(
+                category_lots,
+                key=lambda lot, current=category: _fixed_queue_sort_key(
+                    lot, current, records
+                ),
+            )
+        )
+
+    selected = ordered_queue[:valuation_cap]
+    selected_ids = {fixed_listing_id(lot) for lot in selected}
+    for item_id in selected_ids:
+        queue_diagnostics.record_selected(item_id)
+    for lot in ordered_queue[valuation_cap:]:
+        queue_diagnostics.record_budget_skipped(fixed_listing_id(lot))
+    return selected, category_by_id, records
+
+
+def _fixed_evaluation_completed(
+    lot: Lot,
+    diagnostics: RunDiagnostics,
+) -> tuple[bool, str]:
+    key = lot.url or f"{lot.source_type}:{lot.title}"
+    terminal = diagnostics.fixed_coverage.terminal_statuses.get(key)
+    if terminal == ACCOUNT_INTERNAL_ERROR:
+        return False, ACCOUNT_INTERNAL_ERROR
+    if key not in diagnostics.valuation_outcomes:
+        return False, ACCOUNT_INTERNAL_ERROR
+    rejection = diagnostics.valuation_outcomes[key]
+    return True, rejection or "opportunity"
+
+
 def evaluate_fixed_candidates(
     page,
     candidates: list[Lot],
@@ -5018,32 +5426,49 @@ def evaluate_fixed_candidates(
     valuation_cap: int = MAX_FIXED_CANDIDATES,
     evaluator=None,
 ) -> list[Opportunity]:
-    """Applique le cap historique en le rendant économiquement explicite."""
-    ordered = sorted(
-        candidates,
-        key=lambda lot: (
-            lot.current_price if lot.current_price is not None else 999999
-        ),
-    )
+    """Consomme le budget fixed selon NEW, CHANGED, NEVER_EVALUATED, STALE."""
     economic = run_diagnostics.fixed_economic_coverage
+    economic.incremental_queue = True
     economic.register_candidates(
-        ordered,
+        candidates,
         discovered_listings=run_diagnostics.fixed_coverage.unique_listings,
         valuation_cap=valuation_cap,
     )
-    selected = ordered[:valuation_cap]
-    skipped = ordered[valuation_cap:]
-    for lot in skipped:
-        economic.record_cap_skipped(lot)
-        run_diagnostics.fixed_coverage.record_terminal(
-            lot.url, ACCOUNT_PROCESSING_LIMIT
-        )
+    selected, category_by_id, records = _prepare_fixed_economic_queue(
+        candidates,
+        state,
+        run_now,
+        run_diagnostics,
+        valuation_cap,
+    )
+
+    selected_ids = {fixed_listing_id(lot) for lot in selected}
+    for lot in candidates:
+        item_id = fixed_listing_id(lot)
+        category = category_by_id[item_id]
+        if category == QUEUE_FRESH:
+            economic.record_fresh(lot)
+            run_diagnostics.fixed_coverage.record_terminal(
+                lot.url, ACCOUNT_FRESH_ALREADY_EVALUATED
+            )
+        elif item_id not in selected_ids:
+            economic.record_cap_skipped(lot)
+            if category in {
+                QUEUE_P0_NEW,
+                QUEUE_P1_CHANGED,
+                QUEUE_P2_NEVER_EVALUATED,
+            }:
+                economic.record_coverage_backlog(lot)
+            run_diagnostics.fixed_coverage.record_terminal(
+                lot.url, ACCOUNT_PROCESSING_LIMIT
+            )
 
     run_diagnostics.fixed_candidates = len(selected)
     evaluate = evaluator or evaluate_gcc_candidate
     opportunities: list[Opportunity] = []
     for position, lot in enumerate(selected, start=1):
         economic.record_attempt(lot)
+        heavy_started = time.monotonic()
         opportunity = evaluate(
             page,
             lot,
@@ -5053,10 +5478,68 @@ def evaluate_fixed_candidates(
             run_now,
             run_diagnostics,
         )
+        run_diagnostics.heavy_analysis_seconds += time.monotonic() - heavy_started
+        item_id = fixed_listing_id(lot)
+        completed, evaluation_status = _fixed_evaluation_completed(
+            lot, run_diagnostics
+        )
+        record = records[item_id]
+        record["last_evaluation_status"] = evaluation_status
+        if completed:
+            record["last_evaluated_at"] = run_now.isoformat()
+            record["evaluated_fingerprint"] = record["metadata_fingerprint"]
+            record["evaluation_version"] = ECONOMIC_EVALUATION_VERSION
+            run_diagnostics.fixed_queue.record_processed(item_id)
+        else:
+            economic.record_failure(lot)
+            run_diagnostics.fixed_queue.record_failed(item_id)
         if opportunity is not None:
             opportunities.append(opportunity)
     economic.finalize()
     return opportunities
+
+
+def format_fixed_economic_queue(
+    queue: FixedEconomicQueueDiagnostics,
+) -> str:
+    return "\n".join(
+        (
+            "=== FIXED ECONOMIC QUEUE ===",
+            f"eligible candidates: {queue.eligible_candidates}",
+            f"new: {queue.count(QUEUE_P0_NEW)}",
+            f"changed: {queue.count(QUEUE_P1_CHANGED)}",
+            f"never evaluated: {queue.count(QUEUE_P2_NEVER_EVALUATED)}",
+            f"stale: {queue.count(QUEUE_P3_STALE)}",
+            f"fresh already evaluated: {queue.fresh_already_evaluated}",
+            f"processing budget: {queue.processing_budget}",
+            f"processed this run: {queue.processed_this_run}",
+            f"processed new: {queue.processed_count(QUEUE_P0_NEW)}",
+            f"processed changed: {queue.processed_count(QUEUE_P1_CHANGED)}",
+            (
+                "processed never evaluated: "
+                f"{queue.processed_count(QUEUE_P2_NEVER_EVALUATED)}"
+            ),
+            f"processed stale: {queue.processed_count(QUEUE_P3_STALE)}",
+            (
+                "new skipped due budget: "
+                f"{queue.budget_skipped_count(QUEUE_P0_NEW)}"
+            ),
+            (
+                "changed skipped due budget: "
+                f"{queue.budget_skipped_count(QUEUE_P1_CHANGED)}"
+            ),
+            (
+                "never evaluated backlog: "
+                f"{queue.backlog_count(QUEUE_P2_NEVER_EVALUATED)}"
+            ),
+            f"stale backlog: {queue.backlog_count(QUEUE_P3_STALE)}",
+            f"evaluation failures: {len(queue.failed_ids)}",
+            f"economic coverage: {queue.status}",
+            f"estimated backlog runs remaining: {queue.estimated_backlog_runs}",
+            f"accounting invariant: {'OK' if queue.accounting_coherent else 'FAILED'}",
+            f"bootstrap state: {'YES' if queue.bootstrap else 'NO'}",
+        )
+    )
 
 
 def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
@@ -5139,6 +5622,16 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
     lines.extend(
         f"- {item.url} | {item.title} | qualifier: {item.special_qualifier}"
         for item in diagnostics.special_qualifier_lots.values()
+    )
+    lines.extend(
+        (
+            "",
+            format_fixed_economic_queue(diagnostics.fixed_queue),
+            "",
+            f"discovery_seconds: {diagnostics.discovery_seconds:.2f}",
+            f"heavy_analysis_seconds: {diagnostics.heavy_analysis_seconds:.2f}",
+            f"total_seconds: {diagnostics.total_seconds:.2f}",
+        )
     )
     return "\n".join(lines)
 
@@ -5224,7 +5717,9 @@ def format_economic_coverage(
             f"valuation cap: {cap}",
             f"evaluation attempted: {audit.attempted}",
             f"actually valued: {audit.valued}",
+            f"fresh already evaluated: {len(audit.fresh_ids)}",
             f"skipped because valuation cap: {audit.skipped_by_cap}",
+            f"first-evaluation backlog: {len(audit.coverage_backlog_ids)}",
             f"missing evaluation accounting: {audit.missing_attempts}",
             f"valuation failures: {len(audit.failed_ids)}",
             f"opportunities: {opportunities}",
@@ -5307,6 +5802,7 @@ def _technical_coverage_signature(diagnostics: RunDiagnostics) -> str:
     auction = diagnostics.auction_coverage
     fixed_economic = diagnostics.fixed_economic_coverage
     auction_economic = diagnostics.auction_economic_coverage
+    queue = diagnostics.fixed_queue
     return "|".join(
         (
             fixed.status,
@@ -5325,10 +5821,30 @@ def _technical_coverage_signature(diagnostics: RunDiagnostics) -> str:
             str(fixed_economic.candidates),
             str(fixed_economic.attempted),
             str(fixed_economic.skipped_by_cap),
+            str(queue.budget_skipped_count(QUEUE_P0_NEW)),
+            str(queue.budget_skipped_count(QUEUE_P1_CHANGED)),
+            str(len(queue.failed_ids)),
+            diagnostics.state_issue,
             auction_economic.status,
             str(auction_economic.candidates),
             str(auction_economic.attempted),
             str(auction_economic.skipped_by_cap),
+        )
+    )
+
+
+def _technical_alert_required(diagnostics: RunDiagnostics) -> bool:
+    queue = diagnostics.fixed_queue
+    return any(
+        (
+            diagnostics.discovery_coverage_status == COVERAGE_INCOMPLETE,
+            diagnostics.auction_economic_coverage.status == COVERAGE_INCOMPLETE,
+            queue.budget_skipped_count(QUEUE_P0_NEW) > 0,
+            queue.budget_skipped_count(QUEUE_P1_CHANGED) > 0,
+            bool(queue.failed_ids),
+            bool(diagnostics.state_issue),
+            queue.initialized and not queue.accounting_coherent,
+            diagnostics.fixed_economic_coverage.missing_attempts > 0,
         )
     )
 
@@ -5339,7 +5855,7 @@ def maybe_notify_incomplete_coverage(
     now: datetime,
 ) -> bool:
     """Alerte technique dédupliquée, séparée des notifications économiques."""
-    if diagnostics.scan_coverage_status != COVERAGE_INCOMPLETE or not NTFY_TOPIC:
+    if not _technical_alert_required(diagnostics) or not NTFY_TOPIC:
         return False
 
     signature = _technical_coverage_signature(diagnostics)
@@ -5371,6 +5887,7 @@ def maybe_notify_incomplete_coverage(
     auction = diagnostics.auction_coverage
     fixed_economic = diagnostics.fixed_economic_coverage
     auction_economic = diagnostics.auction_economic_coverage
+    queue = diagnostics.fixed_queue
     message = (
         "GCC SCAN INCOMPLETE\n"
         f"Discovery fixed: {fixed.unique_listings} / "
@@ -5378,8 +5895,14 @@ def maybe_notify_incomplete_coverage(
         f"Discovery auctions: {auction.unique_listings} / "
         f"{_coverage_value(auction.expected_total)} | {auction.status}\n"
         f"Economic fixed: {fixed_economic.attempted} / "
-        f"{fixed_economic.candidates} | {fixed_economic.status} "
+        f"{fixed_economic.candidates} | {queue.status} "
         f"| cap skipped {fixed_economic.skipped_by_cap}\n"
+        f"Urgent fixed skipped: new "
+        f"{queue.budget_skipped_count(QUEUE_P0_NEW)} | changed "
+        f"{queue.budget_skipped_count(QUEUE_P1_CHANGED)}\n"
+        f"Never-evaluated backlog: "
+        f"{queue.backlog_count(QUEUE_P2_NEVER_EVALUATED)}\n"
+        f"State issue: {diagnostics.state_issue or 'NONE'}\n"
         f"Economic auctions: {auction_economic.attempted} / "
         f"{auction_economic.candidates} | {auction_economic.status} "
         f"| cap skipped {auction_economic.skipped_by_cap}\n"
@@ -5452,6 +5975,9 @@ def main() -> int:
     run_now = datetime.now(timezone.utc)
     now = run_now.isoformat()
     run_diagnostics = RunDiagnostics()
+    run_diagnostics.state_issue = str(
+        state.pop("_runtime_state_issue", "") or ""
+    )
 
     log("=== GCC Watcher V4 (valorisation robuste + alertes intelligentes) démarré ===")
     log("Ordre: prix fixes d'abord, puis enchères")
@@ -5501,11 +6027,15 @@ def main() -> int:
             # A) PRIX FIXES EN PREMIER
             # ============================================================
             log("=== Scan prix fixes ===")
+            discovery_started = time.monotonic()
             fixed_discovered = collect_lots_from_listing(
                 page,
                 FIXED_PRICE_URL,
                 "fixed",
                 run_diagnostics,
+            )
+            run_diagnostics.discovery_seconds += (
+                time.monotonic() - discovery_started
             )
             log(
                 f"Prix fixes candidats {MIN_PRICE:.0f}-{MAX_PRICE:.0f} € "
@@ -5527,6 +6057,7 @@ def main() -> int:
                 f"cap ignorés {fixed_economic.skipped_by_cap} | "
                 f"{fixed_economic.status}"
             )
+            save_state(state)
 
             # ============================================================
             # B) ENCHÈRES
@@ -5537,6 +6068,7 @@ def main() -> int:
             # ============================================================
             log("=== Scan enchères ===")
             auction_candidates: dict[str, Lot] = {}
+            auction_discovery_started = time.monotonic()
             sales = collect_live_auction_urls(page, run_diagnostics)
             run_diagnostics.record_live_sales(sales)
             log(f"Ventes live détectées: {len(sales)}")
@@ -5558,6 +6090,10 @@ def main() -> int:
                     run_diagnostics.auction_coverage.record_page_failure(
                         f"auction sale exception: {type(error).__name__}"
                     )
+
+            run_diagnostics.discovery_seconds += (
+                time.monotonic() - auction_discovery_started
+            )
 
             raw_auction_list = list(auction_candidates.values())
             log(f"Enchères Pokémon/prix avant filtre temps: {len(raw_auction_list)}")
@@ -5595,7 +6131,11 @@ def main() -> int:
 
             # Fallback seulement pour les cartes dont le timer n'était pas lisible sur le listing.
             for idx, lot in enumerate(fallback_needed, start=1):
+                fallback_started = time.monotonic()
                 lot = inspect_item(page, lot)
+                run_diagnostics.heavy_analysis_seconds += (
+                    time.monotonic() - fallback_started
+                )
 
                 if lot.inspection_error:
                     run_diagnostics.record_valuation(
@@ -5681,6 +6221,7 @@ def main() -> int:
             # ============================================================
             for auction_inspected, lot in enumerate(auction_list, start=1):
                 auction_economic.record_attempt(lot)
+                auction_heavy_started = time.monotonic()
                 op = evaluate_gcc_candidate(
                     page,
                     lot,
@@ -5689,6 +6230,9 @@ def main() -> int:
                     now,
                     run_now,
                     run_diagnostics,
+                )
+                run_diagnostics.heavy_analysis_seconds += (
+                    time.monotonic() - auction_heavy_started
                 )
                 if op:
                     opportunities.append(op)
@@ -5742,6 +6286,7 @@ def main() -> int:
             log(f"Opportunités finales après validations: {len(final_opportunities)}")
 
         finally:
+            run_diagnostics.total_seconds = time.monotonic() - started
             run_diagnostics.finalize_coverage()
             log_run_diagnostics(run_diagnostics)
             log_scan_coverage(run_diagnostics)

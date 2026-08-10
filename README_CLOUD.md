@@ -85,6 +85,16 @@ J'ai volontairement utilisé les minutes `03,13,23,33,43,53` plutôt que `00,10,
 
 GitHub Actions utilise des machines éphémères. Le workflow sauvegarde donc `state.json` dans le cache Actions et restaure l'état au prochain scan. Les anciens fichiers d'état restent compatibles.
 
+La file économique fixed réutilise ce même fichier et ce même cache. Elle ne
+conserve que l'identifiant GCC, les dates de première/dernière observation et
+d'évaluation, le dernier prix, les empreintes de métadonnées cheap, la version
+d'évaluation, le dernier statut et l'indicateur actif. Aucun HTML, historique de
+ventes ou image n'est persisté. Au premier run sans file compatible, l'inventaire
+déjà présent est classé `NEVER_EVALUATED`; les listings découverts aux runs
+suivants sont classés `NEW`. Le budget de 120 est consommé dans l'ordre
+`NEW`, `CHANGED`, `NEVER_EVALUATED`, puis `STALE`. Une évaluation inchangée
+devient `STALE` après `FIXED_REEVALUATION_TTL_HOURS` (24 heures par défaut).
+
 Une opportunité déjà signalée n'est renotifiée que si son prix baisse d'au moins 10 %, si sa décote gagne au moins 5 points, ou si une enchère franchit un seuil de temps important. Une unique alerte haute priorité est envoyée à cinq minutes ou moins lorsque le prix reste sous le prix maximal conseillé.
 
 ## Limite actuelle sur la valorisation
