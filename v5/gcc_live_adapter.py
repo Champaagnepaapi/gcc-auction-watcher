@@ -1,18 +1,22 @@
 """Explicit V5 adapter for the already-existing V4 GCC access path.
 
-Inventory is read from the public on-sale-items endpoint already used by V4,
-without reusing V4's 0-100 EUR economic price window for identity lookup. For an
-exact identity, or one unique strong identity with no known conflict, one normal
-authenticated GCC item page is rendered and its sales-history text is parsed by
-the shared V4/V5 extractor. No private endpoint, stealth mode, persistence, or
-bypass is used.
+The public on-sale-items inventory remains a fast path. When no safe
+representative is currently on sale, V5 falls back to GCC's normal public
+Explore UI, enables completed sales, searches the collectible, opens a small
+bounded set of public item pages, and applies the same exact/unique-strong
+identity policy before reading rendered sales history.
+
+No private endpoint, stealth mode, persistence, access-control bypass, or
+CAPTCHA circumvention is used.
 """
 
 from __future__ import annotations
 
+import re
 from contextlib import AbstractContextManager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Callable, Mapping, Sequence
+from urllib.parse import urljoin
 
 import watcher
 from gcc_history_shared import HistoricalParsingDiagnostics
@@ -21,8 +25,10 @@ from .market_values.gcc_history.identity import canonicalize_collectible, match_
 from .market_values.gcc_history.models import CanonicalCollectible, MatchClass
 
 
+GCC_EXPLORE_URL = "https://gradedcardcenter.com/en/filters/explore/pokemon"
+GCC_CATALOG_CANDIDATE_LIMIT = 8
 GCC_V4_ACCESS_MECHANISM = (
-    "V4 public on-sale-items identity index without economic price cap + normal authenticated Playwright item page rendered history"
+    "V4 public on-sale-items fast path + GCC public Explore/Completed Sales catalogue fallback + normal authenticated Playwright item page rendered history"
 )
 
 
@@ -56,6 +62,13 @@ def _lot_identity(lot: watcher.Lot) -> CanonicalCollectible:
     )
 
 
+@dataclass(frozen=True)
+class GCCCatalogResolution:
+    lot: watcher.Lot | None = None
+    match_class: MatchClass | None = None
+    ambiguous: bool = False
+
+
 class V4RenderedGCCHistorySource:
     mode = "LIVE"
     live_available = True
@@ -68,11 +81,13 @@ class V4RenderedGCCHistorySource:
         inventory_fetcher: Callable[..., Sequence[watcher.Lot]] = watcher.collect_fixed_lots_from_api,
         item_inspector: Callable[..., watcher.Lot] = watcher.inspect_item,
         history_extractor: Callable[..., Sequence[watcher.HistoricalSale]] = watcher.extract_historical_sales,
+        catalog_resolver: Callable[[CanonicalCollectible], GCCCatalogResolution] | None = None,
     ) -> None:
         self._page = page
         self._inventory_fetcher = inventory_fetcher
         self._item_inspector = item_inspector
         self._history_extractor = history_extractor
+        self._catalog_resolver = catalog_resolver or self._resolve_from_public_explore
         self._inventory_loaded = False
         self._by_name: dict[str, list[tuple[CanonicalCollectible, watcher.Lot]]] = {}
         self._records: list[Mapping[str, object]] = []
@@ -86,6 +101,10 @@ class V4RenderedGCCHistorySource:
         self.representative_strong = 0
         self.representative_ambiguous = 0
         self.no_representative = 0
+        self.catalog_searches = 0
+        self.catalog_candidate_pages_opened = 0
+        self.catalog_completed_sales_enabled = 0
+        self.catalog_search_failures = 0
         self.parsing = HistoricalParsingDiagnostics()
 
     def _load_inventory(self) -> None:
@@ -104,11 +123,193 @@ class V4RenderedGCCHistorySource:
         self.inventory_pages_requested = diagnostics.fixed_coverage.pages_requested
         for lot in lots:
             identity = _lot_identity(lot)
-            # Exact matching needs name+set+number, but a safe STRONG_MATCH can
-            # legitimately be name+number (or name+set with discriminator).
             if not identity.card_name or not (identity.card_number or identity.set_name):
                 continue
             self._by_name.setdefault(identity.card_name, []).append((identity, lot))
+
+    @staticmethod
+    def _first_visible(locator):
+        try:
+            count = locator.count()
+        except Exception:
+            return None
+        for index in range(count):
+            candidate = locator.nth(index)
+            try:
+                if candidate.is_visible():
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    def _enable_completed_sales(self) -> bool:
+        for label in ("Completed Sales", "Ventes réussies", "Ventes réussies"):
+            try:
+                labelled = self._page.get_by_label(label, exact=True)
+                control = self._first_visible(labelled)
+                if control is not None:
+                    try:
+                        checked = control.is_checked()
+                    except Exception:
+                        checked = False
+                    if not checked:
+                        try:
+                            control.check()
+                        except Exception:
+                            control.click()
+                    self._page.wait_for_timeout(500)
+                    self.catalog_completed_sales_enabled += 1
+                    return True
+            except Exception:
+                pass
+
+        for label in ("Completed Sales", "Ventes réussies", "Ventes réussies"):
+            try:
+                text = self._page.get_by_text(label, exact=True)
+                control = self._first_visible(text)
+                if control is not None:
+                    control.click()
+                    self._page.wait_for_timeout(500)
+                    self.catalog_completed_sales_enabled += 1
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _catalog_search_box(self):
+        selectors = (
+            'input[placeholder="Search"]',
+            'input[placeholder="Rechercher"]',
+            'input[placeholder="Recherche"]',
+            'input[type="search"]',
+        )
+        for selector in selectors:
+            try:
+                control = self._first_visible(self._page.locator(selector))
+                if control is not None:
+                    return control
+            except Exception:
+                continue
+        return None
+
+    def _catalog_item_urls(self) -> tuple[str, ...]:
+        try:
+            links = self._page.locator('a[href*="/item/"]')
+            count = min(links.count(), GCC_CATALOG_CANDIDATE_LIMIT * 2)
+        except Exception:
+            return ()
+        urls: list[str] = []
+        for index in range(count):
+            try:
+                href = links.nth(index).get_attribute("href")
+            except Exception:
+                continue
+            if not href or "/item/" not in href:
+                continue
+            url = urljoin("https://gradedcardcenter.com", href)
+            if url not in urls:
+                urls.append(url)
+            if len(urls) >= GCC_CATALOG_CANDIDATE_LIMIT:
+                break
+        return tuple(urls)
+
+    @staticmethod
+    def _catalog_queries(canonical: CanonicalCollectible) -> tuple[str, ...]:
+        name = canonical.card_name or ""
+        number = canonical.card_number or ""
+        set_name = canonical.set_name or ""
+        values = []
+        for query in (
+            " ".join(part for part in (name, number) if part),
+            number,
+            " ".join(part for part in (name, set_name) if part),
+        ):
+            clean = " ".join(query.split())
+            if clean and clean not in values:
+                values.append(clean)
+        return tuple(values[:3])
+
+    def _resolve_from_public_explore(
+        self, canonical: CanonicalCollectible
+    ) -> GCCCatalogResolution:
+        """Resolve a representative through GCC's normal public Explore UI.
+
+        The UI visibly exposes a Completed Sales filter. We use only that public
+        interface and then verify every candidate item page with the strict V5
+        identity matcher before accepting it.
+        """
+
+        exact: watcher.Lot | None = None
+        strong: dict[tuple[object, ...], watcher.Lot] = {}
+        ambiguous_seen = False
+        inspected_urls: set[str] = set()
+
+        for query in self._catalog_queries(canonical):
+            try:
+                self._page.goto(
+                    GCC_EXPLORE_URL,
+                    wait_until="domcontentloaded",
+                    timeout=watcher.NAV_TIMEOUT,
+                )
+                self._page.wait_for_timeout(500)
+                self._enable_completed_sales()
+                search_box = self._catalog_search_box()
+                if search_box is None:
+                    self.catalog_search_failures += 1
+                    continue
+                search_box.fill(query)
+                try:
+                    search_box.press("Enter")
+                except Exception:
+                    pass
+                self.catalog_searches += 1
+                self._page.wait_for_timeout(1200)
+                urls = self._catalog_item_urls()
+            except Exception:
+                self.catalog_search_failures += 1
+                continue
+
+            for url in urls:
+                if url in inspected_urls:
+                    continue
+                inspected_urls.add(url)
+                candidate = watcher.Lot(
+                    url=url,
+                    title="",
+                    current_price=None,
+                    source_type="catalog",
+                )
+                inspected = _call_without_v4_detail_logs(
+                    self._item_inspector,
+                    self._page,
+                    candidate,
+                    log_listing_errors=False,
+                )
+                self.catalog_candidate_pages_opened += 1
+                if inspected.inspection_error:
+                    continue
+                result = match_identity(canonical, _lot_identity(inspected))
+                if result.match_class is MatchClass.EXACT_MATCH:
+                    exact = inspected
+                    break
+                if result.match_class is MatchClass.STRONG_MATCH:
+                    strong.setdefault(_lot_identity(inspected).key, inspected)
+                elif result.match_class is MatchClass.AMBIGUOUS:
+                    ambiguous_seen = True
+                elif result.conflicts:
+                    self.identity_conflicts += 1
+            if exact is not None:
+                break
+
+        if exact is not None:
+            return GCCCatalogResolution(exact, MatchClass.EXACT_MATCH, False)
+        if len(strong) == 1:
+            return GCCCatalogResolution(
+                next(iter(strong.values())), MatchClass.STRONG_MATCH, False
+            )
+        if len(strong) > 1 or ambiguous_seen:
+            return GCCCatalogResolution(None, None, True)
+        return GCCCatalogResolution()
 
     def fetch(self, identity: CanonicalCollectible) -> Sequence[Mapping[str, object]]:
         canonical = canonicalize_collectible(identity)
@@ -117,46 +318,61 @@ class V4RenderedGCCHistorySource:
             return self._fetch_cache[canonical.key]
         self.identities_queried += 1
         self._load_inventory()
+
         exact_matches: list[watcher.Lot] = []
         strong_matches: dict[tuple[object, ...], watcher.Lot] = {}
-        ambiguous_seen = False
+        inventory_ambiguous = False
         for candidate_identity, lot in self._by_name.get(canonical.card_name or "", ()):
             result = match_identity(canonical, candidate_identity)
             if result.match_class is MatchClass.EXACT_MATCH:
                 exact_matches.append(lot)
             elif result.match_class is MatchClass.STRONG_MATCH:
-                # Multiple listings of the same canonical collectible are not
-                # ambiguous; distinct strong identities are.
                 strong_matches.setdefault(candidate_identity.key, lot)
             elif result.match_class is MatchClass.AMBIGUOUS:
-                ambiguous_seen = True
+                inventory_ambiguous = True
             elif result.conflicts:
                 self.identity_conflicts += 1
 
         selected: watcher.Lot | None = None
+        selected_inspected = False
+        selected_class: MatchClass | None = None
         if exact_matches:
             selected = exact_matches[0]
-            self.representative_exact += 1
+            selected_class = MatchClass.EXACT_MATCH
         elif len(strong_matches) == 1:
             selected = next(iter(strong_matches.values()))
+            selected_class = MatchClass.STRONG_MATCH
+        else:
+            resolution = self._catalog_resolver(canonical)
+            selected = resolution.lot
+            selected_class = resolution.match_class
+            selected_inspected = selected is not None and bool(selected.body)
+            if selected is None:
+                if resolution.ambiguous or len(strong_matches) > 1 or inventory_ambiguous:
+                    self.representative_ambiguous += 1
+                else:
+                    self.no_representative += 1
+                self._fetch_cache[canonical.key] = ()
+                return ()
+
+        if selected_class is MatchClass.EXACT_MATCH:
+            self.representative_exact += 1
+        elif selected_class is MatchClass.STRONG_MATCH:
             self.representative_strong += 1
-        elif len(strong_matches) > 1 or ambiguous_seen:
-            self.representative_ambiguous += 1
         else:
             self.no_representative += 1
-
-        if selected is None:
             self._fetch_cache[canonical.key] = ()
             return ()
 
-        # One representative page per identity is enough: its rendered history
-        # already contains the comparable transactions for that collectible.
-        inspected = _call_without_v4_detail_logs(
-            self._item_inspector,
-            self._page,
-            replace(selected),
-            log_listing_errors=False,
-        )
+        if selected_inspected:
+            inspected = selected
+        else:
+            inspected = _call_without_v4_detail_logs(
+                self._item_inspector,
+                self._page,
+                replace(selected),
+                log_listing_errors=False,
+            )
         self.live_calls += 1
         if inspected.inspection_error:
             self._fetch_cache[canonical.key] = ()
