@@ -408,6 +408,7 @@ class LiveRawWorkflowTests(unittest.TestCase):
         self.assertIn("secrets.POKETRACE_API_KEY", workflow)
         self.assertIn('POKETRACE_PLAN: "free"', workflow)
         self.assertIn('POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.05"', workflow)
+        self.assertIn('enforces >=2.25s at runtime', workflow)
         self.assertIn('POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"', workflow)
         self.assertNotIn("PRICECHARTING_TOKEN", workflow)
         self.assertNotIn("CARDGRADER_API_KEY", workflow)
