@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import replace
+from pathlib import Path
+from typing import Optional, Tuple
+
+from ecb_fx import ECBCurrencyConverter
+
+from .card_identity_catalog import (
+    MultilingualPokemonCardResolver,
+    render_card_catalog_counters,
+)
+from .ebay_live_diagnostic import MarketplaceAggregate, OAuthAggregate
+from .gcc_live_adapter import V4GCCBrowserSession
+from .live_raw_pipeline import (
+    LiveRawPipelineConfig,
+    LiveRawPipelineDiagnostic,
+    LiveRawPipelineSummary,
+    PipelineIdentityAggregate,
+    PipelineImageAggregate,
+    _DiscoveryRecord,
+    identity_status,
+    render_live_raw_pipeline_summary,
+    IDENTITY_OK,
+)
+from .market_values.gcc_history.provider import GCCProviderConfig, GCCHistoryProvider
+
+
+class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
+    """Existing V5 pipeline with canonical Pokémon identity resolution first.
+
+    TCGdex is the primary multilingual resolver. Pokémon TCG API is the
+    English/unknown-language fallback. The resolver never persists eBay data.
+    """
+
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        *,
+        card_catalog_resolver: MultilingualPokemonCardResolver,
+        config: Optional[LiveRawPipelineConfig] = None,
+        gcc_history_provider: Optional[GCCHistoryProvider] = None,
+    ) -> None:
+        self.card_catalog_resolver = card_catalog_resolver
+        super().__init__(
+            client_id,
+            client_secret,
+            config=config,
+            set_number_resolver=card_catalog_resolver,
+            gcc_history_provider=gcc_history_provider,
+        )
+
+    def _candidate_from_record(
+        self,
+        record: _DiscoveryRecord,
+        identity_counts: PipelineIdentityAggregate,
+        image_counts: PipelineImageAggregate,
+    ) -> Tuple[object, bool]:
+        candidate, raw = super()._candidate_from_record(
+            record, identity_counts, image_counts
+        )
+        if candidate is None:
+            return None, raw
+
+        # The base resolver already rescues missing card names from set+number.
+        # Run the full resolver here as well when eBay supplied a name, so a
+        # French listing such as "Ekans" can be canonicalised to the French
+        # TCGdex identity without changing its language discriminator.
+        resolved = self.card_catalog_resolver.resolve_identity(candidate.identity)
+        if (
+            resolved.matched
+            and not resolved.ambiguous
+            and identity_status(resolved.identity) == IDENTITY_OK
+        ):
+            candidate = replace(candidate, identity=resolved.identity)
+        # An external catalogue ambiguity must never turn a previously clean
+        # eBay identity into a guessed identity. Keep the original candidate.
+        return candidate, raw
+
+
+def _fallback_summary(config: LiveRawPipelineConfig) -> LiveRawPipelineSummary:
+    return LiveRawPipelineSummary(
+        OAuthAggregate("INTERNAL_ERROR", False, None),
+        tuple(
+            MarketplaceAggregate(marketplace_id=value)
+            for value in config.marketplaces
+        ),
+    )
+
+
+def main() -> int:
+    config = LiveRawPipelineConfig.from_env()
+    client_id = os.getenv("EBAY_CLIENT_ID", "").strip()
+    client_secret = os.getenv("EBAY_CLIENT_SECRET", "").strip()
+    resolver = MultilingualPokemonCardResolver()
+
+    try:
+        gcc_live_requested = (
+            os.getenv("GCC_HISTORY_ENABLED", "false").strip().casefold() == "true"
+        )
+        workflow_authorized = (
+            os.getenv("GITHUB_ACTIONS", "").strip().casefold() == "true"
+        )
+        session_file = Path("gcc_session.json")
+        if gcc_live_requested and workflow_authorized and session_file.is_file():
+            with V4GCCBrowserSession(str(session_file)) as source:
+                gcc_provider = GCCHistoryProvider(
+                    config=GCCProviderConfig.from_env(),
+                    source=source,
+                    converter=ECBCurrencyConverter(),
+                )
+                diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
+                    client_id,
+                    client_secret,
+                    config=config,
+                    card_catalog_resolver=resolver,
+                    gcc_history_provider=gcc_provider,
+                )
+                summary = diagnostic.run()
+        else:
+            diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
+                client_id,
+                client_secret,
+                config=config,
+                card_catalog_resolver=resolver,
+            )
+            summary = diagnostic.run()
+    except Exception:
+        summary = _fallback_summary(config)
+
+    print(render_card_catalog_counters(resolver))
+    print(render_live_raw_pipeline_summary(summary))
+    return 0 if summary.successful else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
