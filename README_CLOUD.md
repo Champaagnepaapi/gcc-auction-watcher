@@ -101,7 +101,11 @@ En l'absence de vente fiable au grade cible, un grade inférieur de la même soc
 
 Les ventes d'autres graders restent secondaires et ne peuvent créer seules une estimation achetable. Elles ne deviennent utilisables qu'après normalisation par un ratio empirique possédant assez d'observations et des sources reconnues; aucun ratio de valeur inter-grader n'est appliqué par défaut.
 
-La recherche eBay publique reste un fallback à échec rapide. Le format commun est prêt à recevoir l'eBay Developer API et PSA Auction Prices Realized sans modifier le moteur statistique.
+Pour les lots PSA dont le grade et l'identité sont lisibles, PSA Auction Prices Realized est interrogé en premier comme source indépendante. Le numéro de carte est prioritaire dans le matching; les résultats ambigus sont rejetés. Les ventes individuelles du grade cible sont converties en euros avec le dernier taux de référence ECB, puis estimées séparément afin que leur volume n'écrase pas l'historique GCC. La moyenne affichée par PSA et la population ne sont jamais injectées comme ventes artificielles.
+
+Si APR fournit au moins deux ventes fiables au grade exact, le scraping eBay public n'est pas lancé pour cette carte afin d'éviter les doubles comptes. Si APR est insuffisant, indisponible, refusé par PSA ou privé de taux de change, eBay reste le fallback à échec rapide. Les graders autres que PSA ne déclenchent jamais APR directement.
+
+APR utilise uniquement les pages PSA publiques, sans connexion. Comme toute interface publique, elle peut changer, limiter les requêtes ou refuser une exécution GitHub Actions; le bot abandonne alors rapidement cette validation sans interrompre le scan GCC.
 
 Deux budgets eBay indépendants évitent toute ambiguïté : `EBAY_MAX_QUERIES_PER_CARD` limite les reformulations pour une carte et `EBAY_MAX_CARDS_PER_RUN` limite le nombre d'opportunités contrôlées pendant un scan.
 
@@ -114,7 +118,14 @@ MAX_PRICE_EUR: '100'
 MIN_DISCOUNT_PCT: '30'
 EBAY_MAX_QUERIES_PER_CARD: '2'
 EBAY_MAX_CARDS_PER_RUN: '2'
+PSA_APR_ENABLED: 'true'
+PSA_APR_MIN_COMPS: '2'
+PSA_APR_MAX_CARDS_PER_RUN: '2'
+PSA_APR_MAX_RESULTS: '20'
+PSA_APR_NAV_TIMEOUT: '6000'
 ```
+
+Le taux USD/EUR est récupéré une seule fois par run depuis l'ECB. Si tu veux un repli explicite lorsque l'ECB est indisponible, crée une variable GitHub Actions `PSA_APR_USD_PER_EUR_FALLBACK` contenant le nombre de dollars pour 1 euro (par exemple `1.15`). Sans taux ECB et sans cette variable, APR est simplement ignoré; aucun taux n'est inventé.
 
 Pour un scan toutes les 5 minutes :
 

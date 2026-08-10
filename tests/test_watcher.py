@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 # Les fonctions statistiques sont testables même sur une machine où les
@@ -39,6 +39,7 @@ import watcher
 
 
 NOW = datetime(2026, 8, 10, tzinfo=timezone.utc)
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def sale(price, days_ago=10, **kwargs):
@@ -86,6 +87,16 @@ def opportunity(minutes=30, price=42.0, max_recommended=70.0):
         gcc_comparables=[],
         ebay_comparables=[],
     )
+
+
+def apr_ready_opportunity():
+    op = opportunity(price=42.0, max_recommended=70.0)
+    op.lot.body = (
+        "Catégorie: Pokémon\nRéférence: #045/132\nAnnée: 2026\n"
+        "Langue: Français\nSérie: Mega Evolution\n"
+    )
+    op.gcc_comparables = [sale(price) for price in (100, 110, 120)]
+    return op
 
 
 class ParsingRegressionTests(unittest.TestCase):
@@ -221,6 +232,244 @@ class TargetGradeSafetyTests(unittest.TestCase):
         self.assertEqual((grader, grade), ("BGS", None))
         with redirect_stdout(io.StringIO()):
             self.assertIsNone(watcher.estimate_with_grade(lot, sales, NOW))
+
+
+class PsaAprParsingTests(unittest.TestCase):
+    def setUp(self):
+        self.lot = apr_ready_opportunity().lot
+
+    def test_psa_identity_and_strong_reference_matching(self):
+        snippet = (
+            "2026 POKEMON MEGA EVOLUTION\nNo. 045\nOtaquin\nLanguage: French"
+        )
+        identity = watcher.extract_psa_apr_identity(snippet)
+        self.assertEqual(identity["ref"], "045")
+        self.assertEqual(identity["year"], "2026")
+        self.assertEqual(identity["series"], "2026 POKEMON MEGA EVOLUTION")
+        self.assertEqual(identity["core"], "Otaquin")
+        score, reason = watcher.psa_apr_match_score(self.lot, snippet)
+        self.assertGreaterEqual(score, watcher.PSA_APR_MATCH_MIN_SCORE)
+        self.assertIn("référence exacte", reason)
+        self.assertIn("année", reason)
+        self.assertIn("série", reason)
+
+    def test_wrong_card_number_is_rejected(self):
+        wrong = "2026 POKEMON MEGA EVOLUTION\nNo. 046\nOtaquin"
+        score, reason = watcher.psa_apr_match_score(self.lot, wrong)
+        self.assertEqual(score, 0)
+        self.assertEqual(reason, "mauvaise référence")
+
+    def test_ambiguous_strong_matches_are_rejected(self):
+        text = "2026 POKEMON MEGA EVOLUTION\nNo. 045\nOtaquin\nFrench"
+        candidate, score, reason = watcher.choose_psa_apr_candidate(
+            self.lot,
+            [
+                watcher.PsaAprCandidate("https://psa.test/item/one", text),
+                watcher.PsaAprCandidate("https://psa.test/item/two", text),
+            ],
+        )
+        self.assertIsNone(candidate)
+        self.assertGreaterEqual(score, watcher.PSA_APR_MATCH_MIN_SCORE)
+        self.assertEqual(reason, "résultats APR ambigus")
+
+    def test_individual_sales_are_converted_separated_and_deduplicated(self):
+        rows = (FIXTURES / "psa_apr_detail.txt").read_text(encoding="utf-8").splitlines()
+        data = watcher.parse_psa_apr_page(rows, 10.0, 1.20, NOW)
+        exact_ten = [item for item in data.sales if item.grade == 10]
+        grade_nine = [item for item in data.sales if item.grade == 9]
+        self.assertEqual(len(data.sales), 3)
+        self.assertEqual(len(exact_ten), 2)
+        self.assertEqual(len(grade_nine), 1)
+        self.assertAlmostEqual(exact_ten[0].price, 93.92)
+        self.assertEqual(exact_ten[0].sold_at.date().isoformat(), "2026-08-02")
+        self.assertEqual(exact_ten[0].source, "psa")
+        self.assertTrue(exact_ten[0].exact_card)
+        self.assertEqual(exact_ten[0].match_score, 100)
+        self.assertIn("cert 12345678", exact_ten[0].context)
+        self.assertEqual(data.population, 523)
+        self.assertEqual(data.pop_higher, 0)
+        self.assertEqual(data.most_recent_price, 100.0)
+
+    def test_usd_price_parser_and_conversion_formula(self):
+        self.assertEqual(watcher.parse_psa_apr_usd("Price $1,299.50"), 1299.50)
+        self.assertIsNone(watcher.parse_psa_apr_usd("Price unavailable"))
+        self.assertEqual(watcher.usd_to_eur(100, 1.25), 80.0)
+
+    def test_sale_without_price_or_grade_is_ignored(self):
+        rows = [
+            "May 1, 2026 | eBay | Auction | 99887766 | 10",
+            "Apr 2, 2026 | eBay | Auction | 88776655 | $99.00",
+        ]
+        self.assertEqual(watcher.parse_psa_apr_sales(rows, 1.20, NOW), [])
+
+
+class PsaAprExchangeRateTests(unittest.TestCase):
+    ECB_XML = (
+        '<?xml version="1.0"?><gesmes:Envelope '
+        'xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01" '
+        'xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">'
+        '<Cube><Cube time="2026-08-07"><Cube currency="USD" rate="1.2000"/>'
+        '</Cube></Cube></gesmes:Envelope>'
+    )
+
+    def test_ecb_rate_is_parsed_and_fetched_only_once(self):
+        response = Mock(text=self.ECB_XML)
+        response.raise_for_status.return_value = None
+        getter = Mock(return_value=response)
+        with (
+            patch.object(watcher, "_PSA_APR_RATE_LOOKUP_DONE", False),
+            patch.object(watcher, "_PSA_APR_USD_PER_EUR", None),
+            patch.object(watcher, "PSA_APR_USD_PER_EUR_FALLBACK", ""),
+        ):
+            self.assertEqual(watcher.get_psa_apr_usd_per_eur(getter), 1.2)
+            self.assertEqual(watcher.get_psa_apr_usd_per_eur(getter), 1.2)
+        getter.assert_called_once()
+
+    def test_explicit_fallback_is_used_when_ecb_fails(self):
+        getter = Mock(side_effect=RuntimeError("ECB down"))
+        with (
+            patch.object(watcher, "_PSA_APR_RATE_LOOKUP_DONE", False),
+            patch.object(watcher, "_PSA_APR_USD_PER_EUR", None),
+            patch.object(watcher, "PSA_APR_USD_PER_EUR_FALLBACK", "1.25"),
+        ):
+            self.assertEqual(watcher.get_psa_apr_usd_per_eur(getter), 1.25)
+
+    def test_no_ecb_or_fallback_disables_apr_without_navigation(self):
+        page = Mock()
+        output = io.StringIO()
+        with (
+            patch.object(watcher, "_PSA_APR_RATE_LOOKUP_DONE", False),
+            patch.object(watcher, "_PSA_APR_USD_PER_EUR", None),
+            patch.object(watcher, "PSA_APR_USD_PER_EUR_FALLBACK", ""),
+            patch.object(watcher, "PSA_APR_ENABLED", True),
+            redirect_stdout(output),
+        ):
+            rate = watcher.get_psa_apr_usd_per_eur(
+                Mock(side_effect=RuntimeError("ECB down"))
+            )
+            data = watcher.scrape_psa_apr(page, apr_ready_opportunity().lot)
+        self.assertIsNone(rate)
+        self.assertEqual(data.sales, [])
+        page.goto.assert_not_called()
+        self.assertIn(
+            "PSA APR: conversion USD/EUR indisponible -> validation APR ignorée",
+            output.getvalue(),
+        )
+
+
+class PsaAprValidationTests(unittest.TestCase):
+    def test_sufficient_apr_builds_an_independent_estimate(self):
+        op = apr_ready_opportunity()
+        data = watcher.PsaAprData(
+            sales=[
+                sale(100, source="psa", grade=10),
+                sale(102, source="psa", grade=10),
+                sale(85, source="psa", grade=9),
+            ],
+            population=523,
+            pop_higher=0,
+            most_recent_price=100,
+        )
+        with patch.object(watcher, "scrape_psa_apr", return_value=data):
+            result = watcher.validate_with_psa_apr(Mock(), op, now=NOW)
+        self.assertTrue(result.sufficient)
+        self.assertIsNotNone(result.opportunity)
+        self.assertIsNotNone(result.opportunity.psa_apr_estimate)
+        self.assertEqual(result.opportunity.psa_apr_estimate.central, 101)
+        self.assertEqual(
+            watcher._exact_count(op.lot, result.opportunity.psa_apr_comparables),
+            2,
+        )
+        self.assertLessEqual(result.opportunity.estimate.central, op.estimate.central)
+
+    def test_insufficient_apr_falls_back_to_ebay(self):
+        op = apr_ready_opportunity()
+        apr_validator = Mock(
+            return_value=watcher.PsaAprValidationResult(op, False)
+        )
+        ebay_validator = Mock(return_value=op)
+        budgets = watcher.ValidationBudgets()
+        with (
+            patch.object(watcher, "PSA_APR_ENABLED", True),
+            patch.object(watcher, "EBAY_ENABLED", True),
+        ):
+            result = watcher.validate_secondary_sources(
+                Mock(), op, budgets, apr_validator=apr_validator,
+                ebay_validator=ebay_validator,
+            )
+        self.assertIs(result, op)
+        apr_validator.assert_called_once()
+        ebay_validator.assert_called_once()
+
+    def test_sufficient_apr_skips_public_ebay(self):
+        op = apr_ready_opportunity()
+        apr_validator = Mock(
+            return_value=watcher.PsaAprValidationResult(op, True)
+        )
+        ebay_validator = Mock(return_value=op)
+        with (
+            patch.object(watcher, "PSA_APR_ENABLED", True),
+            patch.object(watcher, "EBAY_ENABLED", True),
+        ):
+            result = watcher.validate_secondary_sources(
+                Mock(), op, watcher.ValidationBudgets(),
+                apr_validator=apr_validator, ebay_validator=ebay_validator,
+            )
+        self.assertIs(result, op)
+        apr_validator.assert_called_once()
+        ebay_validator.assert_not_called()
+
+    def test_non_psa_never_calls_apr(self):
+        op = apr_ready_opportunity()
+        op.lot.grader = "BGS"
+        op.lot.grade = "9.5"
+        apr_validator = Mock()
+        ebay_validator = Mock(return_value=op)
+        with (
+            patch.object(watcher, "PSA_APR_ENABLED", True),
+            patch.object(watcher, "EBAY_ENABLED", True),
+        ):
+            result = watcher.validate_secondary_sources(
+                Mock(), op, watcher.ValidationBudgets(),
+                apr_validator=apr_validator, ebay_validator=ebay_validator,
+            )
+        self.assertIs(result, op)
+        apr_validator.assert_not_called()
+        ebay_validator.assert_called_once()
+
+    def test_apr_failure_does_not_break_scan_and_uses_ebay(self):
+        op = apr_ready_opportunity()
+        apr_validator = Mock(side_effect=RuntimeError("PSA down"))
+        ebay_validator = Mock(return_value=op)
+        with (
+            patch.object(watcher, "PSA_APR_ENABLED", True),
+            patch.object(watcher, "EBAY_ENABLED", True),
+            redirect_stdout(io.StringIO()),
+        ):
+            result = watcher.validate_secondary_sources(
+                Mock(), op, watcher.ValidationBudgets(),
+                apr_validator=apr_validator, ebay_validator=ebay_validator,
+            )
+        self.assertIs(result, op)
+        ebay_validator.assert_called_once()
+
+    def test_gcc_opportunity_is_unchanged_when_validators_are_disabled(self):
+        lot = apr_ready_opportunity().lot
+        gcc_sales = [sale(price) for price in (95, 100, 105)]
+        op = watcher.estimate_with_grade(lot, gcc_sales, NOW)
+        before = (op.estimated_market, op.max_recommended, op.discount_pct)
+        with (
+            patch.object(watcher, "PSA_APR_ENABLED", False),
+            patch.object(watcher, "EBAY_ENABLED", False),
+        ):
+            result = watcher.validate_secondary_sources(
+                Mock(), op, watcher.ValidationBudgets()
+            )
+        self.assertIs(result, op)
+        self.assertEqual(
+            (result.estimated_market, result.max_recommended, result.discount_pct),
+            before,
+        )
 
 
 class EstimationTests(unittest.TestCase):
@@ -537,6 +786,32 @@ class EstimationTests(unittest.TestCase):
 
 
 class NotificationTests(unittest.TestCase):
+    def test_psa_apr_notification_shows_real_sales_and_population(self):
+        op = apr_ready_opportunity()
+        apr_sales = [
+            sale(98, days_ago=8, source="psa", grade=10),
+            sale(100, days_ago=20, source="psa", grade=10),
+        ]
+        op.psa_apr_comparables = apr_sales
+        op.psa_apr_estimate = watcher.build_market_estimate(op.lot, apr_sales, NOW)
+        op.psa_apr_population = 523
+        op.psa_apr_pop_higher = 0
+        op.psa_apr_most_recent_price = 99
+        op.psa_apr_note = "PSA APR cohérent"
+        output = io.StringIO()
+        with patch.object(watcher, "NTFY_TOPIC", ""), redirect_stdout(output):
+            watcher.notify(
+                op, watcher.NotificationDecision(True, False, ("nouvelle opportunité",))
+            )
+        message = output.getvalue()
+        self.assertIn("PSA APR : 2 vente(s) PSA 10", message)
+        self.assertIn("APR valeur :", message)
+        self.assertIn("APR centrale :", message)
+        self.assertIn("Dernière vente APR : 98.00 € — 02.08.2026", message)
+        self.assertIn("Population PSA 10 : 523", message)
+        self.assertIn("Pop Higher : 0", message)
+        self.assertIn("Most Recent Price PSA : 99.00 €", message)
+
     def test_grade_arbitrage_notification_is_explicit(self):
         lot = watcher.Lot(
             url="https://gradedcardcenter.com/item/grade-alert",

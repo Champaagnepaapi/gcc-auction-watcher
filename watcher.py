@@ -5,13 +5,14 @@ import os
 import re
 import time
 import unicodedata
-from dataclasses import dataclass
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.header import Header
 from pathlib import Path
 from statistics import median
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 
 import requests
 from dotenv import load_dotenv
@@ -43,6 +44,22 @@ EBAY_MAX_QUERIES_PER_CARD = int(
 EBAY_MAX_CARDS_PER_RUN = int(os.getenv("EBAY_MAX_CARDS_PER_RUN", "2"))
 EBAY_PAGE_WAIT_MS = int(os.getenv("EBAY_PAGE_WAIT_MS", "700"))
 EBAY_NAV_TIMEOUT = int(os.getenv("EBAY_NAV_TIMEOUT", "6000"))
+
+# PSA Auction Prices Realized public search (PSA-graded cards only)
+PSA_APR_ENABLED = os.getenv("PSA_APR_ENABLED", "true").lower() == "true"
+PSA_APR_BASE = "https://www.psacard.com"
+PSA_APR_SEARCH_URL = f"{PSA_APR_BASE}/auctionprices"
+PSA_APR_MIN_COMPS = int(os.getenv("PSA_APR_MIN_COMPS", "2"))
+PSA_APR_MAX_CARDS_PER_RUN = int(os.getenv("PSA_APR_MAX_CARDS_PER_RUN", "2"))
+PSA_APR_MAX_RESULTS = int(os.getenv("PSA_APR_MAX_RESULTS", "20"))
+PSA_APR_NAV_TIMEOUT = int(os.getenv("PSA_APR_NAV_TIMEOUT", "6000"))
+PSA_APR_USD_PER_EUR_FALLBACK = os.getenv(
+    "PSA_APR_USD_PER_EUR_FALLBACK", ""
+).strip()
+ECB_DAILY_RATES_URL = (
+    "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+)
+PSA_APR_MATCH_MIN_SCORE = 75
 MIN_EMPIRICAL_GRADER_RATIO_SALES = int(
     os.getenv("MIN_EMPIRICAL_GRADER_RATIO_SALES", "10")
 )
@@ -165,6 +182,12 @@ class Opportunity:
     gcc_comparables: list[ComparableSale]
     ebay_comparables: list[ComparableSale]
     ebay_note: str = ""
+    psa_apr_comparables: list[ComparableSale] = field(default_factory=list)
+    psa_apr_estimate: Optional[MarketEstimate] = None
+    psa_apr_note: str = ""
+    psa_apr_population: Optional[int] = None
+    psa_apr_pop_higher: Optional[int] = None
+    psa_apr_most_recent_price: Optional[float] = None
 
     @property
     def estimated_market(self) -> float:
@@ -188,6 +211,39 @@ class NotificationDecision:
     should_notify: bool
     final_alert: bool = False
     reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PsaAprCandidate:
+    url: str
+    text: str
+
+
+@dataclass
+class PsaAprData:
+    sales: list[ComparableSale]
+    population: Optional[int] = None
+    pop_higher: Optional[int] = None
+    most_recent_price: Optional[float] = None
+    matched_url: str = ""
+    match_score: int = 0
+    note: str = ""
+
+
+@dataclass
+class PsaAprValidationResult:
+    opportunity: Optional[Opportunity]
+    sufficient: bool
+
+
+@dataclass
+class ValidationBudgets:
+    psa_apr_cards: int = 0
+    ebay_cards: int = 0
+
+
+_PSA_APR_RATE_LOOKUP_DONE = False
+_PSA_APR_USD_PER_EUR: Optional[float] = None
 
 
 def log(msg: str) -> None:
@@ -240,6 +296,75 @@ def parse_money(text: str) -> Optional[float]:
         except ValueError:
             pass
     return vals[0] if vals else None
+
+
+def parse_ecb_usd_per_eur(xml_text: str) -> Optional[float]:
+    """Lit le taux ECB coté comme nombre de dollars pour un euro."""
+    try:
+        root = ET.fromstring(xml_text or "")
+    except ET.ParseError:
+        return None
+    for element in root.iter():
+        if element.attrib.get("currency", "").upper() != "USD":
+            continue
+        try:
+            rate = float(element.attrib.get("rate", ""))
+        except (TypeError, ValueError):
+            return None
+        return rate if rate > 0 else None
+    return None
+
+
+def _configured_usd_per_eur_fallback() -> Optional[float]:
+    try:
+        rate = float(PSA_APR_USD_PER_EUR_FALLBACK.replace(",", "."))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return rate if rate > 0 else None
+
+
+def get_psa_apr_usd_per_eur(http_get=None) -> Optional[float]:
+    """Récupère le taux ECB une seule fois par processus/run, puis le met en cache."""
+    global _PSA_APR_RATE_LOOKUP_DONE, _PSA_APR_USD_PER_EUR
+    if _PSA_APR_RATE_LOOKUP_DONE:
+        return _PSA_APR_USD_PER_EUR
+
+    _PSA_APR_RATE_LOOKUP_DONE = True
+    try:
+        getter = http_get or getattr(requests, "get", None)
+        if getter is None:
+            raise RuntimeError("client HTTP indisponible")
+        response = getter(
+            ECB_DAILY_RATES_URL,
+            timeout=max(1.0, min(6.0, PSA_APR_NAV_TIMEOUT / 1000)),
+        )
+        response.raise_for_status()
+        _PSA_APR_USD_PER_EUR = parse_ecb_usd_per_eur(response.text)
+    except Exception:
+        _PSA_APR_USD_PER_EUR = None
+
+    if _PSA_APR_USD_PER_EUR is None:
+        _PSA_APR_USD_PER_EUR = _configured_usd_per_eur_fallback()
+    if _PSA_APR_USD_PER_EUR is None:
+        log("PSA APR: conversion USD/EUR indisponible -> validation APR ignorée")
+    return _PSA_APR_USD_PER_EUR
+
+
+def usd_to_eur(price_usd: float, usd_per_eur: float) -> float:
+    if price_usd <= 0 or usd_per_eur <= 0:
+        raise ValueError("prix USD et taux USD/EUR doivent être positifs")
+    return round(price_usd / usd_per_eur, 2)
+
+
+def parse_psa_apr_usd(raw: str) -> Optional[float]:
+    match = re.search(r"\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)", raw or "")
+    if not match:
+        return None
+    try:
+        value = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 MONTH_NUMBERS = {
@@ -1109,6 +1234,483 @@ def extract_card_identity(lot: Lot) -> dict:
     }
 
 
+def extract_psa_apr_identity(text: str) -> dict:
+    """Extrait l'identité visible d'un résultat ou d'une fiche publique APR."""
+    blob = text or ""
+    lines = [re.sub(r"\s+", " ", line).strip(" |") for line in blob.splitlines()]
+    lines = [line for line in lines if line]
+
+    ref = ""
+    for pattern in (
+        r"#\s*([A-Z0-9-]{1,10}(?:/[A-Z0-9-]{1,10})?)",
+        r"(?:No\.?|Number|Card Number)\s*:?[ #]*([A-Z0-9-]{1,10}(?:/[A-Z0-9-]{1,10})?)",
+        r"\b([A-Z0-9-]{1,10}/[A-Z0-9-]{1,10})\b",
+    ):
+        match = re.search(pattern, blob, re.I)
+        if match:
+            ref = match.group(1).upper()
+            break
+
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", blob)
+    year = year_match.group(1) if year_match else ""
+
+    language = ""
+    for canonical, variants in {
+        "French": ("French", "Français", "Francais"),
+        "Japanese": ("Japanese", "Japonais"),
+        "English": ("English", "Anglais"),
+        "German": ("German", "Allemand"),
+        "Spanish": ("Spanish", "Espagnol"),
+        "Italian": ("Italian", "Italien"),
+    }.items():
+        if any(re.search(rf"\b{re.escape(term)}\b", blob, re.I) for term in variants):
+            language = canonical
+            break
+
+    series = ""
+    for line in lines:
+        if re.search(r"\b(?:19\d{2}|20\d{2})\b", line) and re.search(
+            r"Pok[ée]mon", line, re.I
+        ):
+            series = line
+            break
+
+    core = ""
+    explicit = re.search(
+        r"(?:Subject|Card Name|Item Name)\s*:\s*([^\n\r|]{2,160})",
+        blob,
+        re.I,
+    )
+    if explicit:
+        core = explicit.group(1).strip()
+    elif series and series in lines:
+        series_index = lines.index(series)
+        for line in lines[series_index + 1:]:
+            if re.fullmatch(
+                r"(?:No\.?|Number|Card Number)\s*:?[ #]*[A-Z0-9/-]+",
+                line,
+                re.I,
+            ):
+                continue
+            if re.search(
+                r"Auction Prices|Total (?:Auction )?Sales|Population|Pop Higher|"
+                r"Most Recent|Average Price|Search PSA|View Set",
+                line,
+                re.I,
+            ):
+                continue
+            core = re.sub(r"\s+#\s*[A-Z0-9/-]+\s*$", "", line, flags=re.I).strip()
+            if core:
+                break
+
+    return {
+        "core": core,
+        "ref": ref,
+        "year": year,
+        "language": language,
+        "series": series,
+    }
+
+
+def _reference_parts(reference: str) -> tuple[str, str]:
+    compact = re.sub(r"[^A-Z0-9/]", "", (reference or "").upper())
+    numerator, separator, denominator = compact.partition("/")
+    numerator = numerator.lstrip("0") or ("0" if numerator else "")
+    denominator = denominator.lstrip("0") or ("0" if separator and denominator else "")
+    return numerator, denominator
+
+
+def card_references_match(target: str, candidate: str) -> bool:
+    target_number, target_total = _reference_parts(target)
+    candidate_number, candidate_total = _reference_parts(candidate)
+    if not target_number or not candidate_number or target_number != candidate_number:
+        return False
+    return not (target_total and candidate_total and target_total != candidate_total)
+
+
+def _identity_tokens(text: str) -> list[str]:
+    stop = {
+        "pokemon", "pokémon", "the", "and", "les", "des", "une", "card",
+        "full", "art", "holo", "reverse", "psa", "auction", "prices",
+    }
+    return [
+        token.lower()
+        for token in re.findall(r"[A-Za-zÀ-ÿ0-9'-]{3,}", text or "")
+        if token.lower() not in stop
+    ]
+
+
+def psa_apr_identity_is_sufficient(lot: Lot) -> bool:
+    identity = extract_card_identity(lot)
+    if identity["ref"]:
+        return bool(identity["core"] or identity["year"] or identity["series"])
+    return bool(identity["core"] and identity["year"] and identity["series"])
+
+
+def psa_apr_match_score(lot: Lot, candidate_text: str) -> tuple[int, str]:
+    """Score strict: référence prioritaire, puis année/série/nom/langue."""
+    target = extract_card_identity(lot)
+    candidate = extract_psa_apr_identity(candidate_text)
+    plain = _plain_text(candidate_text)
+    reasons: list[str] = []
+    score = 0
+
+    if any(keyword in plain for keyword in SEALED_KEYWORDS):
+        return 0, "produit scellé/accessoire"
+
+    if target["ref"]:
+        if not candidate["ref"]:
+            return 0, "référence APR absente"
+        if not card_references_match(target["ref"], candidate["ref"]):
+            return 0, "mauvaise référence"
+        score += 65
+        reasons.append("référence exacte")
+
+    year_matches = False
+    if target["year"]:
+        if candidate["year"] and candidate["year"] != target["year"]:
+            return 0, "mauvaise année"
+        if target["year"] in candidate_text:
+            score += 12 if target["ref"] else 25
+            year_matches = True
+            reasons.append("année")
+
+    series_tokens = _identity_tokens(target["series"])
+    series_hits = sum(1 for token in series_tokens[:6] if token in plain)
+    if series_hits:
+        score += min(20 if target["ref"] else 30, series_hits * 6)
+        reasons.append(f"série({series_hits})")
+
+    name_tokens = _identity_tokens(target["core"])
+    name_hits = sum(1 for token in name_tokens[:5] if token in plain)
+    if name_hits:
+        score += min(20 if target["ref"] else 30, name_hits * 10)
+        reasons.append(f"nom({name_hits})")
+
+    if target["language"]:
+        if candidate["language"] and candidate["language"] != target["language"]:
+            return 0, "mauvaise langue"
+        if candidate["language"] == target["language"]:
+            score += 5
+            reasons.append("langue")
+
+    if not target["ref"] and not (year_matches and series_hits and name_hits):
+        return 0, "identité sans référence insuffisante"
+    if target["ref"] and not (year_matches or series_hits or name_hits):
+        return 0, "référence seule sans confirmation"
+    return score, ", ".join(reasons)
+
+
+def choose_psa_apr_candidate(
+    lot: Lot, candidates: list[PsaAprCandidate]
+) -> tuple[Optional[PsaAprCandidate], int, str]:
+    unique: dict[str, PsaAprCandidate] = {}
+    for candidate in candidates:
+        if candidate.url and candidate.url not in unique:
+            unique[candidate.url] = candidate
+
+    ranked = []
+    for candidate in unique.values():
+        score, reason = psa_apr_match_score(lot, candidate.text)
+        if score >= PSA_APR_MATCH_MIN_SCORE:
+            ranked.append((score, candidate.url, candidate, reason))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    if not ranked:
+        return None, 0, "aucune correspondance assez forte"
+    best = ranked[0]
+    if len(ranked) > 1 and ranked[1][0] >= best[0] - 5:
+        return None, best[0], "résultats APR ambigus"
+    return best[2], best[0], best[3]
+
+
+def psa_apr_search_query(lot: Lot) -> str:
+    identity = extract_card_identity(lot)
+    parts = [
+        "Pokemon", identity["ref"], identity["year"], identity["series"],
+        identity["core"], identity["language"],
+    ]
+    return re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()
+
+
+def psa_apr_card_validation_allowed(
+    lot: Lot,
+    cards_already_validated: int,
+    max_cards: Optional[int] = None,
+) -> bool:
+    limit = PSA_APR_MAX_CARDS_PER_RUN if max_cards is None else max_cards
+    return bool(
+        PSA_APR_ENABLED
+        and cards_already_validated < max(0, limit)
+        and (lot.grader or "").upper() == "PSA"
+        and _target_grade(lot) is not None
+        and psa_apr_identity_is_sufficient(lot)
+    )
+
+
+def _split_psa_apr_row(row: str) -> list[str]:
+    return [
+        re.sub(r"\s+", " ", field).strip()
+        for field in re.split(r"[\n\t|]+", row or "")
+        if field.strip()
+    ]
+
+
+def _parse_psa_apr_sale_row(
+    row: str,
+    usd_per_eur: float,
+    now: Optional[datetime] = None,
+) -> Optional[tuple[ComparableSale, str, str]]:
+    fields = _split_psa_apr_row(row)
+    date_index = next(
+        (index for index, field in enumerate(fields) if parse_sale_date(field, now)),
+        None,
+    )
+    price_index = next(
+        (index for index, field in reversed(list(enumerate(fields))) if "$" in field),
+        None,
+    )
+    if date_index is None or price_index is None:
+        return None
+
+    sold_at = parse_sale_date(fields[date_index], now)
+    price_usd = parse_psa_apr_usd(fields[price_index])
+    if sold_at is None or price_usd is None:
+        return None
+
+    grade = None
+    for field in reversed(fields[:price_index]):
+        match = re.fullmatch(r"(?:PSA\s*)?(10|[1-9](?:\.5)?)", field, re.I)
+        if match:
+            candidate_grade = float(match.group(1))
+            if 0 < candidate_grade <= 10:
+                grade = candidate_grade
+                break
+    if grade is None:
+        return None
+
+    between = fields[date_index + 1:price_index]
+    auction_house = between[0] if between else "inconnue"
+    sale_type = between[1] if len(between) > 1 else ""
+    cert = next((field for field in between if re.fullmatch(r"\d{6,}", field)), "")
+    if "·" in auction_house and not sale_type:
+        auction_house, _, sale_type = auction_house.partition("·")
+    context_parts = ["PSA APR", auction_house, sale_type]
+    if cert:
+        context_parts.append(f"cert {cert}")
+    sale = ComparableSale(
+        price=usd_to_eur(price_usd, usd_per_eur),
+        source="psa",
+        grader="PSA",
+        grade=grade,
+        sold_at=sold_at,
+        context=" | ".join(part for part in context_parts if part)[:300],
+        exact_card=True,
+        match_score=100,
+    )
+    return sale, cert, auction_house.strip().lower()
+
+
+def parse_psa_apr_sales(
+    rows: list[str],
+    usd_per_eur: float,
+    now: Optional[datetime] = None,
+) -> list[ComparableSale]:
+    sales: list[ComparableSale] = []
+    seen = set()
+    for row in rows:
+        parsed = _parse_psa_apr_sale_row(row, usd_per_eur, now)
+        if parsed is None:
+            continue
+        sale, cert, auction_house = parsed
+        key = (
+            cert,
+            sale.sold_at.date().isoformat() if sale.sold_at else "",
+            round(sale.price, 2),
+            sale.grade,
+            auction_house,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        sales.append(sale)
+        if len(sales) >= PSA_APR_MAX_RESULTS:
+            break
+    return sales
+
+
+def parse_psa_apr_grade_metadata(
+    rows: list[str], target_grade: float, usd_per_eur: float
+) -> tuple[Optional[int], Optional[int], Optional[float]]:
+    target_label = f"{target_grade:g}"
+    for row in rows:
+        fields = _split_psa_apr_row(row)
+        if not fields or not re.fullmatch(
+            rf"PSA\s*{re.escape(target_label)}", fields[0], re.I
+        ):
+            continue
+        if len(fields) < 4:
+            continue
+        most_recent_usd = parse_psa_apr_usd(fields[1])
+        numeric_tail = []
+        for field in fields[2:]:
+            if re.fullmatch(r"[\d,]+", field):
+                numeric_tail.append(int(field.replace(",", "")))
+        population = numeric_tail[-2] if len(numeric_tail) >= 2 else None
+        pop_higher = numeric_tail[-1] if numeric_tail else None
+        most_recent = (
+            usd_to_eur(most_recent_usd, usd_per_eur)
+            if most_recent_usd is not None
+            else None
+        )
+        return population, pop_higher, most_recent
+    return None, None, None
+
+
+def parse_psa_apr_page(
+    rows: list[str],
+    target_grade: float,
+    usd_per_eur: float,
+    now: Optional[datetime] = None,
+) -> PsaAprData:
+    population, pop_higher, most_recent = parse_psa_apr_grade_metadata(
+        rows, target_grade, usd_per_eur
+    )
+    return PsaAprData(
+        sales=parse_psa_apr_sales(rows, usd_per_eur, now),
+        population=population,
+        pop_higher=pop_higher,
+        most_recent_price=most_recent,
+    )
+
+
+def scrape_psa_apr(
+    page,
+    lot: Lot,
+    usd_per_eur: Optional[float] = None,
+    now: Optional[datetime] = None,
+) -> PsaAprData:
+    """Recherche APR publique; toute erreur/ambiguïté provoque un fast-fail."""
+    if (
+        not PSA_APR_ENABLED
+        or (lot.grader or "").upper() != "PSA"
+        or _target_grade(lot) is None
+        or not psa_apr_identity_is_sufficient(lot)
+    ):
+        return PsaAprData([], note="APR non applicable")
+
+    rate = usd_per_eur if usd_per_eur is not None else get_psa_apr_usd_per_eur()
+    if rate is None:
+        return PsaAprData([], note="conversion USD/EUR indisponible")
+
+    query = psa_apr_search_query(lot)
+    log(f"APR recherche: {query}")
+    try:
+        page.goto(
+            PSA_APR_SEARCH_URL,
+            wait_until="domcontentloaded",
+            timeout=PSA_APR_NAV_TIMEOUT,
+        )
+        search = page.locator(
+            'input[name="q"], input[placeholder*="Search PSA-Graded Items"]'
+        ).first
+        if search.count() == 0:
+            return PsaAprData([], note="formulaire APR indisponible")
+        search.fill(query, timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
+        submit = page.locator(
+            '[role="search"] button[aria-label="Search"], '
+            'button:has-text("Search")'
+        ).first
+        if submit.count() == 0:
+            return PsaAprData([], note="recherche APR indisponible")
+        submit.click(timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
+        page.wait_for_timeout(700)
+        body = page.locator("body").inner_text(timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
+    except Exception as error:
+        log(f"APR: {type(error).__name__} -> abandon APR pour cette carte")
+        return PsaAprData([], note=f"APR indisponible ({type(error).__name__})")
+
+    lower_body = body.lower()
+    if any(
+        marker in lower_body
+        for marker in (
+            "captcha", "access denied", "verify you are human",
+            "pardon our interruption", "too many requests",
+        )
+    ):
+        log("APR: refus/anti-bot détecté -> abandon APR pour cette carte")
+        return PsaAprData([], note="APR refusé ou anti-bot")
+
+    current_url = page.url
+    detail_candidate = None
+    detail_score = 0
+    detail_reason = ""
+    if "auction results" in lower_body and current_url.rstrip("/") != PSA_APR_SEARCH_URL:
+        detail_score, detail_reason = psa_apr_match_score(lot, body)
+        if detail_score >= PSA_APR_MATCH_MIN_SCORE:
+            detail_candidate = PsaAprCandidate(current_url, body)
+
+    if detail_candidate is None:
+        candidates: list[PsaAprCandidate] = []
+        links = page.locator('a[href*="/auctionprices/"]')
+        for index in range(min(links.count(), 120)):
+            link = links.nth(index)
+            try:
+                href = link.get_attribute("href") or ""
+                text = (link.inner_text(timeout=400) or "").strip()
+            except Exception:
+                continue
+            url = urljoin(PSA_APR_BASE, href)
+            if not text or url.rstrip("/") == PSA_APR_SEARCH_URL:
+                continue
+            candidates.append(PsaAprCandidate(url, f"{text}\n{url}"))
+        detail_candidate, detail_score, detail_reason = choose_psa_apr_candidate(
+            lot, candidates
+        )
+
+    if detail_candidate is None:
+        log(f"APR correspondance: rejetée ({detail_reason})")
+        return PsaAprData([], note=detail_reason)
+
+    log(
+        f"APR correspondance: score {detail_score} ({detail_reason}) | "
+        f"{detail_candidate.url}"
+    )
+    try:
+        if page.url != detail_candidate.url:
+            page.goto(
+                detail_candidate.url,
+                wait_until="domcontentloaded",
+                timeout=PSA_APR_NAV_TIMEOUT,
+            )
+        detail_body = page.locator("body").inner_text(
+            timeout=min(PSA_APR_NAV_TIMEOUT, 2500)
+        )
+        verified_score, verified_reason = psa_apr_match_score(lot, detail_body)
+        if verified_score < PSA_APR_MATCH_MIN_SCORE:
+            log(f"APR correspondance: fiche rejetée ({verified_reason})")
+            return PsaAprData([], note="fiche APR non confirmée")
+        table_rows = page.locator("tr")
+        rows = [
+            table_rows.nth(index).inner_text(timeout=500)
+            for index in range(min(table_rows.count(), 250))
+        ]
+    except Exception as error:
+        log(f"APR: {type(error).__name__} sur la fiche -> abandon APR")
+        return PsaAprData([], note=f"fiche APR indisponible ({type(error).__name__})")
+
+    target_grade = _target_grade(lot)
+    data = parse_psa_apr_page(rows, target_grade, rate, now)
+    data.matched_url = detail_candidate.url
+    data.match_score = verified_score
+    exact_count = sum(sale.grade == target_grade for sale in data.sales)
+    log(f"APR ventes exactes PSA {target_grade:g}: {exact_count}")
+    log(
+        f"APR population: {data.population if data.population is not None else '?'} | "
+        f"higher {data.pop_higher if data.pop_higher is not None else '?'}"
+    )
+    return data
+
+
 def ebay_queries_for_lot(lot: Lot) -> list[str]:
     """
     Génère plusieurs recherches, de la plus stricte à la plus large.
@@ -1884,6 +2486,12 @@ def _opportunity_from_estimate(
     gcc_sales: list[ComparableSale],
     ebay_sales: Optional[list[ComparableSale]] = None,
     ebay_note: str = "",
+    psa_apr_sales: Optional[list[ComparableSale]] = None,
+    psa_apr_estimate: Optional[MarketEstimate] = None,
+    psa_apr_note: str = "",
+    psa_apr_population: Optional[int] = None,
+    psa_apr_pop_higher: Optional[int] = None,
+    psa_apr_most_recent_price: Optional[float] = None,
 ) -> Opportunity:
     discount = (estimate.central - lot.current_price) / estimate.central * 100
     if estimate.grade_arbitrage:
@@ -1900,6 +2508,12 @@ def _opportunity_from_estimate(
         gcc_comparables=gcc_sales,
         ebay_comparables=ebay_sales or [],
         ebay_note=ebay_note,
+        psa_apr_comparables=psa_apr_sales or [],
+        psa_apr_estimate=psa_apr_estimate,
+        psa_apr_note=psa_apr_note,
+        psa_apr_population=psa_apr_population,
+        psa_apr_pop_higher=psa_apr_pop_higher,
+        psa_apr_most_recent_price=psa_apr_most_recent_price,
     )
 
 
@@ -1937,6 +2551,137 @@ def _log_estimate(prefix: str, op: Opportunity) -> None:
         f"liquidité {estimate.liquidity} | dispersion {estimate.dispersion} | "
         f"seuil {estimate.adaptive_discount_pct:.0f}% | prix max {op.max_recommended:.2f} €"
     )
+
+
+def _weaker_confidence(first: str, second: str) -> str:
+    rank = {"faible": 0, "moyenne": 1, "élevée": 2}
+    return first if rank.get(first, 0) <= rank.get(second, 0) else second
+
+
+def _conservative_source_validation_estimate(
+    gcc_estimate: MarketEstimate,
+    validation_estimate: MarketEstimate,
+    source_label: str,
+) -> tuple[MarketEstimate, str]:
+    gcc_market = gcc_estimate.central
+    validation_market = validation_estimate.central
+    ratio = validation_market / gcc_market if gcc_market > 0 else 1.0
+
+    if 0.60 <= ratio <= 1.60:
+        combined = replace(
+            gcc_estimate,
+            low=min(gcc_estimate.low, validation_estimate.low),
+            central=min(gcc_estimate.central, validation_estimate.central),
+            high=min(gcc_estimate.high, validation_estimate.high),
+            confidence=_weaker_confidence(
+                gcc_estimate.confidence, validation_estimate.confidence
+            ),
+            adaptive_discount_pct=max(
+                gcc_estimate.adaptive_discount_pct,
+                validation_estimate.adaptive_discount_pct,
+            ),
+            source_consistent=True,
+            rationale=(
+                f"{gcc_estimate.rationale}; {source_label} cohérent, "
+                "borne source par source la plus prudente"
+            ),
+        )
+        combined.low = min(combined.low, combined.central)
+        combined.high = max(combined.high, combined.central)
+        note = (
+            f"{source_label} cohérent ({validation_market:.2f} € vs "
+            f"GCC {gcc_market:.2f} €), valeurs prudentes retenues"
+        )
+        return combined, note
+
+    chosen = validation_estimate if validation_market < gcc_market else gcc_estimate
+    combined = replace(
+        chosen,
+        confidence="faible",
+        source_consistent=False,
+        adaptive_discount_pct=min(
+            45.0, max(MIN_DISCOUNT, chosen.adaptive_discount_pct + 3)
+        ),
+        rationale=(
+            f"{chosen.rationale}; {source_label} divergent, "
+            "source la plus prudente retenue"
+        ),
+    )
+    note = (
+        f"{source_label} divergent ({validation_market:.2f} € vs "
+        f"GCC {gcc_market:.2f} €): source la plus prudente retenue"
+    )
+    return combined, note
+
+
+def validate_with_psa_apr(
+    page,
+    op: Opportunity,
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+    usd_per_eur: Optional[float] = None,
+    now: Optional[datetime] = None,
+) -> PsaAprValidationResult:
+    """Valide l'estimation GCC avec une estimation APR indépendante."""
+    try:
+        data = scrape_psa_apr(page, op.lot, usd_per_eur, now)
+    except Exception as error:
+        log(f"APR: {type(error).__name__} -> validation ignorée")
+        op.psa_apr_note = f"PSA APR indisponible ({type(error).__name__})"
+        return PsaAprValidationResult(op, False)
+
+    op.psa_apr_comparables = data.sales
+    op.psa_apr_population = data.population
+    op.psa_apr_pop_higher = data.pop_higher
+    op.psa_apr_most_recent_price = data.most_recent_price
+    target_grade = _target_grade(op.lot)
+    exact_sales = [sale for sale in data.sales if sale.grade == target_grade]
+    if len(exact_sales) < PSA_APR_MIN_COMPS:
+        op.psa_apr_note = (
+            f"PSA APR: {len(exact_sales)} vente(s) PSA {target_grade:g}, insuffisant"
+            if exact_sales
+            else f"PSA APR: indisponible / 0 vente ({data.note or 'aucun résultat fiable'})"
+        )
+        log(f"APR validation insuffisante: {len(exact_sales)} vente(s) exacte(s)")
+        return PsaAprValidationResult(op, False)
+
+    apr_estimate = build_market_estimate(
+        op.lot, data.sales, now=now, grader_ratios=grader_ratios
+    )
+    if apr_estimate is None:
+        op.psa_apr_note = (
+            f"PSA APR: {len(exact_sales)} vente(s), estimation non fiable"
+        )
+        log("APR validation insuffisante: estimation non fiable")
+        return PsaAprValidationResult(op, False)
+
+    op.psa_apr_estimate = apr_estimate
+    log(
+        f"APR estimation: {apr_estimate.low:.2f}/"
+        f"{apr_estimate.central:.2f}/{apr_estimate.high:.2f} €"
+    )
+    combined_estimate, note = _conservative_source_validation_estimate(
+        op.estimate, apr_estimate, "PSA APR"
+    )
+    combined_op = _opportunity_from_estimate(
+        op.lot,
+        combined_estimate,
+        op.gcc_comparables,
+        op.ebay_comparables,
+        op.ebay_note,
+        data.sales,
+        apr_estimate,
+        note,
+        data.population,
+        data.pop_higher,
+        data.most_recent_price,
+    )
+    _log_estimate("Estimation après PSA APR", combined_op)
+    rejection = opportunity_rejection_reason(combined_op)
+    if rejection:
+        log(f"APR validation rejetée: {op.lot.title} | {rejection}")
+        return PsaAprValidationResult(None, True)
+    log("APR validation retenue")
+    return PsaAprValidationResult(combined_op, True)
 
 
 def validate_with_ebay(
@@ -1986,7 +2731,17 @@ def validate_with_ebay(
         )
 
     combined_op = _opportunity_from_estimate(
-        op.lot, combined_estimate, op.gcc_comparables, ebay_sales, note
+        op.lot,
+        combined_estimate,
+        op.gcc_comparables,
+        ebay_sales,
+        note,
+        op.psa_apr_comparables,
+        op.psa_apr_estimate,
+        op.psa_apr_note,
+        op.psa_apr_population,
+        op.psa_apr_pop_higher,
+        op.psa_apr_most_recent_price,
     )
     _log_estimate("Estimation après eBay", combined_op)
     rejection = opportunity_rejection_reason(combined_op)
@@ -1994,6 +2749,50 @@ def validate_with_ebay(
         log(f"Rejet eBay: {op.lot.title} | {rejection}")
         return None
     return combined_op
+
+
+def validate_secondary_sources(
+    page,
+    op: Opportunity,
+    budgets: ValidationBudgets,
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+    apr_validator=None,
+    ebay_validator=None,
+) -> Optional[Opportunity]:
+    """Route PSA vers APR puis eBay en fallback; les autres graders gardent eBay."""
+    apr_validation = apr_validator or validate_with_psa_apr
+    ebay_validation = ebay_validator or validate_with_ebay
+    validated: Optional[Opportunity] = op
+
+    if psa_apr_card_validation_allowed(op.lot, budgets.psa_apr_cards):
+        budgets.psa_apr_cards += 1
+        card_name = extract_card_identity(op.lot)["core"] or op.lot.title
+        log(
+            f"[APR {budgets.psa_apr_cards}/{PSA_APR_MAX_CARDS_PER_RUN}] "
+            f"{format_grade_label(op.lot.grader, op.lot.grade)} {card_name}"
+        )
+        try:
+            apr_result = apr_validation(page, op, grader_ratios=grader_ratios)
+        except Exception as error:
+            log(f"APR: {type(error).__name__} -> fallback eBay")
+            apr_result = PsaAprValidationResult(op, False)
+        if apr_result.sufficient:
+            return apr_result.opportunity
+        validated = apr_result.opportunity or op
+        log("APR: aucun résultat fiable -> fallback eBay")
+
+    if validated is not None and ebay_card_validation_allowed(budgets.ebay_cards):
+        budgets.ebay_cards += 1
+        log(
+            f"[eBay carte {budgets.ebay_cards}/{EBAY_MAX_CARDS_PER_RUN}] "
+            f"{validated.lot.title} | GCC {validated.estimated_market:.2f} €"
+        )
+        try:
+            return ebay_validation(page, validated, grader_ratios=grader_ratios)
+        except Exception as error:
+            log(f"eBay: {type(error).__name__} -> validation ignorée")
+            return validated
+    return validated
 
 
 def estimate_with_grade(
@@ -2151,6 +2950,42 @@ def notify(op: Opportunity, decision: NotificationDecision) -> None:
     else:
         ebay_status = "indisponible / 0 vente"
     ebay_detail = f"Détail eBay : {op.ebay_note}\n" if op.ebay_note else ""
+    apr_count = _exact_count(op.lot, op.psa_apr_comparables)
+    target_grade = _target_grade(op.lot)
+    target_label = f"PSA {target_grade:g}" if target_grade is not None else "PSA"
+    exact_apr_sales = [
+        sale for sale in op.psa_apr_comparables
+        if sale.exact_card and sale.grade == target_grade
+    ]
+    if op.psa_apr_estimate is not None and apr_count >= PSA_APR_MIN_COMPS:
+        apr_estimate = op.psa_apr_estimate
+        apr_lines = (
+            f"PSA APR : {apr_count} vente(s) {target_label}\n"
+            f"APR valeur : {apr_estimate.low:.2f}–{apr_estimate.high:.2f} €\n"
+            f"APR centrale : {apr_estimate.central:.2f} €\n"
+        )
+    elif apr_count:
+        apr_lines = f"PSA APR : {apr_count} vente(s) {target_label}, insuffisant\n"
+    else:
+        apr_lines = "PSA APR : indisponible / 0 vente\n"
+
+    dated_apr_sales = [sale for sale in exact_apr_sales if sale.sold_at is not None]
+    if dated_apr_sales:
+        latest_apr_sale = max(dated_apr_sales, key=lambda sale: sale.sold_at)
+        apr_lines += (
+            f"Dernière vente APR : {latest_apr_sale.price:.2f} € — "
+            f"{latest_apr_sale.sold_at.strftime('%d.%m.%Y')}\n"
+        )
+    if op.psa_apr_population is not None:
+        apr_lines += f"Population {target_label} : {op.psa_apr_population}\n"
+    if op.psa_apr_pop_higher is not None:
+        apr_lines += f"Pop Higher : {op.psa_apr_pop_higher}\n"
+    if op.psa_apr_most_recent_price is not None:
+        apr_lines += (
+            f"Most Recent Price PSA : {op.psa_apr_most_recent_price:.2f} €\n"
+        )
+    if op.psa_apr_note:
+        apr_lines += f"Détail APR : {op.psa_apr_note}\n"
     recent_line = (
         f"{estimate.recent_90_count}/{len(estimate.kept_comparables)} < 90 jours"
     )
@@ -2206,7 +3041,7 @@ def notify(op: Opportunity, decision: NotificationDecision) -> None:
         f"GCC : {gcc_count} vente(s) exacte(s)\n"
         f"eBay : {ebay_status}\n"
         f"{ebay_detail}"
-        f"PSA APR : indisponible / 0 vente\n\n"
+        f"{apr_lines}\n"
         f"Ventes récentes : {recent_line}\n"
         f"Liquidité : {estimate.liquidity}\n"
         f"Dispersion : {estimate.dispersion}\n"
@@ -2253,7 +3088,10 @@ def main() -> int:
     )
     log(f"Prix: {MIN_PRICE:.0f} à {MAX_PRICE:.0f} €")
     log(f"Décote plancher: {MIN_DISCOUNT:.0f}% (seuil adaptatif selon qualité)")
-    log("Valorisation: médiane pondérée par récence + MAD/IQR + validation eBay publique")
+    log(
+        "Valorisation: médiane pondérée par récence + MAD/IQR + "
+        "validation PSA APR, fallback eBay public"
+    )
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=HEADLESS)
@@ -2481,34 +3319,27 @@ def main() -> int:
                     opportunities.append(op)
 
             # ============================================================
-            # D) VALIDATION eBay SOLD + NOTIFICATIONS
+            # D) VALIDATION PSA APR, FALLBACK eBay SOLD + NOTIFICATIONS
             # ============================================================
-            log(f"Opportunités GCC avant eBay: {len(opportunities)}")
+            log(f"Opportunités GCC avant validations: {len(opportunities)}")
 
-            ebay_page = context.new_page()
-            ebay_page.set_default_timeout(TEXT_TIMEOUT)
-            ebay_page.set_default_navigation_timeout(NAV_TIMEOUT)
+            validation_page = context.new_page()
+            validation_page.set_default_timeout(TEXT_TIMEOUT)
+            validation_page.set_default_navigation_timeout(NAV_TIMEOUT)
 
             final_opportunities: list[Opportunity] = []
-            ebay_cards_validated = 0
+            validation_budgets = ValidationBudgets()
 
             for op in sorted(opportunities, key=lambda x: x.discount_pct, reverse=True):
-                validated = op
-
-                if ebay_card_validation_allowed(ebay_cards_validated):
-                    ebay_cards_validated += 1
-                    log(
-                        f"[eBay carte {ebay_cards_validated}/{EBAY_MAX_CARDS_PER_RUN}] "
-                        f"{op.lot.title} | "
-                        f"GCC {op.estimated_market:.2f} €"
-                    )
-                    validated = validate_with_ebay(ebay_page, op)
+                validated = validate_secondary_sources(
+                    validation_page, op, validation_budgets
+                )
 
                 if validated is not None:
                     final_opportunities.append(validated)
 
             try:
-                ebay_page.close()
+                validation_page.close()
             except Exception:
                 pass
 
@@ -2525,7 +3356,7 @@ def main() -> int:
                     log(f"Pas de renotification: {op.lot.title} | aucun changement important")
 
             save_state(state)
-            log(f"Opportunités finales après eBay: {len(final_opportunities)}")
+            log(f"Opportunités finales après validations: {len(final_opportunities)}")
 
         finally:
             browser.close()

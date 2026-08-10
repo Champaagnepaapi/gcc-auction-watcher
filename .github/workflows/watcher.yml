@@ -51,6 +51,13 @@ jobs:
           EBAY_NAV_TIMEOUT: "6000"
           EBAY_PAGE_WAIT_MS: "700"
 
+          PSA_APR_ENABLED: "true"
+          PSA_APR_MIN_COMPS: "2"
+          PSA_APR_MAX_CARDS_PER_RUN: "2"
+          PSA_APR_MAX_RESULTS: "20"
+          PSA_APR_NAV_TIMEOUT: "6000"
+          PSA_APR_USD_PER_EUR_FALLBACK: ${{ vars.PSA_APR_USD_PER_EUR_FALLBACK }}
+
         run: |
           echo "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           python watcher.py
