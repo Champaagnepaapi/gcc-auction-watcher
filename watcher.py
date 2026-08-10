@@ -461,9 +461,6 @@ class CoverageAudit:
         if not missing:
             return
         self.unaccounted_reconciled += len(missing)
-        self.mark_incomplete(
-            f"{len(missing)} listing(s) reached end of run without terminal status"
-        )
         for listing_id in missing:
             self.terminal_statuses[listing_id] = ACCOUNT_INTERNAL_ERROR
 
@@ -524,9 +521,6 @@ class CoverageAudit:
         if (
             self.incomplete_reasons
             or self.pages_failed
-            or self.unaccounted_listings
-            or self.parse_failures
-            or self.internal_errors
             or hard_end and self.pagination_end_reason != END_UNKNOWN
         ):
             return COVERAGE_INCOMPLETE
@@ -545,6 +539,108 @@ class CoverageAudit:
         if reliable_end:
             return COVERAGE_COMPLETE
         return COVERAGE_UNKNOWN
+
+
+@dataclass
+class EconomicCoverageAudit:
+    """Suit les candidats de valorisation sans modifier leur résultat économique."""
+
+    label: str
+    valuation_cap: Optional[int] = None
+    discovered_listings: Optional[int] = None
+    cheap_filter_rejected: int = 0
+    candidate_ids: set[str] = field(default_factory=set, repr=False)
+    metadata_eligible_ids: set[str] = field(default_factory=set, repr=False)
+    attempted_ids: set[str] = field(default_factory=set, repr=False)
+    valued_ids: set[str] = field(default_factory=set, repr=False)
+    skipped_cap_ids: set[str] = field(default_factory=set, repr=False)
+    failed_ids: set[str] = field(default_factory=set, repr=False)
+    registered: bool = False
+    finalized: bool = False
+
+    @staticmethod
+    def lot_key(lot: Lot) -> str:
+        return lot.url or f"{lot.source_type}:{lot.title}"
+
+    def register_candidates(
+        self,
+        lots: list[Lot],
+        *,
+        discovered_listings: Optional[int] = None,
+        valuation_cap: Optional[int] = None,
+    ) -> None:
+        self.registered = True
+        self.valuation_cap = valuation_cap
+        self.discovered_listings = discovered_listings
+        self.candidate_ids.update(self.lot_key(lot) for lot in lots)
+        self.metadata_eligible_ids.update(
+            self.lot_key(lot)
+            for lot in lots
+            if bool(sanitize_card_title(lot.title))
+            and bool(lot.grader)
+            and _target_grade(lot) is not None
+        )
+        if discovered_listings is not None:
+            self.cheap_filter_rejected = max(
+                0, discovered_listings - len(self.candidate_ids)
+            )
+
+    def record_attempt(self, lot: Lot) -> None:
+        self.attempted_ids.add(self.lot_key(lot))
+
+    def record_valued(self, lot: Lot) -> None:
+        self.valued_ids.add(self.lot_key(lot))
+
+    def record_cap_skipped(self, lot: Lot) -> None:
+        self.skipped_cap_ids.add(self.lot_key(lot))
+
+    def record_failure(self, lot: Lot) -> None:
+        self.failed_ids.add(self.lot_key(lot))
+
+    def finalize(self) -> None:
+        self.finalized = True
+
+    @property
+    def candidates(self) -> int:
+        return len(self.candidate_ids)
+
+    @property
+    def metadata_eligible(self) -> int:
+        return len(self.metadata_eligible_ids)
+
+    @property
+    def attempted(self) -> int:
+        return len(self.attempted_ids)
+
+    @property
+    def valued(self) -> int:
+        return len(self.valued_ids)
+
+    @property
+    def skipped_by_cap(self) -> int:
+        return len(self.skipped_cap_ids)
+
+    @property
+    def missing_attempts(self) -> int:
+        accounted = self.attempted_ids | self.skipped_cap_ids
+        return len(self.candidate_ids.difference(accounted))
+
+    @property
+    def accounting_coherent(self) -> bool:
+        return self.candidates == self.attempted + self.skipped_by_cap
+
+    @property
+    def status(self) -> str:
+        if not self.finalized or not self.registered:
+            return COVERAGE_UNKNOWN
+        if (
+            self.skipped_cap_ids
+            or self.missing_attempts
+            or self.failed_ids
+            or not self.accounting_coherent
+        ):
+            return COVERAGE_INCOMPLETE
+        return COVERAGE_COMPLETE
 
 
 @dataclass
@@ -610,6 +706,12 @@ class RunDiagnostics:
             "AUCTIONS", AUCTION_DISCOVERY_FILTERS
         )
     )
+    fixed_economic_coverage: EconomicCoverageAudit = field(
+        default_factory=lambda: EconomicCoverageAudit("FIXED PRICE")
+    )
+    auction_economic_coverage: EconomicCoverageAudit = field(
+        default_factory=lambda: EconomicCoverageAudit("AUCTIONS")
+    )
     fixed_candidates: int = 0
     auction_candidates_ending_soon: int = 0
     live_auction_urls: set[str] = field(default_factory=set)
@@ -640,6 +742,13 @@ class RunDiagnostics:
             else self.fixed_coverage
         )
 
+    def economic_coverage_for(self, source_type: str) -> EconomicCoverageAudit:
+        return (
+            self.auction_economic_coverage
+            if source_type == "auction"
+            else self.fixed_economic_coverage
+        )
+
     def record_valuation(
         self,
         lot: Lot,
@@ -658,6 +767,8 @@ class RunDiagnostics:
             else:
                 coverage_status = ACCOUNT_ECONOMICALLY_EVALUATED
         self.coverage_for(lot.source_type).record_terminal(key, coverage_status)
+        if coverage_status == ACCOUNT_INTERNAL_ERROR:
+            self.economic_coverage_for(lot.source_type).record_failure(lot)
         if key in self.valuation_outcomes:
             return
         self.valuation_outcomes[key] = rejection
@@ -693,6 +804,12 @@ class RunDiagnostics:
     def rejection_count(self, reason: str) -> int:
         return sum(value == reason for value in self.valuation_outcomes.values())
 
+    def source_rejection_count(self, source_type: str, reasons: set[str]) -> int:
+        return sum(
+            self.valuation_sources.get(key) == source_type and rejection in reasons
+            for key, rejection in self.valuation_outcomes.items()
+        )
+
     @property
     def rejected_total(self) -> int:
         return sum(bool(value) for value in self.valuation_outcomes.values())
@@ -711,8 +828,39 @@ class RunDiagnostics:
         return COVERAGE_UNKNOWN
 
     @property
+    def discovery_coverage_status(self) -> str:
+        return self.overall_coverage_status
+
+    @property
+    def economic_coverage_status(self) -> str:
+        statuses = {
+            self.fixed_economic_coverage.status,
+            self.auction_economic_coverage.status,
+        }
+        if COVERAGE_INCOMPLETE in statuses:
+            return COVERAGE_INCOMPLETE
+        if statuses == {COVERAGE_COMPLETE}:
+            return COVERAGE_COMPLETE
+        return COVERAGE_UNKNOWN
+
+    @property
+    def scan_coverage_status(self) -> str:
+        statuses = {
+            self.discovery_coverage_status,
+            self.economic_coverage_status,
+        }
+        if COVERAGE_INCOMPLETE in statuses:
+            return COVERAGE_INCOMPLETE
+        if statuses == {COVERAGE_COMPLETE}:
+            return COVERAGE_COMPLETE
+        return COVERAGE_UNKNOWN
+
+    @property
     def economic_result_trustworthy(self) -> bool:
-        return self.overall_coverage_status == COVERAGE_COMPLETE
+        return (
+            self.discovery_coverage_status == COVERAGE_COMPLETE
+            and self.economic_coverage_status == COVERAGE_COMPLETE
+        )
 
     def finalize_coverage(self) -> None:
         if self.fixed_coverage.pages_requested == 0:
@@ -729,6 +877,8 @@ class RunDiagnostics:
 
         self.fixed_coverage.reconcile_unaccounted()
         self.auction_coverage.reconcile_unaccounted()
+        self.fixed_economic_coverage.finalize()
+        self.auction_economic_coverage.finalize()
 
 
 _PSA_APR_RATE_LOOKUP_DONE = False
@@ -4487,6 +4637,8 @@ def estimate_with_grade(
         if run_diagnostics is not None:
             run_diagnostics.record_valuation(lot, REJECTION_OTHER)
         return None
+    if run_diagnostics is not None:
+        run_diagnostics.economic_coverage_for(lot.source_type).record_valued(lot)
     estimate = build_market_estimate(lot, sales, now, grader_ratios)
     diagnostics = diagnose_gcc_comparables(
         lot, sales, estimate, now, grader_ratios
@@ -4783,10 +4935,6 @@ def evaluate_gcc_candidate(
             lot = inspect_item(page, lot)
 
         if lot.inspection_error:
-            coverage = run_diagnostics.coverage_for(lot.source_type)
-            coverage.mark_incomplete(
-                f"item inspection failed: {lot.inspection_error}"
-            )
             run_diagnostics.record_valuation(
                 lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
             )
@@ -4849,10 +4997,6 @@ def evaluate_gcc_candidate(
             run_diagnostics=run_diagnostics,
         )
     except Exception as error:
-        coverage = run_diagnostics.coverage_for(lot.source_type)
-        coverage.mark_incomplete(
-            f"listing processing exception: {type(error).__name__}"
-        )
         run_diagnostics.record_valuation(
             lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
         )
@@ -4863,10 +5007,67 @@ def evaluate_gcc_candidate(
         return None
 
 
+def evaluate_fixed_candidates(
+    page,
+    candidates: list[Lot],
+    state: dict,
+    seen_at: str,
+    run_now: datetime,
+    run_diagnostics: RunDiagnostics,
+    *,
+    valuation_cap: int = MAX_FIXED_CANDIDATES,
+    evaluator=None,
+) -> list[Opportunity]:
+    """Applique le cap historique en le rendant économiquement explicite."""
+    ordered = sorted(
+        candidates,
+        key=lambda lot: (
+            lot.current_price if lot.current_price is not None else 999999
+        ),
+    )
+    economic = run_diagnostics.fixed_economic_coverage
+    economic.register_candidates(
+        ordered,
+        discovered_listings=run_diagnostics.fixed_coverage.unique_listings,
+        valuation_cap=valuation_cap,
+    )
+    selected = ordered[:valuation_cap]
+    skipped = ordered[valuation_cap:]
+    for lot in skipped:
+        economic.record_cap_skipped(lot)
+        run_diagnostics.fixed_coverage.record_terminal(
+            lot.url, ACCOUNT_PROCESSING_LIMIT
+        )
+
+    run_diagnostics.fixed_candidates = len(selected)
+    evaluate = evaluator or evaluate_gcc_candidate
+    opportunities: list[Opportunity] = []
+    for position, lot in enumerate(selected, start=1):
+        economic.record_attempt(lot)
+        opportunity = evaluate(
+            page,
+            lot,
+            position,
+            state,
+            seen_at,
+            run_now,
+            run_diagnostics,
+        )
+        if opportunity is not None:
+            opportunities.append(opportunity)
+    economic.finalize()
+    return opportunities
+
+
 def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
+    fixed_economic = diagnostics.fixed_economic_coverage
     lines = [
         "=== DIAGNOSTIC RUN ===",
-        f"Prix fixes candidats: {diagnostics.fixed_candidates}",
+        f"Prix fixes découverts: {_coverage_value(fixed_economic.discovered_listings)}",
+        f"Prix fixes rejetés par filtres cheap: {fixed_economic.cheap_filter_rejected}",
+        f"Prix fixes candidats avant cap: {fixed_economic.candidates}",
+        f"Prix fixes réellement transmis: {diagnostics.fixed_candidates}",
+        f"Prix fixes sautés par cap: {fixed_economic.skipped_by_cap}",
         (
             f"Enchères candidates <={MAX_AUCTION_MINUTES} min: "
             f"{diagnostics.auction_candidates_ending_soon}"
@@ -4994,8 +5195,49 @@ def format_coverage_audit(audit: CoverageAudit) -> str:
     )
 
 
+def format_economic_coverage(
+    audit: EconomicCoverageAudit,
+    diagnostics: RunDiagnostics,
+    source_type: str,
+) -> str:
+    identity_grade_rejected = diagnostics.source_rejection_count(
+        source_type,
+        {
+            REJECTION_GRADER_GRADE,
+            REJECTION_SPECIAL_QUALIFIER,
+            REJECTION_INSUFFICIENT_IDENTITY,
+        },
+    )
+    opportunities = sum(
+        diagnostics.valuation_sources.get(key) == source_type and not rejection
+        for key, rejection in diagnostics.valuation_outcomes.items()
+    )
+    cap = "NONE" if audit.valuation_cap is None else str(audit.valuation_cap)
+    return "\n".join(
+        (
+            audit.label,
+            f"discovered listings: {_coverage_value(audit.discovered_listings)}",
+            f"cheap-filter rejected: {audit.cheap_filter_rejected}",
+            f"valuation candidates: {audit.candidates}",
+            f"metadata grader/grade eligible: {audit.metadata_eligible}",
+            f"identity/grade rejected after inspection: {identity_grade_rejected}",
+            f"valuation cap: {cap}",
+            f"evaluation attempted: {audit.attempted}",
+            f"actually valued: {audit.valued}",
+            f"skipped because valuation cap: {audit.skipped_by_cap}",
+            f"missing evaluation accounting: {audit.missing_attempts}",
+            f"valuation failures: {len(audit.failed_ids)}",
+            f"opportunities: {opportunities}",
+            f"accounting coherent: {'YES' if audit.accounting_coherent else 'NO'}",
+            f"economic coverage status: {audit.status}",
+        )
+    )
+
+
 def format_scan_coverage(diagnostics: RunDiagnostics) -> str:
-    status = diagnostics.overall_coverage_status
+    discovery_status = diagnostics.discovery_coverage_status
+    economic_status = diagnostics.economic_coverage_status
+    status = diagnostics.scan_coverage_status
     trustworthy = "YES" if diagnostics.economic_result_trustworthy else "NO"
     if diagnostics.final_opportunities == 0:
         if status == COVERAGE_COMPLETE:
@@ -5016,14 +5258,36 @@ def format_scan_coverage(diagnostics: RunDiagnostics) -> str:
     return "\n\n".join(
         (
             "=== GCC SCAN COVERAGE ===",
-            format_coverage_audit(diagnostics.fixed_coverage),
-            format_coverage_audit(diagnostics.auction_coverage),
+            "\n\n".join(
+                (
+                    "=== DISCOVERY COVERAGE ===",
+                    format_coverage_audit(diagnostics.fixed_coverage),
+                    format_coverage_audit(diagnostics.auction_coverage),
+                    f"DISCOVERY OVERALL\ndiscovery coverage status: {discovery_status}",
+                )
+            ),
+            "\n\n".join(
+                (
+                    "=== ECONOMIC COVERAGE ===",
+                    format_economic_coverage(
+                        diagnostics.fixed_economic_coverage,
+                        diagnostics,
+                        "fixed",
+                    ),
+                    format_economic_coverage(
+                        diagnostics.auction_economic_coverage,
+                        diagnostics,
+                        "auction",
+                    ),
+                    f"ECONOMIC OVERALL\neconomic coverage status: {economic_status}",
+                )
+            ),
             "\n".join(
                 (
                     "OVERALL",
                     "marketplace coverage: FILTERED PRODUCTION UNIVERSE; "
                     "not a claim of all GCC",
-                    f"coverage status: {status}",
+                    f"combined coverage status: {status}",
                     f"economic opportunities: {diagnostics.final_opportunities}",
                     f"economic result trustworthy: {trustworthy}",
                     opportunity_note,
@@ -5041,6 +5305,8 @@ def log_scan_coverage(diagnostics: RunDiagnostics) -> None:
 def _technical_coverage_signature(diagnostics: RunDiagnostics) -> str:
     fixed = diagnostics.fixed_coverage
     auction = diagnostics.auction_coverage
+    fixed_economic = diagnostics.fixed_economic_coverage
+    auction_economic = diagnostics.auction_economic_coverage
     return "|".join(
         (
             fixed.status,
@@ -5055,6 +5321,14 @@ def _technical_coverage_signature(diagnostics: RunDiagnostics) -> str:
             str(auction.unique_listings),
             str(auction.pages_failed),
             str(auction.internal_errors),
+            fixed_economic.status,
+            str(fixed_economic.candidates),
+            str(fixed_economic.attempted),
+            str(fixed_economic.skipped_by_cap),
+            auction_economic.status,
+            str(auction_economic.candidates),
+            str(auction_economic.attempted),
+            str(auction_economic.skipped_by_cap),
         )
     )
 
@@ -5065,7 +5339,7 @@ def maybe_notify_incomplete_coverage(
     now: datetime,
 ) -> bool:
     """Alerte technique dédupliquée, séparée des notifications économiques."""
-    if diagnostics.overall_coverage_status != COVERAGE_INCOMPLETE or not NTFY_TOPIC:
+    if diagnostics.scan_coverage_status != COVERAGE_INCOMPLETE or not NTFY_TOPIC:
         return False
 
     signature = _technical_coverage_signature(diagnostics)
@@ -5095,12 +5369,20 @@ def maybe_notify_incomplete_coverage(
 
     fixed = diagnostics.fixed_coverage
     auction = diagnostics.auction_coverage
+    fixed_economic = diagnostics.fixed_economic_coverage
+    auction_economic = diagnostics.auction_economic_coverage
     message = (
         "GCC SCAN INCOMPLETE\n"
-        f"Fixed: {fixed.unique_listings} / "
+        f"Discovery fixed: {fixed.unique_listings} / "
         f"{_coverage_value(fixed.expected_total)} | {fixed.status}\n"
-        f"Auctions: {auction.unique_listings} / "
+        f"Discovery auctions: {auction.unique_listings} / "
         f"{_coverage_value(auction.expected_total)} | {auction.status}\n"
+        f"Economic fixed: {fixed_economic.attempted} / "
+        f"{fixed_economic.candidates} | {fixed_economic.status} "
+        f"| cap skipped {fixed_economic.skipped_by_cap}\n"
+        f"Economic auctions: {auction_economic.attempted} / "
+        f"{auction_economic.candidates} | {auction_economic.status} "
+        f"| cap skipped {auction_economic.skipped_by_cap}\n"
         f"Failed pages: {fixed.pages_failed + auction.pages_failed}\n"
         "Unaccounted detected: "
         f"{fixed.unaccounted_listings + auction.unaccounted_listings + fixed.unaccounted_reconciled + auction.unaccounted_reconciled}\n"
@@ -5219,40 +5501,32 @@ def main() -> int:
             # A) PRIX FIXES EN PREMIER
             # ============================================================
             log("=== Scan prix fixes ===")
-            fixed_discovered = sorted(
-                collect_lots_from_listing(
-                    page,
-                    FIXED_PRICE_URL,
-                    "fixed",
-                    run_diagnostics,
-                ),
-                key=lambda x: x.current_price if x.current_price is not None else 999999,
+            fixed_discovered = collect_lots_from_listing(
+                page,
+                FIXED_PRICE_URL,
+                "fixed",
+                run_diagnostics,
             )
-            fixed_list = fixed_discovered[:MAX_FIXED_CANDIDATES]
-            if len(fixed_discovered) > MAX_FIXED_CANDIDATES:
-                run_diagnostics.fixed_coverage.mark_incomplete(
-                    f"fixed candidate processing limit {MAX_FIXED_CANDIDATES} reached"
-                )
-                for skipped in fixed_discovered[MAX_FIXED_CANDIDATES:]:
-                    run_diagnostics.fixed_coverage.record_terminal(
-                        skipped.url, ACCOUNT_PROCESSING_LIMIT
-                    )
-            run_diagnostics.fixed_candidates = len(fixed_list)
-
-            log(f"Prix fixes candidats {MIN_PRICE:.0f}-{MAX_PRICE:.0f} €: {len(fixed_list)}")
-
-            for fixed_inspected, lot in enumerate(fixed_list, start=1):
-                op = evaluate_gcc_candidate(
-                    page,
-                    lot,
-                    fixed_inspected,
-                    state,
-                    now,
-                    run_now,
-                    run_diagnostics,
-                )
-                if op:
-                    opportunities.append(op)
+            log(
+                f"Prix fixes candidats {MIN_PRICE:.0f}-{MAX_PRICE:.0f} € "
+                f"avant cap: {len(fixed_discovered)}"
+            )
+            fixed_opportunities = evaluate_fixed_candidates(
+                page,
+                fixed_discovered,
+                state,
+                now,
+                run_now,
+                run_diagnostics,
+            )
+            opportunities.extend(fixed_opportunities)
+            fixed_economic = run_diagnostics.fixed_economic_coverage
+            log(
+                f"Couverture économique fixed: {fixed_economic.attempted}/"
+                f"{fixed_economic.candidates} évaluations tentées | "
+                f"cap ignorés {fixed_economic.skipped_by_cap} | "
+                f"{fixed_economic.status}"
+            )
 
             # ============================================================
             # B) ENCHÈRES
@@ -5324,9 +5598,6 @@ def main() -> int:
                 lot = inspect_item(page, lot)
 
                 if lot.inspection_error:
-                    run_diagnostics.auction_coverage.mark_incomplete(
-                        f"item inspection failed: {lot.inspection_error}"
-                    )
                     run_diagnostics.record_valuation(
                         lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
                     )
@@ -5387,16 +5658,20 @@ def main() -> int:
             )
 
             # Limite seulement APRES le filtre temps.
+            auction_economic = run_diagnostics.auction_economic_coverage
+            auction_economic.register_candidates(
+                ending_soon,
+                discovered_listings=run_diagnostics.auction_coverage.unique_listings,
+                valuation_cap=MAX_AUCTION_CANDIDATES,
+            )
             auction_list = ending_soon[:MAX_AUCTION_CANDIDATES]
             if len(ending_soon) > MAX_AUCTION_CANDIDATES:
                 log(
                     f"Analyse de valeur limitée aux {MAX_AUCTION_CANDIDATES} "
                     "enchères qui finissent le plus tôt."
                 )
-                run_diagnostics.auction_coverage.mark_incomplete(
-                    f"auction candidate processing limit {MAX_AUCTION_CANDIDATES} reached"
-                )
                 for skipped in ending_soon[MAX_AUCTION_CANDIDATES:]:
+                    auction_economic.record_cap_skipped(skipped)
                     run_diagnostics.auction_coverage.record_terminal(
                         skipped.url, ACCOUNT_PROCESSING_LIMIT
                     )
@@ -5405,6 +5680,7 @@ def main() -> int:
             # C) HISTORIQUE + GRADE + DÉCOTE SEULEMENT SUR LES <= 60 MIN
             # ============================================================
             for auction_inspected, lot in enumerate(auction_list, start=1):
+                auction_economic.record_attempt(lot)
                 op = evaluate_gcc_candidate(
                     page,
                     lot,
@@ -5416,6 +5692,7 @@ def main() -> int:
                 )
                 if op:
                     opportunities.append(op)
+            auction_economic.finalize()
 
             # ============================================================
             # D) VALIDATION PSA APR, FALLBACK eBay SOLD + NOTIFICATIONS

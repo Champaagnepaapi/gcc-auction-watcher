@@ -1787,6 +1787,10 @@ class GccCoverageAuditTests(unittest.TestCase):
             source_type="fixed",
         )
         diagnostics.fixed_coverage.listing_ids.add(lot.url)
+        diagnostics.fixed_economic_coverage.register_candidates(
+            [lot], discovered_listings=1, valuation_cap=120
+        )
+        diagnostics.fixed_economic_coverage.record_attempt(lot)
         with patch.object(watcher, "inspect_item", side_effect=RuntimeError("boom")):
             with redirect_stdout(io.StringIO()):
                 result = watcher.evaluate_gcc_candidate(
@@ -1799,23 +1803,28 @@ class GccCoverageAuditTests(unittest.TestCase):
                     diagnostics,
                 )
         self.assertIsNone(result)
+        diagnostics.fixed_economic_coverage.finalize()
         self.assertEqual(diagnostics.fixed_coverage.internal_errors, 1)
         self.assertEqual(
-            diagnostics.fixed_coverage.status, watcher.COVERAGE_INCOMPLETE
+            diagnostics.fixed_coverage.status, watcher.COVERAGE_UNKNOWN
+        )
+        self.assertEqual(
+            diagnostics.fixed_economic_coverage.status,
+            watcher.COVERAGE_INCOMPLETE,
         )
 
-    def test_unaccounted_listing_is_incomplete_then_reconciled(self):
+    def test_processing_accounting_does_not_corrupt_discovery_status(self):
         audit = watcher.CoverageAudit("TEST", ())
         audit.begin_page("page-1")
         audit.record_page_success("page-1", ["one"])
         audit.finalize_pagination(watcher.END_NO_NEXT_PAGE)
         self.assertEqual(audit.unaccounted_listings, 1)
-        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
         audit.reconcile_unaccounted()
         self.assertEqual(audit.unaccounted_listings, 0)
         self.assertEqual(audit.unaccounted_reconciled, 1)
         self.assertEqual(audit.internal_errors, 1)
-        self.assertEqual(audit.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(audit.status, watcher.COVERAGE_COMPLETE)
 
     def test_unknown_total_never_gets_a_fake_ratio(self):
         audit = watcher.CoverageAudit("TEST", ())
@@ -1832,6 +1841,14 @@ class GccCoverageAuditTests(unittest.TestCase):
             fixed_coverage=self.complete_audit("FIXED"),
             auction_coverage=self.complete_audit("AUCTIONS"),
         )
+        complete.fixed_economic_coverage.register_candidates(
+            [], discovered_listings=0
+        )
+        complete.auction_economic_coverage.register_candidates(
+            [], discovered_listings=0
+        )
+        complete.fixed_economic_coverage.finalize()
+        complete.auction_economic_coverage.finalize()
         complete.final_opportunities = 0
         complete_summary = watcher.format_scan_coverage(complete)
         self.assertIn("economic result trustworthy: YES", complete_summary)
@@ -1843,6 +1860,14 @@ class GccCoverageAuditTests(unittest.TestCase):
             fixed_coverage=incomplete_fixed,
             auction_coverage=self.complete_audit("AUCTIONS"),
         )
+        incomplete.fixed_economic_coverage.register_candidates(
+            [], discovered_listings=0
+        )
+        incomplete.auction_economic_coverage.register_candidates(
+            [], discovered_listings=0
+        )
+        incomplete.fixed_economic_coverage.finalize()
+        incomplete.auction_economic_coverage.finalize()
         incomplete_summary = watcher.format_scan_coverage(incomplete)
         self.assertIn("economic result trustworthy: NO", incomplete_summary)
         self.assertIn(
@@ -1921,6 +1946,141 @@ class GccCoverageAuditTests(unittest.TestCase):
         self.assertNotIn("schedule:", workflow)
         self.assertNotIn("estimate_with_grade", script)
         self.assertNotIn("build_market_estimate", script)
+
+
+class FixedValuationCapCoverageTests(unittest.TestCase):
+    def candidates(self, count):
+        return [
+            watcher.Lot(
+                url=f"https://gcc.test/item/{index:04d}",
+                title=f"PSA 10 Carte {index}",
+                current_price=index / 10,
+                source_type="fixed",
+                grader="PSA",
+                grade="10",
+            )
+            for index in range(1, count + 1)
+        ]
+
+    def run_cap(self, count, target_index):
+        candidates = self.candidates(count)
+        target = candidates[target_index - 1]
+        diagnostics = watcher.RunDiagnostics()
+
+        fixed = diagnostics.fixed_coverage
+        fixed.begin_page("fixed-api")
+        fixed.record_page_success(
+            "fixed-api",
+            [lot.url for lot in candidates],
+            expected_total=count,
+            page_size=100,
+        )
+        fixed.finalize_pagination(watcher.END_NO_NEXT_PAGE)
+
+        auction = diagnostics.auction_coverage
+        auction.begin_page("auction-empty")
+        auction.record_page_success(
+            "auction-empty", [], expected_total=0, page_size=0
+        )
+        auction.finalize_pagination(watcher.END_EMPTY_PAGE_REACHED)
+        diagnostics.auction_economic_coverage.register_candidates(
+            [], discovered_listings=0, valuation_cap=watcher.MAX_AUCTION_CANDIDATES
+        )
+        diagnostics.auction_economic_coverage.finalize()
+
+        called = []
+
+        def evaluator(
+            _page,
+            lot,
+            _position,
+            _state,
+            _seen_at,
+            _run_now,
+            run_diagnostics,
+        ):
+            called.append(lot.url)
+            run_diagnostics.fixed_economic_coverage.record_valued(lot)
+            is_target = lot.url == target.url
+            run_diagnostics.record_valuation(
+                lot,
+                "" if is_target else watcher.REJECTION_EMPTY_HISTORY,
+            )
+            return lot if is_target else None
+
+        opportunities = watcher.evaluate_fixed_candidates(
+            Mock(),
+            candidates,
+            {"seen": {}},
+            NOW.isoformat(),
+            NOW,
+            diagnostics,
+            evaluator=evaluator,
+        )
+        diagnostics.finalize_coverage()
+        return diagnostics, candidates, target, called, opportunities
+
+    def test_below_120_evaluates_every_candidate_including_last_opportunity(self):
+        diagnostics, candidates, target, called, opportunities = self.run_cap(119, 119)
+        economic = diagnostics.fixed_economic_coverage
+        self.assertEqual(len(called), 119)
+        self.assertIn(target.url, called)
+        self.assertEqual(opportunities, [target])
+        self.assertEqual(economic.skipped_by_cap, 0)
+        self.assertEqual(economic.status, watcher.COVERAGE_COMPLETE)
+        self.assertEqual(diagnostics.scan_coverage_status, watcher.COVERAGE_COMPLETE)
+
+    def test_exactly_120_evaluates_every_candidate_including_last_opportunity(self):
+        diagnostics, candidates, target, called, opportunities = self.run_cap(120, 120)
+        economic = diagnostics.fixed_economic_coverage
+        self.assertEqual(len(called), 120)
+        self.assertIn(target.url, called)
+        self.assertEqual(opportunities, [target])
+        self.assertEqual(economic.skipped_by_cap, 0)
+        self.assertEqual(economic.status, watcher.COVERAGE_COMPLETE)
+
+    def test_121st_potential_opportunity_is_explicitly_skipped_and_incomplete(self):
+        diagnostics, candidates, target, called, opportunities = self.run_cap(121, 121)
+        economic = diagnostics.fixed_economic_coverage
+        self.assertEqual(len(called), 120)
+        self.assertNotIn(target.url, called)
+        self.assertEqual(opportunities, [])
+        self.assertIn(target.url, economic.skipped_cap_ids)
+        self.assertEqual(economic.skipped_by_cap, 1)
+        self.assertEqual(diagnostics.discovery_coverage_status, watcher.COVERAGE_COMPLETE)
+        self.assertEqual(economic.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(diagnostics.scan_coverage_status, watcher.COVERAGE_INCOMPLETE)
+        summary = watcher.format_scan_coverage(diagnostics)
+        self.assertIn("discovery coverage status: COMPLETE", summary)
+        self.assertIn("skipped because valuation cap: 1", summary)
+        self.assertIn("economic coverage status: INCOMPLETE", summary)
+
+    def test_500th_potential_opportunity_is_never_silently_lost(self):
+        diagnostics, candidates, target, called, opportunities = self.run_cap(500, 500)
+        economic = diagnostics.fixed_economic_coverage
+        self.assertEqual(len(called), 120)
+        self.assertNotIn(target.url, called)
+        self.assertEqual(opportunities, [])
+        self.assertIn(target.url, economic.skipped_cap_ids)
+        self.assertEqual(economic.skipped_by_cap, 380)
+        self.assertEqual(economic.status, watcher.COVERAGE_INCOMPLETE)
+        self.assertTrue(economic.accounting_coherent)
+
+    def test_economic_cap_incomplete_triggers_technical_alert(self):
+        diagnostics, *_ = self.run_cap(121, 121)
+        response = Mock()
+        response.raise_for_status.return_value = None
+        state = {"technical_alerts": {}}
+        with patch.object(watcher, "NTFY_TOPIC", "diagnostic-topic"):
+            with patch.object(watcher.requests, "post", return_value=response) as post:
+                sent = watcher.maybe_notify_incomplete_coverage(
+                    diagnostics, state, NOW
+                )
+        self.assertTrue(sent)
+        message = post.call_args.kwargs["data"].decode("utf-8")
+        self.assertIn("Discovery fixed: 121 / 121 | COMPLETE", message)
+        self.assertIn("Economic fixed: 120 / 121 | INCOMPLETE", message)
+        self.assertIn("cap skipped 1", message)
 
 
 class ZeroPriceDiscoveryTests(unittest.TestCase):
