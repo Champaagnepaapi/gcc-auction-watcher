@@ -70,8 +70,8 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           echo "GCC authenticated session: READY"
 
-      - name: Run aggregate-only V5 live raw pipeline
-        run: python -m v5.live_raw_pipeline
+      - name: Run aggregate-only V5 live raw pipeline with canonical card resolver
+        run: python -m v5.live_raw_pipeline_catalog
 
       - name: Save cumulative GCC catalogue even after diagnostic failure
         if: ${{ always() && hashFiles('gcc_catalog_index.json') != '' }}
