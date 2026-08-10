@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Callable, Dict, Optional, Protocol, Sequence, Tuple
 
 from .ebay import (
@@ -43,6 +44,8 @@ from .market_values.economic import (
     EconomicThresholds,
     evaluate_economic_pre_filter,
 )
+from .market_values.gcc_history.models import Grader, ValuationType
+from .market_values.gcc_history.provider import GCCHistoryProvider
 from .market_values.models import (
     MARKET_VALUE_CONFLICT,
     MARKET_VALUES_MISSING,
@@ -180,6 +183,10 @@ class PipelineMarketAggregate:
     value_conflicts: int = 0
     manual_validation_required: int = 0
     manual_product_research_queries_possible: int = 0
+    gcc_raw_direct_values: int = 0
+    gcc_psa9_direct_values: int = 0
+    gcc_psa10_direct_values: int = 0
+    gcc_proxy_values: int = 0
 
 
 @dataclass
@@ -200,6 +207,13 @@ class ProviderAggregate:
     psa_sales_status: str
     product_research_mode: str
     product_research_automated_calls: int
+    gcc_history_enabled: bool = False
+    gcc_history_mode: str = "LIVE_UNAVAILABLE"
+    gcc_history_live_calls: int = 0
+    gcc_history_queries: int = 0
+    gcc_history_cache_hits: int = 0
+    gcc_history_records_received: int = 0
+    gcc_history_exact_matches: int = 0
 
 
 @dataclass(frozen=True)
@@ -214,7 +228,13 @@ class LiveRawPipelineSummary:
     economic: PipelineEconomicAggregate = field(default_factory=PipelineEconomicAggregate)
     providers: ProviderAggregate = field(
         default_factory=lambda: ProviderAggregate(
-            False, 0, False, 0, "UNAVAILABLE", PRODUCT_RESEARCH_MODE, 0
+            pricecharting_enabled=False,
+            pricecharting_live_calls=0,
+            marketplace_insights_enabled=False,
+            marketplace_insights_live_calls=0,
+            psa_sales_status="UNAVAILABLE",
+            product_research_mode=PRODUCT_RESEARCH_MODE,
+            product_research_automated_calls=0,
         )
     )
     seen_item_store_mode: str = NO_PERSISTENCE_MODE
@@ -248,6 +268,7 @@ class LiveRawPipelineDiagnostic:
         back_detector: Optional[LocalPokemonBackDetector] = None,
         image_fetcher: Optional[Callable[[str], Optional[bytes]]] = None,
         offline_market_sources: Sequence[OfflineMarketValueSource] = (),
+        gcc_history_provider: Optional[GCCHistoryProvider] = None,
         cost_factory: Optional[Callable[[EbayListing], CostModel]] = None,
         seen_store_factory: Callable[[], SeenItemStore] = MemoryOnlySeenItemStore,
     ) -> None:
@@ -275,6 +296,7 @@ class LiveRawPipelineDiagnostic:
         self.marketplace_insights = MarketplaceInsightsProvider()
         self.psa_sales = PSASalesProvider()
         self.product_research = ManualProductResearch()
+        self.gcc_history = gcc_history_provider or GCCHistoryProvider()
         self.aggregator = MarketValueAggregator()
         self.offline_market_sources = tuple(offline_market_sources)
         self.cost_factory = cost_factory or (
@@ -442,6 +464,32 @@ class LiveRawPipelineDiagnostic:
             value = source.values_for(candidate.identity)
             if value is not None:
                 provider_values.append(value)
+        if self.gcc_history.counters.enabled:
+            gcc_result = self.gcc_history.market_for(
+                candidate.identity,
+                candidate.listing.currency,
+            )
+            if gcc_result.market_values is not None:
+                provider_values.append(gcc_result.market_values)
+            raw_value = gcc_result.valuation(Grader.RAW, None)
+            psa9_value = gcc_result.valuation(Grader.PSA, Decimal("9"))
+            psa10_value = gcc_result.valuation(Grader.PSA, Decimal("10"))
+            market_counts.gcc_raw_direct_values += int(
+                raw_value is not None
+                and raw_value.valuation_type is ValuationType.DIRECT_MARKET_VALUE
+            )
+            market_counts.gcc_psa9_direct_values += int(
+                psa9_value is not None
+                and psa9_value.valuation_type is ValuationType.DIRECT_MARKET_VALUE
+            )
+            market_counts.gcc_psa10_direct_values += int(
+                psa10_value is not None
+                and psa10_value.valuation_type is ValuationType.DIRECT_MARKET_VALUE
+            )
+            market_counts.gcc_proxy_values += sum(
+                valuation.valuation_type is ValuationType.CROSS_GRADER_PROXY
+                for valuation in gcc_result.valuations.values()
+            )
 
         aggregate = self.aggregator.aggregate(candidate.identity, provider_values)
         if aggregate.status is AggregationStatus.MISSING:
@@ -510,13 +558,20 @@ class LiveRawPipelineDiagnostic:
             market=market or PipelineMarketAggregate(),
             economic=economic or PipelineEconomicAggregate(),
             providers=ProviderAggregate(
-                self.pricecharting.config.enabled,
-                self.pricecharting.live_calls,
-                self.marketplace_insights.enabled,
-                self.marketplace_insights.live_calls,
-                self.psa_sales.status,
-                self.product_research.mode,
-                self.product_research.automated_calls,
+                pricecharting_enabled=self.pricecharting.config.enabled,
+                pricecharting_live_calls=self.pricecharting.live_calls,
+                marketplace_insights_enabled=self.marketplace_insights.enabled,
+                marketplace_insights_live_calls=self.marketplace_insights.live_calls,
+                psa_sales_status=self.psa_sales.status,
+                product_research_mode=self.product_research.mode,
+                product_research_automated_calls=self.product_research.automated_calls,
+                gcc_history_enabled=self.gcc_history.counters.enabled,
+                gcc_history_mode=self.gcc_history.mode,
+                gcc_history_live_calls=self.gcc_history.counters.live_calls,
+                gcc_history_queries=self.gcc_history.counters.queries,
+                gcc_history_cache_hits=self.gcc_history.counters.cache_hits,
+                gcc_history_records_received=self.gcc_history.counters.records_received,
+                gcc_history_exact_matches=self.gcc_history.counters.exact_matches,
             ),
             seen_item_store_mode=seen_mode,
         )
@@ -580,6 +635,25 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             (
                 "manual Product Research queries possible: "
                 f"{summary.market.manual_product_research_queries_possible}"
+            ),
+            f"raw direct values found: {summary.market.gcc_raw_direct_values}",
+            f"PSA9 direct values found: {summary.market.gcc_psa9_direct_values}",
+            f"PSA10 direct values found: {summary.market.gcc_psa10_direct_values}",
+            f"cross-grader proxy values found: {summary.market.gcc_proxy_values}",
+            "",
+            "GCC HISTORY:",
+            (
+                "GCC History enabled: "
+                f"{str(summary.providers.gcc_history_enabled).lower()}"
+            ),
+            f"mode: {summary.providers.gcc_history_mode}",
+            f"live calls: {summary.providers.gcc_history_live_calls}",
+            f"queries: {summary.providers.gcc_history_queries}",
+            f"query cache hits: {summary.providers.gcc_history_cache_hits}",
+            f"records received: {summary.providers.gcc_history_records_received}",
+            (
+                "exact collectible matches: "
+                f"{summary.providers.gcc_history_exact_matches}"
             ),
             "",
             "ECONOMIC FILTER:",
