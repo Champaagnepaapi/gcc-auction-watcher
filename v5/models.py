@@ -84,6 +84,7 @@ class EbayListing:
     end_time: Optional[datetime]
     bid_count: Optional[int]
     condition: Optional[str]
+    condition_id: Optional[str]
     grading_status: StructuredGradingStatus
     seller: SellerInfo
     primary_image_url: Optional[str]

@@ -5,6 +5,7 @@
   "price": {"value": "50.00", "currency": "EUR"},
   "buyingOptions": ["FIXED_PRICE"],
   "itemEndDate": "2026-08-12T18:30:00.000Z",
+  "conditionId": "4000",
   "condition": "Ungraded - Near mint or better",
   "seller": {
     "username": "fixture-seller",

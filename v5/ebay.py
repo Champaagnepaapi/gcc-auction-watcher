@@ -24,6 +24,8 @@ PRODUCTION_BROWSE_BASE = "https://api.ebay.com/buy/browse/v1"
 SANDBOX_IDENTITY_BASE = "https://api.sandbox.ebay.com/identity/v1/oauth2"
 SANDBOX_BROWSE_BASE = "https://api.sandbox.ebay.com/buy/browse/v1"
 OAUTH_SCOPE = "https://api.ebay.com/oauth/api_scope"
+RAW_CONDITION_ID = "4000"
+GRADED_CONDITION_IDS = frozenset({"2750"})
 
 
 class EbayConfigurationError(ValueError):
@@ -296,6 +298,28 @@ def structured_grading_status(
     return StructuredGradingStatus.UNKNOWN
 
 
+def grading_status_from_ebay_data(
+    condition_id: Optional[str], aspects: Mapping[str, Tuple[str, ...]]
+) -> StructuredGradingStatus:
+    """Combine les champs eBay structures sans utiliser le titre.
+
+    eBay definit 4000 comme non grade et 2750 comme grade pour la categorie
+    de cartes concernee. Un conflit avec les aspects reste ambigu et est donc
+    rejete de maniere prudente.
+    """
+
+    aspect_status = structured_grading_status(aspects)
+    if condition_id == RAW_CONDITION_ID:
+        if aspect_status is StructuredGradingStatus.GRADED:
+            return StructuredGradingStatus.UNKNOWN
+        return StructuredGradingStatus.RAW
+    if condition_id in GRADED_CONDITION_IDS:
+        if aspect_status is StructuredGradingStatus.RAW:
+            return StructuredGradingStatus.UNKNOWN
+        return StructuredGradingStatus.GRADED
+    return aspect_status
+
+
 IDENTITY_ALIASES = {
     "game": ("Game", "Jeu", "Franchise"),
     "card_name": ("Card Name", "Nom de la carte", "Character", "Personnage"),
@@ -387,6 +411,9 @@ def _parse_datetime(value: object) -> Optional[datetime]:
 
 def parse_ebay_item(payload: Mapping[str, object]) -> EbayListing:
     aspects = _aspects(payload)
+    condition_id = (
+        str(payload["conditionId"]) if payload.get("conditionId") is not None else None
+    )
     buying_options = tuple(str(value) for value in payload.get("buyingOptions", []) or [])
     price_payload = payload.get("price")
     if "AUCTION" in buying_options and payload.get("currentBidPrice"):
@@ -427,7 +454,8 @@ def parse_ebay_item(payload: Mapping[str, object]) -> EbayListing:
         end_time=_parse_datetime(payload.get("itemEndDate")),
         bid_count=(int(payload["bidCount"]) if payload.get("bidCount") is not None else None),
         condition=(str(payload["condition"]) if payload.get("condition") else None),
-        grading_status=structured_grading_status(aspects),
+        condition_id=condition_id,
+        grading_status=grading_status_from_ebay_data(condition_id, aspects),
         seller=SellerInfo(
             username=(str(seller_payload["username"]) if seller_payload.get("username") else None),
             feedback_percentage=(

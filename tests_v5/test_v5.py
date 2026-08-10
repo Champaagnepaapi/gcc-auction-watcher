@@ -165,6 +165,7 @@ class EbayOfficialConnectorTests(unittest.TestCase):
         self.assertEqual(listing.item_id, "v1|123456789012|0")
         self.assertEqual(listing.price, Decimal("50.00"))
         self.assertEqual(listing.shipping_price, Decimal("5.00"))
+        self.assertEqual(listing.condition_id, "4000")
         self.assertTrue(listing.is_buy_it_now)
         self.assertEqual(listing.seller.username, "fixture-seller")
         self.assertEqual(len(listing.image_urls), 3)
@@ -176,6 +177,7 @@ class EbayOfficialConnectorTests(unittest.TestCase):
 
     def test_raw_title_alone_never_proves_ungraded_status(self):
         payload = deepcopy(self.payload)
+        payload.pop("conditionId")
         payload["localizedAspects"] = [
             aspect
             for aspect in payload["localizedAspects"]

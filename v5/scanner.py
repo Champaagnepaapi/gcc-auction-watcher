@@ -177,18 +177,18 @@ class RawCardScanner:
             return CheapFilterResult(
                 request, False, (IDENTITY_AMBIGUOUS,) + tuple(detail)
             )
-        if request.costs.unknown_fields():
-            return CheapFilterResult(
-                request,
-                False,
-                (SIGNIFICANT_COSTS_UNKNOWN,) + request.costs.unknown_fields(),
-            )
-
         try:
             market_values = self.market_provider.values_for(identity)
         except MarketDataUnavailable as exc:
             return CheapFilterResult(
                 request, False, (MARKET_DATA_UNAVAILABLE, str(exc))
+            )
+        if request.costs.unknown_fields():
+            return CheapFilterResult(
+                request,
+                False,
+                (SIGNIFICANT_COSTS_UNKNOWN,) + request.costs.unknown_fields(),
+                market_values=market_values,
             )
         insufficient_psa = _insufficient_psa_evidence(
             market_values, self.safeguards.minimum_psa_samples
