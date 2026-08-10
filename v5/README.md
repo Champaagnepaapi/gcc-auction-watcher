@@ -12,6 +12,8 @@ ou de checkout.
 - `valuation.py` : ancien calcul d'EV probabiliste du prototype.
 - `market_values/` : fournisseurs, provenance, agregation, couts et prefiltre
   economique non probabiliste avant CardGrader.
+- `live_raw_pipeline.py` : orchestration eBay RAW Production vers identite,
+  images, agregateur de marche et prefiltre economique, uniquement en memoire.
 - `scanner.py` : garde-fous, classement et sortie diagnostique.
 - `../tests_v5/` : fixtures et tests sans reseau.
 
@@ -94,6 +96,26 @@ calcule les profits et ROI raw, grade 8 generique, grade 9 generique et PSA 10,
 puis emet notamment `RAW_ARBITRAGE`, `GRADE9_PROFITABLE`, `PSA10_DEPENDENT` ou
 `ECONOMIC_REJECT_EVEN_PSA10`. Aucune probabilite de grade n'est utilisee a ce
 stade et CardGrader reste verrouille.
+
+## Pipeline live RAW manuel
+
+Le workflow `V5 Live Raw Pipeline Diagnostic` est exclusivement manuel et
+limite EBAY_US a 20 resultats par defaut. Il reutilise Taxonomy, Browse et
+getItem, deduplique les itemId en memoire, puis transmet uniquement les RAW
+`conditionId=4000` avec identite et recto exploitables au moteur market/economic.
+L'absence de verso ajoute une confiance visuelle reduite mais ne bloque jamais
+la valorisation economique.
+
+PriceCharting et Marketplace Insights restent forces a `false`; PSA Sales est
+`UNAVAILABLE`. Les asking prices actifs eBay servent seulement de contexte en
+memoire et ne sont jamais transmis comme ventes realisees a l'agregateur. Sans
+source de marche fiable, le resultat est `MARKET_VALUES_MISSING` avec validation
+manuelle requise. Product Research reste `MANUAL_VALIDATION_ONLY`, sans Seller
+Hub, application mobile, Playwright, scraping ni endpoint interne.
+
+`RAW_DISCOVERY_INTERVAL_MINUTES=10` documente uniquement la cadence future.
+Aucun workflow V5 ne contient encore de schedule. Les payloads, titres, itemId,
+URL, vendeurs, prix et images ne sont ni logges individuellement ni persistes.
 
 ## Prix RAW
 

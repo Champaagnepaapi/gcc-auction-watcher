@@ -174,7 +174,13 @@ class EbayLiveDiagnostic:
         set_number_resolver: Optional[SetNumberCardNameResolver] = None,
         back_detector: Optional[LocalPokemonBackDetector] = None,
         image_fetcher: Optional[Callable[[str], Optional[bytes]]] = None,
+        result_limit: int = RESULT_LIMIT,
+        marketplaces: Sequence[str] = MARKETPLACES,
     ) -> None:
+        if not 1 <= result_limit <= RESULT_LIMIT:
+            raise ValueError(f"result_limit doit etre compris entre 1 et {RESULT_LIMIT}")
+        if not marketplaces or any(value not in MARKETPLACES for value in marketplaces):
+            raise ValueError("marketplaces V5 non supportees")
         self._client_id = client_id
         self._client_secret = client_secret
         self._session = session or requests.Session()
@@ -184,6 +190,8 @@ class EbayLiveDiagnostic:
         )
         self._back_detector = back_detector or LocalPokemonBackDetector()
         self._image_fetcher = image_fetcher or self._fetch_image_in_memory
+        self._result_limit = result_limit
+        self._marketplaces = tuple(dict.fromkeys(marketplaces))
 
     def run(self) -> LiveDiagnosticSummary:
         token, oauth = self._application_token()
@@ -191,13 +199,14 @@ class EbayLiveDiagnostic:
             return LiveDiagnosticSummary(
                 oauth=oauth,
                 marketplaces=tuple(
-                    MarketplaceAggregate(marketplace_id=value) for value in MARKETPLACES
+                    MarketplaceAggregate(marketplace_id=value)
+                    for value in self._marketplaces
                 ),
             )
 
         aggregates: Dict[str, MarketplaceAggregate] = {}
         records: List[_DiscoveryRecord] = []
-        for marketplace_id in MARKETPLACES:
+        for marketplace_id in self._marketplaces:
             aggregate, discovered = self._discover_marketplace(marketplace_id, token)
             aggregates[marketplace_id] = aggregate
             records.extend(discovered)
@@ -213,13 +222,13 @@ class EbayLiveDiagnostic:
             aggregate.resolved_category_id for aggregate in aggregates.values()
         ]
         same_category_id = bool(
-            len(category_ids) == len(MARKETPLACES)
+            len(category_ids) == len(self._marketplaces)
             and all(category_ids)
             and len(set(category_ids)) == 1
         )
         return LiveDiagnosticSummary(
             oauth=oauth,
-            marketplaces=tuple(aggregates[value] for value in MARKETPLACES),
+            marketplaces=tuple(aggregates[value] for value in self._marketplaces),
             duplicate_items=duplicates,
             unique_items=unique_items,
             same_category_id=same_category_id,
@@ -335,7 +344,7 @@ class EbayLiveDiagnostic:
             "q": "Pokémon",
             "filter": f"conditionIds:{{{RAW_CONDITION_ID}}}",
             "fieldgroups": "EXTENDED",
-            "limit": str(RESULT_LIMIT),
+            "limit": str(self._result_limit),
         }
         if category_id:
             params["category_ids"] = category_id
@@ -375,7 +384,7 @@ class EbayLiveDiagnostic:
         if not isinstance(summaries, list):
             summaries = []
         records = []
-        for summary in summaries[:RESULT_LIMIT]:
+        for summary in summaries[: self._result_limit]:
             if not isinstance(summary, Mapping):
                 summary = {}
             item_id = summary.get("itemId")
@@ -457,7 +466,7 @@ class EbayLiveDiagnostic:
         detail_by_id: Dict[str, Tuple[bool, Mapping[str, object]]] = {}
         for item_id, owner in first_by_id.items():
             aggregate = aggregates[owner.marketplace_id]
-            if aggregate.get_item_calls >= RESULT_LIMIT:
+            if aggregate.get_item_calls >= self._result_limit:
                 detail_by_id[item_id] = (False, {})
                 continue
             aggregate.get_item_calls += 1

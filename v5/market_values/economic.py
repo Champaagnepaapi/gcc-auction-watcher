@@ -58,13 +58,21 @@ class CostModel:
             raise ValueError("La devise du modele de couts est obligatoire")
 
     @classmethod
-    def from_env(cls, currency: str) -> "CostModel":
+    def from_env(
+        cls,
+        currency: str,
+        raw_purchase_price: Optional[Decimal] = None,
+    ) -> "CostModel":
         def configured(name: str) -> Optional[Decimal]:
             raw = os.getenv(name, "").strip()
             return Decimal(raw) if raw else None
 
         return cls(
-            raw_purchase_price=configured("RAW_PURCHASE_PRICE"),
+            raw_purchase_price=(
+                raw_purchase_price
+                if raw_purchase_price is not None
+                else configured("RAW_PURCHASE_PRICE")
+            ),
             buyer_fees=configured("BUYER_FEES"),
             domestic_shipping=configured("DOMESTIC_SHIPPING"),
             international_shipping=configured("INTERNATIONAL_SHIPPING"),
