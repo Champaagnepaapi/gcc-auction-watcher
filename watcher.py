@@ -23,7 +23,7 @@ load_dotenv()
 BASE = "https://gradedcardcenter.com"
 FIXED_PRICE_URL = 'https://gradedcardcenter.com/filtres?sellingTypes=%5B%22FIXED_PRICE%22%5D'
 
-MIN_PRICE = 10.0
+MIN_PRICE = 0.0
 MAX_PRICE = float(os.getenv("MAX_PRICE_EUR", "100"))
 MIN_DISCOUNT = float(os.getenv("MIN_DISCOUNT_PCT", "30"))
 MAX_AUCTION_MINUTES = int(os.getenv("MAX_AUCTION_MINUTES", "60"))
@@ -284,7 +284,8 @@ ACCOUNT_DIAGNOSTIC_ONLY = "diagnostic_inventory_only"
 FIXED_DISCOVERY_FILTERS = (
     "sellingType=FIXED_PRICE (GCC)",
     "category=Pokemon card (local existing rule)",
-    f"price={MIN_PRICE:.0f}-{MAX_PRICE:.0f} EUR (local existing rule)",
+    f"min_price={MIN_PRICE:g} EUR (local existing rule)",
+    f"max_price={MAX_PRICE:g} EUR (local existing rule)",
     "grader=ALL",
     "grade=ALL",
 )
@@ -292,7 +293,8 @@ AUCTION_DISCOVERY_FILTERS = (
     "homepage link=/auction/ and (text LIVE or href contains AUCTION) (current V4 rule)",
     f"remaining_time<={MAX_AUCTION_MINUTES} min (local existing rule)",
     "category=Pokemon card (local existing rule)",
-    f"price={MIN_PRICE:.0f}-{MAX_PRICE:.0f} EUR (local existing rule)",
+    f"min_price={MIN_PRICE:g} EUR (local existing rule)",
+    f"max_price={MAX_PRICE:g} EUR (local existing rule)",
     "grader=ALL",
     "grade=ALL",
 )

@@ -1714,5 +1714,230 @@ class GccCoverageAuditTests(unittest.TestCase):
         self.assertNotIn("build_market_estimate", script)
 
 
+class ZeroPriceDiscoveryTests(unittest.TestCase):
+    def pipeline_lot(self, source_type, price, suffix):
+        return watcher.Lot(
+            url=f"https://gcc.test/item/{source_type}-{suffix}",
+            title="PSA 10 Otaquin",
+            current_price=price,
+            source_type=source_type,
+            minutes_to_end=30 if source_type == "auction" else None,
+            end_text="0j 0h 30m 0s" if source_type == "auction" else "",
+            body=(
+                "Catégorie: Pokémon\n"
+                "Article Gradation Détails\n"
+                "Société de gradation: PSA\n"
+                "Note: 10\n"
+                "Référence: #045/132"
+            ),
+            grader="PSA",
+            grade="10",
+        )
+
+    def run_empty_history_pipeline(self, source_type, price, suffix):
+        lot = self.pipeline_lot(source_type, price, suffix)
+        diagnostics = watcher.RunDiagnostics()
+        with patch.object(watcher, "inspect_item", return_value=lot):
+            with patch.object(watcher, "extract_historical_sales", return_value=[]):
+                with redirect_stdout(io.StringIO()):
+                    opportunity = watcher.evaluate_gcc_candidate(
+                        Mock(),
+                        lot,
+                        1,
+                        {"seen": {}},
+                        NOW.isoformat(),
+                        NOW,
+                        diagnostics,
+                    )
+        return lot, diagnostics, opportunity
+
+    def assert_cheap_prices_reach_pipeline(self, source_type):
+        for index, price in enumerate((0.50, 2.0, 5.0, 9.99), start=1):
+            with self.subTest(source_type=source_type, price=price):
+                lot, diagnostics, opportunity = self.run_empty_history_pipeline(
+                    source_type, price, str(index)
+                )
+                self.assertIsNone(opportunity)
+                self.assertEqual(
+                    diagnostics.valuation_outcomes[lot.url],
+                    watcher.REJECTION_EMPTY_HISTORY,
+                )
+                coverage = diagnostics.coverage_for(source_type)
+                self.assertEqual(coverage.unique_listings, 1)
+                self.assertEqual(coverage.accounted_listings, 1)
+                self.assertEqual(coverage.unaccounted_listings, 0)
+                self.assertEqual(
+                    coverage.terminal_count(
+                        watcher.ACCOUNT_ECONOMICALLY_EVALUATED
+                    ),
+                    1,
+                )
+
+    def collect_listing_price(self, source_type, price, index):
+        class Node:
+            def __init__(self, text="", href=""):
+                self.text = text
+                self.href = href
+                self.first = self
+
+            def inner_text(self, timeout=None):
+                return self.text
+
+            def get_attribute(self, name):
+                return self.href if name == "href" else None
+
+            def locator(self, selector):
+                return self
+
+        class Nodes:
+            def __init__(self, values):
+                self.values = values
+
+            def count(self):
+                return len(self.values)
+
+            def nth(self, position):
+                return self.values[position]
+
+        price_label = f"{price:.2f}".replace(".", ",")
+        listing = (
+            "PSA 10 Otaquin\n"
+            "Pokemon • French • 2026 • #045/132\n"
+            f"{price_label} €\n"
+            "0 JOURS 0 HEURES 30 MINUTES 0 SEC"
+        )
+        anchor = Node(
+            listing,
+            f"/item/{index:020x}",
+        )
+
+        page = Mock()
+        page.mouse = Mock()
+        page.locator.side_effect = lambda selector: (
+            Node("1 résultats\n0 JOURS 0 HEURES 30 MINUTES 0 SEC")
+            if selector == "body"
+            else Node("Vente test")
+            if selector == "h1"
+            else Nodes([anchor])
+        )
+        page.evaluate.return_value = 100
+        diagnostics = watcher.RunDiagnostics()
+        with patch.object(watcher, "GCC_LISTING_SCROLL_LIMIT", 1):
+            with redirect_stdout(io.StringIO()):
+                lots = watcher.collect_lots_from_listing(
+                    page,
+                    "https://gcc.test/listing",
+                    source_type,
+                    diagnostics,
+                )
+        return lots, diagnostics
+
+    def test_fixed_and_auction_collectors_discover_zero_to_former_minimum(self):
+        prices = (0.0, 0.50, 2.0, 5.0, 9.99, 10.0)
+        for source_offset, source_type in enumerate(("fixed", "auction")):
+            for index, price in enumerate(prices, start=1):
+                with self.subTest(source_type=source_type, price=price):
+                    lots, diagnostics = self.collect_listing_price(
+                        source_type,
+                        price,
+                        source_offset * 100 + index,
+                    )
+                    self.assertEqual(len(lots), 1)
+                    self.assertEqual(lots[0].current_price, price)
+                    coverage = diagnostics.coverage_for(source_type)
+                    coverage.record_terminal(
+                        lots[0].url, watcher.ACCOUNT_DIAGNOSTIC_ONLY
+                    )
+                    self.assertEqual(coverage.unique_listings, 1)
+                    self.assertEqual(coverage.accounted_listings, 1)
+
+    def test_fixed_prices_below_former_minimum_reach_economic_pipeline(self):
+        self.assert_cheap_prices_reach_pipeline("fixed")
+
+    def test_auction_prices_below_former_minimum_reach_economic_pipeline(self):
+        self.assert_cheap_prices_reach_pipeline("auction")
+
+    def test_zero_price_is_accepted_by_both_active_paths(self):
+        for source_type in ("fixed", "auction"):
+            with self.subTest(source_type=source_type):
+                lot, diagnostics, opportunity = self.run_empty_history_pipeline(
+                    source_type, 0.0, "zero"
+                )
+                self.assertIsNone(opportunity)
+                self.assertEqual(
+                    diagnostics.valuation_outcomes[lot.url],
+                    watcher.REJECTION_EMPTY_HISTORY,
+                )
+
+    def test_former_exact_minimum_remains_included(self):
+        for source_type in ("fixed", "auction"):
+            with self.subTest(source_type=source_type):
+                lot, diagnostics, _ = self.run_empty_history_pipeline(
+                    source_type, 10.0, "former-min"
+                )
+                self.assertEqual(
+                    diagnostics.valuation_outcomes[lot.url],
+                    watcher.REJECTION_EMPTY_HISTORY,
+                )
+
+    def test_minimum_is_zero_and_maximum_is_unchanged(self):
+        self.assertEqual(watcher.MIN_PRICE, 0.0)
+        self.assertEqual(watcher.MAX_PRICE, 100.0)
+        workflow = (
+            Path(__file__).parents[1] / ".github" / "workflows" / "watcher.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('MAX_PRICE_EUR: "100"', workflow)
+
+    def test_low_price_alone_never_creates_an_opportunity(self):
+        for source_type in ("fixed", "auction"):
+            with self.subTest(source_type=source_type):
+                _, diagnostics, opportunity = self.run_empty_history_pipeline(
+                    source_type, 0.50, "no-false-positive"
+                )
+                self.assertIsNone(opportunity)
+                self.assertEqual(
+                    diagnostics.rejection_count(watcher.REJECTION_EMPTY_HISTORY),
+                    1,
+                )
+
+    def test_coverage_filters_report_zero_for_fixed_and_auctions(self):
+        diagnostics = watcher.RunDiagnostics()
+        summary = watcher.format_scan_coverage(diagnostics)
+        self.assertEqual(summary.count("min_price=0 EUR"), 2)
+        self.assertEqual(summary.count("max_price=100 EUR"), 2)
+
+    def test_existing_price_fixture_is_identical_at_old_and_new_minimum(self):
+        sales = [sale(price) for price in (100, 110, 120)]
+        old_lot = self.pipeline_lot("auction", 50.0, "old-min")
+        new_lot = self.pipeline_lot("auction", 50.0, "new-min")
+        with redirect_stdout(io.StringIO()):
+            with patch.object(watcher, "MIN_PRICE", 10.0):
+                old_opportunity = watcher.estimate_with_grade(
+                    old_lot, sales, NOW
+                )
+            new_opportunity = watcher.estimate_with_grade(
+                new_lot, sales, NOW
+            )
+        self.assertIsNotNone(old_opportunity)
+        self.assertIsNotNone(new_opportunity)
+        self.assertEqual(
+            old_opportunity.estimate.central,
+            new_opportunity.estimate.central,
+        )
+        self.assertEqual(
+            old_opportunity.discount_pct,
+            new_opportunity.discount_pct,
+        )
+        self.assertEqual(
+            old_opportunity.max_recommended,
+            new_opportunity.max_recommended,
+        )
+        self.assertEqual(old_opportunity.lot.grade, new_opportunity.lot.grade)
+        self.assertEqual(
+            watcher.notification_decision(old_opportunity, None),
+            watcher.notification_decision(new_opportunity, None),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
