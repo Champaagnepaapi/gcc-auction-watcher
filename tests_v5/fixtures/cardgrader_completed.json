@@ -1,0 +1,19 @@
+{
+  "id": 12345,
+  "status": "completed",
+  "modules": ["grade"],
+  "imageQuality": "high",
+  "grading": {
+    "grade": 10.0,
+    "predictedGrade": 10.0,
+    "confidence": 0.86,
+    "subGrades": {
+      "centering": 10.0,
+      "corners": 9.5,
+      "edges": 9.5,
+      "surface": 9.0
+    },
+    "issues": ["Light print line visible under angled light"],
+    "summary": "Strong copy with a minor surface concern."
+  }
+}

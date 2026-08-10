@@ -1,0 +1,37 @@
+{
+  "itemId": "v1|123456789012|0",
+  "title": "Dracaufeu 4/102 Base Set Pokemon Holo RAW",
+  "itemWebUrl": "https://www.ebay.fr/itm/123456789012",
+  "price": {"value": "50.00", "currency": "EUR"},
+  "buyingOptions": ["FIXED_PRICE"],
+  "itemEndDate": "2026-08-12T18:30:00.000Z",
+  "condition": "Ungraded - Near mint or better",
+  "seller": {
+    "username": "fixture-seller",
+    "feedbackPercentage": "99.8",
+    "feedbackScore": 2401
+  },
+  "image": {"imageUrl": "https://i.ebayimg.com/images/g/front.jpg"},
+  "additionalImages": [
+    {"imageUrl": "https://i.ebayimg.com/images/g/back.jpg"},
+    {"imageUrl": "https://i.ebayimg.com/images/g/corner.jpg"}
+  ],
+  "shippingOptions": [
+    {"shippingCost": {"value": "5.00", "currency": "EUR"}}
+  ],
+  "categories": [
+    {"categoryId": "2536", "categoryName": "Cartes à collectionner"},
+    {"categoryId": "183454", "categoryName": "Cartes Pokémon individuelles"}
+  ],
+  "localizedAspects": [
+    {"name": "Game", "value": "Pokémon TCG"},
+    {"name": "Card Name", "value": "Charizard"},
+    {"name": "Set", "value": "Base Set"},
+    {"name": "Card Number", "value": "4/102"},
+    {"name": "Year Manufactured", "value": "1999"},
+    {"name": "Language", "value": "English"},
+    {"name": "Finish", "value": "Holo"},
+    {"name": "Graded", "value": "No"},
+    {"name": "Rarity", "value": "Holo Rare"}
+  ]
+}

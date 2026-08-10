@@ -1,0 +1,16 @@
+{
+  "profitable_in_psa9": {
+    "raw": {"amount": "55", "sample_size": 8},
+    "psa7_or_lower": {"amount": "60", "sample_size": 3},
+    "psa8": {"amount": "100", "sample_size": 4},
+    "psa9": {"amount": "150", "sample_size": 5},
+    "psa10": {"amount": "250", "sample_size": 4}
+  },
+  "psa10_only": {
+    "raw": {"amount": "70", "sample_size": 8},
+    "psa7_or_lower": {"amount": "40", "sample_size": 3},
+    "psa8": {"amount": "60", "sample_size": 4},
+    "psa9": {"amount": "100", "sample_size": 5},
+    "psa10": {"amount": "300", "sample_size": 4}
+  }
+}
