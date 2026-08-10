@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Optional, Sequence
+from typing import Mapping, Optional
 
 import watcher
 
@@ -14,30 +14,7 @@ from .market_values.gcc_history.models import CanonicalCollectible
 
 
 GCC_CATALOG_SCHEMA_VERSION = 1
-DEFAULT_CATALOG_PATH = Path(
-    os.getenv("GCC_CATALOG_INDEX_FILE", "gcc_catalog_index.json")
-)
-
-
-def canonical_from_gcc_lot(lot: watcher.Lot) -> CanonicalCollectible:
-    """Build the V5 canonical identity from GCC-only listing/page metadata."""
-
-    parsed = watcher.extract_card_identity(lot)
-    core = parsed.get("core") or lot.title
-    set_name = lot.card_set or parsed.get("series") or ""
-    card_number = lot.card_number or parsed.get("ref") or ""
-    return canonicalize_collectible(
-        CanonicalCollectible(
-            card_name=core or None,
-            set_name=set_name or None,
-            card_number=card_number or None,
-            language=(lot.language or parsed.get("language") or None),
-            variant=lot.variant or None,
-            year=lot.year,
-            set_family=lot.set_family or set_name or None,
-            category="pokemon",
-        )
-    )
+DEFAULT_GCC_CATALOG_FILE = "gcc_catalog_index.json"
 
 
 @dataclass(frozen=True)
@@ -47,15 +24,17 @@ class GCCCatalogCandidate:
 
 
 class GCCCatalogIndex:
-    """Persistent cumulative index containing GCC collectible identity only.
+    """Cumulative GCC-only identity lookup cache.
 
-    It intentionally stores no eBay identifier, listing URL/title/price, seller,
-    image, aspects or API payload. The only URL stored is the GCC item page used
-    as a future representative for GCC sales-history lookup.
+    The file stores only public GCC identity metadata and GCC item URLs. It is
+    intentionally unable to store eBay ids, titles, prices, sellers or images.
     """
 
-    def __init__(self, path: Path | str | None = None) -> None:
-        self.path = Path(path) if path is not None else DEFAULT_CATALOG_PATH
+    def __init__(self, path: Optional[str] = None) -> None:
+        self.path = Path(
+            path
+            or os.getenv("GCC_CATALOG_INDEX_FILE", DEFAULT_GCC_CATALOG_FILE)
+        )
         self._items: dict[str, dict[str, object]] = {}
         self._by_name: dict[str, list[str]] = {}
         self.entries_loaded = 0
@@ -64,7 +43,6 @@ class GCCCatalogIndex:
         self.lookup_hits = 0
         self.load_failures = 0
         self.save_failures = 0
-        self._dirty = False
         self._load()
 
     @property
@@ -72,48 +50,65 @@ class GCCCatalogIndex:
         return len(self._items)
 
     def _load(self) -> None:
-        if not self.path.exists():
+        if not self.path.is_file():
             return
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(raw, Mapping):
-                raise ValueError("catalog root is not an object")
-            if raw.get("schema_version") != GCC_CATALOG_SCHEMA_VERSION:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping):
+                raise ValueError("invalid catalog root")
+            if payload.get("schema_version") != GCC_CATALOG_SCHEMA_VERSION:
                 raise ValueError("unsupported catalog schema")
-            items = raw.get("items")
-            if not isinstance(items, Mapping):
-                raise ValueError("catalog items are not an object")
-            for url, entry in items.items():
-                if not isinstance(url, str) or not isinstance(entry, Mapping):
+            raw_items = payload.get("items")
+            if not isinstance(raw_items, list):
+                raise ValueError("invalid catalog items")
+            for raw in raw_items:
+                if not isinstance(raw, Mapping):
                     continue
-                normalized = dict(entry)
-                normalized["url"] = url
-                identity = self._identity_from_entry(normalized)
-                if not identity.card_name or not (
-                    identity.card_number or identity.set_name
-                ):
+                url = str(raw.get("url") or "").strip()
+                card_name = str(raw.get("card_name") or "").strip()
+                if not url or not card_name:
                     continue
-                self._items[url] = normalized
+                entry = self._safe_entry(raw)
+                self._items[url] = entry
             self.entries_loaded = len(self._items)
-            self._rebuild_name_index()
+            self._reindex()
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             self.load_failures += 1
             self._items = {}
             self._by_name = {}
 
-    def _rebuild_name_index(self) -> None:
+    @staticmethod
+    def _safe_entry(raw: Mapping[str, object]) -> dict[str, object]:
+        year = raw.get("year")
+        return {
+            "url": str(raw.get("url") or "").strip(),
+            "card_name": str(raw.get("card_name") or "").strip(),
+            "set_name": str(raw.get("set_name") or "").strip(),
+            "card_number": str(raw.get("card_number") or "").strip(),
+            "language": str(raw.get("language") or "").strip(),
+            "variant": str(raw.get("variant") or "").strip(),
+            "year": year if isinstance(year, int) else None,
+            "set_family": str(raw.get("set_family") or "").strip(),
+            "grader": str(raw.get("grader") or "").strip(),
+            "grade": (
+                str(raw.get("grade")) if raw.get("grade") is not None else None
+            ),
+            "source": str(raw.get("source") or "").strip(),
+            "last_seen_at": str(raw.get("last_seen_at") or "").strip(),
+        }
+
+    def _reindex(self) -> None:
         by_name: dict[str, list[str]] = {}
         for url, entry in self._items.items():
             identity = self._identity_from_entry(entry)
-            if identity.card_name:
-                by_name.setdefault(identity.card_name, []).append(url)
+            if not identity.card_name:
+                continue
+            by_name.setdefault(identity.card_name, []).append(url)
         self._by_name = by_name
 
     @staticmethod
     def _identity_from_entry(entry: Mapping[str, object]) -> CanonicalCollectible:
         year = entry.get("year")
-        if not isinstance(year, int):
-            year = None
         return canonicalize_collectible(
             CanonicalCollectible(
                 card_name=str(entry.get("card_name") or "") or None,
@@ -121,7 +116,7 @@ class GCCCatalogIndex:
                 card_number=str(entry.get("card_number") or "") or None,
                 language=str(entry.get("language") or "") or None,
                 variant=str(entry.get("variant") or "") or None,
-                year=year,
+                year=year if isinstance(year, int) else None,
                 set_family=str(entry.get("set_family") or "") or None,
                 category="pokemon",
             )
@@ -153,8 +148,17 @@ class GCCCatalogIndex:
         )
 
     def candidates(self, card_name: str | None) -> tuple[GCCCatalogCandidate, ...]:
+        # This lookup intentionally starts from card name only. The strict
+        # set/number/language/variant matcher is applied to returned candidates.
+        # CanonicalCollectible requires explicit set/number fields even when
+        # absent, so keep them as None rather than constructing an invalid key.
         name = canonicalize_collectible(
-            CanonicalCollectible(card_name=card_name, category="pokemon")
+            CanonicalCollectible(
+                card_name=card_name,
+                set_name=None,
+                card_number=None,
+                category="pokemon",
+            )
         ).card_name
         if not name:
             return ()
@@ -188,132 +192,44 @@ class GCCCatalogIndex:
             identity.card_number or identity.set_name
         ):
             return False
-
-        now = (seen_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        timestamp = now.isoformat()
-        previous = self._items.get(url)
-        previous_name = (
-            self._identity_from_entry(previous).card_name
-            if isinstance(previous, Mapping)
-            else None
-        )
-        first_seen = (
-            str(previous.get("first_seen"))
-            if isinstance(previous, Mapping) and previous.get("first_seen")
-            else timestamp
-        )
-        sources = []
-        if isinstance(previous, Mapping):
-            raw_sources = previous.get("sources")
-            if isinstance(raw_sources, Sequence) and not isinstance(
-                raw_sources, str
-            ):
-                sources.extend(str(value) for value in raw_sources if value)
-        if source and source not in sources:
-            sources.append(source)
-
-        entry: dict[str, object] = {
+        timestamp = (seen_at or datetime.now(timezone.utc)).isoformat()
+        entry = {
             "url": url,
-            "card_name": identity.card_name,
-            "set_name": identity.set_name,
-            "card_number": identity.card_number,
-            "language": identity.language,
-            "variant": identity.variant,
+            "card_name": identity.card_name or "",
+            "set_name": identity.set_name or "",
+            "card_number": identity.card_number or "",
+            "language": identity.language or "",
+            "variant": identity.variant or "",
             "year": identity.year,
-            "set_family": identity.set_family,
-            "grader": (lot.grader or "").strip().upper() or None,
-            "grade": str(lot.grade).strip() if lot.grade is not None else None,
-            "sources": sources,
-            "first_seen": first_seen,
-            "last_seen": timestamp,
+            "set_family": identity.set_family or "",
+            "grader": lot.grader or "",
+            "grade": lot.grade,
+            "source": source,
+            "last_seen_at": timestamp,
         }
-
+        previous = self._items.get(url)
         if previous is None:
             self.added_this_run += 1
+        elif previous != entry:
+            self.updated_this_run += 1
         else:
-            comparable_previous = dict(previous)
-            comparable_previous.pop("last_seen", None)
-            comparable_entry = dict(entry)
-            comparable_entry.pop("last_seen", None)
-            if comparable_previous != comparable_entry:
-                self.updated_this_run += 1
-
+            return False
         self._items[url] = entry
-        if previous_name and previous_name != identity.card_name:
-            old_bucket = self._by_name.get(previous_name, [])
-            if url in old_bucket:
-                old_bucket.remove(url)
-            if not old_bucket:
-                self._by_name.pop(previous_name, None)
-        bucket = self._by_name.setdefault(identity.card_name, [])
-        if url not in bucket:
-            bucket.append(url)
-        self._dirty = True
+        self._reindex()
         return True
 
-    def add_lots(
-        self,
-        lots: Iterable[watcher.Lot],
-        *,
-        source: str,
-        identity_builder: Callable[
-            [watcher.Lot], CanonicalCollectible
-        ] = canonical_from_gcc_lot,
-    ) -> int:
-        accepted = 0
-        for lot in lots:
-            if self.upsert(identity_builder(lot), lot, source=source):
-                accepted += 1
-        return accepted
-
     def save(self) -> None:
-        if not self._dirty and self.path.exists():
-            return
-        payload = {
-            "schema_version": GCC_CATALOG_SCHEMA_VERSION,
-            "items": self._items,
-        }
-        temporary = self.path.with_name(f".{self.path.name}.tmp")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            payload = {
+                "schema_version": GCC_CATALOG_SCHEMA_VERSION,
+                "items": [self._items[key] for key in sorted(self._items)],
+            }
+            temp = self.path.with_suffix(self.path.suffix + ".tmp")
+            temp.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
                 encoding="utf-8",
             )
-            temporary.replace(self.path)
-            self._dirty = False
+            temp.replace(self.path)
         except OSError:
             self.save_failures += 1
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
-def refresh_catalog_from_public_inventory(
-    *,
-    path: Path | str | None = None,
-) -> GCCCatalogIndex:
-    index = GCCCatalogIndex(path)
-    diagnostics = watcher.RunDiagnostics()
-    lots = watcher.collect_fixed_lots_from_api(
-        diagnostics,
-        min_price=0.0,
-        max_price=None,
-    )
-    index.add_lots(lots, source="on_sale")
-    index.save()
-    print("=== V5 GCC CATALOG REFRESH ===")
-    print(f"inventory pages requested: {diagnostics.fixed_coverage.pages_requested}")
-    print(f"GCC entries loaded: {index.entries_loaded}")
-    print(f"GCC entries current: {index.current_entries}")
-    print(f"GCC entries added this run: {index.added_this_run}")
-    print(f"GCC entries updated this run: {index.updated_this_run}")
-    print(f"catalog load failures: {index.load_failures}")
-    print(f"catalog save failures: {index.save_failures}")
-    print("Persisted eBay records: 0")
-    return index
-
-
-if __name__ == "__main__":
-    refresh_catalog_from_public_inventory()
