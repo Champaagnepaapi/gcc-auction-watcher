@@ -51,6 +51,7 @@ VISUAL_GRADING_QUOTA_REACHED = "VISUAL_GRADING_QUOTA_REACHED"
 NON_PROFITABLE_EV = "NON_PROFITABLE_EV"
 ROI_BELOW_THRESHOLD = "ROI_BELOW_THRESHOLD"
 CHEAP_FILTER_PASSED = "CHEAP_FILTER_PASSED"
+GRADING_VISUAL_CONFIDENCE_REDUCED = "GRADING_VISUAL_CONFIDENCE_REDUCED"
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class CheapFilterResult:
     psa9_profit: Optional[Decimal] = None
     psa8_profit: Optional[Decimal] = None
     maximum_plausible_roi: Optional[Decimal] = None
+    risk_flags: Tuple[str, ...] = ()
 
     @property
     def priority(self) -> Tuple[Decimal, Decimal, Decimal]:
@@ -235,13 +237,14 @@ class RawCardScanner:
                 maximum_plausible_roi=maximum_roi,
             )
 
-        # Les controles photo restent gratuits et precedent le grading visuel.
-        photo_reasons = _photo_rejection_reasons(request)
-        if photo_reasons:
+        # Un recto exploitable suffit a poursuivre la valorisation economique.
+        # Le verso reste obligatoire uniquement au moment du grading visuel.
+        front_reasons = _front_rejection_reasons(request)
+        if front_reasons:
             return CheapFilterResult(
                 request,
                 False,
-                photo_reasons,
+                front_reasons,
                 market_values=market_values,
                 total_cost_if_graded=total_cost,
                 psa10_profit=psa10_profit,
@@ -249,6 +252,11 @@ class RawCardScanner:
                 psa8_profit=psa8_profit,
                 maximum_plausible_roi=maximum_roi,
             )
+        visual_risk = (
+            ()
+            if request.image_pair.is_complete()
+            else (GRADING_VISUAL_CONFIDENCE_REDUCED,)
+        )
         return CheapFilterResult(
             request,
             True,
@@ -259,6 +267,7 @@ class RawCardScanner:
             psa9_profit=psa9_profit,
             psa8_profit=psa8_profit,
             maximum_plausible_roi=maximum_roi,
+            risk_flags=visual_risk,
         )
 
     def shortlist(self, requests: Iterable[ScanRequest]) -> List[CheapFilterResult]:
@@ -293,6 +302,9 @@ class RawCardScanner:
             return _diagnostic_from_cheap(
                 cheap_result, reasons=(MARKET_DATA_UNAVAILABLE,)
             )
+        photo_reasons = _photo_rejection_reasons(request)
+        if photo_reasons:
+            return _diagnostic_from_cheap(cheap_result, reasons=photo_reasons)
         try:
             assessment = self.grade_provider.assess(request.image_pair, identity)
         except GradeProviderError as exc:
@@ -340,7 +352,7 @@ class RawCardScanner:
                 probabilities=probabilities,
             )
 
-        risk_flags = []
+        risk_flags = list(cheap_result.risk_flags)
         psa10_contribution = (
             Decimal(str(probabilities.psa10)) * market_values.psa10.amount
             if market_values.psa10 is not None
@@ -373,7 +385,7 @@ class RawCardScanner:
             identity=identity,
             decision=decision,
             reasons=tuple(reasons),
-            risk_flags=tuple(risk_flags),
+            risk_flags=tuple(dict.fromkeys(risk_flags)),
             assessment=assessment,
             probabilities=probabilities,
             market_values=market_values,
@@ -441,6 +453,7 @@ def _diagnostic_from_cheap(
         identity=request.listing.identity,
         decision=ScanDecision.REJECTED,
         reasons=tuple(reasons or result.reasons),
+        risk_flags=result.risk_flags,
         assessment=assessment,
         probabilities=probabilities,
         market_values=result.market_values,
@@ -470,6 +483,15 @@ def _photo_rejection_reasons(request: ScanRequest) -> Tuple[str, ...]:
         or request.image_pair.back_url not in listing.image_urls
     ):
         return (INSUFFICIENT_PHOTOS, "IMAGE_PAIR_NOT_IN_EBAY_LISTING")
+    return ()
+
+
+def _front_rejection_reasons(request: ScanRequest) -> Tuple[str, ...]:
+    front = request.image_pair.front_url
+    if not front:
+        return (INSUFFICIENT_PHOTOS, "FRONT_IMAGE_MISSING")
+    if front not in request.listing.image_urls:
+        return (INSUFFICIENT_PHOTOS, "FRONT_IMAGE_NOT_IN_EBAY_LISTING")
     return ()
 
 

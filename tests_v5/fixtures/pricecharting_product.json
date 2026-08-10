@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "console-name": "Pokemon Base Set",
+  "id": "580001",
+  "product-name": "Charizard #4",
+  "loose-price": 1234,
+  "new-price": 4567,
+  "graded-price": 8901,
+  "manual-only-price": 23456,
+  "release-date": "1999-01-09"
+}

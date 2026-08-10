@@ -1,0 +1,15 @@
+{
+  "status": "success",
+  "products": [
+    {
+      "console-name": "Pokemon Base Set",
+      "id": "580001",
+      "product-name": "Charizard #4"
+    },
+    {
+      "console-name": "Pokemon Base Set",
+      "id": "580099",
+      "product-name": "Charizard #4"
+    }
+  ]
+}

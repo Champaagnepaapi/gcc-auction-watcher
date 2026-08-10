@@ -9,7 +9,9 @@ ou de checkout.
 - `models.py` : identite de carte, annonce eBay, pre-grade, valeurs, couts et diagnostic.
 - `ebay.py` : OAuth client-credentials et Browse API eBay officielle en lecture seule.
 - `grading.py` : interface `GradeAssessmentProvider`, adaptateur CardGrader.AI et distributions prudentes.
-- `valuation.py` : interface `MarketDataProvider` et calculs d'EV sans interpolation de prix.
+- `valuation.py` : ancien calcul d'EV probabiliste du prototype.
+- `market_values/` : fournisseurs, provenance, agregation, couts et prefiltre
+  economique non probabiliste avant CardGrader.
 - `scanner.py` : garde-fous, classement et sortie diagnostique.
 - `../tests_v5/` : fixtures et tests sans reseau.
 
@@ -45,9 +47,10 @@ avec `GET /buy/browse/v1/item/{item_id}` et revalide via `localizedAspects`.
 Le mot « RAW » dans un titre n'est jamais une preuve suffisante.
 
 L'API eBay ne donne pas de role semantique aux images additionnelles. La V5 ne
-suppose donc jamais que la deuxieme photo est le verso : un operateur ou un
-futur selecteur d'images fiable doit fournir la paire recto/verso. Sans cela,
-le candidat est rejete avant tout appel de grading.
+suppose donc jamais que la deuxieme photo est le verso. Un recto et une identite
+exploitables suffisent desormais a poursuivre la valorisation economique. Un
+verso absent ajoute `GRADING_VISUAL_CONFIDENCE_REDUCED`; il reste bloquant au
+moment d'un eventuel grading visuel, jamais avant l'analyse economique.
 
 Copier les noms de variables de `.env.example` dans l'environnement. L'ID de
 categorie et les libelles/valeurs de l'aspect RAW restent configurables car ils
@@ -71,6 +74,26 @@ totalite du capital et des couts explicites.
 
 Un candidat est rejete avec `PSA10_DEPENDENT` s'il devient deficitaire en PSA 9
 ou si la part du PSA 10 dans l'EV brute depasse le seuil configure.
+
+## Valorisation de marche V5
+
+`PRICECHARTING_ENABLED=false` par defaut garantit qu'aucun appel PriceCharting
+n'est emis. L'adaptateur officiel recherche d'abord `/api/products`, exige un
+match structure unique et explique, puis lit `/api/product`. Les prix en cents
+sont mappes sans extrapolation : raw, grade 8/8,5 generique, grade 9 generique
+et PSA 10. Les grades generiques ne sont jamais presentes comme PSA 8 ou PSA 9.
+
+Les prix demandes actifs eBay ne fournissent que des statistiques secondaires
+de liquidite en memoire. Ils ne peuvent jamais suffire a autoriser CardGrader
+ou une decision d'achat. Marketplace Insights reste une interface desactivee,
+et PSA Sales reste `UNAVAILABLE` sans scraping, navigateur headless ou
+contournement Cloudflare/CAPTCHA.
+
+Le modele de couts ne remplace aucune variable absente par zero. Le prefiltre
+calcule les profits et ROI raw, grade 8 generique, grade 9 generique et PSA 10,
+puis emet notamment `RAW_ARBITRAGE`, `GRADE9_PROFITABLE`, `PSA10_DEPENDENT` ou
+`ECONOMIC_REJECT_EVEN_PSA10`. Aucune probabilite de grade n'est utilisee a ce
+stade et CardGrader reste verrouille.
 
 ## Prix RAW
 
