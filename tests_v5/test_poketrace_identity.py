@@ -11,23 +11,29 @@ from v5.poketrace_identity import PokeTraceIdentityResolver
 
 
 class Response:
-    def __init__(self, status_code, payload):
+    def __init__(self, status_code, payload, headers=None):
         self.status_code = status_code
         self._payload = payload
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
 
 
 class PokeTraceSession:
-    def __init__(self, payload, status_code=200):
-        self.payload = payload
-        self.status_code = status_code
+    def __init__(self, responses):
+        if isinstance(responses, Response):
+            responses = [responses]
+        elif isinstance(responses, dict):
+            responses = [Response(200, responses)]
+        self.responses = list(responses)
         self.calls = []
 
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
-        return Response(self.status_code, self.payload)
+        if not self.responses:
+            raise AssertionError("unexpected PokeTrace request")
+        return self.responses.pop(0)
 
 
 class CatalogSession:
@@ -41,12 +47,12 @@ class CatalogSession:
         raise AssertionError(f"Pokemon TCG fallback must not be reached: {url}")
 
 
-def card_payload(two=False):
+def card_payload(two=False, *, card_number="004/102", set_name="Base Set"):
     card = {
         "id": "pt-charizard-base-4",
         "name": "Charizard",
-        "cardNumber": "004/102",
-        "set": {"name": "Base Set", "slug": "base-set"},
+        "cardNumber": card_number,
+        "set": {"name": set_name, "slug": "base-set"},
         "variant": "Holofoil",
         "rarity": "Rare Holo",
         "productType": "single",
@@ -68,18 +74,18 @@ def card_payload(two=False):
     return {"data": data}
 
 
-def identity(card_name="Charizard", set_name="Pokemon TCG Base Set"):
+def identity(card_name="Charizard", set_name="Pokemon TCG Base Set", card_number="4/102"):
     return CardIdentity(
         game="Pokemon TCG",
         card_name=card_name,
         set=set_name,
-        card_number="4/102",
+        card_number=card_number,
         language="English",
         variant="Holofoil",
     )
 
 
-def provider(session):
+def provider(session, sleeper=lambda _seconds: None):
     return FreeTierPokeTraceProvider(
         config=PokeTraceConfig(
             enabled=True,
@@ -87,11 +93,12 @@ def provider(session):
             minimum_request_interval_seconds=0,
         ),
         session=session,
+        sleeper=sleeper,
     )
 
 
 class PokeTraceIdentityResolverTests(unittest.TestCase):
-    def test_identity_and_raw_market_value_reuse_one_free_request(self):
+    def test_broad_identity_and_raw_market_value_reuse_one_free_request(self):
         session = PokeTraceSession(card_payload())
         market = provider(session)
         resolver = PokeTraceIdentityResolver(market)
@@ -104,8 +111,9 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertEqual(resolved.identity.set, "Base Set")
         self.assertEqual(len(session.calls), 1)
         params = session.calls[0][1]["params"]
-        self.assertEqual(params["search"], "Charizard")
-        self.assertEqual(params["card_number"], "4/102")
+        self.assertIn("Charizard", params["search"])
+        self.assertIn("4/102", params["search"])
+        self.assertNotIn("card_number", params)
         self.assertNotIn("set", params)
         self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))
         self.assertIsNone(snapshot.us_values.psa10_value)
@@ -113,24 +121,69 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertEqual(market.counters.us_matches, 1)
         self.assertEqual(resolver.counters.primed_market_snapshots, 1)
 
-    def test_missing_name_uses_set_slug_and_number_to_resolve(self):
+    def test_leading_zero_number_is_matched_locally_not_server_filtered(self):
+        session = PokeTraceSession(card_payload(card_number="004/102"))
+        resolver = PokeTraceIdentityResolver(provider(session))
+        resolved = resolver.resolve_identity(identity(card_number="4/102"))
+        self.assertTrue(resolved.matched)
+        self.assertEqual(resolver.counters.rejected_card_number, 0)
+        self.assertNotIn("card_number", session.calls[0][1]["params"])
+
+    def test_missing_number_can_be_recovered_from_unique_name_and_set(self):
         session = PokeTraceSession(card_payload())
-        market = provider(session)
-        resolver = PokeTraceIdentityResolver(market)
+        resolver = PokeTraceIdentityResolver(provider(session))
+
+        resolved = resolver.resolve_identity(identity(card_number=None, set_name="Base Set"))
+
+        self.assertTrue(resolved.matched)
+        self.assertEqual(resolved.identity.card_number, "004/102")
+        self.assertEqual(resolver.counters.card_numbers_recovered, 1)
+
+    def test_missing_name_uses_number_and_set_to_resolve(self):
+        session = PokeTraceSession(card_payload())
+        resolver = PokeTraceIdentityResolver(provider(session))
 
         resolved = resolver.resolve_identity(identity(card_name=None, set_name="Base Set"))
 
         self.assertTrue(resolved.matched)
         self.assertEqual(resolved.identity.card_name, "Charizard")
-        params = session.calls[0][1]["params"]
-        self.assertNotIn("search", params)
-        self.assertEqual(params["set"], "base-set")
-        self.assertEqual(params["card_number"], "4/102")
+        self.assertEqual(resolver.counters.card_names_recovered, 1)
+        self.assertIn("4/102", session.calls[0][1]["params"]["search"])
+
+    def test_second_broader_search_can_rescue_first_empty_query(self):
+        session = PokeTraceSession([
+            Response(200, {"data": []}),
+            Response(200, card_payload()),
+        ])
+        resolver = PokeTraceIdentityResolver(provider(session))
+
+        resolved = resolver.resolve_identity(identity())
+
+        self.assertTrue(resolved.matched)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(session.calls[1][1]["params"]["search"], "Charizard")
+        self.assertEqual(resolver.counters.fallback_searches, 1)
+        self.assertEqual(resolver.counters.api_empty_results, 1)
+
+    def test_rejection_reasons_are_counted_without_relaxing_acceptance(self):
+        wrong_number = card_payload(card_number="5/102")["data"][0]
+        wrong_set = card_payload(set_name="Jungle")["data"][0]
+        session = PokeTraceSession([
+            Response(200, {"data": [wrong_number, wrong_set]}),
+            Response(200, {"data": []}),
+        ])
+        resolver = PokeTraceIdentityResolver(provider(session))
+
+        resolved = resolver.resolve_identity(identity(set_name="Base Set"))
+
+        self.assertFalse(resolved.matched)
+        self.assertEqual(resolver.counters.rejected_card_number, 1)
+        self.assertEqual(resolver.counters.rejected_set, 1)
+        self.assertEqual(resolver.counters.matches, 0)
 
     def test_equal_best_candidates_are_ambiguous(self):
         session = PokeTraceSession(card_payload(two=True))
-        market = provider(session)
-        resolver = PokeTraceIdentityResolver(market)
+        resolver = PokeTraceIdentityResolver(provider(session))
 
         resolved = resolver.resolve_identity(identity())
 
@@ -139,8 +192,27 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertEqual(resolver.counters.ambiguous, 1)
         self.assertEqual(len(session.calls), 1)
 
-    def test_rate_limit_is_unavailable_not_false_no_match_and_no_second_call(self):
-        session = PokeTraceSession({"data": []}, status_code=429)
+    def test_429_retry_after_is_retried_once_and_can_succeed(self):
+        waits = []
+        session = PokeTraceSession([
+            Response(429, {"retryAfter": 2}, {"Retry-After": "2"}),
+            Response(200, card_payload()),
+        ])
+        market = provider(session, sleeper=waits.append)
+        resolver = PokeTraceIdentityResolver(market)
+
+        resolved = resolver.resolve_identity(identity())
+
+        self.assertTrue(resolved.matched)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(resolver.counters.rate_limited, 1)
+        self.assertEqual(resolver.counters.retry_attempts, 1)
+        self.assertTrue(any(wait >= 2.25 for wait in waits))
+
+    def test_long_429_is_unavailable_not_false_no_match(self):
+        session = PokeTraceSession(
+            Response(429, {"retryAfter": 3600}, {"Retry-After": "3600"})
+        )
         market = provider(session)
         resolver = PokeTraceIdentityResolver(market)
         original = identity()
@@ -151,6 +223,7 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertFalse(resolved.matched)
         self.assertEqual(resolver.counters.no_match, 0)
         self.assertEqual(resolver.counters.rate_limited, 1)
+        self.assertEqual(resolver.counters.retry_attempts, 0)
         self.assertEqual(snapshot.status, POKETRACE_DISABLED)
         self.assertEqual(len(session.calls), 1)
 
