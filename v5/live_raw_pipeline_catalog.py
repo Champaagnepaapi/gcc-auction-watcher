@@ -62,9 +62,18 @@ class _PokeTracePrimaryMarketSource:
         self.provider = provider
 
     def values_for(self, identity):
-        snapshot = self.provider.snapshot_for(identity)
         language = str(identity.language or "").strip().casefold()
+        if (
+            isinstance(self.provider, FreeTierPokeTraceProvider)
+            and language not in self._SUPPORTED_US_LANGUAGES
+        ):
+            # Free is US-only. Do not spend quota on a US request whose value
+            # would be rejected immediately for language incompatibility.
+            return None
+        snapshot = self.provider.snapshot_for(identity)
         if language not in self._SUPPORTED_US_LANGUAGES:
+            # In paid mode the snapshot may still carry a useful separate EU /
+            # CardMarket signal, but US values never enter the USD aggregator.
             return None
         return snapshot.us_values
 
