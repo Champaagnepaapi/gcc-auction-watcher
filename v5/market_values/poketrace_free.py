@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import replace
 
 from ..models import CardIdentity
 from .poketrace import (
@@ -46,18 +46,12 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
         # fields, strip them before exposing values to the V5 aggregator.
         values = _us_market_values(identity, us)
         if values is not None:
-            values = type(values)(
+            values = replace(
+                values,
                 source="PokeTrace Free US: eBay + TCGPlayer raw",
-                currency=values.currency,
-                ungraded_value=values.ungraded_value,
                 grade8_generic_value=None,
                 grade9_generic_value=None,
                 psa10_value=None,
-                matched_identity=values.matched_identity,
-                match_confidence=values.match_confidence,
-                matched_product_id=values.matched_product_id,
-                fetched_at=values.fetched_at,
-                freshness=values.freshness,
                 notes=(
                     "Free-tier validation: US raw prices only",
                     "No EU/CardMarket request performed",
