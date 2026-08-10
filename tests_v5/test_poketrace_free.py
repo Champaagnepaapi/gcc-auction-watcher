@@ -59,8 +59,6 @@ def free_payload():
                 "prices": {
                     "ebay": {
                         "NEAR_MINT": {"median7d": 100},
-                        # A Free response should not expose graded tiers, but
-                        # include one here to prove the wrapper never accepts it.
                         "PSA_10": {"median7d": 999},
                     },
                     "tcgplayer": {"NEAR_MINT": {"median7d": 110}},
@@ -75,7 +73,7 @@ def provider_for(session):
         config=PokeTraceConfig(
             enabled=True,
             api_key="free-secret-key",
-            minimum_request_interval_seconds=2.05,
+            minimum_request_interval_seconds=2.25,
         ),
         session=session,
     )
@@ -85,9 +83,7 @@ class PokeTraceFreeTierTests(unittest.TestCase):
     def test_free_mode_performs_one_us_request_and_never_eu(self):
         session = FakeSession(free_payload())
         provider = provider_for(session)
-
         snapshot = provider.snapshot_for(identity())
-
         self.assertEqual(len(session.calls), 1)
         params = session.calls[0][1]["params"]
         self.assertEqual(params["market"], "US")
@@ -113,14 +109,12 @@ class PokeTraceFreeTierTests(unittest.TestCase):
         session = FakeSession(free_payload())
         provider = provider_for(session)
         source = _PokeTracePrimaryMarketSource(provider)
-
         value = source.values_for(identity(language="French"))
-
         self.assertIsNone(value)
         self.assertEqual(session.calls, [])
         self.assertEqual(provider.counters.live_calls, 0)
 
-    def test_free_env_enforces_documented_burst_interval(self):
+    def test_free_env_enforces_safety_margin_above_documented_burst_interval(self):
         with patch.dict(
             os.environ,
             {
@@ -132,7 +126,7 @@ class PokeTraceFreeTierTests(unittest.TestCase):
         ):
             config = free_tier_config_from_env()
         self.assertTrue(config.enabled)
-        self.assertGreaterEqual(config.minimum_request_interval_seconds, 2.05)
+        self.assertGreaterEqual(config.minimum_request_interval_seconds, 2.25)
 
     def test_free_summary_never_prints_api_key_or_cardmarket_claims(self):
         session = FakeSession(free_payload())
@@ -142,6 +136,7 @@ class PokeTraceFreeTierTests(unittest.TestCase):
         self.assertIn("plan mode: FREE_TEST", rendered)
         self.assertIn("EU/CardMarket requests: 0", rendered)
         self.assertIn("graded values accepted: 0", rendered)
+        self.assertIn("enforced minimum interval: >=2.25s", rendered)
         self.assertNotIn("free-secret-key", rendered)
 
 
