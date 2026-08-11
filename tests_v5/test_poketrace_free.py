@@ -90,7 +90,7 @@ class PokeTraceFreeTierTests(unittest.TestCase):
         self.assertNotEqual(params["market"], "EU")
         self.assertEqual(params["search"], "Charizard")
         self.assertEqual(params["card_number"], "4/102")
-        self.assertEqual(params["set"], "Base Set")
+        self.assertNotIn("set", params)
         self.assertIsNotNone(snapshot.us_values)
         self.assertIsNone(snapshot.cardmarket)
         self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))

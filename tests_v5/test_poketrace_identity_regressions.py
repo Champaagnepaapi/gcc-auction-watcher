@@ -129,7 +129,7 @@ class PokeTraceIdentityRegressionTests(unittest.TestCase):
         params = session.calls[0][1]["params"]
         self.assertEqual(params["search"], "Charizard")
         self.assertEqual(params["card_number"], "4/102")
-        self.assertEqual(params["set"], "Pokemon TCG Base Set")
+        self.assertNotIn("set", params)
         self.assertEqual(resolver.counters.structured_searches, 1)
 
     def test_candidate_field_counters_are_independent_of_rejection_order(self):

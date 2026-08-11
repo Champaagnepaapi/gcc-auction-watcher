@@ -232,8 +232,6 @@ class PokeTraceProvider:
         card_number = _normalize_card_number(identity.card_number)
         if card_number:
             params["card_number"] = card_number
-        if identity.set:
-            params["set"] = str(identity.set).strip()
         game = _poketrace_game(identity.language)
         if game:
             params["game"] = game

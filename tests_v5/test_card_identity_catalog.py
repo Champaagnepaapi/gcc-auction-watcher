@@ -65,6 +65,44 @@ class MultilingualPokemonCardResolverTests(unittest.TestCase):
         self.assertEqual(resolver.counters.canonical_name_changes, 1)
         self.assertEqual(resolver.counters.canonical_set_changes, 1)
         self.assertEqual(resolver.counters.canonical_card_number_changes, 1)
+        self.assertEqual(resolver.counters.tcgdex_set_alias_unique_resolutions, 1)
+
+    def test_tcgdex_set_id_is_a_unique_deterministic_alias(self):
+        def handler(url, _params, _headers):
+            if url.endswith("/en/sets"):
+                return _Response(200, [{"id": "base1", "name": "Base Set"}])
+            if url.endswith("/fr/sets"):
+                return _Response(200, [])
+            if url.endswith("/en/sets/base1/4"):
+                return _Response(
+                    200,
+                    {
+                        "name": "Charizard",
+                        "localId": "004",
+                        "set": {
+                            "id": "base1",
+                            "name": "Base Set",
+                            "cardCount": {"official": 102},
+                        },
+                    },
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        resolver = MultilingualPokemonCardResolver(session=_Session(handler))
+        result = resolver.resolve_identity(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name="Charizard",
+                set="base1",
+                card_number="4",
+                language="English",
+            )
+        )
+
+        self.assertTrue(result.matched)
+        self.assertEqual(result.identity.set, "Base Set")
+        self.assertEqual(result.identity.card_number, "004/102")
+        self.assertEqual(resolver.counters.tcgdex_set_alias_unique_resolutions, 1)
 
     def test_french_identity_is_localized_by_tcgdex_without_losing_language(self):
         def handler(url, params, _headers):
@@ -125,6 +163,7 @@ class MultilingualPokemonCardResolverTests(unittest.TestCase):
         self.assertFalse(result.matched)
         self.assertFalse(result.ambiguous)
         self.assertEqual(resolver.counters.pokemon_tcg_requests, 0)
+        self.assertEqual(resolver.counters.tcgdex_no_match_set, 1)
 
     def test_english_tcgdex_miss_uses_pokemon_tcg_api_fallback(self):
         def handler(url, _params, _headers):
@@ -192,6 +231,7 @@ class MultilingualPokemonCardResolverTests(unittest.TestCase):
         self.assertFalse(result.matched)
         self.assertTrue(result.ambiguous)
         self.assertEqual(resolver.counters.ambiguous, 1)
+        self.assertEqual(resolver.counters.tcgdex_ambiguous_set_aliases, 1)
         self.assertEqual(resolver.counters.pokemon_tcg_requests, 0)
 
 

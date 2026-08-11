@@ -137,7 +137,11 @@ def _search_strategies(
 
     strategies: list[tuple[str, str, bool]] = []
     primary_search = name or set_name or number
-    if primary_search and (number or set_name):
+    # CardIdentity does not carry a verified PokeTrace set slug. A display set
+    # name remains strict local evidence, never a structured server filter.
+    # Without a number the former structured request would be identical to the
+    # broad request, so do not spend quota on it twice.
+    if primary_search and number:
         strategies.append(("structured", primary_search, True))
     if name:
         strategies.append(("broad_name", name, False))
@@ -307,8 +311,6 @@ class PokeTraceIdentityResolver:
             card_number = _normalize_card_number(identity.card_number)
             if card_number:
                 params["card_number"] = card_number
-            if identity.set:
-                params["set"] = str(identity.set).strip()
         return params
 
     def _request(

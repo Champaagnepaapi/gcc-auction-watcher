@@ -67,6 +67,18 @@ class CardCatalogCounters:
     canonical_name_changes: int = 0
     canonical_set_changes: int = 0
     canonical_card_number_changes: int = 0
+    tcgdex_numerator_only_canonicalizations: int = 0
+    tcgdex_denominator_conflicts: int = 0
+    tcgdex_set_alias_unique_resolutions: int = 0
+    tcgdex_ambiguous_set_aliases: int = 0
+    tcgdex_only_rescues: int = 0
+    tcgdex_poketrace_calls_avoided: int = 0
+    tcgdex_skipped_missing_fields: int = 0
+    tcgdex_no_match_set: int = 0
+    tcgdex_no_match_card: int = 0
+    tcgdex_no_match_number_conflict: int = 0
+    tcgdex_no_match_missing_name: int = 0
+    tcgdex_no_match_set_conflict: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,6 +87,7 @@ class CatalogIdentityResult:
     source: str = "NONE"
     matched: bool = False
     ambiguous: bool = False
+    blocking: bool = False
 
 
 def _normalize(value: object) -> str:
@@ -177,6 +190,19 @@ def _tcgdex_printed_card_number(
     return local_id
 
 
+def _complete_card_number_conflict(original: object, canonical: object) -> bool:
+    original_numerator, original_denominator = _card_number_parts(original)
+    canonical_numerator, canonical_denominator = _card_number_parts(canonical)
+    return bool(
+        original_denominator
+        and canonical_denominator
+        and (
+            original_numerator != canonical_numerator
+            or original_denominator != canonical_denominator
+        )
+    )
+
+
 def _canonical_value_changed(before: object, after: object) -> bool:
     return str(before or "").strip() != str(after or "").strip()
 
@@ -246,6 +272,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
 
     def resolve_identity(self, identity: CardIdentity) -> CatalogIdentityResult:
         if not identity.set or not identity.card_number:
+            self.counters.tcgdex_skipped_missing_fields += 1
             return CatalogIdentityResult(identity)
         key = self._identity_key(identity)
         cached = self._identity_cache.get(key)
@@ -329,7 +356,13 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             return cached
 
         rows = self._tcgdex_all_sets(language)
-        exact = tuple((set_id, name) for set_id, name in rows if _normalize(name) == _normalize(set_name))
+        normalized_query = _normalize(set_name)
+        exact = tuple(
+            (set_id, name)
+            for set_id, name in rows
+            if _normalize(name) == normalized_query
+            or _normalize(set_id) == normalized_query
+        )
         if exact:
             self._set_cache[cache_key] = exact
             return exact
@@ -375,25 +408,38 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         for language in lookup_languages:
             for set_id, name in self._tcgdex_sets(language, identity.set or ""):
                 loose_ids.setdefault(set_id, name)
-                if _normalize(name) == normalized_set:
+                if (
+                    _normalize(name) == normalized_set
+                    or _normalize(set_id) == normalized_set
+                ):
                     exact_ids.setdefault(set_id, name)
 
         candidate_ids = exact_ids or loose_ids
         if len(candidate_ids) != 1:
             if len(candidate_ids) > 1:
                 self.counters.ambiguous += 1
+                self.counters.tcgdex_ambiguous_set_aliases += 1
                 return CatalogIdentityResult(identity, "TCGDEX", False, True)
+            self.counters.tcgdex_no_match_set += 1
             return CatalogIdentityResult(identity)
 
         set_id = next(iter(candidate_ids))
+        candidate_set_name = candidate_ids[set_id]
+        if (
+            _normalize(candidate_set_name) != normalized_set
+            or _normalize(set_id) == normalized_set
+        ):
+            self.counters.tcgdex_set_alias_unique_resolutions += 1
         local_number = _local_card_number(identity.card_number or "")
         if not local_number:
+            self.counters.tcgdex_skipped_missing_fields += 1
             return CatalogIdentityResult(identity)
 
         card = self._tcgdex_card(target_language, set_id, local_number)
         if card is None and target_language != "en":
             card = self._tcgdex_card("en", set_id, local_number)
         if card is None:
+            self.counters.tcgdex_no_match_card += 1
             return CatalogIdentityResult(identity)
 
         card_name = str(card.get("name") or "").strip() or None
@@ -402,25 +448,56 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         lookup_numerator, _ = _card_number_parts(local_number)
         if card_local_id and card_local_numerator != lookup_numerator:
             self.counters.ambiguous += 1
+            self.counters.tcgdex_no_match_number_conflict += 1
             return CatalogIdentityResult(identity, "TCGDEX", False, True)
 
         set_payload = card.get("set")
         card_set_name = None
         release_year = None
         if isinstance(set_payload, Mapping):
+            card_set_id = str(set_payload.get("id") or "").strip()
+            if card_set_id and card_set_id != set_id:
+                self.counters.ambiguous += 1
+                self.counters.tcgdex_no_match_set_conflict += 1
+                return CatalogIdentityResult(
+                    identity, "TCGDEX", False, True, True
+                )
             card_set_name = str(set_payload.get("name") or "").strip() or None
             release_year = _safe_year_from_release_date(set_payload.get("releaseDate"))
         if card_set_name is None:
             card_set_name = candidate_ids.get(set_id)
 
         if not card_name:
+            self.counters.tcgdex_no_match_missing_name += 1
             return CatalogIdentityResult(identity)
+        canonical_card_number = _tcgdex_printed_card_number(identity, card)
+        if _complete_card_number_conflict(
+            identity.card_number, canonical_card_number
+        ):
+            self.counters.ambiguous += 1
+            self.counters.tcgdex_denominator_conflicts += 1
+            self.counters.tcgdex_no_match_number_conflict += 1
+            return CatalogIdentityResult(identity, "TCGDEX", False, True, True)
         resolved = _with_catalog_identity(
             identity,
             card_name=card_name,
             set_name=card_set_name,
-            card_number=_tcgdex_printed_card_number(identity, card),
+            card_number=canonical_card_number,
             year=release_year,
+        )
+        original_numerator, original_denominator = _card_number_parts(
+            identity.card_number
+        )
+        canonical_numerator, canonical_denominator = _card_number_parts(
+            resolved.card_number
+        )
+        self.counters.tcgdex_numerator_only_canonicalizations += int(
+            bool(
+                original_numerator
+                and original_denominator is None
+                and canonical_denominator
+                and original_numerator == canonical_numerator
+            )
         )
         self.counters.canonical_name_changes += int(
             _canonical_value_changed(identity.card_name, resolved.card_name)
@@ -568,8 +645,6 @@ class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
         return _normalize(identity.language) in self._POKETRACE_US_LANGUAGES
 
     def resolve_identity(self, identity: CardIdentity) -> CatalogIdentityResult:
-        if not identity.card_number:
-            return CatalogIdentityResult(identity)
         key = self._identity_key(identity)
         cached = self._identity_cache.get(key)
         if cached is not None:
@@ -581,12 +656,26 @@ class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
             if identity.set and identity.card_number
             else CatalogIdentityResult(identity)
         )
+        if not (identity.set and identity.card_number):
+            self.counters.tcgdex_skipped_missing_fields += 1
+        if tcgdex.blocking:
+            self._identity_cache[key] = tcgdex
+            return tcgdex
         if tcgdex.matched:
+            self.counters.tcgdex_only_rescues += 1
+            self.counters.tcgdex_poketrace_calls_avoided += 1
             self._identity_cache[key] = tcgdex
             return tcgdex
 
         poketrace = None
-        if self._poketrace_language_allowed(identity):
+        supplied_core_fields = sum(
+            bool(value)
+            for value in (identity.card_name, identity.set, identity.card_number)
+        )
+        if (
+            self._poketrace_language_allowed(identity)
+            and supplied_core_fields >= 2
+        ):
             poketrace = self.poketrace_identity.resolve_identity(identity)
             if poketrace.matched:
                 result = CatalogIdentityResult(
@@ -645,6 +734,39 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             (
                 "canonical identities changed by TCGdex - card number: "
                 f"{counters.canonical_card_number_changes}"
+            ),
+            (
+                "TCGdex numerator-only canonicalizations: "
+                f"{counters.tcgdex_numerator_only_canonicalizations}"
+            ),
+            f"TCGdex denominator conflicts: {counters.tcgdex_denominator_conflicts}",
+            (
+                "TCGdex unique set-alias resolutions: "
+                f"{counters.tcgdex_set_alias_unique_resolutions}"
+            ),
+            f"TCGdex ambiguous set aliases: {counters.tcgdex_ambiguous_set_aliases}",
+            f"TCGdex-only rescues: {counters.tcgdex_only_rescues}",
+            (
+                "identities avoiding a PokeTrace call via TCGdex: "
+                f"{counters.tcgdex_poketrace_calls_avoided}"
+            ),
+            (
+                "TCGdex skipped - missing set/card number: "
+                f"{counters.tcgdex_skipped_missing_fields}"
+            ),
+            f"TCGdex no-match - set: {counters.tcgdex_no_match_set}",
+            f"TCGdex no-match - card: {counters.tcgdex_no_match_card}",
+            (
+                "TCGdex no-match - number conflict: "
+                f"{counters.tcgdex_no_match_number_conflict}"
+            ),
+            (
+                "TCGdex no-match - missing canonical name: "
+                f"{counters.tcgdex_no_match_missing_name}"
+            ),
+            (
+                "TCGdex no-match - returned set conflict: "
+                f"{counters.tcgdex_no_match_set_conflict}"
             ),
             "language preserved as a first-class identity discriminator: YES",
             "persisted eBay records: 0",

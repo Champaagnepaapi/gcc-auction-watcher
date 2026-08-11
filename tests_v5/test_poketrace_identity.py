@@ -113,7 +113,7 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         params = session.calls[0][1]["params"]
         self.assertEqual(params["search"], "Charizard")
         self.assertEqual(params["card_number"], "4/102")
-        self.assertEqual(params["set"], "Pokemon TCG Base Set")
+        self.assertNotIn("set", params)
         self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))
         self.assertIsNone(snapshot.us_values.psa10_value)
         self.assertEqual(market.counters.live_calls, 1)

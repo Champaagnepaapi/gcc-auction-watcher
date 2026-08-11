@@ -10,11 +10,11 @@ from v5.poketrace_identity import PokeTraceIdentityResolver
 
 
 class _Response:
-    status_code = 200
     headers = {}
 
-    def __init__(self, payload):
-        self._payload = payload
+    def __init__(self, status_or_payload, payload=None):
+        self.status_code = 200 if payload is None else status_or_payload
+        self._payload = status_or_payload if payload is None else payload
 
     def json(self):
         return self._payload
@@ -39,6 +39,8 @@ class _Session:
 def _tcgdex_handler(url, _params, _headers):
     if url.endswith("/en/sets"):
         return _Response(200, [{"id": "base1", "name": "Base Set"}])
+    if url.endswith("/fr/sets"):
+        return _Response(200, [])
     if url.endswith("/en/sets/base1/4"):
         return _Response(
             200,
@@ -86,6 +88,7 @@ class PostCodexBlockerTests(unittest.TestCase):
         self.assertFalse(result.matched)
         self.assertTrue(result.ambiguous)
         self.assertEqual(result.identity.card_number, "4/130")
+        self.assertEqual(resolver.counters.tcgdex_denominator_conflicts, 1)
 
     def test_tcgdex_numerator_only_can_be_canonicalized_to_printed_number(self):
         resolver = MultilingualPokemonCardResolver(session=_Session(_tcgdex_handler))
@@ -102,6 +105,10 @@ class PostCodexBlockerTests(unittest.TestCase):
         self.assertTrue(result.matched)
         self.assertFalse(result.ambiguous)
         self.assertEqual(result.identity.card_number, "004/102")
+        self.assertEqual(
+            resolver.counters.tcgdex_numerator_only_canonicalizations,
+            1,
+        )
 
     def test_hybrid_name_plus_set_can_use_poketrace_to_recover_missing_number(self):
         def pt_handler(url, params, _headers):
@@ -143,6 +150,76 @@ class PostCodexBlockerTests(unittest.TestCase):
         self.assertEqual(result.source, "POKETRACE")
         self.assertEqual(result.identity.card_number, "004/102")
         self.assertEqual(len(pt_session.calls), 1)
+
+    def test_hybrid_exact_tcgdex_identity_avoids_poketrace_call(self):
+        def unexpected_poketrace(_url, _params, _headers):
+            raise AssertionError("an exact TCGdex identity must stop the chain")
+
+        pt_session = _Session(unexpected_poketrace)
+        provider = FreeTierPokeTraceProvider(
+            config=PokeTraceConfig(
+                enabled=True,
+                api_key="unit-test-only",
+                minimum_request_interval_seconds=0,
+            ),
+            session=pt_session,
+            sleeper=lambda _seconds: None,
+        )
+        hybrid = HybridPokemonCardResolver(
+            poketrace_identity_resolver=PokeTraceIdentityResolver(provider),
+            session=_Session(_tcgdex_handler),
+        )
+
+        result = hybrid.resolve_identity(
+            CardIdentity(
+                game="Pokemon TCG",
+                card_name="Charizard",
+                set="Base Set",
+                card_number="4",
+                language="English",
+            )
+        )
+
+        self.assertTrue(result.matched)
+        self.assertEqual(result.source, "TCGDEX")
+        self.assertEqual(pt_session.calls, [])
+        self.assertEqual(hybrid.counters.tcgdex_only_rescues, 1)
+        self.assertEqual(hybrid.counters.tcgdex_poketrace_calls_avoided, 1)
+
+    def test_hybrid_denominator_conflict_cannot_be_overridden_by_poketrace(self):
+        def unexpected_poketrace(_url, _params, _headers):
+            raise AssertionError("a complete-number conflict must block fallbacks")
+
+        pt_session = _Session(unexpected_poketrace)
+        provider = FreeTierPokeTraceProvider(
+            config=PokeTraceConfig(
+                enabled=True,
+                api_key="unit-test-only",
+                minimum_request_interval_seconds=0,
+            ),
+            session=pt_session,
+            sleeper=lambda _seconds: None,
+        )
+        hybrid = HybridPokemonCardResolver(
+            poketrace_identity_resolver=PokeTraceIdentityResolver(provider),
+            session=_Session(_tcgdex_handler),
+        )
+
+        result = hybrid.resolve_identity(
+            CardIdentity(
+                game="Pokemon TCG",
+                card_name="Charizard",
+                set="Base Set",
+                card_number="4/130",
+                language="English",
+            )
+        )
+
+        self.assertFalse(result.matched)
+        self.assertTrue(result.ambiguous)
+        self.assertTrue(result.blocking)
+        self.assertEqual(result.identity.card_number, "4/130")
+        self.assertEqual(pt_session.calls, [])
 
 
 if __name__ == "__main__":
