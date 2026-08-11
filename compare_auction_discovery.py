@@ -22,6 +22,57 @@ def write_output(name: str, value: object) -> None:
         handle.write(f"{name}={value}\n")
 
 
+def print_public_index_diagnostics(page) -> None:
+    """Print only public DOM/resource structure; never cookies or headers."""
+    try:
+        resources = page.evaluate(
+            """() => performance.getEntriesByType('resource')
+                .map(entry => entry.name)
+                .filter(url => url.includes('gradedcardcenter'))
+                .slice(-40)"""
+        )
+    except Exception:
+        resources = []
+    print("--- PUBLIC AUCTION INDEX RESOURCES ---", flush=True)
+    for resource in resources:
+        print(f"RESOURCE {resource}", flush=True)
+
+    try:
+        bid_buttons = page.get_by_role("button", name="Enchérir")
+        button_count = bid_buttons.count()
+    except Exception:
+        bid_buttons = None
+        button_count = 0
+    print(f"bid buttons visible: {button_count}", flush=True)
+
+    if not bid_buttons or button_count <= 0:
+        return
+
+    try:
+        node = bid_buttons.first
+        for level in range(1, 8):
+            node = node.locator("xpath=..")
+            snapshot = node.evaluate(
+                """el => ({
+                    tag: el.tagName,
+                    id: el.id || '',
+                    className: typeof el.className === 'string' ? el.className : '',
+                    role: el.getAttribute('role') || '',
+                    href: el.getAttribute('href') || '',
+                    data: Object.fromEntries(
+                        Array.from(el.attributes)
+                            .filter(a => a.name.startsWith('data-'))
+                            .map(a => [a.name, a.value])
+                    ),
+                    text: (el.innerText || '').slice(0, 500),
+                    html: (el.outerHTML || '').slice(0, 3500)
+                })"""
+            )
+            print(f"ANCESTOR_LEVEL_{level} {snapshot}", flush=True)
+    except Exception as error:
+        print(f"DOM_DIAGNOSTIC_ERROR {type(error).__name__}", flush=True)
+
+
 def resolve_ending_soon_ids(
     page,
     lots: list[watcher.Lot],
@@ -86,6 +137,8 @@ def main() -> int:
             primary_page,
             max_minutes=horizon,
         )
+        if primary_result.rows_seen == 0:
+            print_public_index_diagnostics(primary_page)
         legacy_lots = collect_legacy(legacy_page, horizon)
 
         primary_ids, primary_unresolved = resolve_ending_soon_ids(
