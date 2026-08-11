@@ -1,0 +1,95 @@
+name: V4 Auction Discovery Validation
+
+on:
+  workflow_dispatch:
+
+  pull_request:
+    paths:
+      - "v4_auction_item_discovery.py"
+      - "compare_auction_discovery.py"
+      - "run_watcher_safe.py"
+      - "watcher.py"
+      - "tests/**"
+      - ".github/workflows/watcher.yml"
+      - ".github/workflows/v4-auction-discovery-validation.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run complete V4 tests
+        run: python -m unittest discover -s tests -p "test*.py" -v
+
+      - name: Compile changed V4 Python files
+        run: |
+          python -m py_compile v4_auction_item_discovery.py
+          python -m py_compile compare_auction_discovery.py
+          python -m py_compile run_watcher_safe.py
+
+      - name: Compare item-level and legacy discovery live
+        id: compare
+        env:
+          V4_AUCTION_COMPARE_MINUTES: "720"
+        run: python compare_auction_discovery.py
+
+      - name: Check diff whitespace
+        run: git diff --check origin/${{ github.base_ref }}...HEAD
+
+      - name: Post comparison summary on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PRIMARY_COMPLETE: ${{ steps.compare.outputs.primary_complete }}
+          PRIMARY_SCOPE: ${{ steps.compare.outputs.primary_scope }}
+          PRIMARY_ROWS: ${{ steps.compare.outputs.primary_rows_seen }}
+          PRIMARY_CANDIDATES: ${{ steps.compare.outputs.primary_candidates }}
+          LEGACY_CANDIDATES: ${{ steps.compare.outputs.legacy_candidates }}
+          PRIMARY_ONLY: ${{ steps.compare.outputs.primary_only }}
+          LEGACY_ONLY: ${{ steps.compare.outputs.legacy_only }}
+          PRIMARY_UNRESOLVED: ${{ steps.compare.outputs.primary_unresolved }}
+          LEGACY_UNRESOLVED: ${{ steps.compare.outputs.legacy_unresolved }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const body = [
+              "### V4 auction discovery live comparison",
+              `run_id=${context.runId}`,
+              "diagnostic_horizon_minutes=720",
+              `primary_complete=${process.env.PRIMARY_COMPLETE || "unavailable"}`,
+              `primary_scope=${process.env.PRIMARY_SCOPE || "unavailable"}`,
+              `primary_rows_seen=${process.env.PRIMARY_ROWS || "unavailable"}`,
+              `primary_candidates=${process.env.PRIMARY_CANDIDATES || "unavailable"}`,
+              `legacy_candidates=${process.env.LEGACY_CANDIDATES || "unavailable"}`,
+              `primary_only=${process.env.PRIMARY_ONLY || "unavailable"}`,
+              `legacy_only=${process.env.LEGACY_ONLY || "unavailable"}`,
+              `primary_unresolved=${process.env.PRIMARY_UNRESOLVED || "unavailable"}`,
+              `legacy_unresolved=${process.env.LEGACY_UNRESOLVED || "unavailable"}`,
+              "No bids, purchases, checkout, ntfy notification, or state mutation are performed by this comparison.",
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
