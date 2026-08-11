@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from PIL import Image, ImageDraw
 
+from v5.card_number_ocr import CardNumberOCRConfig, LocalCardNumberOCR
 from v5.market_values.poketrace import PokeTraceConfig
 from v5.market_values.poketrace_free import FreeTierPokeTraceProvider
 from v5.models import CardIdentity
@@ -112,6 +113,14 @@ def ebay_photo(card_bytes):
     return output.getvalue()
 
 
+class SequenceOCRRunner:
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+
+    def __call__(self, _png_bytes, _psm, _timeout):
+        return self.outputs.pop(0) if self.outputs else ""
+
+
 class LocalVisualIdentityTests(unittest.TestCase):
     def make_resolver(self, payload, ebay_images, canonical_images, **kwargs):
         session = PokeTraceSession(payload)
@@ -163,7 +172,6 @@ class LocalVisualIdentityTests(unittest.TestCase):
         self.assertEqual(visual.counters.rescued, 1)
         self.assertEqual(visual.counters.market_snapshots_primed, 1)
         self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))
-        # One API call: the later market lookup is served from the primed cache.
         api_calls = [call for call in session.calls if call[0].endswith("/v1/cards")]
         self.assertEqual(len(api_calls), 1)
 
@@ -248,6 +256,50 @@ class LocalVisualIdentityTests(unittest.TestCase):
         self.assertFalse(result.matched)
         self.assertEqual(visual.counters.low_confidence, 1)
 
+    def test_local_ocr_can_rescue_after_visual_low_confidence(self):
+        a = card_image("a")
+        b = card_image("b")
+        payload = {
+            "data": [
+                card_payload("char-a", "004/102", "https://cdn.poketrace.com/a.png"),
+                card_payload("char-b", "11/108", "https://cdn.poketrace.com/b.png"),
+            ]
+        }
+        local_ocr = LocalCardNumberOCR(
+            CardNumberOCRConfig(
+                enabled=True,
+                minimum_votes=2,
+                override_minimum_votes=3,
+            ),
+            runner=SequenceOCRRunner(["004/102", "004/102", "004/102", ""]),
+        )
+        _session, market, visual = self.make_resolver(
+            payload,
+            {"https://i.ebayimg.com/front.png": card_image("gray")},
+            {
+                "https://cdn.poketrace.com/a.png": a,
+                "https://cdn.poketrace.com/b.png": b,
+            },
+            minimum_score=0.99,
+            override_number_minimum_score=0.99,
+            card_number_ocr=local_ocr,
+        )
+
+        result = visual.resolve_identity(
+            identity(number="999/999", ambiguous=True),
+            ["https://i.ebayimg.com/front.png"],
+        )
+        snapshot = market.snapshot_for(result.identity)
+
+        self.assertTrue(result.matched)
+        self.assertEqual(result.card_id, "char-a")
+        self.assertEqual(result.identity.card_number, "004/102")
+        self.assertEqual(result.identity.ambiguities, ())
+        self.assertEqual(visual.counters.rescued, 0)
+        self.assertEqual(visual.counters.ocr_rescued, 1)
+        self.assertEqual(local_ocr.counters.structured_number_overrides, 1)
+        self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))
+
     def test_renderer_does_not_expose_key_or_image_urls(self):
         a = card_image("a")
         payload = {
@@ -265,8 +317,10 @@ class LocalVisualIdentityTests(unittest.TestCase):
         self.assertNotIn("secret-never-render", rendered)
         self.assertNotIn("ebayimg", rendered)
         self.assertNotIn("poketrace.com/a", rendered)
-        self.assertIn("persisted images: 0", rendered)
-        self.assertIn("OCR/model API calls: 0", rendered)
+        self.assertIn("persisted images/OCR text: 0", rendered)
+        self.assertIn("model API calls: 0", rendered)
+        self.assertIn("no visual candidates after metadata filter", rendered)
+        self.assertIn("no usable eBay image after fetch", rendered)
 
 
 if __name__ == "__main__":
