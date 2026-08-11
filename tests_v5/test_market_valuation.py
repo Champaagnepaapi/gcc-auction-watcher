@@ -398,21 +398,14 @@ class PipelineAndSummarySafetyTests(unittest.TestCase):
         self.assertFalse(pricecharting.enabled)
         self.assertEqual(safeguards.maximum_paid_gradings_per_run, 0)
 
-    def test_market_workflow_is_manual_offline_and_contains_both_paid_locks(self):
+    def test_redundant_market_workflow_remains_removed(self):
         workflow = (
             Path(__file__).parents[1]
             / ".github"
             / "workflows"
             / "v5-market-valuation-diagnostic.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("name: V5 Market Valuation Diagnostic", workflow)
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("schedule:", workflow)
-        self.assertIn('PRICECHARTING_ENABLED: "false"', workflow)
-        self.assertIn('RAW_MAX_PAID_GRADINGS_PER_RUN: "0"', workflow)
-        self.assertIn('CARDGRADER_V5_ALLOW_PAID_CALLS: "false"', workflow)
-        self.assertNotIn("PRICECHARTING_TOKEN", workflow)
-        self.assertNotIn("EBAY_CLIENT", workflow)
+        )
+        self.assertFalse(workflow.exists())
 
 
 if __name__ == "__main__":

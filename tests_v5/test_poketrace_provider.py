@@ -6,6 +6,7 @@ from v5.market_values.poketrace import (
     CARDMARKET_FALLING_MARKET,
     POKETRACE_DISABLED,
     POKETRACE_MATCHED,
+    POKETRACE_RATE_LIMITED,
     PokeTraceConfig,
     PokeTraceProvider,
 )
@@ -214,15 +215,20 @@ class PokeTraceProviderTests(unittest.TestCase):
         self.assertEqual(session.calls, [])
         self.assertNotIn("secret-never-render", repr(config))
 
-    def test_rate_limit_is_counted_without_retrying(self):
+    def test_unclassified_rate_limit_opens_circuit_before_eu_request(self):
         session = FakeSession(status_code=429)
         provider = self.provider(session)
 
         snapshot = provider.snapshot_for(identity())
 
         self.assertIsNone(snapshot.us_values)
-        self.assertEqual(provider.counters.rate_limited, 2)
-        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(snapshot.status, POKETRACE_RATE_LIMITED)
+        self.assertEqual(provider.counters.rate_limited, 1)
+        self.assertEqual(provider.counters.unclassified_429, 1)
+        self.assertEqual(provider.counters.terminal_429_detected, 1)
+        self.assertEqual(provider.counters.circuit_breaker_opened, 1)
+        self.assertEqual(provider.counters.calls_avoided_after_breaker, 1)
+        self.assertEqual(len(session.calls), 1)
 
 
 if __name__ == "__main__":

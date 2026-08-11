@@ -30,6 +30,7 @@ class VisualIdentityCounters:
     attempted: int = 0
     api_searches: int = 0
     api_unavailable: int = 0
+    visual_searches_skipped_after_breaker: int = 0
     no_ebay_image: int = 0
     no_candidates: int = 0
     candidates_considered: int = 0
@@ -175,6 +176,10 @@ class LocalVisualIdentityResolver:
 
         search_text = self._visual_search_text(identity)
         if not search_text:
+            return VisualIdentityResolution(identity)
+        if self.provider.circuit_open:
+            self.counters.visual_searches_skipped_after_breaker += 1
+            self.provider._record_call_avoided_after_breaker()
             return VisualIdentityResolution(identity)
 
         self.counters.attempted += 1
@@ -493,6 +498,10 @@ def render_visual_identity_counters(resolver: LocalVisualIdentityResolver) -> st
             f"attempted: {counters.attempted}",
             f"PokeTrace candidate searches: {counters.api_searches}",
             f"candidate searches unavailable: {counters.api_unavailable}",
+            (
+                "visual searches skipped after breaker: "
+                f"{counters.visual_searches_skipped_after_breaker}"
+            ),
             f"no visual candidates after metadata filter: {counters.no_candidates}",
             f"no usable eBay image after fetch: {counters.no_ebay_image}",
             f"candidate scans considered: {counters.candidates_considered}",

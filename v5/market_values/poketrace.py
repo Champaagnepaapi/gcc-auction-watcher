@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
 from statistics import median
 from typing import Callable, Mapping, Optional, Protocol, Sequence, Tuple
 
@@ -27,6 +29,11 @@ POKETRACE_BASE_URL = "https://api.poketrace.com/v1"
 POKETRACE_DISABLED = "POKETRACE_DISABLED"
 POKETRACE_MATCHED = "POKETRACE_MATCHED"
 POKETRACE_NO_MATCH = "POKETRACE_NO_MATCH"
+POKETRACE_RATE_LIMITED = "POKETRACE_RATE_LIMITED"
+
+RATE_LIMIT_SHORT_RETRYABLE = "SHORT_RETRYABLE"
+RATE_LIMIT_LONG_NON_RETRYABLE = "LONG_NON_RETRYABLE"
+RATE_LIMIT_UNCLASSIFIED = "UNCLASSIFIED"
 
 CARDMARKET_DISCOUNT = "CARDMARKET_DISCOUNT"
 CARDMARKET_FALLING_MARKET = "CARDMARKET_FALLING_MARKET"
@@ -50,6 +57,7 @@ class PokeTraceConfig:
     timeout_seconds: float = 15.0
     result_limit: int = 20
     minimum_request_interval_seconds: float = 0.35
+    max_retry_after_seconds: float = 30.0
     cardmarket_discount_threshold: Decimal = Decimal("0.20")
     falling_market_threshold: Decimal = Decimal("0.10")
 
@@ -68,6 +76,10 @@ class PokeTraceConfig:
             ),
             minimum_request_interval_seconds=float(
                 os.getenv("POKETRACE_MIN_REQUEST_INTERVAL_SECONDS", "0.35")
+            ),
+            max_retry_after_seconds=max(
+                0.0,
+                float(os.getenv("POKETRACE_MAX_RETRY_AFTER_SECONDS", "30")),
             ),
             cardmarket_discount_threshold=Decimal(
                 os.getenv("POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD", "0.20")
@@ -88,6 +100,13 @@ class PokeTraceCounters:
     ambiguous: int = 0
     request_failures: int = 0
     rate_limited: int = 0
+    retryable_429: int = 0
+    long_429: int = 0
+    unclassified_429: int = 0
+    terminal_429_detected: int = 0
+    rate_limit_retry_attempts: int = 0
+    circuit_breaker_opened: int = 0
+    calls_avoided_after_breaker: int = 0
     primed_market_calls_avoided: int = 0
     cardmarket_snapshots: int = 0
     cardmarket_discount_signals: int = 0
@@ -115,6 +134,58 @@ class PokeTraceSnapshot:
     status: str
     us_values: Optional[MarketValues] = None
     cardmarket: Optional[CardmarketOpportunity] = None
+
+
+@dataclass(frozen=True)
+class PokeTraceRateLimitDecision:
+    classification: str
+    retry_after_seconds: Optional[float] = None
+
+    @property
+    def retryable(self) -> bool:
+        return self.classification == RATE_LIMIT_SHORT_RETRYABLE
+
+
+def classify_poketrace_429(
+    response: object,
+    *,
+    max_retry_after_seconds: float,
+    now: Optional[datetime] = None,
+) -> PokeTraceRateLimitDecision:
+    """Classify a 429 from Retry-After only, without reading provider data."""
+
+    headers = getattr(response, "headers", None)
+    raw_retry_after = None
+    if isinstance(headers, Mapping):
+        for key, value in headers.items():
+            if str(key).casefold() == "retry-after":
+                raw_retry_after = value
+                break
+    if raw_retry_after is None:
+        return PokeTraceRateLimitDecision(RATE_LIMIT_UNCLASSIFIED)
+
+    raw_text = str(raw_retry_after).strip()
+    try:
+        seconds = float(raw_text)
+        if not math.isfinite(seconds):
+            raise ValueError
+        seconds = max(0.0, seconds)
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(raw_text)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            reference = now or datetime.now(timezone.utc)
+            seconds = max(0.0, (retry_at - reference).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return PokeTraceRateLimitDecision(RATE_LIMIT_UNCLASSIFIED)
+
+    classification = (
+        RATE_LIMIT_SHORT_RETRYABLE
+        if seconds <= max(0.0, max_retry_after_seconds)
+        else RATE_LIMIT_LONG_NON_RETRYABLE
+    )
+    return PokeTraceRateLimitDecision(classification, seconds)
 
 
 class PokeTraceProvider:
@@ -149,6 +220,49 @@ class PokeTraceProvider:
         self.counters = PokeTraceCounters()
         self._cache: dict[Tuple[str, ...], PokeTraceSnapshot] = {}
         self._identity_primed_keys: set[Tuple[str, ...]] = set()
+        self._circuit_open = False
+
+    @property
+    def circuit_open(self) -> bool:
+        return self._circuit_open
+
+    def _record_call_avoided_after_breaker(self) -> None:
+        self.counters.calls_avoided_after_breaker += 1
+
+    def _record_rate_limit(
+        self,
+        response: object,
+        *,
+        retry_exhausted: bool = False,
+    ) -> PokeTraceRateLimitDecision:
+        decision = classify_poketrace_429(
+            response,
+            max_retry_after_seconds=self.config.max_retry_after_seconds,
+        )
+        self.counters.rate_limited += 1
+        if decision.classification == RATE_LIMIT_SHORT_RETRYABLE:
+            self.counters.retryable_429 += 1
+        elif decision.classification == RATE_LIMIT_LONG_NON_RETRYABLE:
+            self.counters.long_429 += 1
+        else:
+            self.counters.unclassified_429 += 1
+
+        terminal = retry_exhausted or not decision.retryable
+        if terminal:
+            self.counters.terminal_429_detected += 1
+            if not self._circuit_open:
+                self._circuit_open = True
+                self.counters.circuit_breaker_opened += 1
+        return decision
+
+    def _rate_limit_wait_seconds(
+        self, decision: PokeTraceRateLimitDecision
+    ) -> float:
+        retry_after = decision.retry_after_seconds or 0.0
+        return max(
+            self.config.minimum_request_interval_seconds,
+            retry_after + 0.25,
+        )
 
     def values_for(self, identity: CardIdentity) -> Optional[MarketValues]:
         return self.snapshot_for(identity).us_values
@@ -163,10 +277,21 @@ class PokeTraceProvider:
             return cached
 
         us = self._search_exact(identity, "US")
+        if self.circuit_open and us is None:
+            # A Pro snapshot would otherwise proceed to its EU request.
+            self._record_call_avoided_after_breaker()
+            result = PokeTraceSnapshot(POKETRACE_RATE_LIMITED)
+            self._cache[key] = result
+            return result
         eu = self._search_exact(identity, "EU")
         if us is None and eu is None:
-            result = PokeTraceSnapshot(POKETRACE_NO_MATCH)
-            self.counters.no_match += 1
+            result = PokeTraceSnapshot(
+                POKETRACE_RATE_LIMITED
+                if self.circuit_open
+                else POKETRACE_NO_MATCH
+            )
+            if not self.circuit_open:
+                self.counters.no_match += 1
             self._cache[key] = result
             return result
 
@@ -218,7 +343,9 @@ class PokeTraceProvider:
     def _request_cards(
         self, identity: CardIdentity, market: str
     ) -> Optional[Mapping[str, object]]:
-        self._respect_rate_limit()
+        if self.circuit_open:
+            self._record_call_avoided_after_breaker()
+            return None
         headers = {
             "Accept": "application/json",
             "X-API-Key": self.config.api_key or "",
@@ -235,6 +362,43 @@ class PokeTraceProvider:
         game = _poketrace_game(identity.language)
         if game:
             params["game"] = game
+
+        response = self._request_cards_once(headers, params)
+        if response is None:
+            return None
+        status = getattr(response, "status_code", None)
+        if status == 429:
+            decision = self._record_rate_limit(response)
+            if not decision.retryable:
+                return None
+            self.counters.rate_limit_retry_attempts += 1
+            self.sleeper(self._rate_limit_wait_seconds(decision))
+            response = self._request_cards_once(headers, params)
+            if response is None:
+                return None
+            status = getattr(response, "status_code", None)
+            if status == 429:
+                self._record_rate_limit(response, retry_exhausted=True)
+                return None
+        if status != 200:
+            self.counters.request_failures += 1
+            return None
+        try:
+            payload = response.json()
+        except Exception:
+            self.counters.request_failures += 1
+            return None
+        return payload if isinstance(payload, Mapping) else None
+
+    def _request_cards_once(
+        self,
+        headers: Mapping[str, str],
+        params: Mapping[str, str],
+    ) -> Optional[object]:
+        if self.circuit_open:
+            self._record_call_avoided_after_breaker()
+            return None
+        self._respect_rate_limit()
         try:
             self.counters.live_calls += 1
             response = self.session.get(
@@ -246,20 +410,7 @@ class PokeTraceProvider:
         except Exception:
             self.counters.request_failures += 1
             return None
-
-        status = getattr(response, "status_code", None)
-        if status == 429:
-            self.counters.rate_limited += 1
-            return None
-        if status != 200:
-            self.counters.request_failures += 1
-            return None
-        try:
-            payload = response.json()
-        except Exception:
-            self.counters.request_failures += 1
-            return None
-        return payload if isinstance(payload, Mapping) else None
+        return response
 
     def _respect_rate_limit(self) -> None:
         interval = max(0.0, self.config.minimum_request_interval_seconds)
@@ -524,6 +675,16 @@ def render_poketrace_counters(provider: PokeTraceProvider) -> str:
             f"ambiguous: {counters.ambiguous}",
             f"request failures: {counters.request_failures}",
             f"rate limited: {counters.rate_limited}",
+            f"429 short/retryable: {counters.retryable_429}",
+            f"429 long/non-retryable: {counters.long_429}",
+            f"429 unclassified: {counters.unclassified_429}",
+            f"terminal 429 detected: {counters.terminal_429_detected}",
+            f"429 retry attempts: {counters.rate_limit_retry_attempts}",
+            f"circuit breaker opened: {counters.circuit_breaker_opened}",
+            (
+                "calls avoided after breaker: "
+                f"{counters.calls_avoided_after_breaker}"
+            ),
             f"extra market calls avoided by identity cache: {counters.primed_market_calls_avoided}",
             f"CardMarket snapshots: {counters.cardmarket_snapshots}",
             f"CardMarket discount signals: {counters.cardmarket_discount_signals}",

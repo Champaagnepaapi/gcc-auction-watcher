@@ -48,6 +48,12 @@ from v5.image_detection import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "v5-ebay-diagnostic.yml"
+LIVE_PIPELINE_WORKFLOW = (
+    Path(__file__).parents[1]
+    / ".github"
+    / "workflows"
+    / "v5-live-raw-pipeline-diagnostic.yml"
+)
 
 
 def load_fixture(name):
@@ -780,18 +786,11 @@ class LiveDiagnosticFailureTests(unittest.TestCase):
 
 
 class LiveDiagnosticWorkflowTests(unittest.TestCase):
-    def test_workflow_is_manual_read_only_and_has_no_persistence_actions(self):
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("name: V5 eBay Enrichment Diagnostic", workflow)
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("schedule:", workflow)
-        self.assertIn("contents: read", workflow)
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertNotIn("actions/cache", workflow)
-        self.assertNotIn("upload-artifact", workflow)
+    def test_redundant_ebay_workflow_remains_removed(self):
+        self.assertFalse(WORKFLOW.exists())
 
-    def test_workflow_uses_only_expected_secrets_and_safety_locks(self):
-        workflow = WORKFLOW.read_text(encoding="utf-8")
+    def test_consolidated_workflow_keeps_ebay_secrets_and_safety_locks(self):
+        workflow = LIVE_PIPELINE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("secrets.EBAY_CLIENT_ID", workflow)
         self.assertIn("secrets.EBAY_CLIENT_SECRET", workflow)
         self.assertIn('RAW_MAX_PAID_GRADINGS_PER_RUN: "0"', workflow)

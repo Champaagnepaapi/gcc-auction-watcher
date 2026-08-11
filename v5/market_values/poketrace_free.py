@@ -7,6 +7,7 @@ from .poketrace import (
     POKETRACE_DISABLED,
     POKETRACE_MATCHED,
     POKETRACE_NO_MATCH,
+    POKETRACE_RATE_LIMITED,
     PokeTraceConfig,
     PokeTraceProvider,
     PokeTraceSnapshot,
@@ -39,8 +40,13 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
 
         us = self._search_exact(identity, "US")
         if us is None:
-            result = PokeTraceSnapshot(POKETRACE_NO_MATCH)
-            self.counters.no_match += 1
+            result = PokeTraceSnapshot(
+                POKETRACE_RATE_LIMITED
+                if self.circuit_open
+                else POKETRACE_NO_MATCH
+            )
+            if not self.circuit_open:
+                self.counters.no_match += 1
             self._cache[key] = result
             return result
 
@@ -90,6 +96,7 @@ def free_tier_config_from_env() -> PokeTraceConfig:
         timeout_seconds=config.timeout_seconds,
         result_limit=config.result_limit,
         minimum_request_interval_seconds=interval,
+        max_retry_after_seconds=config.max_retry_after_seconds,
         cardmarket_discount_threshold=config.cardmarket_discount_threshold,
         falling_market_threshold=config.falling_market_threshold,
     )
@@ -117,6 +124,16 @@ def render_free_poketrace_counters(provider: FreeTierPokeTraceProvider) -> str:
             f"ambiguous: {counters.ambiguous}",
             f"request failures: {counters.request_failures}",
             f"rate limited: {counters.rate_limited}",
+            f"429 short/retryable: {counters.retryable_429}",
+            f"429 long/non-retryable: {counters.long_429}",
+            f"429 unclassified: {counters.unclassified_429}",
+            f"terminal 429 detected: {counters.terminal_429_detected}",
+            f"429 retry attempts: {counters.rate_limit_retry_attempts}",
+            f"circuit breaker opened: {counters.circuit_breaker_opened}",
+            (
+                "calls avoided after breaker: "
+                f"{counters.calls_avoided_after_breaker}"
+            ),
             f"extra market calls avoided by identity cache: {counters.primed_market_calls_avoided}",
             "Persisted PokeTrace records: 0",
         )

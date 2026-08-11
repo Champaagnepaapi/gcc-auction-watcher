@@ -5,7 +5,10 @@ from dataclasses import replace
 from decimal import Decimal
 
 from v5.card_identity_catalog import HybridPokemonCardResolver
-from v5.market_values.poketrace import POKETRACE_DISABLED, PokeTraceConfig
+from v5.market_values.poketrace import (
+    POKETRACE_RATE_LIMITED,
+    PokeTraceConfig,
+)
 from v5.market_values.poketrace_free import FreeTierPokeTraceProvider
 from v5.models import CardIdentity
 from v5.poketrace_identity import PokeTraceIdentityResolver, _candidate_key
@@ -246,7 +249,9 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertTrue(resolved.matched)
         self.assertEqual(len(session.calls), 2)
         self.assertEqual(resolver.counters.rate_limited, 1)
+        self.assertEqual(resolver.counters.retryable_429, 1)
         self.assertEqual(resolver.counters.retry_attempts, 1)
+        self.assertFalse(market.circuit_open)
         self.assertTrue(any(wait >= 2.25 for wait in waits))
 
     def test_long_429_is_unavailable_not_false_no_match(self):
@@ -263,8 +268,12 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertFalse(resolved.matched)
         self.assertEqual(resolver.counters.no_match, 0)
         self.assertEqual(resolver.counters.rate_limited, 1)
+        self.assertEqual(resolver.counters.long_429, 1)
+        self.assertEqual(resolver.counters.terminal_429_detected, 1)
         self.assertEqual(resolver.counters.retry_attempts, 0)
-        self.assertEqual(snapshot.status, POKETRACE_DISABLED)
+        self.assertEqual(resolved.provider_status, POKETRACE_RATE_LIMITED)
+        self.assertEqual(snapshot.status, POKETRACE_RATE_LIMITED)
+        self.assertTrue(market.circuit_open)
         self.assertEqual(len(session.calls), 1)
 
     def test_hybrid_chain_uses_poketrace_before_pokemon_tcg_api(self):

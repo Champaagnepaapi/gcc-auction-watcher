@@ -703,13 +703,8 @@ class GCCProviderIntegrationTests(unittest.TestCase):
         self.assertNotIn("FIXED_RATIO", ratios_source)
         self.assertNotIn("PCA_TO_PSA", ratios_source)
 
-    def test_gcc_diagnostic_workflow_is_manual_offline_and_has_no_secrets(self):
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("schedule:", workflow)
-        self.assertNotIn("secrets.", workflow)
-        self.assertIn("python -m v5.gcc_history_diagnostic", workflow)
-        self.assertIn('GCC_HISTORY_ENABLED: "false"', workflow)
+    def test_redundant_gcc_diagnostic_workflow_remains_removed(self):
+        self.assertFalse(WORKFLOW.exists())
 
     def test_live_workflow_enables_only_existing_v4_live_access(self):
         workflow = LIVE_WORKFLOW.read_text(encoding="utf-8")

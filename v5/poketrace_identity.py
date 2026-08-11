@@ -9,6 +9,9 @@ from .market_values.poketrace import (
     POKETRACE_DISABLED,
     POKETRACE_MATCHED,
     POKETRACE_NO_MATCH,
+    POKETRACE_RATE_LIMITED,
+    RATE_LIMIT_LONG_NON_RETRYABLE,
+    RATE_LIMIT_SHORT_RETRYABLE,
     PokeTraceProvider,
     PokeTraceSnapshot,
     _identity_key,
@@ -64,6 +67,7 @@ from .poketrace_matching import (
 REQUEST_OK = "OK"
 REQUEST_ERROR = "ERROR"
 REQUEST_RATE_LIMITED = "RATE_LIMITED"
+REQUEST_CIRCUIT_OPEN = "CIRCUIT_OPEN"
 
 POKETRACE_STRATEGIES = (
     "contextual_canonical",
@@ -142,7 +146,12 @@ class PokeTraceIdentityCounters:
     cache_hits: int = 0
     request_failures: int = 0
     rate_limited: int = 0
+    retryable_429: int = 0
+    long_429: int = 0
+    unclassified_429: int = 0
+    terminal_429_detected: int = 0
     retry_attempts: int = 0
+    identities_skipped_after_breaker: int = 0
     api_empty_results: int = 0
     candidates_received: int = 0
     rejected_product_type: int = 0
@@ -195,6 +204,7 @@ class PokeTraceIdentityResolution:
     matched: bool = False
     ambiguous: bool = False
     card_id: Optional[str] = None
+    provider_status: Optional[str] = None
 
 
 def _candidate_uses_partial_number(
@@ -320,6 +330,16 @@ class PokeTraceIdentityResolver:
         if cached is not None:
             self.counters.cache_hits += 1
             return cached
+        if self.provider.circuit_open:
+            self.counters.identities_skipped_after_breaker += 1
+            self.provider._record_call_avoided_after_breaker()
+            result = PokeTraceIdentityResolution(
+                identity,
+                provider_status=POKETRACE_RATE_LIMITED,
+            )
+            self._cache[key] = result
+            self._prime_rate_limited(identity)
+            return result
 
         self.counters.queries += 1
         self._progress(f"PokeTrace identity {self.counters.queries}: query")
@@ -341,9 +361,21 @@ class PokeTraceIdentityResolver:
                 use_structured_filters=structured,
             )
             if request_status != REQUEST_OK or payload is None:
-                result = PokeTraceIdentityResolution(identity)
+                provider_status = (
+                    POKETRACE_RATE_LIMITED
+                    if request_status
+                    in {REQUEST_RATE_LIMITED, REQUEST_CIRCUIT_OPEN}
+                    else POKETRACE_DISABLED
+                )
+                result = PokeTraceIdentityResolution(
+                    identity,
+                    provider_status=provider_status,
+                )
                 self._cache[key] = result
-                self._prime_unavailable(identity)
+                if provider_status == POKETRACE_RATE_LIMITED:
+                    self._prime_rate_limited(identity)
+                else:
+                    self._prime_unavailable(identity)
                 self._progress(
                     f"PokeTrace identity {self.counters.queries}: {request_status.casefold()}"
                 )
@@ -414,6 +446,7 @@ class PokeTraceIdentityResolver:
                 resolved,
                 matched=bool(resolved.card_name and resolved.set and resolved.card_number),
                 card_id=card_id,
+                provider_status=POKETRACE_MATCHED,
             )
             if not result.matched:
                 self._count_rejection(REJECT_INSUFFICIENT)
@@ -449,6 +482,8 @@ class PokeTraceIdentityResolver:
             self._cache[_identity_key(target)] = source_result
             if source_result.ambiguous:
                 self._prime_unavailable(target)
+            elif source_result.provider_status == POKETRACE_RATE_LIMITED:
+                self._prime_rate_limited(target)
             else:
                 self._prime_no_match(target)
 
@@ -490,22 +525,37 @@ class PokeTraceIdentityResolver:
         if status != REQUEST_RATE_LIMITED:
             return response, status
 
-        retry_after = self._retry_after_seconds(response)
-        if retry_after is None or retry_after > 30:
+        self.counters.rate_limited += 1
+        decision = self.provider._record_rate_limit(response)
+        self._count_rate_limit_classification(decision.classification)
+        if not decision.retryable:
+            self.counters.terminal_429_detected += 1
             return None, REQUEST_RATE_LIMITED
 
         self.counters.retry_attempts += 1
-        wait_seconds = max(2.25, retry_after + 0.25)
+        self.provider.counters.rate_limit_retry_attempts += 1
+        wait_seconds = self.provider._rate_limit_wait_seconds(decision)
         self._progress(
             f"PokeTrace identity {self.counters.queries}: 429 retry in {wait_seconds:.2f}s"
         )
         self.provider.sleeper(wait_seconds)
         retried, retry_status = self._request_once(params)
+        if retry_status == REQUEST_RATE_LIMITED:
+            self.counters.rate_limited += 1
+            retry_decision = self.provider._record_rate_limit(
+                retried,
+                retry_exhausted=True,
+            )
+            self._count_rate_limit_classification(retry_decision.classification)
+            self.counters.terminal_429_detected += 1
         return retried, retry_status
 
     def _request_once(
         self, params: Mapping[str, str]
     ) -> tuple[Optional[object], str]:
+        if self.provider.circuit_open:
+            self.provider._record_call_avoided_after_breaker()
+            return None, REQUEST_CIRCUIT_OPEN
         self.provider._respect_rate_limit()
         self.counters.search_attempts += 1
         headers = {
@@ -527,8 +577,6 @@ class PokeTraceIdentityResolver:
 
         status = getattr(response, "status_code", None)
         if status == 429:
-            self.provider.counters.rate_limited += 1
-            self.counters.rate_limited += 1
             return response, REQUEST_RATE_LIMITED
         if status != 200:
             self.provider.counters.request_failures += 1
@@ -542,28 +590,13 @@ class PokeTraceIdentityResolver:
             return response, REQUEST_ERROR
         return (payload if isinstance(payload, Mapping) else None), REQUEST_OK
 
-    @staticmethod
-    def _retry_after_seconds(response: object) -> Optional[float]:
-        headers = getattr(response, "headers", None)
-        if isinstance(headers, Mapping):
-            raw = headers.get("Retry-After") or headers.get("retry-after")
-            try:
-                if raw is not None:
-                    return max(0.0, float(str(raw).strip()))
-            except ValueError:
-                pass
-        try:
-            payload = response.json()
-        except Exception:
-            return None
-        if isinstance(payload, Mapping):
-            raw = payload.get("retryAfter")
-            try:
-                if raw is not None:
-                    return max(0.0, float(str(raw).strip()))
-            except ValueError:
-                return None
-        return None
+    def _count_rate_limit_classification(self, classification: str) -> None:
+        if classification == RATE_LIMIT_SHORT_RETRYABLE:
+            self.counters.retryable_429 += 1
+        elif classification == RATE_LIMIT_LONG_NON_RETRYABLE:
+            self.counters.long_429 += 1
+        else:
+            self.counters.unclassified_429 += 1
 
     def _count_rejection(
         self,
@@ -732,6 +765,9 @@ class PokeTraceIdentityResolver:
     def _prime_unavailable(self, identity: CardIdentity) -> None:
         self._cache_snapshot(identity, PokeTraceSnapshot(POKETRACE_DISABLED))
 
+    def _prime_rate_limited(self, identity: CardIdentity) -> None:
+        self._cache_snapshot(identity, PokeTraceSnapshot(POKETRACE_RATE_LIMITED))
+
     @staticmethod
     def _progress(message: str) -> None:
         if os.getenv("V5_PROGRESS_LOGS", "false").strip().casefold() == "true":
@@ -788,7 +824,23 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             f"cache hits: {counters.cache_hits}",
             f"request failures: {counters.request_failures}",
             f"429 responses: {counters.rate_limited}",
+            f"429 short/retryable: {counters.retryable_429}",
+            f"429 long/non-retryable: {counters.long_429}",
+            f"429 unclassified: {counters.unclassified_429}",
+            f"terminal 429 detected: {counters.terminal_429_detected}",
             f"429 retry attempts: {counters.retry_attempts}",
+            (
+                "circuit breaker opened: "
+                f"{resolver.provider.counters.circuit_breaker_opened}"
+            ),
+            (
+                "calls avoided after breaker: "
+                f"{resolver.provider.counters.calls_avoided_after_breaker}"
+            ),
+            (
+                "identities skipped after breaker: "
+                f"{counters.identities_skipped_after_breaker}"
+            ),
             f"API empty result pages: {counters.api_empty_results}",
             f"unique candidates received: {counters.candidates_received}",
             f"candidates where name matched: {counters.candidates_name_matched}",
