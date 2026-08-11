@@ -82,10 +82,31 @@ def install_grade_arbitrage_guard() -> None:
     watcher.validate_secondary_sources = guarded_validate_secondary_sources
 
 
+def install_current_auction_discovery_diagnostics() -> None:
+    """Keep V4 log/coverage text aligned with the installed item-level source."""
+
+    watcher.AUCTION_DISCOVERY_FILTERS = (
+        "endpoint=/on-sale-items (official GCC API)",
+        "sellingTypeGroup=AUCTION (GCC)",
+        "sortType=ENDING_SOON (GCC)",
+        "status=ON_SALE (GCC)",
+        "endTime=individual lot end time (GCC)",
+        f"remaining_time<={watcher.MAX_AUCTION_MINUTES} min (local defense)",
+        "category=Pokemon card (existing local rule)",
+        f"min_price={watcher.MIN_PRICE:g} EUR (existing local rule)",
+        f"max_price={watcher.MAX_PRICE:g} EUR (existing local rule)",
+        "grader=ALL",
+        "grade=ALL",
+        "legacy live-sale pages=fallback only if API coverage cannot be proven",
+    )
+
+
 if __name__ == "__main__":
-    # Keep V4 valuation and notification safeguards intact. Only the auction
-    # discovery source changes: item-level /filtres/auctions first, with the
-    # previous live-sale collector preserved as a conservative fallback.
+    # Keep V4 valuation and notification safeguards intact. Auction discovery is
+    # item-level through GCC's official /on-sale-items API, ordered ENDING_SOON
+    # and filtered by each lot's individual endTime. The previous live-sale
+    # collector is preserved strictly as a conservative fallback.
     install_grade_arbitrage_guard()
     install_v4_auction_item_discovery()
+    install_current_auction_discovery_diagnostics()
     raise SystemExit(watcher.main())
