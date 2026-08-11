@@ -134,6 +134,10 @@ Les anciens noms peuvent rester visibles dans l’historique/sidebar GitHub Acti
 - PR : **#8**.
 - Branche exacte : `agent/v5-poketrace-cardmarket-market-data`.
 - PR reste **draft, ouverte, non mergée**.
+- HEAD fonctionnel V5 validé pour l'extension eBay EU :
+  `f920e647171df758adb91ad3b1bc8aca46730ff2`.
+- `main` réellement synchronisé dans V5 :
+  `90e7ed2abdc4d9757c3a5f4201ba6daf877ca485`.
 - V5 = diagnostic **RAW eBay** séparé de la V4 graded GCC.
 - Aucun achat/bid/checkout/CardGrader.
 - Le plan PokeTrace Pro est désormais activé pour **un unique diagnostic manuel de 20 listings**, précédé d’un preflight `/auth/info` fail-closed. Aucun live n’est lancé depuis le développement local.
@@ -198,6 +202,48 @@ et déjà routées par V5 (`fr`, `de`, `es`, `it`, `ja`, `pt`, `pt-br`, `pt-pt`,
 preuve de coordonnées identiques existe. Cela ne garantit ni qu’un record
 PokeTrace US existe, ni qu’il contienne une valeur RAW.
 
+## Discovery eBay Europe
+
+La whitelist V5 couvre désormais `EBAY_US`, `EBAY_CH`, `EBAY_DE`, `EBAY_FR`,
+`EBAY_IT`, `EBAY_ES`, `EBAY_AT`, `EBAY_BE`, `EBAY_NL`, `EBAY_PL`, `EBAY_IE` et
+`EBAY_GB`. Le prochain live active seulement `EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES`
+via l'unique variable `V5_LIVE_EBAY_MARKETPLACES`.
+
+`V5_LIVE_RAW_RESULT_LIMIT=20` est une limite globale. Chaque marketplace peut
+fournir des summaries, puis un round-robin déterministe choisit au plus vingt
+`itemId` uniques, backfill les marchés vides et déduplique les doublons
+cross-market avant `getItem`. Il n'existe plus de quota de vingt `getItem` par
+marketplace.
+
+Chaque marché résout son propre default category tree et ses propres category
+suggestions. Seule une catégorie explicitement reconnue comme cartes
+individuelles est acceptée. Une taxonomie absente ou non sûre produit
+`marketplace unavailable/incomplete` et interdit toute recherche Pokémon large
+ou tout enrichissement sur ce marché. Un filtre local conservateur exclut aussi
+boosters, displays, ETB, coffrets, boxes, blisters, decks, lots, bulk et sealed.
+
+Pour tout marché non-CH, Browse reçoit `deliveryCountry:CH`. Le header
+`contextualLocation` n'est envoyé que si un NPA suisse de quatre chiffres est
+explicitement fourni par `V5_EBAY_DELIVERY_POSTAL_CODE`; aucun postcode ni coût
+de livraison n'est inventé. Sans coût fourni par Browse, le diagnostic indique
+`shipping estimate limited` et une annonce sans preuve d'éligibilité Suisse ne
+peut pas entrer dans l'économie.
+
+La devise du listing reste inchangée. Le chemin économique existant continue
+uniquement pour un listing `EBAY_US` en USD avec des valeurs marché USD. EUR,
+CHF, GBP ou toute autre devise traversent discovery, identité et diagnostics
+marché, puis retournent `ECONOMICS_DEFERRED_CURRENCY_POLICY`; aucun prix d'achat
+non-USD n'est injecté dans le modèle de coûts USD. Les aliases eBay espagnols
+ajoutés (`Juego`, `Idioma`, `Edición`, etc.) sont explicites et déterministes ;
+l'identité utilisateur/localisée et le contrat du jumeau TCGdex exact restent
+inchangés.
+
+Le résumé live expose seulement, par marketplace, taxonomie/statut technique,
+total et summaries, sélection globale, doublons, rejets sealed/multi-produit,
+appels `getItem`, RAW, shipping CH, disponibilité de l'estimation shipping,
+distribution des devises et economics différées. Aucune valeur listing-level
+n'est loggée ou persistée.
+
 ---
 
 # V5 — validation offline la plus récente
@@ -208,16 +254,16 @@ Baseline antérieure du circuit-breaker PokeTrace :
 bdd1abc7b479ed980f4f4896b17e3b184b701ed5
 ```
 
-Validation offline de la transition Free → Pro, incluant les régressions
-RAW→RAW et alias multilingues :
+Validation offline après synchronisation de `main`, transition Free → Pro et
+extension eBay EU, incluant les régressions RAW→RAW et alias multilingues :
 
-- V5 : **345/345** ;
+- V5 : **365/365** ;
 - V4 : **167/167** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
 - YAML : **7/7** ;
 - `git diff --check` : OK ;
-- aucun appel PokeTrace/JustTCG/eBay live pendant cette phase ;
+- aucun appel PokeTrace/TCGdex/JustTCG/eBay/GCC live pendant cette phase ;
 - aucun secret consulté ;
 - aucun CardGrader, achat, bid ou checkout.
 
@@ -405,8 +451,8 @@ Conclusion : **TCGdex reste clairement principal.** JustTCG reste second avis ex
 
 Ordre recommandé :
 
-1. lancer manuellement **une seule validation Pro de 20 listings** via `V5 Live Raw Pipeline Diagnostic`, après revue de cette PR ;
-2. vérifier d’abord le résumé du preflight Pro, puis mesurer US→EU, circuit-breaker, diagnostics near-match, rendement par stratégie et compteurs RAW ;
+1. après revue et seulement sans blocker, lancer manuellement **un seul** `V5 Live Raw Pipeline Diagnostic` sur au plus vingt listings uniques globaux, avec `EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES` ;
+2. vérifier d’abord le résumé du preflight Pro, puis les diagnostics agrégés eBay par marketplace, US→EU PokeTrace, circuit-breaker, near-match, rendement par stratégie et compteurs RAW ;
 3. seulement après ce run propre, décider si `structured`, `broad-name`, `broad-set` ou d’autres fallbacks peuvent être réduits/supprimés ;
 4. continuer à chercher des équivalences uniquement déterministes ; ne jamais assouplir le matching pour atteindre `15+/20` ;
 5. si PokeTrace reste à 0 exact/0 market value après ce run Pro propre, réévaluer les stratégies sans relâcher le matcher ;
