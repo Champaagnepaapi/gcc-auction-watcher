@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 
 from .models import CardIdentity
+from .variant_semantics import (
+    FINISH_HOLO,
+    FINISH_REVERSE,
+    FINISH_STANDARD,
+    semantics_from_text,
+    variant_compatibility,
+)
 
 
 REJECT_PRODUCT_TYPE = "product_type"
@@ -30,6 +37,13 @@ class CandidateMatchEvidence:
     failed_core_fields: tuple[str, ...]
     score: Optional[float]
     rejection: Optional[str]
+    variant_compatible: bool = True
+    variant_exact: bool = False
+    variant_reason: Optional[str] = None
+    variant_finish_match: bool = False
+    variant_edition_match: bool = False
+    variant_promo_match: bool = False
+    variant_metadata_missing: bool = False
 
 
 def _normalize(value: object) -> str:
@@ -142,19 +156,23 @@ def _set_similarity(
 
 
 def _variant_family(value: object) -> str:
-    normalized = _normalize(value)
-    aliases = {
-        "holo": "holofoil",
-        "holographic": "holofoil",
-        "holofoil": "holofoil",
-        "reverse holo": "reverse holofoil",
-        "reverse holographic": "reverse holofoil",
-        "reverse holofoil": "reverse holofoil",
-        "normal": "standard",
-        "non holo": "standard",
-        "standard": "standard",
-    }
-    return aliases.get(normalized, normalized)
+    """Compatibility shim for older callers.
+
+    New identity matching uses structured variant semantics. This function only
+    exposes the broad finish family for visual filtering/tests that still import
+    it. Edition/promo semantics must use ``variant_compatibility`` instead.
+    """
+
+    semantics = semantics_from_text(value)
+    if semantics.special_finish:
+        return semantics.special_finish
+    if semantics.finish == FINISH_HOLO:
+        return "holofoil"
+    if semantics.finish == FINISH_REVERSE:
+        return "reverse holofoil"
+    if semantics.finish == FINISH_STANDARD:
+        return "standard"
+    return _normalize(value)
 
 
 def _candidate_evidence(
@@ -198,6 +216,8 @@ def _candidate_evidence(
         if supplied and not matched
     )
 
+    variant = variant_compatibility(identity, candidate)
+
     rejection = None
     if product_type and product_type != "single":
         rejection = REJECT_PRODUCT_TYPE
@@ -207,15 +227,7 @@ def _candidate_evidence(
         rejection = REJECT_SET
     elif card_number_supplied and not card_number_matched:
         rejection = REJECT_CARD_NUMBER
-
-    expected_variant = _variant_family(identity.variant)
-    candidate_variant = _variant_family(candidate.get("variant"))
-    if (
-        rejection is None
-        and expected_variant
-        and candidate_variant
-        and expected_variant != candidate_variant
-    ):
+    elif not variant.compatible:
         rejection = REJECT_VARIANT
 
     supplied_core = sum((name_supplied, set_supplied, card_number_supplied))
@@ -242,8 +254,17 @@ def _candidate_evidence(
         elif number_partial:
             score += 3.0
         score += set_similarity * 3.0
-        if expected_variant and candidate_variant == expected_variant:
-            score += 1.0
+        # Variant evidence is deliberately a tie-breaker, never a substitute
+        # for exact core identity fields.
+        score += 0.35 * sum(
+            (
+                variant.finish_match,
+                variant.edition_match,
+                variant.promo_match,
+            )
+        )
+        if variant.exact:
+            score += 0.25
         score += 0.5 * supplied_core
 
     return CandidateMatchEvidence(
@@ -259,6 +280,13 @@ def _candidate_evidence(
         failed_core_fields=failed_core_fields,
         score=score,
         rejection=rejection,
+        variant_compatible=variant.compatible,
+        variant_exact=variant.exact,
+        variant_reason=variant.reason,
+        variant_finish_match=variant.finish_match,
+        variant_edition_match=variant.edition_match,
+        variant_promo_match=variant.promo_match,
+        variant_metadata_missing=variant.metadata_missing,
     )
 
 
