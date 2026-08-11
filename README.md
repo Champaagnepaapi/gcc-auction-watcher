@@ -95,7 +95,7 @@ branche: agent/v4-independent-external-market-valuation
 base origin/main: 510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d
 PR V4: séparée, draft, vers main
 PR #8 / branche V5: séparées et inchangées
-validation offline V4: 249/249 tests
+validation offline V4: 265/265 tests
 ```
 
 Le résultat GCC est désormais une preuve structurée (`STRONG`, `WEAK` ou
@@ -130,6 +130,21 @@ dans le résultat ou son contexte observé. PSA utilise APR au grade exact en
 premier puis eBay en fallback ; les autres graders utilisent eBay au même
 grader/grade. PokeTrace et les proxys inter-graders ne participent pas à cette
 V4.
+
+Les dimensions GCC proviennent du listing cheap et d’un bloc détail courant
+strictement labelisé (`Edition/Édition`, `Variant/Variante`,
+`Finish/Finition`, `Language/Langue`, `Printing/Print/Stamp`). La lecture
+s’arrête avant l’historique et les articles similaires ; navigation et ventes
+passées ne peuvent donc pas enrichir l’identité courante. Les finitions
+explicitement nommées Cosmos, Galaxy, Cracked Ice, Poké Ball et Master Ball
+sont conservées séparément de la finition générique. Aucune valeur Unlimited
+ou Non-Holo n’est déduite par absence.
+
+Pour une enchère, `max_recommended` reste dérivé sans changement de formule de
+l’estimation externe lors d’un `EXTERNAL_RESCUE`, ou de l’estimation prudente
+combinée lors d’un `GCC_EXTERNAL_CONFIRMED`. Ce même plafond est persisté et
+affiché par les alertes 15/5 minutes ; un prix courant supérieur ne produit pas
+d’opportunité notifiable.
 
 Deux marchés forts ne sont concordants que si leurs intervalles prudents
 `low/high` se chevauchent et si le ratio de leurs valeurs centrales reste dans

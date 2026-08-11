@@ -139,6 +139,7 @@ class Lot:
     year: Optional[int] = None
     variant: str = ""
     set_family: str = ""
+    commercial_dimensions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -3090,6 +3091,17 @@ def parse_listing_countdown_minutes(text: str) -> tuple[Optional[int], str]:
     return None, ""
 
 
+def _current_item_detail_text(body: str) -> str:
+    """Exclut les ventes/autres articles de toute identité de l'item courant."""
+    return re.split(
+        r"Historique des ventes|Sales history|Articles? similaires?|"
+        r"Similar items?|Related items?",
+        body or "",
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+
+
 def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
     try:
         lot.inspection_error = ""
@@ -3098,6 +3110,19 @@ def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
 
         body = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
         lot.body = body
+        lot.commercial_dimensions = extract_current_item_commercial_dimensions(
+            body
+        )
+        detail_language = lot.commercial_dimensions.get("language", "")
+        if not lot.language and detail_language not in {"", "__conflict__"}:
+            lot.language = {
+                "french": "French",
+                "japanese": "Japanese",
+                "english": "English",
+                "german": "German",
+                "spanish": "Spanish",
+                "italian": "Italian",
+            }.get(detail_language, "")
 
         page_heading = ""
         try:
@@ -3113,12 +3138,7 @@ def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
             body=body,
         )
 
-        current_section = re.split(
-            r"Historique des ventes|Sales history",
-            body,
-            maxsplit=1,
-            flags=re.I,
-        )[0]
+        current_section = _current_item_detail_text(body)
         page_price = parse_money(current_section)
         if page_price is not None:
             lot.current_price = page_price
@@ -3396,7 +3416,7 @@ def extract_card_identity(lot: Lot) -> dict:
     nom, référence, année, langue et série/set.
     """
     title = lot.title or ""
-    body = lot.body or ""
+    body = _current_item_detail_text(lot.body)
 
     core = title
     if lot.grader and lot.grade:
@@ -3444,11 +3464,29 @@ def extract_card_identity(lot: Lot) -> dict:
         "Spanish": ("Spanish", "Espagnol"),
         "Italian": ("Italian", "Italien"),
     }
-    for canonical, variants in language_map.items():
-        identity_text = f"{title}\n{lot.listing_text}\n{body}"
-        if any(re.search(rf"\b{re.escape(v)}\b", identity_text, re.I) for v in variants):
-            language = canonical
-            break
+    detail_language = (
+        lot.commercial_dimensions.get("language")
+        or extract_current_item_commercial_dimensions(body).get("language")
+        or ""
+    )
+    canonical_detail_languages = {
+        "french": "French",
+        "japanese": "Japanese",
+        "english": "English",
+        "german": "German",
+        "spanish": "Spanish",
+        "italian": "Italian",
+    }
+    language = str(lot.language or canonical_detail_languages.get(detail_language, ""))
+    if not language:
+        identity_text = f"{title}\n{lot.listing_text}"
+        for canonical, variants in language_map.items():
+            if any(
+                re.search(rf"\b{re.escape(value)}\b", identity_text, re.I)
+                for value in variants
+            ):
+                language = canonical
+                break
 
     # Série/set: plusieurs libellés possibles selon la fiche GCC.
     series = ""
@@ -3500,6 +3538,9 @@ def commercial_identity_payload(lot: Lot) -> dict[str, object]:
         "set_family": _normalized_identity_value(lot.set_family),
         "language": _normalized_identity_value(lot.language or identity.get("language")),
         "variant": _normalized_identity_value(lot.variant),
+        "commercial_dimensions": dict(
+            sorted(expected_commercial_dimensions(lot).items())
+        ),
     }
 
 
@@ -3546,6 +3587,13 @@ COMMERCIAL_DIMENSION_PATTERNS = {
         "stamped": r"\b(?:stamped|stamp|estampillee?)\b",
         "promo": r"\bpromo(?:tional)?\b",
     },
+    "special_finish": {
+        "cosmos": r"\bcosmos(?: holo)?\b",
+        "galaxy": r"\bgalaxy(?: holo)?\b",
+        "cracked_ice": r"\bcracked ice\b",
+        "poke_ball": r"\bpoke ball\b",
+        "master_ball": r"\bmaster ball\b",
+    },
 }
 SENSITIVE_COMMERCIAL_DIMENSIONS = frozenset(
     {"edition", "shadow", "finish", "printing", "special_finish", "variant"}
@@ -3576,6 +3624,106 @@ def _commercial_dimension_tokens(text: str) -> tuple[str, ...]:
     )
 
 
+CURRENT_ITEM_METADATA_LABEL_DIMENSIONS = {
+    "edition": frozenset({"edition"}),
+    "variant": frozenset(
+        {"edition", "shadow", "finish", "printing", "special_finish"}
+    ),
+    "variante": frozenset(
+        {"edition", "shadow", "finish", "printing", "special_finish"}
+    ),
+    "finish": frozenset({"finish", "printing", "special_finish"}),
+    "finition": frozenset({"finish", "printing", "special_finish"}),
+    "language": frozenset({"language"}),
+    "langue": frozenset({"language"}),
+    "printing": frozenset({"printing", "special_finish"}),
+    "print": frozenset({"printing", "special_finish"}),
+    "stamp": frozenset({"printing", "special_finish"}),
+}
+
+
+def _record_current_item_dimension(
+    dimensions: dict[str, str], dimension: str, value: str
+) -> None:
+    existing = dimensions.get(dimension)
+    if existing is None:
+        dimensions[dimension] = value
+    elif existing != value:
+        dimensions[dimension] = "__conflict__"
+
+
+def extract_current_item_commercial_dimensions(body: str) -> dict[str, str]:
+    """Lit seulement les labels explicites du bloc courant, jamais l'historique."""
+    current = _current_item_detail_text(body)
+    lines = [line.strip() for line in current.splitlines() if line.strip()]
+    dimensions: dict[str, str] = {}
+    navigation_mode = False
+
+    for index, line in enumerate(lines):
+        normalized_line = _normalized_identity_value(line)
+        if re.fullmatch(
+            r"(?:navigation|menu|filters?|filtres?|browse|shop by)(?:\s+.*)?",
+            normalized_line,
+        ):
+            navigation_mode = True
+            continue
+        if re.match(
+            r"^(?:categorie|category|reference|description|grader|grade|note|"
+            r"article(?: gradation)?(?: details)?)\b",
+            normalized_line,
+        ) or re.search(
+            rf"\b(?:{'|'.join(re.escape(value.lower()) for value in GRADERS)})"
+            r"\s*(?:10|[1-9](?:[.,]5)?)\b",
+            line,
+            re.I,
+        ):
+            navigation_mode = False
+
+        label = ""
+        value = ""
+        inline = re.fullmatch(r"([^:：]{1,32})\s*[:：]\s*(.+)", line)
+        if inline:
+            label = _normalized_identity_value(inline.group(1))
+            value = inline.group(2).strip()
+        else:
+            normalized_line = _normalized_identity_value(line)
+            if normalized_line not in CURRENT_ITEM_METADATA_LABEL_DIMENSIONS:
+                continue
+            label = normalized_line
+            if index + 1 >= len(lines):
+                continue
+            next_line = lines[index + 1]
+            if (
+                _normalized_identity_value(next_line)
+                in CURRENT_ITEM_METADATA_LABEL_DIMENSIONS
+            ):
+                continue
+            value = next_line
+
+        allowed = CURRENT_ITEM_METADATA_LABEL_DIMENSIONS.get(label)
+        if navigation_mode or not allowed or not value:
+            continue
+        candidates = _commercial_dimension_candidates(value)
+        for dimension in allowed:
+            values = candidates.get(dimension, set())
+            if len(values) == 1:
+                _record_current_item_dimension(
+                    dimensions, dimension, next(iter(values))
+                )
+            elif len(values) > 1:
+                _record_current_item_dimension(
+                    dimensions, dimension, "__conflict__"
+                )
+
+        if label in {"variant", "variante"} and not any(
+            candidates.get(dimension) for dimension in allowed
+        ):
+            literal = _normalized_identity_value(value)
+            if literal:
+                _record_current_item_dimension(dimensions, "variant", literal)
+    return dimensions
+
+
 def expected_commercial_dimensions(lot: Lot) -> dict[str, str]:
     """Dimensions matérielles connues du lot; aucune absence n'est inventée."""
     identity = extract_card_identity(lot)
@@ -3584,26 +3732,44 @@ def expected_commercial_dimensions(lot: Lot) -> dict[str, str]:
     )
     explicit_variant = _commercial_dimension_candidates(lot.variant)
     for dimension, values in explicit_variant.items():
-        observed[dimension] = values
+        observed.setdefault(dimension, set()).update(values)
+
+    for detail_dimensions in (
+        extract_current_item_commercial_dimensions(lot.body),
+        lot.commercial_dimensions,
+    ):
+        for dimension, value in detail_dimensions.items():
+            observed.setdefault(dimension, set()).add(value)
 
     expected = {
-        dimension: next(iter(values))
+        dimension: (
+            next(iter(values)) if len(values) == 1 else "__conflict__"
+        )
         for dimension, values in observed.items()
-        if len(values) == 1
+        if values
     }
     language_text = str(lot.language or identity.get("language") or "")
     language_candidates = _commercial_dimension_candidates(language_text).get(
         "language", set()
     )
     if len(language_candidates) == 1:
-        expected["language"] = next(iter(language_candidates))
+        language_value = next(iter(language_candidates))
+        existing_language = expected.get("language")
+        if existing_language and existing_language != language_value:
+            expected["language"] = "__conflict__"
+        else:
+            expected["language"] = language_value
 
     normalized_variant = _normalized_identity_value(lot.variant)
     recognized_values = {
         value for values in explicit_variant.values() for value in values
     }
     if normalized_variant and not recognized_values:
-        expected["variant"] = normalized_variant
+        existing_variant = expected.get("variant")
+        if existing_variant and existing_variant != normalized_variant:
+            expected["variant"] = "__conflict__"
+        else:
+            expected["variant"] = normalized_variant
     return expected
 
 

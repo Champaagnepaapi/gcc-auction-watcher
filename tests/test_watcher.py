@@ -2866,6 +2866,143 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
         )[0]
         self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
 
+    def test_detail_only_first_edition_requires_external_edition_proof(self):
+        lot = self.lot()
+        lot.variant = ""
+        lot.body += "\nEdition: 1st Edition"
+        comparable = self.external_sales(
+            [200], context="Pokemon Zorua Holo 045/132 French"
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_detail_only_first_edition_accepts_matching_external_proof(self):
+        lot = self.lot()
+        lot.variant = ""
+        lot.body += "\nÉdition: 1st Edition"
+        comparable = self.external_sales(
+            [200],
+            context="Pokemon Zorua Holo 1st Edition 045/132 French",
+        )[0]
+        self.assertTrue(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_detail_only_unlimited_requires_external_edition_proof(self):
+        lot = self.lot()
+        lot.variant = ""
+        lot.body += "\nEdition: Unlimited"
+        comparable = self.external_sales(
+            [200], context="Pokemon Zorua Holo 045/132 French"
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_detail_special_finish_rejects_generic_holo_external(self):
+        for finish in ("Cosmos Holo", "Cracked Ice"):
+            with self.subTest(finish=finish):
+                lot = self.lot()
+                lot.variant = ""
+                lot.body += f"\nFinish: {finish}"
+                comparable = self.external_sales(
+                    [200], context="Pokemon Zorua Holo 045/132 French"
+                )[0]
+                self.assertFalse(
+                    watcher.external_comparable_is_exact(lot, comparable)
+                )
+
+    def test_detail_special_finish_accepts_same_external_finish(self):
+        lot = self.lot()
+        lot.variant = ""
+        lot.body += "\nFinition: Cosmos Holo"
+        comparable = self.external_sales(
+            [200],
+            context="Pokemon Zorua Cosmos Holo 045/132 French",
+        )[0]
+        self.assertTrue(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_explicit_special_finish_and_stamp_labels_are_canonical(self):
+        cases = (
+            ("Finition: Galaxy Holo", "special_finish", "galaxy"),
+            ("Finish: Poké Ball", "special_finish", "poke_ball"),
+            ("Variante: Master Ball", "special_finish", "master_ball"),
+            ("Stamp: Stamped", "printing", "stamped"),
+        )
+        for raw, dimension, expected in cases:
+            with self.subTest(raw=raw):
+                parsed = watcher.extract_current_item_commercial_dimensions(
+                    f"Catégorie: Pokémon\n{raw}\nHistorique des ventes"
+                )
+                self.assertEqual(parsed[dimension], expected)
+
+    def test_split_detail_label_and_value_are_extracted(self):
+        parsed = watcher.extract_current_item_commercial_dimensions(
+            "Catégorie: Pokémon\nEdition\n1st Edition\nSales history"
+        )
+        self.assertEqual(parsed["edition"], "first_edition")
+
+    def test_history_variant_does_not_contaminate_current_item_metadata(self):
+        lot = self.lot()
+        lot.variant = ""
+        lot.body += (
+            "\nEdition: Unlimited\n"
+            "Historique des ventes\nEdition: 1st Edition\n200 €"
+        )
+        dimensions = watcher.expected_commercial_dimensions(lot)
+        self.assertEqual(dimensions["edition"], "unlimited")
+        matching = self.external_sales(
+            [200],
+            context="Pokemon Zorua Holo Unlimited 045/132 French",
+        )[0]
+        self.assertTrue(watcher.external_comparable_is_exact(lot, matching))
+
+    def test_navigation_variant_term_is_not_current_item_metadata(self):
+        lot = self.lot()
+        lot.variant = ""
+        lot.body += "\nNavigation\nVariant: Cracked Ice"
+        dimensions = watcher.expected_commercial_dimensions(lot)
+        self.assertNotIn("special_finish", dimensions)
+        comparable = self.external_sales(
+            [200], context="Pokemon Zorua Holo 045/132 French"
+        )[0]
+        self.assertTrue(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_fixed_inspection_enriches_detail_only_commercial_dimension(self):
+        body = (
+            "Catégorie: Pokémon\nRéférence: #045/132\nLangue: Français\n"
+            "Variante: Cosmos Holo\nArticle Gradation Détails\n"
+            "Grader: PSA\nGrade: 10\nHistorique des ventes"
+        )
+        body_node = Mock()
+        body_node.inner_text.return_value = body
+        heading_node = Mock()
+        heading_node.first = heading_node
+        heading_node.inner_text.return_value = "PSA 10 Zorua"
+        page = Mock()
+        page.locator.side_effect = lambda selector: (
+            body_node if selector == "body" else heading_node
+        )
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/detail-variant",
+            title="PSA 10 Zorua",
+            current_price=20,
+            source_type="fixed",
+            grader="PSA",
+            grade="10",
+        )
+        inspected = watcher.inspect_item(page, lot)
+        self.assertEqual(inspected.variant, "")
+        self.assertEqual(inspected.commercial_dimensions["finish"], "holo")
+        self.assertEqual(
+            inspected.commercial_dimensions["special_finish"], "cosmos"
+        )
+
+    def test_detail_dimensions_are_part_of_strict_external_cache_identity(self):
+        plain = self.lot(suffix="plain-detail")
+        detailed = self.lot(suffix="cosmos-detail")
+        plain.variant = detailed.variant = ""
+        detailed.body += "\nFinition: Cosmos Holo"
+        self.assertNotEqual(
+            watcher.external_commercial_identity_key(plain),
+            watcher.external_commercial_identity_key(detailed),
+        )
+
     def test_external_comparable_rejects_other_missing_sensitive_dimensions(self):
         cases = (
             ("Unlimited", "Pokemon Zorua Holo 045/132 French"),
@@ -3023,6 +3160,87 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
         )
         self.assertIsNotNone(result.opportunity)
         self.assertEqual(result.path, watcher.PATH_EXTERNAL_RESCUE)
+
+    def test_auction_external_rescue_max_comes_from_external_estimate(self):
+        lot = self.lot(price=50, source_type="auction")
+        external = self.external(lot, [200, 210, 220])
+        result = watcher.arbitrate_market_evidence(self.gcc(lot, []), external)
+        self.assertEqual(result.path, watcher.PATH_EXTERNAL_RESCUE)
+        expected_max = external.estimate.low * (
+            1 - external.estimate.adaptive_discount_pct / 100
+        )
+        self.assertAlmostEqual(result.opportunity.max_recommended, expected_max)
+
+    def test_auction_confirmed_max_comes_from_prudent_combined_estimate(self):
+        lot = self.lot(price=40, source_type="auction")
+        gcc = self.gcc(lot, [100, 101, 102])
+        external = self.external(lot, [101, 102, 103])
+        combined, _ = watcher._conservative_source_validation_estimate(
+            gcc.estimate, external.estimate, "EBAY"
+        )
+        result = watcher.arbitrate_market_evidence(gcc, external)
+        self.assertEqual(result.path, watcher.PATH_GCC_EXTERNAL_CONFIRMED)
+        expected_max = combined.low * (
+            1 - combined.adaptive_discount_pct / 100
+        )
+        self.assertAlmostEqual(result.opportunity.max_recommended, expected_max)
+
+    def test_auction_above_external_max_has_no_notifiable_opportunity(self):
+        lot = self.lot(price=70, source_type="auction")
+        external = self.external(lot, [100, 101, 102])
+        external_max = external.estimate.low * (
+            1 - external.estimate.adaptive_discount_pct / 100
+        )
+        self.assertGreater(lot.current_price, external_max)
+        result = watcher.arbitrate_market_evidence(self.gcc(lot, []), external)
+        self.assertIsNone(result.opportunity)
+
+    def test_auction_external_notification_prints_exact_recommended_max(self):
+        lot = self.lot(price=50, source_type="auction")
+        result = watcher.arbitrate_market_evidence(
+            self.gcc(lot, []), self.external(lot, [200, 210, 220])
+        )
+        output = io.StringIO()
+        with patch.object(watcher, "NTFY_TOPIC", ""), redirect_stdout(output):
+            watcher.notify(
+                result.opportunity,
+                watcher.NotificationDecision(True, False, ("test plafond",)),
+            )
+        expected_line = (
+            f"Prix max conseillé : "
+            f"{result.opportunity.max_recommended:.2f} €"
+        )
+        self.assertEqual(output.getvalue().count(expected_line), 1)
+
+    def test_auction_15_and_5_minute_alerts_keep_same_recommended_max(self):
+        lot = self.lot(price=50, source_type="auction")
+        result = watcher.arbitrate_market_evidence(
+            self.gcc(lot, []), self.external(lot, [200, 210, 220])
+        )
+        op = result.opportunity
+        self.assertLessEqual(op.lot.current_price, op.max_recommended)
+        op.lot.minutes_to_end = 12
+        previous = {
+            "price": op.lot.current_price,
+            "discount_pct": op.discount_pct,
+            "minutes_to_end": 30,
+            "alert_15m_sent": False,
+            "final_alert_sent": False,
+        }
+        at_fifteen = watcher.notification_decision(op, previous)
+        self.assertIn("passage sous 15 minutes", at_fifteen.reasons)
+        state = watcher.updated_notification_state(
+            op, previous, at_fifteen, NOW.isoformat()
+        )
+        self.assertEqual(state["max_recommended"], op.max_recommended)
+
+        op.lot.minutes_to_end = 5
+        at_five = watcher.notification_decision(op, state)
+        self.assertTrue(at_five.final_alert)
+        final_state = watcher.updated_notification_state(
+            op, state, at_five, NOW.isoformat()
+        )
+        self.assertEqual(final_state["max_recommended"], op.max_recommended)
 
     def test_weak_gcc_rejection_is_not_an_external_hard_cap(self):
         lot = self.lot(price=80)
