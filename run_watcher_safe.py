@@ -173,6 +173,31 @@ def install_technical_alert_guard() -> None:
     watcher._technical_alert_required = guarded_technical_alert_required
 
 
+def estimated_all_queue_backlog_runs(
+    queue: watcher.FixedEconomicQueueDiagnostics,
+) -> int:
+    """Estimate runs needed to drain every queued item, including STALE.
+
+    Coverage semantics stay unchanged: only NEW/CHANGED/NEVER_EVALUATED are
+    coverage-critical. This helper only fixes the human-facing backlog metric so
+    a remaining STALE queue is not reported as zero runs.
+    """
+
+    backlog = queue.queued_backlog
+    if backlog <= 0:
+        return 0
+    budget = max(1, int(queue.processing_budget))
+    return ceil(backlog / budget)
+
+
+def install_fixed_queue_backlog_diagnostics() -> None:
+    """Make the production backlog-run estimate include stale reevaluations."""
+
+    watcher.FixedEconomicQueueDiagnostics.estimated_backlog_runs = property(
+        estimated_all_queue_backlog_runs
+    )
+
+
 def install_current_auction_discovery_diagnostics() -> None:
     """Keep V4 log/coverage text aligned with the installed item-level source."""
 
@@ -199,6 +224,7 @@ if __name__ == "__main__":
     # collector is preserved strictly as a conservative fallback.
     install_grade_arbitrage_guard()
     install_technical_alert_guard()
+    install_fixed_queue_backlog_diagnostics()
     install_v4_auction_item_discovery()
     install_current_auction_discovery_diagnostics()
     raise SystemExit(watcher.main())
