@@ -251,7 +251,11 @@ class JustTCGIdentityResolver:
             if not name_ok:
                 self.counters.rejected_name += 1
                 continue
-            set_score = _set_similarity(identity.set, card.get("set_name"), card.get("set"))
+            candidate_set_name = card.get("set_name")
+            if _normalize(candidate_set_name):
+                set_score = _set_similarity(identity.set, candidate_set_name, None)
+            else:
+                set_score = _set_similarity(identity.set, None, card.get("set"))
             if identity.set and set_score < 0.66:
                 self.counters.rejected_set += 1
                 continue

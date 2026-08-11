@@ -111,7 +111,7 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertEqual(resolved.identity.set, "Base Set")
         self.assertEqual(len(session.calls), 1)
         params = session.calls[0][1]["params"]
-        self.assertEqual(params["search"], "Charizard")
+        self.assertEqual(params["search"], "Charizard Pokemon TCG Base Set 4/102")
         self.assertEqual(params["card_number"], "4/102")
         self.assertNotIn("set", params)
         self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))
@@ -147,7 +147,7 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertTrue(resolved.matched)
         self.assertEqual(resolved.identity.card_name, "Charizard")
         self.assertEqual(resolver.counters.card_names_recovered, 1)
-        self.assertEqual(session.calls[0][1]["params"]["search"], "Base Set")
+        self.assertEqual(session.calls[0][1]["params"]["search"], "Base Set 4/102")
         self.assertEqual(session.calls[0][1]["params"]["card_number"], "4/102")
 
     def test_second_broader_search_can_rescue_first_empty_query(self):

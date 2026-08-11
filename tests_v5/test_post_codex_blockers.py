@@ -113,7 +113,7 @@ class PostCodexBlockerTests(unittest.TestCase):
     def test_hybrid_name_plus_set_can_use_poketrace_to_recover_missing_number(self):
         def pt_handler(url, params, _headers):
             self.assertTrue(url.endswith("/v1/cards"))
-            self.assertEqual(params["search"], "Charizard")
+            self.assertEqual(params["search"], "Charizard Base Set")
             self.assertNotIn("card_number", params)
             self.assertNotIn(
                 "set",

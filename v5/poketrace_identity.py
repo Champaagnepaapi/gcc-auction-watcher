@@ -25,9 +25,14 @@ from .poketrace_matching import (
     REJECT_VARIANT,
     CandidateMatchEvidence,
     _candidate_evidence,
+    _candidate_score_and_rejection,
+    _card_number_parts,
     _normalize,
     _normalize_card_name,
     _normalize_card_number,
+    _partial_card_number_equivalent,
+    _set_similarity,
+    _variant_family,
 )
 
 
@@ -156,7 +161,7 @@ def _search_strategies(
     strategies: list[tuple[str, str, bool]] = []
     contextual_parts = tuple(value for value in (name, set_name, number) if value)
     if len(contextual_parts) >= 2:
-        strategies.append(("contextual", " ".join(contextual_parts), False))
+        strategies.append(("contextual", " ".join(contextual_parts), bool(number)))
 
     primary_search = name or set_name or number
     if primary_search and number:
