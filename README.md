@@ -243,10 +243,13 @@ agrégé suivant :
   `UNAVAILABLE` ;
 - échantillon global de 20 annonces uniques sur US/DE/FR/IT/ES, 20 appels
   `getItem` réussis et 19 RAW acceptées ;
-- US/DE/IT/ES : taxonomie et recherche OK, 5 annonces sélectionnées par marché ;
-  ES comptait aussi 3 doublons cross-market ;
+- US : taxonomie/recherche OK, 5 sélectionnées, `USD=5` ; DE : OK, 5,
+  `EUR=5` ; IT : OK, 5, `EUR=5` ; ES : OK, 5, `EUR=5` et 3 doublons
+  cross-market ;
 - FR : taxonomie HTTP 200/200, mais `SAFE_INDIVIDUAL_CATEGORY_MISSING` et
   Browse correctement `NOT_CALLED` ;
+- éligibilité livraison Suisse et estimation de livraison disponibles pour
+  les 20 annonces sélectionnées ;
 - identité : 9 utilisables, 2 ambiguës, 9 insuffisantes ; TCGdex 0 hit ;
   matching visuel 14 tentatives/5 sauvetages et OCR 3 tentatives/0 sauvetage ;
 - PokeTrace : 0 identité exacte, 0×429, 0 panne de requête ; 5 snapshots
