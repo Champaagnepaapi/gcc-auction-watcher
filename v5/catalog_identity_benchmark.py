@@ -4,13 +4,18 @@ import hashlib
 import os
 import sys
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Optional
 
 from .card_identity_catalog import MultilingualPokemonCardResolver, render_card_catalog_counters
 from .ebay import RAW_CONDITION_ID, parse_ebay_item, resolve_card_identity
 from .ebay_live_diagnostic import EbayLiveDiagnostic, MarketplaceAggregate
 from .justtcg_identity import JustTCGIdentityResolver, render_justtcg_counters
-from .poketrace_matching import _normalize, _normalize_card_name, _normalize_card_number
+from .poketrace_matching import (
+    _card_number_parts,
+    _normalize_card_name,
+    _normalize_card_number,
+    _set_similarity,
+)
 
 
 @dataclass
@@ -26,18 +31,51 @@ class BenchmarkCounters:
     justtcg_unresolved: int = 0
     both_exact: int = 0
     exact_consensus: int = 0
+    exact_enrichment_consensus: int = 0
     exact_disagreement: int = 0
+    disagreement_name: int = 0
+    disagreement_set: int = 0
+    disagreement_number: int = 0
     tcgdex_only: int = 0
     justtcg_only: int = 0
     neither_exact: int = 0
 
 
-def _core_key(identity) -> tuple[str, str, str]:
-    return (
-        _normalize_card_name(identity.card_name),
-        _normalize(identity.set),
-        _normalize_card_number(identity.card_number),
+def _number_compatible(left: object, right: object) -> tuple[bool, bool]:
+    left_norm = _normalize_card_number(left)
+    right_norm = _normalize_card_number(right)
+    if not left_norm or not right_norm:
+        return False, False
+    if left_norm == right_norm:
+        return True, False
+
+    left_num, left_den = _card_number_parts(left)
+    right_num, right_den = _card_number_parts(right)
+    if not left_num or left_num != right_num:
+        return False, False
+    if left_den and right_den:
+        return left_den == right_den, False
+    # Same printed numerator, exactly one source adds the denominator. Treat as
+    # compatible canonical enrichment, never as a hard disagreement.
+    return True, bool(left_den) != bool(right_den)
+
+
+def _core_compatibility(left, right) -> tuple[bool, bool, tuple[str, ...]]:
+    failures = []
+    if _normalize_card_name(left.card_name) != _normalize_card_name(right.card_name):
+        failures.append("name")
+
+    set_score = _set_similarity(left.set, right.set, None)
+    if set_score < 0.86:
+        failures.append("set")
+
+    number_ok, number_enrichment = _number_compatible(
+        left.card_number, right.card_number
     )
+    if not number_ok:
+        failures.append("number")
+
+    return not failures, number_enrichment, tuple(failures)
 
 
 def _fingerprint(item_ids: Iterable[str]) -> str:
@@ -116,10 +154,17 @@ def run_benchmark(
 
         if tcg_exact and just_exact:
             counters.both_exact += 1
-            if _core_key(tcg.identity) == _core_key(just.identity):
+            compatible, enrichment, failures = _core_compatibility(
+                tcg.identity, just.identity
+            )
+            if compatible:
                 counters.exact_consensus += 1
+                counters.exact_enrichment_consensus += int(enrichment)
             else:
                 counters.exact_disagreement += 1
+                counters.disagreement_name += int("name" in failures)
+                counters.disagreement_set += int("set" in failures)
+                counters.disagreement_number += int("number" in failures)
         elif tcg_exact:
             counters.tcgdex_only += 1
         elif just_exact:
@@ -156,8 +201,15 @@ def render_benchmark(
         f"JustTCG ambiguous: {counters.justtcg_ambiguous}",
         f"JustTCG unresolved: {counters.justtcg_unresolved}",
         f"both exact: {counters.both_exact}",
-        f"exact consensus: {counters.exact_consensus}",
-        f"exact disagreement: {counters.exact_disagreement}",
+        f"safe exact consensus: {counters.exact_consensus}",
+        (
+            "consensus with denominator/canonical enrichment: "
+            f"{counters.exact_enrichment_consensus}"
+        ),
+        f"hard exact disagreement: {counters.exact_disagreement}",
+        f"hard disagreement - name: {counters.disagreement_name}",
+        f"hard disagreement - set: {counters.disagreement_set}",
+        f"hard disagreement - number: {counters.disagreement_number}",
         f"TCGdex-only exact: {counters.tcgdex_only}",
         f"JustTCG-only exact: {counters.justtcg_only}",
         f"neither exact: {counters.neither_exact}",
