@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 
+from .card_number_ocr import LocalCardNumberOCR
 from .models import CardIdentity
 from .poketrace_identity import (
     REQUEST_OK,
@@ -41,6 +42,8 @@ class VisualIdentityCounters:
     card_number_overrides: int = 0
     ambiguities_cleared: int = 0
     market_snapshots_primed: int = 0
+    ocr_rescued: int = 0
+    ocr_market_snapshots_primed: int = 0
 
 
 @dataclass(frozen=True)
@@ -74,11 +77,11 @@ class LocalVisualIdentityResolver:
     and never replaces a clean structured identity. It asks PokeTrace for a
     small candidate set, downloads the canonical scan URLs returned by the API,
     and compares them locally with the eBay image using perceptual/edge/color
-    signatures. No OCR service, model API, image persistence, bid or purchase is
-    involved.
+    signatures. If that image matcher cannot separate the candidates, an
+    optional local OCR pass reads only lower-card strips and may select a
+    collector number that already exists in the same PokeTrace candidate pool.
 
-    If visual evidence would override a structured eBay card number, the score
-    and separation requirements are deliberately stricter.
+    No model API, image persistence, bid or purchase is involved.
     """
 
     def __init__(
@@ -94,6 +97,7 @@ class LocalVisualIdentityResolver:
         minimum_margin: Optional[float] = None,
         override_number_minimum_score: Optional[float] = None,
         override_number_minimum_margin: Optional[float] = None,
+        card_number_ocr: Optional[LocalCardNumberOCR] = None,
     ) -> None:
         self.poketrace_identity = poketrace_identity
         self.provider = poketrace_identity.provider
@@ -145,6 +149,7 @@ class LocalVisualIdentityResolver:
             if override_number_minimum_margin is not None
             else float(os.getenv("V5_VISUAL_IDENTITY_OVERRIDE_NUMBER_MIN_MARGIN", "0.12"))
         )
+        self.card_number_ocr = card_number_ocr or LocalCardNumberOCR()
         self.counters = VisualIdentityCounters()
         self._scan_signature_cache: dict[str, Tuple[_ImageSignature, ...]] = {}
 
@@ -190,6 +195,7 @@ class LocalVisualIdentityResolver:
             return VisualIdentityResolution(identity)
 
         ebay_signatures = []
+        ebay_image_bytes = []
         for image_url in usable_image_urls:
             image_bytes = self.ebay_image_fetcher(image_url)
             if image_bytes is None:
@@ -203,6 +209,7 @@ class LocalVisualIdentityResolver:
             if signatures:
                 self.counters.ebay_images_downloaded += 1
                 ebay_signatures.extend(signatures)
+                ebay_image_bytes.append(image_bytes)
 
         if not ebay_signatures:
             self.counters.no_ebay_image += 1
@@ -222,7 +229,8 @@ class LocalVisualIdentityResolver:
 
         if not scored:
             self.counters.low_confidence += 1
-            return VisualIdentityResolution(identity)
+            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            return ocr or VisualIdentityResolution(identity)
 
         scored.sort(key=lambda value: (value[0], value[1]), reverse=True)
         best_score, _metadata_score, best = scored[0]
@@ -247,9 +255,15 @@ class LocalVisualIdentityResolver:
 
         if best_score < score_floor:
             self.counters.low_confidence += 1
+            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            if ocr is not None:
+                return ocr
             return VisualIdentityResolution(identity, score=best_score, margin=margin)
         if len(scored) > 1 and margin < margin_floor:
             self.counters.close_second += 1
+            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            if ocr is not None:
+                return ocr
             return VisualIdentityResolution(identity, score=best_score, margin=margin)
 
         resolved = replace(
@@ -258,6 +272,9 @@ class LocalVisualIdentityResolver:
         )
         if not (resolved.card_name and resolved.set and resolved.card_number):
             self.counters.low_confidence += 1
+            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            if ocr is not None:
+                return ocr
             return VisualIdentityResolution(identity, score=best_score, margin=margin)
 
         if overrides_number:
@@ -265,8 +282,6 @@ class LocalVisualIdentityResolver:
         if identity.ambiguities:
             self.counters.ambiguities_cleared += 1
 
-        # Reuse this exact PokeTrace card payload for the later RAW valuation;
-        # the visual rescue must not spend another market API call for the card.
         self.poketrace_identity._prime_market_snapshot(identity, resolved, best.payload)
         self.counters.market_snapshots_primed += 1
         self.counters.rescued += 1
@@ -279,11 +294,56 @@ class LocalVisualIdentityResolver:
             margin=margin,
         )
 
+    def _try_ocr_rescue(
+        self,
+        identity: CardIdentity,
+        candidates: Sequence[_VisualCandidate],
+        ebay_image_bytes: Sequence[bytes],
+    ) -> Optional[VisualIdentityResolution]:
+        result = self.card_number_ocr.resolve(
+            ebay_image_bytes,
+            tuple(candidate.payload for candidate in candidates),
+            identity.card_number,
+        )
+        if not result.matched or result.candidate is None:
+            return None
+
+        retained_ambiguities = tuple(
+            value
+            for value in identity.ambiguities
+            if not (
+                value.startswith("card_number:")
+                or value.startswith("card_name: resolution set+number ambigue")
+                or value == "catalog_identity_ambiguous"
+            )
+        )
+        resolved = replace(
+            _resolved_identity(identity, result.candidate),
+            ambiguities=retained_ambiguities,
+        )
+        if (
+            not (resolved.card_name and resolved.set and resolved.card_number)
+            or resolved.ambiguities
+        ):
+            return None
+
+        self.poketrace_identity._prime_market_snapshot(
+            identity, resolved, result.candidate
+        )
+        self.counters.ocr_rescued += 1
+        self.counters.ocr_market_snapshots_primed += 1
+        self.provider.counters.us_matches += 1
+        return VisualIdentityResolution(
+            resolved,
+            matched=True,
+            card_id=str(result.candidate.get("id") or "").strip() or None,
+        )
+
     @staticmethod
     def _visual_search_text(identity: CardIdentity) -> str:
         # The card number is intentionally not used as the primary visual search
-        # discriminator: the latest live run showed that this is the field most
-        # often conflicting with otherwise plausible PokeTrace candidates.
+        # discriminator: live runs show that this is the field most often
+        # conflicting with otherwise plausible PokeTrace candidates.
         parts = [
             str(value).strip()
             for value in (identity.card_name, identity.set)
@@ -421,16 +481,19 @@ class LocalVisualIdentityResolver:
 
 def render_visual_identity_counters(resolver: LocalVisualIdentityResolver) -> str:
     counters = resolver.counters
+    ocr = resolver.card_number_ocr.counters
     return "\n".join(
         (
             "=== V5 LOCAL VISUAL IDENTITY RESCUE ===",
             f"enabled: {str(resolver.enabled).lower()}",
             "scope: ambiguous/insufficient RAW listings only",
             "method: local perceptual + edge + color scan matching",
-            "OCR/model API calls: 0",
+            "model API calls: 0",
             f"attempted: {counters.attempted}",
             f"PokeTrace candidate searches: {counters.api_searches}",
             f"candidate searches unavailable: {counters.api_unavailable}",
+            f"no visual candidates after metadata filter: {counters.no_candidates}",
+            f"no usable eBay image after fetch: {counters.no_ebay_image}",
             f"candidate scans considered: {counters.candidates_considered}",
             f"candidate scans downloaded: {counters.candidate_images_downloaded}",
             f"candidate image failures: {counters.candidate_image_failures}",
@@ -439,10 +502,22 @@ def render_visual_identity_counters(resolver: LocalVisualIdentityResolver) -> st
             f"low-confidence rejects: {counters.low_confidence}",
             f"close-second/ambiguous rejects: {counters.close_second}",
             f"visual identities rescued: {counters.rescued}",
-            f"structured card-number overrides: {counters.card_number_overrides}",
+            f"visual structured card-number overrides: {counters.card_number_overrides}",
             f"ambiguities cleared by visual evidence: {counters.ambiguities_cleared}",
             f"market snapshots primed from visual match: {counters.market_snapshots_primed}",
-            "persisted images: 0",
+            "--- targeted local card-number OCR fallback ---",
+            f"OCR enabled: {str(resolver.card_number_ocr.config.enabled).lower()}",
+            f"OCR attempted: {ocr.attempted}",
+            f"OCR calls: {ocr.ocr_calls}",
+            f"OCR failures: {ocr.ocr_failures}",
+            f"OCR candidate-matching tokens seen: {ocr.candidate_tokens_seen}",
+            f"OCR consensus found: {ocr.consensus_found}",
+            f"OCR rejected no consensus: {ocr.rejected_no_consensus}",
+            f"OCR rejected duplicate candidate number: {ocr.rejected_candidate_ambiguous}",
+            f"OCR identities rescued: {counters.ocr_rescued}",
+            f"OCR structured card-number overrides: {ocr.structured_number_overrides}",
+            f"market snapshots primed from OCR match: {counters.ocr_market_snapshots_primed}",
+            "persisted images/OCR text: 0",
             "persisted eBay identifiers: 0",
         )
     )
@@ -590,7 +665,6 @@ def _bit_similarity(left: Tuple[bool, ...], right: Tuple[bool, ...]) -> float:
 def _histogram_similarity(left: Tuple[float, ...], right: Tuple[float, ...]) -> float:
     if not left or len(left) != len(right):
         return 0.0
-    # Each RGB channel integrates to 1.0; divide the intersection by 3.
     return sum(min(a, b) for a, b in zip(left, right)) / 3.0
 
 
