@@ -9,7 +9,7 @@ Cette version tourne dans **GitHub Actions** : aucun Mac ne doit rester allumé.
 - découverte prix : **0 à 100 €** ;
 - enchères : timer individuel **≤ 60 minutes** ;
 - décote minimale : **30 %**, relevée automatiquement lorsque les comparables sont faibles ;
-- scan : **toutes les 10 minutes, 24/7** ;
+- scan : **toutes les 10 minutes, 24/7**, déclenché extérieurement par **Cron-job.org → `workflow_dispatch`** ;
 - notification : **ntfy** ;
 - aucun achat, aucune enchère et aucun checkout automatique.
 
@@ -17,18 +17,26 @@ La cible économique historique était principalement 10–100 €. La découver
 
 Les produits scellés/non-cartes sont exclus : boosters, packs, displays, boxes, ETB, coffrets, blisters, bundles, decks, tins, cases, etc.
 
-## Fréquence GitHub Actions
+## Fréquence de production
 
-Le workflow `.github/workflows/watcher.yml` utilise :
+La cadence de production **n'utilise plus `schedule:` dans GitHub Actions**. Les runs planifiés natifs GitHub se sont révélés trop irréguliers pour ce watcher, avec parfois de longues périodes sans exécution.
+
+Le workflow `.github/workflows/watcher.yml` conserve uniquement :
 
 ```yaml
-schedule:
-  - cron: "3,13,23,33,43,53 * * * *"
+on:
+  workflow_dispatch:
 ```
 
-Les minutes `03,13,23,33,43,53` évitent les pics habituels du début de l'heure. GitHub Actions n'est pas un ordonnanceur temps réel : un run planifié peut parfois démarrer avec un léger retard.
+Un job externe **Cron-job.org** appelle ce `workflow_dispatch` toutes les 10 minutes. C'est donc normal que les runs de production soient journalisés avec :
 
-Le workflow peut également être lancé manuellement via **Actions → GCC Auction Watcher → Run workflow**.
+```text
+trigger=workflow_dispatch
+```
+
+Ne pas réajouter un `schedule:` GitHub en parallèle : cela créerait des doubles scans inutiles lorsque le cron externe fonctionne.
+
+Le workflow peut toujours être lancé manuellement via **Actions → GCC Auction Watcher → Run workflow**.
 
 ## Architecture de découverte
 
@@ -146,15 +154,15 @@ Un résultat `0 opportunities` n'est présenté comme fiable que si les invarian
 
 ## Journal issue #1
 
-Chaque run V4, planifié ou manuel, écrit un commentaire dans l'**issue #1**.
+Chaque run V4 écrit un commentaire dans l'**issue #1**.
 
-Exemple de champs :
+Exemple de champs en production :
 
 ```text
 timestamp_utc=...
 run_id=...
 run_attempt=1
-trigger=schedule
+trigger=workflow_dispatch
 commit_sha=...
 scan_status=success
 scan_exit_code=0
@@ -168,7 +176,7 @@ auction_ending_soon=...
 auction_fallback_used=false
 ```
 
-`trigger=schedule` permet de distinguer un vrai cron de production d'un `workflow_dispatch` manuel.
+`trigger=workflow_dispatch` est attendu pour la cadence Cron-job.org comme pour un lancement manuel depuis l'interface GitHub. La distinction entre les deux n'est donc pas portée par `trigger`; le registre sert surtout à contrôler la cadence, le commit, l'état du scan et les compteurs auction.
 
 ## État et anti-spam
 
@@ -258,7 +266,13 @@ GCC_SESSION_B64
 
 Ne jamais committer leur valeur dans le repository.
 
-### 3. Lancer un test manuel
+### 3. Cadence externe Cron-job.org
+
+Configurer Cron-job.org pour appeler l'action GitHub `workflow_dispatch` toutes les 10 minutes. Le secret/token utilisé par ce service doit rester exclusivement dans sa configuration sécurisée et ne jamais être enregistré dans le repository.
+
+Le workflow GitHub lui-même ne contient pas de `schedule:` de production.
+
+### 4. Lancer un test manuel
 
 Dans l'onglet **Actions** :
 
