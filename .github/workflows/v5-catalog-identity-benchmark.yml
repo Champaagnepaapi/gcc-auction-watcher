@@ -2,18 +2,12 @@ name: V5 Catalog Identity Benchmark
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - agent/v5-poketrace-cardmarket-market-data
-    paths:
-      - .github/workflows/v5-catalog-identity-benchmark.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   benchmark:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -27,13 +21,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
+
       - name: Assert PokeTrace is unavailable to this job
         shell: bash
         run: |
@@ -42,101 +39,6 @@ jobs:
             exit 1
           fi
           echo "PokeTrace secret injected: 0"
+
       - name: Run same-sample TCGdex vs JustTCG benchmark
         run: python -m v5.catalog_identity_benchmark
-
-  refresh-readme-handoff:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: docs/v5-variant-tcgdex-justtcg-handoff
-          fetch-depth: 0
-      - name: Refresh canonical V5 handoff only
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('README.md')
-          text = p.read_text(encoding='utf-8')
-          start = text.index('### V5 — expérimental, PR #8, NE PAS MERGER')
-          end = text.index('### Règles de gouvernance du projet', start)
-          section = '''### V5 — expérimental, PR #8, NE PAS MERGER
-
-- PR **#8**, branche exacte : `agent/v5-poketrace-cardmarket-market-data`.
-- V5 reste un diagnostic **RAW eBay** séparé de la V4 graded GCC.
-- Architecture : **TCGdex principal multilingue → PokeTrace Free fallback identité + RAW US market → Pokémon TCG API fallback → arbitres locaux visuel/OCR pour `AMBIGUOUS/INSUFFICIENT`**.
-- **JustTCG** a été benchmarké sur les mêmes samples : seconde opinion/fallback expérimental, **pas principal**.
-- **Scrydex/Vision** reste réservé aux ambiguïtés persistantes après la chaîne gratuite.
-- Workflows V5 live/benchmark : **`workflow_dispatch` uniquement** hors trigger de test ponctuel immédiatement retiré.
-- PokeTrace Free : 250 req/j, US + RAW uniquement, cadence affichée et imposée **≥2.25 s**, pas de Cardmarket EU/graded en Free.
-- Données listing-level eBay/PokeTrace/JustTCG et images : mémoire-only ; ne pas persister/loguer itemId, titre, URL ou prix individuel.
-
-#### Dernier live PokeTrace de référence — avant les nouveaux correctifs
-
-Dernier PokeTrace Free : **run `31483091017` / job `93752247632`**, fingerprint `c48b11c284cf453b` : eBay 20/20, RAW 19, usable **11/20**, ambiguous 4, insufficient 5 ; TCGdex 16 requêtes/**2 hits**/3 failures ; PokeTrace 12 identities / 30 HTTP / **189 candidats uniques / 0 exact** ; nom/set/numéro compatibles 21/13/5 ; nom+set 2, nom+numéro 1, set+numéro 3, **les trois 1**, `rejected variant=1` ; visual/OCR rescues 0 ; market values 0 ; achats/bids/checkout/CardGrader 0.
-
-**Aucun nouveau run PokeTrace live n'a été effectué depuis les correctifs ci-dessous.** Leur gain live sur les 189 candidats reste donc à mesurer, pas à supposer.
-
-#### Variantes PokeTrace/eBay — nouveau modèle
-
-Le matcher sépare désormais :
-
-- finish : normal/standard, holo/holographic/holofoil, reverse holo ;
-- edition : 1st Edition, Unlimited, Shadowless ;
-- promo : preuve par variante/rareté/set ;
-- finishes spéciaux conservateurs : Cosmos, Galaxy, Cracked Ice, Stamped, Poké Ball, Master Ball, etc.
-
-Holo ≠ reverse ; éditions contradictoires bloquent ; édition premium manquante jamais inventée ; finition spéciale non corroborée bloque. Le variant ne remplace jamais nom+set+numéro. Les compteurs distinguent désormais `all three + variant compatible`, `all three but variant blocked`, matches finish/edition/promo, metadata missing et conflits détaillés.
-
-#### Retrieval PokeTrace — plus pertinent sans assouplir l'acceptation
-
-Ordre actuel : recherche contextuelle `name + set + number` ; `card_number` structuré lorsqu'il existe ; fallbacks bornés broad-name/broad-number/broad-set. Aucun nom d'affichage n'est envoyé comme `set=` sans slug PokeTrace vérifié. L'acceptation locale reste stricte nom/set/numéro/variant + gagnant unique. **Ce changement n'est pas encore live-validé.**
-
-#### TCGdex renforcé — reste principal
-
-- langues TCGdex réellement supportées ; sinon métadonnées anglaises sans modifier `CardIdentity.language` ;
-- set par nom/`set.id` ;
-- formes déterministes de `localId` (`004` puis `4`, casse alphanumérique) ;
-- lookup set/localId puis fallback direct `setId-localId` ;
-- dénominateurs complets contradictoires bloquants ;
-- `variants.firstEdition/holo/normal/reverse/wPromo` seulement pour détecter une impossibilité, jamais inventer la variante du listing ;
-- failures séparées transport/HTTP/JSON/set catalogue/card lookup.
-
-#### Benchmark final même sample : TCGdex vs JustTCG
-
-**Run `31489148268` / job `93771289624`**, fingerprint **`7f440e8cb080097e`**. PokeTrace non injecté/non instancié. eBay 20/20, RAW 20, core suffisant 14.
-
-**TCGdex** : **5 exacts**, 4 ambigus, 11 unresolved ; 34 requests, **0 failure** ; canonical name/set/number 3/4/1 ; denominator conflicts 2 ; set aliases unique/ambiguous 8/1 ; no-match set/card 2/3 ; localId alternatives 5 essais/**3 hits** ; direct-card fallback 10/0 ; variant-impossible 1 ; unsupported-language fallback 2.
-
-**JustTCG set-aware** : 2 set-catalog queries, **655 sets** en cache ; mappings uniques/ambigus/no-match 4/3/2 ; 9 card queries ; **0 exact**, 3 ambigus, 17 unresolved ; failures/429 **0/0** grâce à cadence Free ≥6.25 s ; 6 candidats, 5 rejetés nom, 1 core-compatible rejeté variant.
-
-Comparaison : both exact 0, safe consensus 0, hard disagreement 0, **TCGdex-only exact 5**, JustTCG-only 0. Donc **TCGdex reste principal** ; JustTCG reste second avis expérimental. Aucun prix JustTCG n'entre dans l'économie V5. JustTCG charge `/sets` une fois par jeu, résout un set ID stable puis filtre `/cards` par `q + set ID + number`; un 429 transitoire peut utiliser `Retry-After` + un retry, jamais les quotas daily/monthly.
-
-#### CI finale
-
-**Run `31489502796` / job `93772388887`** : V4 **167/167**, V5 **270/270**, compileall OK, YAML **11/11** pendant la CI (workflow temporaire ensuite supprimé), `git diff --check` OK, V4 identique à `main`, branche V5 behind=0 au moment du run, live PokeTrace/JustTCG/eBay dans la CI **0/0/0**, secrets 0, achats/bids/checkout/CardGrader 0.
-
-#### Prochaines actions V5
-
-**Ne pas merger PR #8.** Faire d'abord un audit offline indépendant des règles variant + contextual PokeTrace + TCGdex + JustTCG. Ensuite seulement : **un unique PokeTrace Free de 20 listings** pour mesurer le nouveau ratio candidats compatibles/exacts (`all three`, variant-compatible, raisons de rejet). Garder TCGdex principal, JustTCG second avis, Scrydex/Vision si ambiguïtés matérielles. Pas de Pro/Cardmarket avant preuve Free exploitable. La cible `15+/20` reste aspiratoire, jamais au prix de faux positifs.
-
-'''
-          p.write_text(text[:start] + section + text[end:], encoding='utf-8')
-          text = p.read_text(encoding='utf-8')
-          bottom = text.index('## V5 — expérimental, pas en production')
-          tail = '''## V5 — expérimental, pas en production
-
-La V5 reste séparée de la V4. **TCGdex** reste principal (dernier même-sample : 5 exacts contre 0 JustTCG). **PokeTrace Free** reste fallback identité + RAW US market ; son retrieval contextuel et son modèle de variantes sont validés offline mais pas encore re-testés en live. **JustTCG** reste benchmark/seconde opinion set-aware sans valeur économique. PR #8 reste draft/non mergée. Scrydex/Vision reste dans le radar. Aucun achat, enchère ou checkout automatique.
-'''
-          p.write_text(text[:bottom] + tail, encoding='utf-8')
-          PY
-          rm -f .github/workflows/docs-v5-handoff-temp.yml
-          git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A README.md .github/workflows/docs-v5-handoff-temp.yml
-          git commit -m "Docs: refresh canonical V5 handoff after resolver benchmarks"
-          git push origin HEAD:docs/v5-variant-tcgdex-justtcg-handoff
