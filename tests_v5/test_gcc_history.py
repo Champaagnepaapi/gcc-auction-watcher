@@ -660,7 +660,14 @@ class GCCProviderIntegrationTests(unittest.TestCase):
         market = PipelineMarketAggregate()
         economic = PipelineEconomicAggregate()
         diagnostic._evaluate_candidate(
-            _PipelineCandidate(listing, charizard(), "BACK_IMAGE_UNKNOWN"),
+            _PipelineCandidate(
+                listing,
+                charizard(),
+                "BACK_IMAGE_UNKNOWN",
+                "EBAY_US",
+                True,
+            ),
+            MarketplaceAggregate("EBAY_US"),
             market,
             economic,
         )

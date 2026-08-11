@@ -103,6 +103,7 @@ class FakeLiveSession:
         search_responses=None,
         detail_payloads=None,
         taxonomy_categories=None,
+        taxonomy_names=None,
         taxonomy_failures=None,
         detail_failures=None,
         probe_responses=None,
@@ -122,6 +123,10 @@ class FakeLiveSession:
         self.taxonomy_categories = taxonomy_categories or {
             "EBAY_US": "183454",
             "EBAY_CH": "183454",
+        }
+        self.taxonomy_names = taxonomy_names or {
+            marketplace: "CCG Individual Cards"
+            for marketplace in self.taxonomy_categories
         }
         self.taxonomy_failures = taxonomy_failures or {}
         self.detail_failures = detail_failures or {}
@@ -152,7 +157,16 @@ class FakeLiveSession:
             category_id = self.taxonomy_categories[marketplace]
             return FakeResponse(
                 200,
-                {"categorySuggestions": [{"category": {"categoryId": category_id}}]},
+                {
+                    "categorySuggestions": [
+                        {
+                            "category": {
+                                "categoryId": category_id,
+                                "categoryName": self.taxonomy_names[marketplace],
+                            }
+                        }
+                    ]
+                },
             )
         if url == SEARCH_URL:
             params = kwargs.get("params", {})
@@ -181,12 +195,18 @@ class FakeLiveSession:
 def run_successfully(item=None, session=None, **diagnostic_kwargs):
     chosen = item or complete_item()
     if session is None:
-        response = FakeResponse(
-            200, {"total": 1, "itemSummaries": [search_summary(chosen)]}
-        )
+        search_responses = {}
+        detail_payloads = {}
+        for marketplace in MARKETPLACES:
+            market_item = deepcopy(chosen)
+            market_item["itemId"] = f"{chosen['itemId']}-{marketplace}"
+            search_responses[marketplace] = FakeResponse(
+                200, {"total": 1, "itemSummaries": [search_summary(market_item)]}
+            )
+            detail_payloads[market_item["itemId"]] = market_item
         session = FakeLiveSession(
-            search_responses={marketplace: response for marketplace in MARKETPLACES},
-            detail_payloads={chosen["itemId"]: chosen},
+            search_responses=search_responses,
+            detail_payloads=detail_payloads,
         )
     diagnostic = EbayLiveDiagnostic(
         "client-id-secret-value",
@@ -450,14 +470,18 @@ class LiveDiagnosticPipelineTests(unittest.TestCase):
         search_calls = [call for call in session.gets if call[0] == SEARCH_URL]
         self.assertEqual(len(search_calls), 2)
         for _, kwargs in search_calls:
-            self.assertEqual(kwargs["params"]["filter"], "conditionIds:{4000}")
+            marketplace = kwargs["headers"]["X-EBAY-C-MARKETPLACE-ID"]
+            expected_filter = "conditionIds:{4000}"
+            if marketplace != "EBAY_CH":
+                expected_filter += ",deliveryCountry:CH"
+            self.assertEqual(kwargs["params"]["filter"], expected_filter)
             self.assertEqual(kwargs["params"]["limit"], str(RESULT_LIMIT))
             self.assertEqual(kwargs["params"]["q"], "Pokémon")
         get_calls = [call for call in session.gets if "/buy/browse/v1/item/" in call[0]]
-        self.assertEqual(len(get_calls), 1)
+        self.assertEqual(len(get_calls), 2)
         self.assertEqual(get_calls[0][1]["params"], {"fieldgroups": "PRODUCT"})
 
-    def test_get_item_is_capped_at_twenty_calls_per_marketplace(self):
+    def test_get_item_is_capped_at_twenty_calls_globally(self):
         detail_payloads = {}
         search_responses = {}
         for marketplace in MARKETPLACES:
@@ -481,16 +505,18 @@ class LiveDiagnosticPipelineTests(unittest.TestCase):
         )
         self.assertEqual(
             [value.get_item_calls for value in summary.marketplaces],
-            [RESULT_LIMIT, RESULT_LIMIT],
+            [RESULT_LIMIT // 2, RESULT_LIMIT // 2],
         )
+        self.assertEqual(sum(value.get_item_calls for value in summary.marketplaces), 20)
 
     def test_cross_marketplace_duplicate_is_deduplicated_before_get_item(self):
-        summary, _, session, _ = run_successfully()
+        session = FakeLiveSession()
+        summary, _, session, _ = run_successfully(session=session)
         self.assertEqual(summary.duplicate_items, 1)
         self.assertEqual(summary.unique_items, 1)
         get_calls = [call for call in session.gets if "/buy/browse/v1/item/" in call[0]]
         self.assertEqual(len(get_calls), 1)
-        self.assertEqual([value.get_item_success for value in summary.marketplaces], [1, 1])
+        self.assertEqual([value.get_item_success for value in summary.marketplaces], [1, 0])
 
     def test_identity_coverage_improves_after_get_item(self):
         summary, _, _, _ = run_successfully()
@@ -619,11 +645,11 @@ class LiveDiagnosticImageTests(unittest.TestCase):
             detail_payloads={item["itemId"]: item},
         )
         summary, _, _, _ = run_successfully(session=session)
-        self.assertEqual(summary.images.search_primary, 2)
-        self.assertEqual(summary.images.search_additional, 2)
-        self.assertEqual(summary.images.get_item_primary, 2)
-        self.assertEqual(summary.images.get_item_additional, 2)
-        self.assertEqual(summary.images.total_images, 6)
+        self.assertEqual(summary.images.search_primary, 1)
+        self.assertEqual(summary.images.search_additional, 1)
+        self.assertEqual(summary.images.get_item_primary, 1)
+        self.assertEqual(summary.images.get_item_additional, 1)
+        self.assertEqual(summary.images.total_images, 3)
 
     def test_multiple_unlabelled_images_are_candidate_never_confirmed_back(self):
         summary, _, _, _ = run_successfully()
@@ -701,13 +727,14 @@ class LiveDiagnosticFailureTests(unittest.TestCase):
         self.assertEqual(ch.taxonomy_error_type, "REQUEST")
         self.assertEqual(ch.taxonomy_error_code, "62000")
         self.assertNotIn("private", rendered)
-        ch_search = next(
+        ch_searches = [
             call
             for call in session.gets
             if call[0] == SEARCH_URL
             and call[1]["headers"]["X-EBAY-C-MARKETPLACE-ID"] == "EBAY_CH"
-        )
-        self.assertNotIn("category_ids", ch_search[1]["params"])
+        ]
+        self.assertEqual(ch_searches, [])
+        self.assertEqual(ch.empty_reason, "marketplace unavailable/incomplete")
 
     def test_get_item_404_and_timeout_fall_back_to_search_in_memory(self):
         us_item = complete_item()

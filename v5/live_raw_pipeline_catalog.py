@@ -277,7 +277,13 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         _progress(
             f"identity record {self._identity_records_seen}: usable via {source}"
         )
-        return _PipelineCandidate(listing, identity, back_state), True
+        return _PipelineCandidate(
+            listing,
+            identity,
+            back_state,
+            record.marketplace_id,
+            record.ship_to_ch_eligible,
+        ), True
 
     @staticmethod
     def _count_identity(

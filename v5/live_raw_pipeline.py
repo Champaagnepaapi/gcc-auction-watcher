@@ -22,8 +22,9 @@ from .ebay import (
     resolve_card_identity,
 )
 from .ebay_live_diagnostic import (
-    MARKETPLACES,
+    DEFAULT_LIVE_MARKETPLACES,
     RESULT_LIMIT,
+    SUPPORTED_MARKETPLACES,
     EbayLiveDiagnostic,
     MarketplaceAggregate,
     OAuthAggregate,
@@ -73,33 +74,46 @@ IDENTITY_INSUFFICIENT = "IDENTITY_INSUFFICIENT"
 MANUAL_MARKET_VALIDATION_REQUIRED = "MANUAL_MARKET_VALIDATION_REQUIRED"
 PRODUCT_RESEARCH_MODE = "MANUAL_VALIDATION_ONLY"
 NO_PERSISTENCE_MODE = "NO_PERSISTENCE / MEMORY_ONLY"
+ECONOMICS_DEFERRED_CURRENCY_POLICY = "ECONOMICS_DEFERRED_CURRENCY_POLICY"
 RAW_DISCOVERY_INTERVAL_MINUTES = 10
 
 
 @dataclass(frozen=True)
 class LiveRawPipelineConfig:
     result_limit: int = RESULT_LIMIT
-    include_ebay_ch: bool = False
+    marketplaces: Tuple[str, ...] = DEFAULT_LIVE_MARKETPLACES
+    delivery_postal_code: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.result_limit <= RESULT_LIMIT:
             raise ValueError(
                 f"V5_LIVE_RAW_RESULT_LIMIT doit etre compris entre 1 et {RESULT_LIMIT}"
             )
+        if not self.marketplaces or any(
+            value not in SUPPORTED_MARKETPLACES for value in self.marketplaces
+        ):
+            raise ValueError("V5_LIVE_EBAY_MARKETPLACES contient une marketplace inconnue")
+        if len(set(self.marketplaces)) != len(self.marketplaces):
+            raise ValueError("V5_LIVE_EBAY_MARKETPLACES contient un doublon")
 
     @classmethod
     def from_env(cls) -> "LiveRawPipelineConfig":
+        raw_marketplaces = os.getenv(
+            "V5_LIVE_EBAY_MARKETPLACES",
+            ",".join(DEFAULT_LIVE_MARKETPLACES),
+        )
+        marketplaces = tuple(
+            value.strip().upper()
+            for value in raw_marketplaces.split(",")
+            if value.strip()
+        )
         return cls(
             result_limit=int(os.getenv("V5_LIVE_RAW_RESULT_LIMIT", str(RESULT_LIMIT))),
-            include_ebay_ch=os.getenv("V5_LIVE_INCLUDE_EBAY_CH", "false")
-            .strip()
-            .casefold()
-            == "true",
+            marketplaces=marketplaces,
+            delivery_postal_code=(
+                os.getenv("V5_EBAY_DELIVERY_POSTAL_CODE", "").strip() or None
+            ),
         )
-
-    @property
-    def marketplaces(self) -> Tuple[str, ...]:
-        return MARKETPLACES if self.include_ebay_ch else ("EBAY_US",)
 
 
 class SeenItemStore(Protocol):
@@ -211,6 +225,8 @@ class PipelineEconomicAggregate:
     psa10_dependent: int = 0
     reject_even_psa10: int = 0
     cost_model_incomplete: int = 0
+    deferred_currency_policy: int = 0
+    shipping_ineligible: int = 0
 
 
 @dataclass(frozen=True)
@@ -298,6 +314,8 @@ class _PipelineCandidate:
     listing: EbayListing
     identity: CardIdentity
     back_state: str
+    marketplace_id: str
+    ship_to_ch_eligible: bool
 
 
 class LiveRawPipelineDiagnostic:
@@ -329,6 +347,7 @@ class LiveRawPipelineDiagnostic:
             image_fetcher=image_fetcher,
             result_limit=self.config.result_limit,
             marketplaces=self.config.marketplaces,
+            delivery_postal_code=self.config.delivery_postal_code,
         )
         # Ce diagnostic force le fournisseur payant a OFF, meme si
         # l'environnement local contient accidentellement une autre valeur.
@@ -376,20 +395,10 @@ class LiveRawPipelineDiagnostic:
             )
             marketplace_by_id[marketplace_id] = aggregate
             records.extend(discovered)
-        self.discovery._enrich_unique_items(records, marketplace_by_id, token)
-        first_owner: Dict[str, str] = {}
-        successful_ids = set()
-        for record in records:
-            if record.item_id:
-                first_owner.setdefault(record.item_id, record.marketplace_id)
-                if record.get_item_success:
-                    successful_ids.add(record.item_id)
-        for marketplace_id, aggregate in marketplace_by_id.items():
-            aggregate.get_item_success = sum(
-                1
-                for item_id in successful_ids
-                if first_owner.get(item_id) == marketplace_id
-            )
+        selected, selection_duplicates = self.discovery._select_global_sample(
+            records, marketplace_by_id
+        )
+        self.discovery._enrich_unique_items(selected, marketplace_by_id, token)
 
         seen_store = self.seen_store_factory()
         identity_counts = PipelineIdentityAggregate()
@@ -398,14 +407,19 @@ class LiveRawPipelineDiagnostic:
         economic_counts = PipelineEconomicAggregate()
         candidates = []
         raw_accepted = 0
-        duplicates = 0
+        duplicates = selection_duplicates
 
-        for record in records:
+        for record in selected:
             if record.item_id and not seen_store.mark_first_seen(record.item_id):
                 duplicates += 1
                 continue
             candidate, raw = self._candidate_from_record(
                 record, identity_counts, image_counts
+            )
+            self._aggregate_marketplace_record(
+                record,
+                marketplace_by_id[record.marketplace_id],
+                raw,
             )
             raw_accepted += int(raw)
             if candidate is not None:
@@ -426,7 +440,12 @@ class LiveRawPipelineDiagnostic:
             active_asking_statistics(prices, key[-1])
 
         for candidate in candidates:
-            self._evaluate_candidate(candidate, market_counts, economic_counts)
+            self._evaluate_candidate(
+                candidate,
+                marketplace_by_id[candidate.marketplace_id],
+                market_counts,
+                economic_counts,
+            )
 
         marketplaces = tuple(
             marketplace_by_id[value] for value in self.config.marketplaces
@@ -494,15 +513,55 @@ class LiveRawPipelineDiagnostic:
 
         if status != IDENTITY_OK or listing.primary_image_url is None:
             return None, True
-        return _PipelineCandidate(listing, identity, back_state), True
+        return _PipelineCandidate(
+            listing,
+            identity,
+            back_state,
+            record.marketplace_id,
+            record.ship_to_ch_eligible,
+        ), True
+
+    @staticmethod
+    def _aggregate_marketplace_record(
+        record: _DiscoveryRecord,
+        aggregate: MarketplaceAggregate,
+        raw: bool,
+    ) -> None:
+        aggregate.raw_accepted += int(raw)
+        aggregate.ship_to_ch_eligible += int(record.ship_to_ch_eligible)
+        try:
+            listing = parse_ebay_item(record.enriched)
+        except Exception:
+            return
+        aggregate.shipping_estimate_available += int(
+            listing.shipping_price is not None
+        )
+        aggregate.shipping_estimate_limited += int(
+            listing.shipping_price is None
+        )
+        currency = str(listing.currency or "").strip().upper()
+        if len(currency) != 3 or not currency.isalpha():
+            currency = "OTHER"
+        aggregate.currency_counts[currency] = (
+            aggregate.currency_counts.get(currency, 0) + 1
+        )
+        aggregate.economics_deferred += int(
+            raw and (record.marketplace_id != "EBAY_US" or currency != "USD")
+        )
 
     def _evaluate_candidate(
         self,
         candidate: _PipelineCandidate,
+        marketplace: MarketplaceAggregate,
         market_counts: PipelineMarketAggregate,
         economic_counts: PipelineEconomicAggregate,
     ) -> None:
         market_counts.identities_evaluated += 1
+        currency_deferred = (
+            candidate.marketplace_id != "EBAY_US"
+            or candidate.listing.currency.upper() != "USD"
+        )
+        economic_counts.deferred_currency_policy += int(currency_deferred)
         provider_values = []
         pricecharting_result = self.pricecharting.values_for(candidate.identity)
         if pricecharting_result.values is not None:
@@ -551,6 +610,16 @@ class LiveRawPipelineDiagnostic:
             market_counts.manual_validation_required += 1
             return
 
+        market_counts.values_found += 1
+        if not candidate.ship_to_ch_eligible:
+            economic_counts.shipping_ineligible += 1
+            return
+        if currency_deferred or str(aggregate.currency or "").upper() != "USD":
+            if not currency_deferred:
+                marketplace.economics_deferred += 1
+                economic_counts.deferred_currency_policy += 1
+            return
+
         try:
             costs = self.cost_factory(candidate.listing)
             economic = evaluate_economic_pre_filter(
@@ -560,7 +629,6 @@ class LiveRawPipelineDiagnostic:
                 thresholds=EconomicThresholds.from_env(),
             )
         except (ArithmeticError, TypeError, ValueError):
-            market_counts.values_found += 1
             economic_counts.cost_model_incomplete += 1
             return
 
@@ -588,7 +656,6 @@ class LiveRawPipelineDiagnostic:
             market_counts.manual_validation_required += 1
             return
 
-        market_counts.values_found += 1
         economic_counts.raw_arbitrage += int(RAW_ARBITRAGE in economic.signals)
         economic_counts.grade9_profitable += int(
             GRADE9_PROFITABLE in economic.signals
@@ -740,6 +807,10 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             f"getItem success: {us.get_item_success}",
             f"raw accepted: {summary.raw_condition_accepted}",
             "",
+        )
+        + _render_marketplace_diagnostics(summary.marketplaces)
+        + (
+            "",
             "IDENTITY:",
             f"identity exact/usable: {summary.identity.ok}",
             f"ambiguous: {summary.identity.ambiguous}",
@@ -889,6 +960,11 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             f"economic reject even psa10: {summary.economic.reject_even_psa10}",
             f"cost model incomplete: {summary.economic.cost_model_incomplete}",
             (
+                f"{ECONOMICS_DEFERRED_CURRENCY_POLICY}: "
+                f"{summary.economic.deferred_currency_policy}"
+            ),
+            f"shipping ineligible: {summary.economic.shipping_ineligible}",
+            (
                 "manual validation required: "
                 f"{summary.market.manual_validation_required}"
             ),
@@ -901,6 +977,55 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             "Persisted eBay records: 0",
         )
     )
+
+
+def _render_marketplace_diagnostics(
+    marketplaces: Sequence[MarketplaceAggregate],
+) -> Tuple[str, ...]:
+    lines = ["EBAY MARKETPLACE DIAGNOSTICS:"]
+    for aggregate in marketplaces:
+        currencies = ",".join(
+            f"{code}={count}"
+            for code, count in sorted(aggregate.currency_counts.items())
+        ) or "NONE=0"
+        lines.extend(
+            (
+                f"{aggregate.marketplace_id}:",
+                (
+                    "taxonomy: "
+                    f"{'OK' if aggregate.taxonomy_ok else 'FAIL'} "
+                    f"({aggregate.taxonomy_http_status})"
+                ),
+                (
+                    "taxonomy error: "
+                    f"{aggregate.taxonomy_error_type or 'NONE'}/"
+                    f"{aggregate.taxonomy_error_code or 'NONE'}"
+                ),
+                f"search HTTP: {aggregate.http_status}",
+                f"availability reason: {aggregate.empty_reason}",
+                f"total announced: {aggregate.total_announced}",
+                f"summaries received: {aggregate.results_received}",
+                f"unique selected global: {aggregate.unique_selected}",
+                f"cross-market duplicates: {aggregate.duplicates_cross_market}",
+                f"sealed/multi-product rejects: {aggregate.product_shape_rejected}",
+                f"getItem calls: {aggregate.get_item_calls}",
+                f"getItem success: {aggregate.get_item_success}",
+                f"getItem failure: {aggregate.get_item_failure}",
+                f"RAW accepted: {aggregate.raw_accepted}",
+                f"ship-to-CH eligible: {aggregate.ship_to_ch_eligible}",
+                (
+                    "shipping estimate available: "
+                    f"{aggregate.shipping_estimate_available}"
+                ),
+                (
+                    "shipping estimate limited: "
+                    f"{aggregate.shipping_estimate_limited}"
+                ),
+                f"currency distribution: {currencies}",
+                f"economics deferred: {aggregate.economics_deferred}",
+            )
+        )
+    return tuple(lines)
 
 
 def main() -> int:

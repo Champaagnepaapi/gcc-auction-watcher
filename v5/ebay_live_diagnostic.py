@@ -51,8 +51,99 @@ RAW_CONDITION_ID = "4000"
 RESULT_LIMIT = 20
 MAX_VISUAL_IMAGES_PER_ITEM = 6
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# Conservé pour les anciens diagnostics offline US/CH. La whitelist et le
+# workflow multi-market utilisent les constantes explicites ci-dessous.
 MARKETPLACES = ("EBAY_US", "EBAY_CH")
+SUPPORTED_MARKETPLACES = (
+    "EBAY_US",
+    "EBAY_CH",
+    "EBAY_DE",
+    "EBAY_FR",
+    "EBAY_IT",
+    "EBAY_ES",
+    "EBAY_AT",
+    "EBAY_BE",
+    "EBAY_NL",
+    "EBAY_PL",
+    "EBAY_IE",
+    "EBAY_GB",
+)
+DEFAULT_LIVE_MARKETPLACES = (
+    "EBAY_US",
+    "EBAY_DE",
+    "EBAY_FR",
+    "EBAY_IT",
+    "EBAY_ES",
+)
 CATEGORY_QUERY = "Pokémon CCG Individual Cards"
+CATEGORY_QUERIES = {
+    "EBAY_DE": "Pokémon Sammelkarten Einzelkarten",
+    "EBAY_FR": "Pokémon cartes à collectionner individuelles",
+    "EBAY_IT": "Pokémon carte collezionabili singole",
+    "EBAY_ES": "Pokémon cartas coleccionables individuales",
+    "EBAY_AT": "Pokémon Sammelkarten Einzelkarten",
+    "EBAY_BE": "Pokémon cartes à collectionner individuelles",
+    "EBAY_NL": "Pokémon losse verzamelkaarten",
+    "EBAY_PL": "Pokémon pojedyncze karty kolekcjonerskie",
+}
+
+_SAFE_INDIVIDUAL_CATEGORY_PHRASES = {
+    "EBAY_US": ("individual cards", "single cards"),
+    "EBAY_CH": (
+        "individual cards",
+        "single cards",
+        "einzelkarten",
+        "cartes individuelles",
+        "cartes a l unite",
+    ),
+    "EBAY_DE": ("einzelkarten",),
+    "EBAY_FR": ("cartes individuelles", "cartes a l unite"),
+    "EBAY_IT": ("carte singole",),
+    "EBAY_ES": ("cartas individuales", "cartas sueltas"),
+    "EBAY_AT": ("einzelkarten",),
+    "EBAY_BE": (
+        "cartes individuelles",
+        "cartes a l unite",
+        "losse kaarten",
+    ),
+    "EBAY_NL": ("losse kaarten",),
+    "EBAY_PL": ("pojedyncze karty",),
+    "EBAY_IE": ("individual cards", "single cards"),
+    "EBAY_GB": ("individual cards", "single cards"),
+}
+
+_SEALED_OR_MULTI_PRODUCT_TERMS = (
+    "booster",
+    "boosters",
+    "display",
+    "displays",
+    "elite trainer box",
+    "etb",
+    "coffret",
+    "coffrets",
+    "box",
+    "boxes",
+    "boite",
+    "boites",
+    "caja",
+    "cajas",
+    "scatola",
+    "scatole",
+    "blister",
+    "blisters",
+    "deck",
+    "decks",
+    "lot",
+    "lots",
+    "bulk",
+    "bundle",
+    "bundles",
+    "sealed",
+    "scelle",
+    "versiegelt",
+    "sigillato",
+    "sellado",
+)
 
 
 class _NeverGradeProvider:
@@ -88,6 +179,15 @@ class MarketplaceAggregate:
     get_item_calls: int = 0
     get_item_success: int = 0
     get_item_failure: int = 0
+    unique_selected: int = 0
+    duplicates_cross_market: int = 0
+    product_shape_rejected: int = 0
+    raw_accepted: int = 0
+    ship_to_ch_eligible: int = 0
+    shipping_estimate_available: int = 0
+    shipping_estimate_limited: int = 0
+    currency_counts: Dict[str, int] = field(default_factory=dict)
+    economics_deferred: int = 0
     empty_reason: str = "autre"
 
 
@@ -162,6 +262,7 @@ class _DiscoveryRecord:
     detail: Mapping[str, object] = field(default_factory=dict, repr=False)
     enriched: Mapping[str, object] = field(default_factory=dict, repr=False)
     get_item_success: bool = False
+    ship_to_ch_eligible: bool = False
 
 
 class EbayLiveDiagnostic:
@@ -176,11 +277,17 @@ class EbayLiveDiagnostic:
         image_fetcher: Optional[Callable[[str], Optional[bytes]]] = None,
         result_limit: int = RESULT_LIMIT,
         marketplaces: Sequence[str] = MARKETPLACES,
+        delivery_postal_code: Optional[str] = None,
     ) -> None:
         if not 1 <= result_limit <= RESULT_LIMIT:
             raise ValueError(f"result_limit doit etre compris entre 1 et {RESULT_LIMIT}")
-        if not marketplaces or any(value not in MARKETPLACES for value in marketplaces):
+        if not marketplaces or any(
+            value not in SUPPORTED_MARKETPLACES for value in marketplaces
+        ):
             raise ValueError("marketplaces V5 non supportees")
+        postal_code = str(delivery_postal_code or "").strip()
+        if postal_code and not re.fullmatch(r"[0-9]{4}", postal_code):
+            raise ValueError("V5_EBAY_DELIVERY_POSTAL_CODE doit etre un NPA suisse")
         self._client_id = client_id
         self._client_secret = client_secret
         self._session = session or requests.Session()
@@ -192,6 +299,7 @@ class EbayLiveDiagnostic:
         self._image_fetcher = image_fetcher or self._fetch_image_in_memory
         self._result_limit = result_limit
         self._marketplaces = tuple(dict.fromkeys(marketplaces))
+        self._delivery_postal_code = postal_code or None
 
     def run(self) -> LiveDiagnosticSummary:
         token, oauth = self._application_token()
@@ -211,12 +319,19 @@ class EbayLiveDiagnostic:
             aggregates[marketplace_id] = aggregate
             records.extend(discovered)
 
-        duplicates, unique_items = self._enrich_unique_items(records, aggregates, token)
+        selected, duplicates = self._select_global_sample(records, aggregates)
+        _, unique_items = self._enrich_unique_items(selected, aggregates, token)
         identity = IdentityAggregate()
         images = ImageAggregate()
         cheap_filter = CheapFilterAggregate()
-        for record in records:
-            self._aggregate_record(record, identity, images, cheap_filter)
+        for record in selected:
+            self._aggregate_record(
+                record,
+                aggregates[record.marketplace_id],
+                identity,
+                images,
+                cheap_filter,
+            )
 
         category_ids = [
             aggregate.resolved_category_id for aggregate in aggregates.values()
@@ -263,13 +378,23 @@ class EbayLiveDiagnostic:
             return None, OAuthAggregate(status, False, expires_in)
         return token, OAuthAggregate(status, True, expires_in)
 
-    @staticmethod
-    def _headers(token: str, marketplace_id: str) -> Dict[str, str]:
-        return {
+    def _headers(
+        self,
+        token: str,
+        marketplace_id: str,
+        include_end_user_context: bool = False,
+    ) -> Dict[str, str]:
+        headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
         }
+        if self._delivery_postal_code and include_end_user_context:
+            location = quote(
+                f"country=CH,zip={self._delivery_postal_code}", safe=""
+            )
+            headers["X-EBAY-C-ENDUSERCTX"] = f"contextualLocation={location}"
+        return headers
 
     def _resolve_category(
         self, marketplace_id: str, token: str, aggregate: MarketplaceAggregate
@@ -304,7 +429,7 @@ class EbayLiveDiagnostic:
             suggestion_response = self._session.get(
                 url,
                 headers=headers,
-                params={"q": CATEGORY_QUERY},
+                params={"q": CATEGORY_QUERIES.get(marketplace_id, CATEGORY_QUERY)},
                 timeout=self._timeout_seconds,
             )
         except requests.RequestException as exc:
@@ -325,11 +450,26 @@ class EbayLiveDiagnostic:
         if not isinstance(suggestions, list) or not suggestions:
             aggregate.taxonomy_error_type = "CATEGORY_SUGGESTIONS_EMPTY"
             return None
-        first = suggestions[0]
-        category = first.get("category") if isinstance(first, Mapping) else None
-        category_id = category.get("categoryId") if isinstance(category, Mapping) else None
-        if not isinstance(category_id, str) or not category_id:
-            aggregate.taxonomy_error_type = "CATEGORY_ID_MISSING"
+        category_id = None
+        for suggestion in suggestions:
+            category = (
+                suggestion.get("category")
+                if isinstance(suggestion, Mapping)
+                else None
+            )
+            if not isinstance(category, Mapping):
+                continue
+            candidate_id = category.get("categoryId")
+            category_name = category.get("categoryName")
+            if (
+                isinstance(candidate_id, str)
+                and candidate_id
+                and _is_safe_individual_category(marketplace_id, category_name)
+            ):
+                category_id = candidate_id
+                break
+        if category_id is None:
+            aggregate.taxonomy_error_type = "SAFE_INDIVIDUAL_CATEGORY_MISSING"
             return None
         aggregate.taxonomy_ok = True
         aggregate.resolved_category_id = category_id
@@ -340,18 +480,25 @@ class EbayLiveDiagnostic:
     ) -> Tuple[MarketplaceAggregate, List[_DiscoveryRecord]]:
         aggregate = MarketplaceAggregate(marketplace_id=marketplace_id)
         category_id = self._resolve_category(marketplace_id, token, aggregate)
+        if category_id is None:
+            aggregate.empty_reason = "marketplace unavailable/incomplete"
+            return aggregate, []
+        filters = [f"conditionIds:{{{RAW_CONDITION_ID}}}"]
+        if marketplace_id != "EBAY_CH":
+            filters.append("deliveryCountry:CH")
         params = {
             "q": "Pokémon",
-            "filter": f"conditionIds:{{{RAW_CONDITION_ID}}}",
+            "filter": ",".join(filters),
             "fieldgroups": "EXTENDED",
             "limit": str(self._result_limit),
+            "category_ids": category_id,
         }
-        if category_id:
-            params["category_ids"] = category_id
         try:
             response = self._session.get(
                 SEARCH_URL,
-                headers=self._headers(token, marketplace_id),
+                headers=self._headers(
+                    token, marketplace_id, include_end_user_context=True
+                ),
                 params=params,
                 timeout=self._timeout_seconds,
             )
@@ -383,10 +530,14 @@ class EbayLiveDiagnostic:
         summaries = payload.get("itemSummaries")
         if not isinstance(summaries, list):
             summaries = []
+        aggregate.results_received = len(summaries[: self._result_limit])
         records = []
         for summary in summaries[: self._result_limit]:
             if not isinstance(summary, Mapping):
                 summary = {}
+            if not _is_individual_card_summary(summary):
+                aggregate.product_shape_rejected += 1
+                continue
             item_id = summary.get("itemId")
             records.append(
                 _DiscoveryRecord(
@@ -394,9 +545,9 @@ class EbayLiveDiagnostic:
                     summary=summary,
                     item_id=item_id if isinstance(item_id, str) and item_id else None,
                     enriched=summary,
+                    ship_to_ch_eligible=True,
                 )
             )
-        aggregate.results_received = len(records)
         if marketplace_id == "EBAY_CH":
             aggregate.empty_reason = (
                 self._diagnose_empty_ch(token, category_id)
@@ -404,6 +555,46 @@ class EbayLiveDiagnostic:
                 else "autre"
             )
         return aggregate, records
+
+    def _select_global_sample(
+        self,
+        records: Sequence[_DiscoveryRecord],
+        aggregates: Mapping[str, MarketplaceAggregate],
+    ) -> Tuple[List[_DiscoveryRecord], int]:
+        """Select at most twenty unique records in deterministic round-robin."""
+
+        by_marketplace: Dict[str, List[_DiscoveryRecord]] = {
+            marketplace_id: [] for marketplace_id in self._marketplaces
+        }
+        for record in records:
+            by_marketplace.setdefault(record.marketplace_id, []).append(record)
+        offsets = {marketplace_id: 0 for marketplace_id in self._marketplaces}
+        selected: List[_DiscoveryRecord] = []
+        seen_ids: set[str] = set()
+        duplicate_count = 0
+        while len(selected) < self._result_limit:
+            progressed = False
+            for marketplace_id in self._marketplaces:
+                bucket = by_marketplace.get(marketplace_id, [])
+                while offsets[marketplace_id] < len(bucket):
+                    record = bucket[offsets[marketplace_id]]
+                    offsets[marketplace_id] += 1
+                    progressed = True
+                    if record.item_id is None:
+                        continue
+                    if record.item_id in seen_ids:
+                        duplicate_count += 1
+                        aggregates[marketplace_id].duplicates_cross_market += 1
+                        continue
+                    seen_ids.add(record.item_id)
+                    selected.append(record)
+                    aggregates[marketplace_id].unique_selected += 1
+                    break
+                if len(selected) >= self._result_limit:
+                    break
+            if not progressed:
+                break
+        return selected, duplicate_count
 
     def _diagnose_empty_ch(self, token: str, category_id: Optional[str]) -> str:
         if not category_id:
@@ -433,7 +624,9 @@ class EbayLiveDiagnostic:
         try:
             response = self._session.get(
                 SEARCH_URL,
-                headers=self._headers(token, "EBAY_CH"),
+                headers=self._headers(
+                    token, "EBAY_CH", include_end_user_context=True
+                ),
                 params=dict(params),
                 timeout=self._timeout_seconds,
             )
@@ -466,7 +659,7 @@ class EbayLiveDiagnostic:
         detail_by_id: Dict[str, Tuple[bool, Mapping[str, object]]] = {}
         for item_id, owner in first_by_id.items():
             aggregate = aggregates[owner.marketplace_id]
-            if aggregate.get_item_calls >= self._result_limit:
+            if len(detail_by_id) >= self._result_limit:
                 detail_by_id[item_id] = (False, {})
                 continue
             aggregate.get_item_calls += 1
@@ -496,7 +689,9 @@ class EbayLiveDiagnostic:
         try:
             response = self._session.get(
                 url,
-                headers=self._headers(token, marketplace_id),
+                headers=self._headers(
+                    token, marketplace_id, include_end_user_context=True
+                ),
                 params={"fieldgroups": "PRODUCT"},
                 timeout=self._timeout_seconds,
             )
@@ -510,6 +705,7 @@ class EbayLiveDiagnostic:
     def _aggregate_record(
         self,
         record: _DiscoveryRecord,
+        marketplace: MarketplaceAggregate,
         identity_aggregate: IdentityAggregate,
         images: ImageAggregate,
         cheap_filter: CheapFilterAggregate,
@@ -571,6 +767,23 @@ class EbayLiveDiagnostic:
         try:
             listing = parse_ebay_item(record.enriched)
         except (EbayApiError, TypeError, ValueError, KeyError):
+            return
+        marketplace.raw_accepted += int(raw)
+        marketplace.ship_to_ch_eligible += int(record.ship_to_ch_eligible)
+        marketplace.shipping_estimate_available += int(
+            listing.shipping_price is not None
+        )
+        marketplace.shipping_estimate_limited += int(
+            listing.shipping_price is None
+        )
+        currency = _safe_currency_code(listing.currency)
+        marketplace.currency_counts[currency] = (
+            marketplace.currency_counts.get(currency, 0) + 1
+        )
+        marketplace.economics_deferred += int(
+            record.marketplace_id != "EBAY_US" or currency != "USD"
+        )
+        if not record.ship_to_ch_eligible:
             return
         scanner = RawCardScanner(
             _NeverGradeProvider(),  # type: ignore[arg-type]
@@ -748,6 +961,31 @@ def _normalized_marker(value: object) -> str:
         .replace("-", " ")
         .split()
     )
+
+
+def _is_safe_individual_category(marketplace_id: str, value: object) -> bool:
+    normalized = _normalized_marker(value)
+    if not normalized:
+        return False
+    return any(
+        _normalized_marker(phrase) in normalized
+        for phrase in _SAFE_INDIVIDUAL_CATEGORY_PHRASES.get(marketplace_id, ())
+    )
+
+
+def _is_individual_card_summary(payload: Mapping[str, object]) -> bool:
+    title = f" {_normalized_marker(payload.get('title'))} "
+    if not title.strip():
+        return False
+    return not any(
+        f" {_normalized_marker(term)} " in title
+        for term in _SEALED_OR_MULTI_PRODUCT_TERMS
+    )
+
+
+def _safe_currency_code(value: object) -> str:
+    code = str(value or "").strip().upper()
+    return code if re.fullmatch(r"[A-Z]{3}", code) else "OTHER"
 
 
 def _safe_json(response: object) -> object:

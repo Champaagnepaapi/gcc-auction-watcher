@@ -23,8 +23,12 @@ jobs:
       POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
       POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
       V5_PROGRESS_LOGS: "true"
+      # One global sample: at most 20 unique listings across all marketplaces.
       V5_LIVE_RAW_RESULT_LIMIT: "20"
-      V5_LIVE_INCLUDE_EBAY_CH: "false"
+      V5_LIVE_EBAY_MARKETPLACES: "EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES"
+      # Optional repository variable. When absent, no postcode is invented and
+      # shipping diagnostics remain explicitly limited.
+      V5_EBAY_DELIVERY_POSTAL_CODE: ${{ vars.V5_EBAY_DELIVERY_POSTAL_CODE }}
       # Only ambiguous/insufficient RAW identities are sent through this local
       # image matcher. Images stay in memory and no model API is called.
       V5_VISUAL_IDENTITY_ENABLED: "true"

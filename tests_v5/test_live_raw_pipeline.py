@@ -59,7 +59,9 @@ def run_pipeline(item=None, session=None, config=None, **kwargs):
     diagnostic = LiveRawPipelineDiagnostic(
         "private-client-id",
         "private-client-secret",
-        config=config or LiveRawPipelineConfig(result_limit=20),
+        config=config or LiveRawPipelineConfig(
+            result_limit=20, marketplaces=("EBAY_US",)
+        ),
         session=session,
         **kwargs,
     )
@@ -163,13 +165,16 @@ class LiveRawPipelineFlowTests(unittest.TestCase):
         search_calls = [call for call in session.gets if "item_summary/search" in call[0]]
         detail_calls = [call for call in session.gets if "/buy/browse/v1/item/" in call[0]]
         self.assertEqual(len(search_calls), 1)
-        self.assertEqual(search_calls[0][1]["params"]["filter"], "conditionIds:{4000}")
+        self.assertEqual(
+            search_calls[0][1]["params"]["filter"],
+            "conditionIds:{4000},deliveryCountry:CH",
+        )
         self.assertEqual(len(detail_calls), 1)
         self.assertIn(MANUAL_MARKET_VALIDATION_REQUIRED.lower().replace("_", " "), rendered.lower())
         self.assertEqual(diagnostic.pricecharting.live_calls, 0)
 
     def test_result_limit_is_configurable_and_sent_to_browse(self):
-        config = LiveRawPipelineConfig(result_limit=5)
+        config = LiveRawPipelineConfig(result_limit=5, marketplaces=("EBAY_US",))
         _, _, _, session, _ = run_pipeline(config=config)
         search = next(call for call in session.gets if "item_summary/search" in call[0])
         self.assertEqual(search[1]["params"]["limit"], "5")
@@ -382,7 +387,10 @@ class MemoryAndPrivacyTests(unittest.TestCase):
     def test_no_ebay_payload_is_written_to_disk(self):
         session = FakeLiveSession()
         diagnostic = LiveRawPipelineDiagnostic(
-            "private-client", "private-secret", session=session
+            "private-client",
+            "private-secret",
+            config=LiveRawPipelineConfig(marketplaces=("EBAY_US", "EBAY_CH")),
+            session=session,
         )
         with patch.object(builtins, "open", wraps=builtins.open) as mocked_open:
             diagnostic.run()
@@ -431,7 +439,9 @@ class MemoryAndPrivacyTests(unittest.TestCase):
             },
             detail_payloads={item["itemId"]: item},
         )
-        config = LiveRawPipelineConfig(result_limit=20, include_ebay_ch=True)
+        config = LiveRawPipelineConfig(
+            result_limit=20, marketplaces=("EBAY_US", "EBAY_CH")
+        )
         _, summary, _, _, _ = run_pipeline(session=session, config=config)
         ch = next(
             value for value in summary.marketplaces if value.marketplace_id == "EBAY_CH"
@@ -473,7 +483,11 @@ class LiveRawWorkflowTests(unittest.TestCase):
         self.assertIn('RAW_MAX_PAID_GRADINGS_PER_RUN: "0"', workflow)
         self.assertIn('CARDGRADER_V5_ALLOW_PAID_CALLS: "false"', workflow)
         self.assertIn('V5_LIVE_RAW_RESULT_LIMIT: "20"', workflow)
-        self.assertIn('V5_LIVE_INCLUDE_EBAY_CH: "false"', workflow)
+        self.assertIn(
+            'V5_LIVE_EBAY_MARKETPLACES: "EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES"',
+            workflow,
+        )
+        self.assertNotIn("V5_LIVE_INCLUDE_EBAY_CH", workflow)
         self.assertIn('GCC_HISTORY_ENABLED: "true"', workflow)
         self.assertIn("rm -f gcc_session.json", workflow)
 

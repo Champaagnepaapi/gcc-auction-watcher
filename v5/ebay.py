@@ -349,7 +349,7 @@ def grading_status_from_ebay_data(
 
 
 IDENTITY_ALIASES = {
-    "game": ("Game", "Jeu", "Franchise", "Spiel", "Gioco"),
+    "game": ("Game", "Jeu", "Franchise", "Spiel", "Gioco", "Juego"),
     "set": (
         "Set",
         "Set Name",
@@ -382,6 +382,7 @@ IDENTITY_ALIASES = {
         "Numero della carta",
         "Numero carta",
         "Número de carta",
+        "N.º de carta",
     ),
     "year": (
         "Year Manufactured",
@@ -390,8 +391,10 @@ IDENTITY_ALIASES = {
         "Année",
         "Herstellungsjahr",
         "Anno di fabbricazione",
+        "Año de fabricación",
+        "Año",
     ),
-    "language": ("Language", "Langue", "Sprache", "Lingua"),
+    "language": ("Language", "Langue", "Sprache", "Lingua", "Idioma"),
     "variant": (
         "Parallel/Variety",
         "Variante",
@@ -401,8 +404,17 @@ IDENTITY_ALIASES = {
         "Caractéristiques",
         "Merkmale",
         "Besonderheiten",
+        "Características",
     ),
-    "rarity": ("Rarity", "Rareté", "Rarite", "Seltenheit", "Rarità", "Rarita"),
+    "rarity": (
+        "Rarity",
+        "Rareté",
+        "Rarite",
+        "Seltenheit",
+        "Rarità",
+        "Rarita",
+        "Rareza",
+    ),
     "finish": (
         "Finish",
         "Finition",
@@ -413,9 +425,15 @@ IDENTITY_ALIASES = {
         "Oberfläche",
         "Oberflache",
         "Finitura",
+        "Acabado",
     ),
-    "edition": ("Edition", "Édition", "Edizione", "Ausgabe"),
-    "illustrator": ("Illustrator", "Illustrateur", "Illustratore"),
+    "edition": ("Edition", "Édition", "Edizione", "Ausgabe", "Edición"),
+    "illustrator": (
+        "Illustrator",
+        "Illustrateur",
+        "Illustratore",
+        "Ilustrador",
+    ),
 }
 
 DIRECT_CARD_NAME_ALIASES = (
