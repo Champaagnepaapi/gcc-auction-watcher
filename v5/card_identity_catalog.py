@@ -15,6 +15,10 @@ from .models import (
     CardIdentity,
     ProviderSearchAlias,
 )
+from .microvariants import (
+    MicrovariantApplicability,
+    tcgdex_microvariant_applicability,
+)
 from .poketrace_identity import PokeTraceIdentityResolver
 from .poketrace_matching import _card_number_parts
 from .variant_semantics import tcgdex_variant_supports_identity
@@ -137,6 +141,9 @@ class CatalogIdentityResult:
     ambiguous: bool = False
     blocking: bool = False
     provider_alias: Optional[ProviderSearchAlias] = None
+    microvariant_applicability: MicrovariantApplicability = (
+        MicrovariantApplicability()
+    )
 
 
 def _normalize(value: object) -> str:
@@ -811,6 +818,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             False,
             False,
             provider_alias,
+            tcgdex_microvariant_applicability(card),
         )
 
     @staticmethod

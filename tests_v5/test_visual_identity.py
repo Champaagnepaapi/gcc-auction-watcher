@@ -376,7 +376,7 @@ class LocalVisualIdentityTests(unittest.TestCase):
             ["US", "EU"],
         )
 
-    def test_eu_missing_variant_requires_independent_visual_confirmation(self):
+    def test_eu_missing_variant_is_not_proven_by_whole_card_visual_match(self):
         a = card_image("a")
         us = card_payload("us-char", "004/102", "https://cdn.poketrace.com/us.png")
         eu = card_payload(
@@ -407,8 +407,9 @@ class LocalVisualIdentityTests(unittest.TestCase):
         )
 
         self.assertTrue(result.matched)
-        self.assertEqual(market.snapshot_for(result.identity).eu_record_id, "eu-char")
-        self.assertEqual(visual.counters.eu_enrichment_matches, 1)
+        self.assertIsNone(market.snapshot_for(result.identity).eu_record_id)
+        self.assertEqual(visual.counters.eu_enrichment_matches, 0)
+        self.assertEqual(visual.counters.eu_enrichment_rejected_variant, 1)
 
     def test_eu_explicit_variant_conflict_is_rejected_even_if_image_matches(self):
         a = card_image("a")
@@ -487,7 +488,8 @@ class LocalVisualIdentityTests(unittest.TestCase):
 
         self.assertEqual(visual.counters.eu_enrichment_matches, 0)
         self.assertEqual(visual.counters.eu_enrichment_rejected_core, 1)
-        self.assertEqual(visual.counters.eu_enrichment_rejected_no_image, 1)
+        self.assertEqual(visual.counters.eu_enrichment_rejected_no_image, 0)
+        self.assertEqual(visual.counters.eu_enrichment_rejected_variant, 1)
 
     def test_multiple_exact_eu_variants_remain_ambiguous(self):
         a = card_image("a")

@@ -282,12 +282,50 @@ valeur PokeTrace.
 Après un sauvetage visuel/OCR réussi sur une annonce non-US, un unique lookup
 EU optionnel peut maintenant enrichir le cache CardMarket. Le cœur nom + set +
 numéro doit rester exact. Une variante/finition explicitement compatible suffit ;
-si sa métadonnée est absente, le scan canonique EU doit confirmer localement le
-match avec les mêmes seuils et marges conservateurs que le sauvetage US. Un
-conflit explicite, plusieurs candidats plausibles ou l'absence d'image
-utilisable interdisent le match. L'identité eBay/TCGdex n'est jamais remplacée
-par l'enrichissement EU, les IDs/caches restent séparés par marché et aucune
-valeur EUR n'entre dans l'économie RAW.
+une métadonnée de microvariante absente ne peut plus être remplacée par une
+simple ressemblance du scan complet. Un conflit explicite ou plusieurs
+candidats plausibles interdisent le match. L'identité eBay/TCGdex n'est jamais
+remplacée par l'enrichissement EU, les IDs/caches restent séparés par marché et
+aucune valeur EUR n'entre dans l'économie RAW.
+
+## File forensique et sécurité des microvariantes
+
+Les annonces initialement insuffisantes ne sont plus traitées comme du bruit :
+elles forment une file forensique bornée et déterministe, priorisée avant les
+identités déjà propres. Le plafond
+`V5_VISUAL_IDENTITY_MAX_LISTINGS_PER_RUN` borne les annonces soumises au
+sauvetage local ; les seuils de preuve visuelle/OCR restent strictement
+inchangés. Le diagnostic compare désormais cinq cohortes agrégées :
+`STRUCTURED_USABLE`, `RESCUED_FROM_INSUFFICIENT`,
+`RESCUED_FROM_AMBIGUOUS`, `STILL_INSUFFICIENT` et `STILL_AMBIGUOUS`, avec pour
+chacune valeurs marché trouvées/manquantes, provenance US/EU et économie
+évaluée/différée. Aucune donnée listing-level n'est rendue ou persistée.
+
+La preuve d'identité est séparée en deux niveaux :
+
+- identité macro : jeu, nom exact, set exact, numéro de collection exact et
+  langue ;
+- microvariante commerciale : édition, finition, promo, stamp ou impression
+  spéciale susceptible de changer matériellement la valeur.
+
+Le scan perceptuel complet peut sauver uniquement l'identité macro. Il ne peut
+pas fabriquer une 1st Edition, une finition ou une promo depuis le candidat
+fournisseur : les champs vendeur restent inchangés et le candidat premium reste
+une provenance non héritée. La validation microvariante vient seulement après
+la macro, via une interface locale à région/layout ou référence canonique
+exacte. L'édition 1st/Unlimited n'est activée que lorsqu'un catalogue exact — en
+priorité `TCGdex variants.firstEdition` — prouve que la famille possède cette
+distinction. Une famille explicitement non concernée n'est pas bloquée.
+
+`EDITION_UNKNOWN` n'est jamais assimilé à Unlimited. L'absence visuelle d'un
+stamp, à elle seule, ne prouve pas Unlimited ; il faut une couverture suffisante
+de la région attendue et une référence Unlimited déterministe. Si l'édition est
+applicable et reste inconnue, ou si les preuves se contredisent, les prix de la
+microvariante premium ne sont pas amorcés et l'économie est différée.
+
+La prochaine étape reste une revue de ce batch offline. Seulement en l'absence
+de blocker, elle pourra être suivie d'au plus un live contrôlé de 20 annonces ;
+ce batch Codex ne lance aucun workflow.
 
 Le prochain live doit rester le workflow manuel existant et ne sera justifié
 qu'après revue de ces changements offline. Il devra vérifier : Browse FR via la
@@ -320,10 +358,10 @@ Baseline antérieure du circuit-breaker PokeTrace :
 bdd1abc7b479ed980f4f4896b17e3b184b701ed5
 ```
 
-Validation offline après synchronisation de `main`, transition Free → Pro et
-extension eBay EU, incluant les régressions RAW→RAW et alias multilingues :
+Validation offline après synchronisation de `main`, transition Free → Pro,
+extension eBay EU et séparation macro/microvariante :
 
-- V5 : **365/365** ;
+- V5 : **394/394** ;
 - V4 : **169/169** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
@@ -332,6 +370,9 @@ extension eBay EU, incluant les régressions RAW→RAW et alias multilingues :
 - aucun appel PokeTrace/TCGdex/JustTCG/eBay/GCC live pendant le batch Codex ;
 - aucun secret consulté ;
 - aucun CardGrader, achat, bid ou checkout.
+
+SHA final : commit final de la branche de la PR #8, communiqué dans le rapport
+de validation (un commit ne peut pas contenir son propre hash).
 
 Le merge post-Codex `0e3660ed330d0fc5220dfa239911d934d700398c` resynchronise `main` `510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d` dans V5. Il ne modifie aucun fichier `v5/`; les deux fichiers V4 repris de `main` ont été validés à **169/169** par le workflow V4 de la PR #27.
 

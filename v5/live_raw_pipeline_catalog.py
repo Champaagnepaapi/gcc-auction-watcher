@@ -32,15 +32,20 @@ from .live_raw_pipeline import (
     LiveRawPipelineSummary,
     PipelineIdentityAggregate,
     PipelineImageAggregate,
+    PipelineForensicAggregate,
+    PipelineMicrovariantAggregate,
     _DiscoveryRecord,
     _PipelineCandidate,
     identity_status,
+    _forensic_state,
     render_live_raw_pipeline_summary,
     IDENTITY_AMBIGUOUS,
+    IDENTITY_INSUFFICIENT,
     IDENTITY_OK,
 )
 from .market_values.gcc_history.provider import GCCProviderConfig, GCCHistoryProvider
 from .market_values.poketrace import (
+    CARDMARKET_DISCOUNT,
     PokeTraceConfig,
     PokeTraceProvider,
     PokeTraceSnapshot,
@@ -53,6 +58,7 @@ from .market_values.poketrace_free import (
     render_free_poketrace_counters,
 )
 from .models import StructuredGradingStatus
+from .microvariants import LocalMicrovariantValidator, MicrovariantApplicability
 from .poketrace_identity import (
     PokeTraceIdentityResolver,
     render_poketrace_identity_counters,
@@ -162,6 +168,15 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         self.poketrace_market_source = _PokeTracePrimaryMarketSource(self.poketrace)
         self._identity_records_seen = 0
         self._sample_item_ids: set[str] = set()
+        self.microvariant_validator = LocalMicrovariantValidator()
+        self.max_visual_identity_listings = max(
+            0,
+            min(
+                20,
+                int(os.getenv("V5_VISUAL_IDENTITY_MAX_LISTINGS_PER_RUN", "20")),
+            ),
+        )
+        self._visual_identity_attempts = 0
         super().__init__(
             client_id,
             client_secret,
@@ -190,11 +205,42 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         ).hexdigest()
         return digest[:16]
 
+    def _order_records_for_identity(self, records):
+        """Prioritize bounded forensic rescue without weakening its proof gate."""
+
+        def priority(indexed_record):
+            index, record = indexed_record
+            identity = resolve_card_identity(record.enriched).identity
+            status = identity_status(identity)
+            core_fields = sum(
+                bool(value)
+                for value in (identity.card_name, identity.set, identity.card_number)
+            )
+            if status == IDENTITY_INSUFFICIENT and core_fields >= 2:
+                rank = 0
+            elif status == IDENTITY_AMBIGUOUS:
+                rank = 1
+            elif status == IDENTITY_INSUFFICIENT:
+                rank = 2
+            else:
+                rank = 3
+            return rank, index
+
+        return tuple(
+            record
+            for _index, record in sorted(
+                enumerate(records),
+                key=priority,
+            )
+        )
+
     def _candidate_from_record(
         self,
         record: _DiscoveryRecord,
         identity_counts: PipelineIdentityAggregate,
         image_counts: PipelineImageAggregate,
+        forensic_counts: Optional[PipelineForensicAggregate] = None,
+        microvariant_counts: Optional[PipelineMicrovariantAggregate] = None,
     ) -> Tuple[object, bool]:
         self._identity_records_seen += 1
         if record.item_id:
@@ -204,6 +250,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             record.enriched,
         )
         identity = initial.identity
+        initial_status = identity_status(identity)
         aspect_audit = identity_aspect_audit(record.enriched)
         identity_counts.unmapped_name_like_aspect_labels += int(
             aspect_audit.unmapped_name_like_label
@@ -212,8 +259,11 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             aspect_audit.unmapped_number_like_label
         )
         source = "eBay structured identity"
+        microvariant_applicability = MicrovariantApplicability()
+        microvariant = None
 
         resolved = self.card_catalog_resolver.resolve_identity(identity)
+        microvariant_applicability = resolved.microvariant_applicability
         if resolved.matched and not resolved.ambiguous:
             identity = resolved.identity
             source = resolved.source
@@ -245,12 +295,21 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             image_counts.back_unknown += 1
 
         status_before_visual = identity_status(identity)
-        if (
+        visual_eligible = bool(
             raw
             and listing.primary_image_url is not None
             and status_before_visual != IDENTITY_OK
             and self.visual_identity is not None
+        )
+        if visual_eligible and hasattr(self.visual_identity, "counters"):
+            self.visual_identity.counters.forensic_eligible += 1
+        if visual_eligible and (
+            self._visual_identity_attempts >= self.max_visual_identity_listings
         ):
+            if hasattr(self.visual_identity, "counters"):
+                self.visual_identity.counters.skipped_run_limit += 1
+        elif visual_eligible:
+            self._visual_identity_attempts += 1
             _progress(
                 f"identity record {self._identity_records_seen}: local visual rescue"
             )
@@ -258,9 +317,11 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
                 identity,
                 listing.image_urls,
                 marketplace_id=record.marketplace_id,
+                microvariant_applicability=microvariant_applicability,
             )
             if visual.matched:
                 identity = visual.identity
+                microvariant = visual.microvariant
                 source = "VISUAL_POKETRACE"
                 _progress(
                     f"identity record {self._identity_records_seen}: visual rescue accepted"
@@ -272,12 +333,28 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             _progress(f"identity record {self._identity_records_seen}: not eligible")
             return None, False
 
+        forensic_state = _forensic_state(initial_status, status)
+        if forensic_counts is not None:
+            forensic = forensic_counts.for_state(forensic_state)
+            forensic.records += 1
+
         if status != IDENTITY_OK or listing.primary_image_url is None:
             reason = "ambiguous" if status == IDENTITY_AMBIGUOUS else "raw but unresolved"
             if status == IDENTITY_OK and listing.primary_image_url is None:
                 reason = "usable identity but missing front image"
             _progress(f"identity record {self._identity_records_seen}: {reason}")
+            if forensic_counts is not None:
+                forensic.market_missing += 1
+                forensic.economics_deferred += 1
             return None, True
+
+        if microvariant is None:
+            microvariant = self.microvariant_validator.resolve(
+                identity,
+                microvariant_applicability,
+            )
+        if microvariant_counts is not None:
+            microvariant_counts.record(microvariant)
 
         _progress(
             f"identity record {self._identity_records_seen}: usable via {source}"
@@ -288,13 +365,15 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             back_state,
             record.marketplace_id,
             record.ship_to_ch_eligible,
+            forensic_state,
+            microvariant,
         ), True
 
     def _record_market_provenance(
         self,
         candidate: _PipelineCandidate,
         marketplace: MarketplaceAggregate,
-    ) -> None:
+    ) -> Tuple[bool, bool, bool]:
         snapshot = self.poketrace_market_source.last_snapshot
         us_values = snapshot.us_values if snapshot is not None else None
         cardmarket = snapshot.cardmarket if snapshot is not None else None
@@ -337,6 +416,11 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         if str(candidate.listing.currency or "").upper() == "EUR":
             marketplace.eur_with_usable_eu_value += int(usable_eu)
             marketplace.eur_without_usable_eu_value += int(not usable_eu)
+        return (
+            usable_us,
+            usable_eu,
+            bool(cardmarket is not None and cardmarket.status == CARDMARKET_DISCOUNT),
+        )
 
     @staticmethod
     def _count_identity(

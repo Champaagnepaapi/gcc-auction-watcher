@@ -8,7 +8,13 @@ from tests_v5.test_ebay_live_diagnostic import complete_item
 from v5.card_identity_catalog import CatalogIdentityResult
 from v5.ebay import CardNameLookupResult
 from v5.ebay_live_diagnostic import MarketplaceAggregate, _DiscoveryRecord
-from v5.live_raw_pipeline import PipelineIdentityAggregate, PipelineImageAggregate
+from v5.live_raw_pipeline import (
+    RESCUED_FROM_INSUFFICIENT,
+    STILL_INSUFFICIENT,
+    PipelineForensicAggregate,
+    PipelineIdentityAggregate,
+    PipelineImageAggregate,
+)
 from v5.live_raw_pipeline_catalog import CatalogAwareLiveRawPipelineDiagnostic
 from v5.market_values.models import MarketValues
 from v5.market_values.poketrace import (
@@ -77,7 +83,14 @@ class StubVisualResolver:
     def __init__(self):
         self.calls = 0
 
-    def resolve_identity(self, identity, image_urls, *, marketplace_id=None):
+    def resolve_identity(
+        self,
+        identity,
+        image_urls,
+        *,
+        marketplace_id=None,
+        microvariant_applicability=None,
+    ):
         self.calls += 1
         self.image_urls = tuple(image_urls)
         self.marketplace_id = marketplace_id
@@ -246,6 +259,69 @@ class CatalogIdentityRescueTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         self.assertEqual(visual.calls, 0)
         self.assertEqual(identities.ok, 1)
+
+    def test_forensic_queue_prioritizes_rescuable_insufficient_before_clean(self):
+        diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
+            "client",
+            "secret",
+            card_catalog_resolver=NoRescueResolver(),
+            poketrace_provider=disabled_poketrace(),
+        )
+        clean = _DiscoveryRecord(
+            marketplace_id="EBAY_US",
+            summary={},
+            item_id="clean",
+            enriched=complete_item(),
+            get_item_success=True,
+        )
+        insufficient = _DiscoveryRecord(
+            marketplace_id="EBAY_US",
+            summary={},
+            item_id="insufficient",
+            enriched=item_without_number(),
+            get_item_success=True,
+        )
+
+        ordered = diagnostic._order_records_for_identity((clean, insufficient))
+
+        self.assertEqual(ordered[0].item_id, "insufficient")
+        self.assertEqual(ordered[1].item_id, "clean")
+
+    def test_visual_run_limit_keeps_proof_gate_and_final_insufficient_state(self):
+        visual = StubVisualResolver()
+        diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
+            "client",
+            "secret",
+            card_catalog_resolver=NoRescueResolver(),
+            poketrace_provider=disabled_poketrace(),
+            visual_identity_resolver=visual,
+        )
+        diagnostic.max_visual_identity_listings = 0
+        diagnostic.discovery._image_fetcher = lambda _url: None
+        record = _DiscoveryRecord(
+            marketplace_id="EBAY_US",
+            summary={},
+            item_id="bounded-visual",
+            enriched=item_without_number(),
+            get_item_success=True,
+        )
+        forensic = PipelineForensicAggregate()
+
+        candidate, raw = diagnostic._candidate_from_record(
+            record,
+            PipelineIdentityAggregate(),
+            PipelineImageAggregate(),
+            forensic,
+        )
+
+        self.assertTrue(raw)
+        self.assertIsNone(candidate)
+        self.assertEqual(visual.calls, 0)
+        self.assertEqual(forensic.for_state(STILL_INSUFFICIENT).records, 1)
+        self.assertEqual(
+            forensic.for_state(RESCUED_FROM_INSUFFICIENT).records,
+            0,
+        )
 
     def test_market_provenance_is_aggregate_and_marketplace_scoped(self):
         diagnostic = CatalogAwareLiveRawPipelineDiagnostic(

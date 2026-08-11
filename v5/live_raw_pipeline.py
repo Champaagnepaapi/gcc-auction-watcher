@@ -66,6 +66,15 @@ from .market_values.secondary import (
     active_asking_statistics,
 )
 from .models import CardIdentity, EbayListing, StructuredGradingStatus
+from .microvariants import (
+    EDITION_CONFLICT,
+    EDITION_UNKNOWN,
+    FIRST_EDITION_CONFIRMED,
+    MICROVARIANT_APPLICABLE,
+    MICROVARIANT_NOT_APPLICABLE,
+    UNLIMITED_CONFIRMED,
+    MicrovariantResolution,
+)
 
 
 IDENTITY_OK = "IDENTITY_OK"
@@ -76,6 +85,18 @@ PRODUCT_RESEARCH_MODE = "MANUAL_VALIDATION_ONLY"
 NO_PERSISTENCE_MODE = "NO_PERSISTENCE / MEMORY_ONLY"
 ECONOMICS_DEFERRED_CURRENCY_POLICY = "ECONOMICS_DEFERRED_CURRENCY_POLICY"
 RAW_DISCOVERY_INTERVAL_MINUTES = 10
+STRUCTURED_USABLE = "STRUCTURED_USABLE"
+RESCUED_FROM_INSUFFICIENT = "RESCUED_FROM_INSUFFICIENT"
+RESCUED_FROM_AMBIGUOUS = "RESCUED_FROM_AMBIGUOUS"
+STILL_INSUFFICIENT = "STILL_INSUFFICIENT"
+STILL_AMBIGUOUS = "STILL_AMBIGUOUS"
+FORENSIC_STATES = (
+    STRUCTURED_USABLE,
+    RESCUED_FROM_INSUFFICIENT,
+    RESCUED_FROM_AMBIGUOUS,
+    STILL_INSUFFICIENT,
+    STILL_AMBIGUOUS,
+)
 
 
 @dataclass(frozen=True)
@@ -229,6 +250,74 @@ class PipelineEconomicAggregate:
     shipping_ineligible: int = 0
 
 
+@dataclass
+class PipelineForensicStateAggregate:
+    records: int = 0
+    market_found: int = 0
+    market_missing: int = 0
+    poketrace_us_found: int = 0
+    eu_cardmarket_found: int = 0
+    economics_evaluated: int = 0
+    economics_deferred: int = 0
+    raw_opportunities: int = 0
+    cardmarket_discount_opportunities: int = 0
+
+
+@dataclass
+class PipelineForensicAggregate:
+    states: Dict[str, PipelineForensicStateAggregate] = field(
+        default_factory=lambda: {
+            state: PipelineForensicStateAggregate() for state in FORENSIC_STATES
+        }
+    )
+
+    def for_state(self, state: str) -> PipelineForensicStateAggregate:
+        return self.states[state]
+
+
+@dataclass
+class PipelineMicrovariantAggregate:
+    microvariant_applicable: int = 0
+    microvariant_not_applicable: int = 0
+    edition_first_confirmed: int = 0
+    edition_unlimited_confirmed: int = 0
+    edition_unknown: int = 0
+    edition_conflict: int = 0
+    premium_variant_candidate_not_inherited: int = 0
+    microvariant_visual_attempts: int = 0
+    microvariant_visual_confirmed: int = 0
+    microvariant_visual_inconclusive: int = 0
+    economics_blocked_microvariant_unknown: int = 0
+
+    def record(self, resolution: MicrovariantResolution) -> None:
+        self.microvariant_applicable += int(
+            resolution.applicability == MICROVARIANT_APPLICABLE
+        )
+        self.microvariant_not_applicable += int(
+            resolution.applicability == MICROVARIANT_NOT_APPLICABLE
+        )
+        self.edition_first_confirmed += int(
+            resolution.edition_status == FIRST_EDITION_CONFIRMED
+        )
+        self.edition_unlimited_confirmed += int(
+            resolution.edition_status == UNLIMITED_CONFIRMED
+        )
+        self.edition_unknown += int(
+            resolution.edition_status == EDITION_UNKNOWN
+        )
+        self.edition_conflict += int(
+            resolution.edition_status == EDITION_CONFLICT
+        )
+        self.premium_variant_candidate_not_inherited += int(
+            resolution.premium_candidate_not_inherited
+        )
+        self.microvariant_visual_attempts += int(resolution.visual_attempted)
+        self.microvariant_visual_confirmed += int(resolution.visual_confirmed)
+        self.microvariant_visual_inconclusive += int(
+            resolution.visual_attempted and not resolution.visual_confirmed
+        )
+
+
 @dataclass(frozen=True)
 class ProviderAggregate:
     pricecharting_enabled: bool
@@ -285,6 +374,12 @@ class LiveRawPipelineSummary:
     images: PipelineImageAggregate = field(default_factory=PipelineImageAggregate)
     market: PipelineMarketAggregate = field(default_factory=PipelineMarketAggregate)
     economic: PipelineEconomicAggregate = field(default_factory=PipelineEconomicAggregate)
+    forensic: PipelineForensicAggregate = field(
+        default_factory=PipelineForensicAggregate
+    )
+    microvariants: PipelineMicrovariantAggregate = field(
+        default_factory=PipelineMicrovariantAggregate
+    )
     providers: ProviderAggregate = field(
         default_factory=lambda: ProviderAggregate(
             pricecharting_enabled=False,
@@ -316,6 +411,10 @@ class _PipelineCandidate:
     back_state: str
     marketplace_id: str
     ship_to_ch_eligible: bool
+    forensic_state: str = STRUCTURED_USABLE
+    microvariant: MicrovariantResolution = field(
+        default_factory=MicrovariantResolution
+    )
 
 
 class LiveRawPipelineDiagnostic:
@@ -398,6 +497,7 @@ class LiveRawPipelineDiagnostic:
         selected, selection_duplicates = self.discovery._select_global_sample(
             records, marketplace_by_id
         )
+        selected = list(self._order_records_for_identity(selected))
         self.discovery._enrich_unique_items(selected, marketplace_by_id, token)
 
         seen_store = self.seen_store_factory()
@@ -405,6 +505,8 @@ class LiveRawPipelineDiagnostic:
         image_counts = PipelineImageAggregate()
         market_counts = PipelineMarketAggregate()
         economic_counts = PipelineEconomicAggregate()
+        forensic_counts = PipelineForensicAggregate()
+        microvariant_counts = PipelineMicrovariantAggregate()
         candidates = []
         raw_accepted = 0
         duplicates = selection_duplicates
@@ -414,7 +516,11 @@ class LiveRawPipelineDiagnostic:
                 duplicates += 1
                 continue
             candidate, raw = self._candidate_from_record(
-                record, identity_counts, image_counts
+                record,
+                identity_counts,
+                image_counts,
+                forensic_counts,
+                microvariant_counts,
             )
             self._aggregate_marketplace_record(
                 record,
@@ -445,6 +551,8 @@ class LiveRawPipelineDiagnostic:
                 marketplace_by_id[candidate.marketplace_id],
                 market_counts,
                 economic_counts,
+                forensic_counts,
+                microvariant_counts,
             )
 
         marketplaces = tuple(
@@ -459,6 +567,8 @@ class LiveRawPipelineDiagnostic:
             image_counts,
             market_counts,
             economic_counts,
+            forensic_counts,
+            microvariant_counts,
             seen_store.persistence_mode,
         )
 
@@ -467,6 +577,8 @@ class LiveRawPipelineDiagnostic:
         record: _DiscoveryRecord,
         identity_counts: PipelineIdentityAggregate,
         image_counts: PipelineImageAggregate,
+        forensic_counts: Optional[PipelineForensicAggregate] = None,
+        microvariant_counts: Optional[PipelineMicrovariantAggregate] = None,
     ) -> Tuple[Optional[_PipelineCandidate], bool]:
         resolution = resolve_card_identity(
             record.enriched,
@@ -502,6 +614,11 @@ class LiveRawPipelineDiagnostic:
         if not raw:
             return None, False
 
+        forensic_state = _forensic_state(status, status)
+        if forensic_counts is not None:
+            state_counts = forensic_counts.for_state(forensic_state)
+            state_counts.records += 1
+
         image_counts.front_available += int(listing.primary_image_url is not None)
         back_state, _ = self.discovery._back_image_state(record.enriched)
         if back_state == BACK_IMAGE_CONFIRMED:
@@ -512,13 +629,21 @@ class LiveRawPipelineDiagnostic:
             image_counts.back_unknown += 1
 
         if status != IDENTITY_OK or listing.primary_image_url is None:
+            if forensic_counts is not None:
+                state_counts.market_missing += 1
+                state_counts.economics_deferred += 1
             return None, True
+        microvariant = MicrovariantResolution()
+        if microvariant_counts is not None:
+            microvariant_counts.record(microvariant)
         return _PipelineCandidate(
             listing,
             identity,
             back_state,
             record.marketplace_id,
             record.ship_to_ch_eligible,
+            forensic_state,
+            microvariant,
         ), True
 
     @staticmethod
@@ -549,13 +674,27 @@ class LiveRawPipelineDiagnostic:
             raw and (record.marketplace_id != "EBAY_US" or currency != "USD")
         )
 
+    def _order_records_for_identity(
+        self, records: Sequence[_DiscoveryRecord]
+    ) -> Sequence[_DiscoveryRecord]:
+        """Hook for a deterministic forensic queue; base V5 keeps discovery order."""
+
+        return records
+
     def _evaluate_candidate(
         self,
         candidate: _PipelineCandidate,
         marketplace: MarketplaceAggregate,
         market_counts: PipelineMarketAggregate,
         economic_counts: PipelineEconomicAggregate,
+        forensic_counts: Optional[PipelineForensicAggregate] = None,
+        microvariant_counts: Optional[PipelineMicrovariantAggregate] = None,
     ) -> None:
+        forensic = (
+            forensic_counts.for_state(candidate.forensic_state)
+            if forensic_counts is not None
+            else None
+        )
         market_counts.identities_evaluated += 1
         currency_deferred = (
             candidate.marketplace_id != "EBAY_US"
@@ -573,7 +712,15 @@ class LiveRawPipelineDiagnostic:
             value = source.values_for(candidate.identity)
             if value is not None:
                 provider_values.append(value)
-        self._record_market_provenance(candidate, marketplace)
+        (
+            poketrace_us_found,
+            eu_cardmarket_found,
+            cardmarket_discount,
+        ) = self._record_market_provenance(candidate, marketplace)
+        if forensic is not None:
+            forensic.poketrace_us_found += int(poketrace_us_found)
+            forensic.eu_cardmarket_found += int(eu_cardmarket_found)
+            forensic.cardmarket_discount_opportunities += int(cardmarket_discount)
         if self.gcc_history.counters.enabled:
             gcc_result = self.gcc_history.market_for(
                 candidate.identity,
@@ -605,21 +752,42 @@ class LiveRawPipelineDiagnostic:
         if aggregate.status is AggregationStatus.MISSING:
             market_counts.values_missing += 1
             market_counts.manual_validation_required += 1
+            if forensic is not None:
+                forensic.market_missing += 1
+                forensic.economics_deferred += 1
             return
         if aggregate.status is AggregationStatus.CONFLICT:
             market_counts.value_conflicts += 1
             market_counts.manual_validation_required += 1
+            if forensic is not None:
+                forensic.market_missing += 1
+                forensic.economics_deferred += 1
             return
 
         market_counts.values_found += 1
         marketplace.market_values_found += 1
+        if forensic is not None:
+            forensic.market_found += 1
+        if candidate.microvariant.blocks_economics:
+            if (
+                microvariant_counts is not None
+                and candidate.microvariant.edition_status == EDITION_UNKNOWN
+            ):
+                microvariant_counts.economics_blocked_microvariant_unknown += 1
+            if forensic is not None:
+                forensic.economics_deferred += 1
+            return
         if not candidate.ship_to_ch_eligible:
             economic_counts.shipping_ineligible += 1
+            if forensic is not None:
+                forensic.economics_deferred += 1
             return
         if currency_deferred or str(aggregate.currency or "").upper() != "USD":
             if not currency_deferred:
                 marketplace.economics_deferred += 1
                 economic_counts.deferred_currency_policy += 1
+            if forensic is not None:
+                forensic.economics_deferred += 1
             return
 
         try:
@@ -632,7 +800,12 @@ class LiveRawPipelineDiagnostic:
             )
         except (ArithmeticError, TypeError, ValueError):
             economic_counts.cost_model_incomplete += 1
+            if forensic is not None:
+                forensic.economics_deferred += 1
             return
+
+        if forensic is not None:
+            forensic.economics_evaluated += 1
 
         economic_counts.raw_market_sufficient += int(
             economic.raw_market_sufficient
@@ -659,6 +832,8 @@ class LiveRawPipelineDiagnostic:
             return
 
         economic_counts.raw_arbitrage += int(RAW_ARBITRAGE in economic.signals)
+        if forensic is not None:
+            forensic.raw_opportunities += int(RAW_ARBITRAGE in economic.signals)
         economic_counts.grade9_profitable += int(
             GRADE9_PROFITABLE in economic.signals
         )
@@ -674,8 +849,9 @@ class LiveRawPipelineDiagnostic:
         self,
         candidate: _PipelineCandidate,
         marketplace: MarketplaceAggregate,
-    ) -> None:
+    ) -> Tuple[bool, bool, bool]:
         """Hook for provider-specific, aggregate-only provenance diagnostics."""
+        return False, False, False
 
     def _summary(
         self,
@@ -687,6 +863,8 @@ class LiveRawPipelineDiagnostic:
         images: Optional[PipelineImageAggregate] = None,
         market: Optional[PipelineMarketAggregate] = None,
         economic: Optional[PipelineEconomicAggregate] = None,
+        forensic: Optional[PipelineForensicAggregate] = None,
+        microvariants: Optional[PipelineMicrovariantAggregate] = None,
         seen_mode: str = NO_PERSISTENCE_MODE,
     ) -> LiveRawPipelineSummary:
         gcc_source = self.gcc_history.source
@@ -707,6 +885,8 @@ class LiveRawPipelineDiagnostic:
             images=images or PipelineImageAggregate(),
             market=market or PipelineMarketAggregate(),
             economic=economic or PipelineEconomicAggregate(),
+            forensic=forensic or PipelineForensicAggregate(),
+            microvariants=microvariants or PipelineMicrovariantAggregate(),
             providers=ProviderAggregate(
                 pricecharting_enabled=self.pricecharting.config.enabled,
                 pricecharting_live_calls=self.pricecharting.live_calls,
@@ -801,6 +981,18 @@ def identity_status(identity: CardIdentity) -> str:
     return IDENTITY_INSUFFICIENT
 
 
+def _forensic_state(initial_status: str, final_status: str) -> str:
+    if initial_status == IDENTITY_OK and final_status == IDENTITY_OK:
+        return STRUCTURED_USABLE
+    if final_status == IDENTITY_OK and initial_status == IDENTITY_AMBIGUOUS:
+        return RESCUED_FROM_AMBIGUOUS
+    if final_status == IDENTITY_OK:
+        return RESCUED_FROM_INSUFFICIENT
+    if final_status == IDENTITY_AMBIGUOUS:
+        return STILL_AMBIGUOUS
+    return STILL_INSUFFICIENT
+
+
 def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
     us = next(
         (value for value in summary.marketplaces if value.marketplace_id == "EBAY_US"),
@@ -834,6 +1026,51 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             (
                 "unmapped card-number-like aspect labels: "
                 f"{summary.identity.unmapped_number_like_aspect_labels}"
+            ),
+            "",
+            "FORENSIC RESCUE STATES:",
+        )
+        + _render_forensic_states(summary.forensic)
+        + (
+            "",
+            "MICROVARIANT SAFETY:",
+            (
+                "microvariant_applicable: "
+                f"{summary.microvariants.microvariant_applicable}"
+            ),
+            (
+                "microvariant_not_applicable: "
+                f"{summary.microvariants.microvariant_not_applicable}"
+            ),
+            (
+                "edition_first_confirmed: "
+                f"{summary.microvariants.edition_first_confirmed}"
+            ),
+            (
+                "edition_unlimited_confirmed: "
+                f"{summary.microvariants.edition_unlimited_confirmed}"
+            ),
+            f"edition_unknown: {summary.microvariants.edition_unknown}",
+            f"edition_conflict: {summary.microvariants.edition_conflict}",
+            (
+                "premium_variant_candidate_not_inherited: "
+                f"{summary.microvariants.premium_variant_candidate_not_inherited}"
+            ),
+            (
+                "microvariant_visual_attempts: "
+                f"{summary.microvariants.microvariant_visual_attempts}"
+            ),
+            (
+                "microvariant_visual_confirmed: "
+                f"{summary.microvariants.microvariant_visual_confirmed}"
+            ),
+            (
+                "microvariant_visual_inconclusive: "
+                f"{summary.microvariants.microvariant_visual_inconclusive}"
+            ),
+            (
+                "economics_blocked_microvariant_unknown: "
+                f"{summary.microvariants.economics_blocked_microvariant_unknown}"
             ),
             "",
             "IMAGES:",
@@ -986,6 +1223,33 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             "Persisted eBay records: 0",
         )
     )
+
+
+def _render_forensic_states(
+    forensic: PipelineForensicAggregate,
+) -> Tuple[str, ...]:
+    lines = []
+    for state in FORENSIC_STATES:
+        values = forensic.for_state(state)
+        lines.extend(
+            (
+                f"{state}:",
+                f"records: {values.records}",
+                f"market found/missing: {values.market_found}/{values.market_missing}",
+                f"PokeTrace US found: {values.poketrace_us_found}",
+                f"EU/Cardmarket found: {values.eu_cardmarket_found}",
+                (
+                    "economics evaluated/deferred: "
+                    f"{values.economics_evaluated}/{values.economics_deferred}"
+                ),
+                f"RAW opportunities: {values.raw_opportunities}",
+                (
+                    "Cardmarket discount opportunities: "
+                    f"{values.cardmarket_discount_opportunities}"
+                ),
+            )
+        )
+    return tuple(lines)
 
 
 def _render_marketplace_diagnostics(

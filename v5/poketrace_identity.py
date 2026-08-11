@@ -258,8 +258,6 @@ def _resolved_identity(original: CardIdentity, card: Mapping[str, object]) -> Ca
         card_name=str(card.get("name") or "").strip() or original.card_name,
         set=set_name,
         card_number=card_number,
-        variant=original.variant or (str(card.get("variant") or "").strip() or None),
-        rarity=original.rarity or (str(card.get("rarity") or "").strip() or None),
     )
 
 
