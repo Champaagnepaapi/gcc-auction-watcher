@@ -23,57 +23,155 @@
 ### V4 — optimisation runtime Playwright validée
 
 - PR **#13** mergée dans `main` au commit `19942ce7cb26b2ba05bd51de8744d212933299bb`.
-- GitHub-hosted runners sont des VM jetables : Python/paquets/Chromium ne peuvent pas rester installés sur la machine d'un run au suivant. La stratégie production est donc **cache pip + cache Playwright + probe de lancement**.
+- GitHub-hosted runners sont des VM jetables : Python/paquets/Chromium ne peuvent pas rester installés physiquement sur la machine d'un run au suivant. La stratégie production est donc **cache pip + cache Playwright + probe de lancement**.
 - Premier run post-merge `31479526838` : **cache miss attendu**, téléchargement initial puis sauvegarde d'environ 279 MB de cache Playwright ; probe Chromium OK sans fallback `--with-deps` ; scan V4 sain en ~15 s.
 - Run suivant `31480316615` : **cache pip hit + cache Playwright hit**, log `Playwright browser cache hit: Chromium payload restored`, aucun téléchargement Chromium/FFmpeg/Headless Shell et aucun `playwright install --with-deps chromium`; scan V4 sain en ~14 s.
 - Le cache Playwright est restauré depuis GitHub Actions (~266 MB) sur une VM neuve : ce n'est pas une installation persistante locale, mais cela supprime les téléchargements CDN/apt complets à chaque scan production.
 - Si le probe Chromium échoue sur une future image runner, fallback automatique `playwright install --with-deps chromium` puis nouveau probe.
-- Les workflows de validation PR peuvent encore installer Chromium séparément ; cela n'affecte pas le watcher production toutes les 10 minutes.
+- Un runner self-hosted conserverait réellement les installations entre jobs, mais n'est **pas justifié actuellement** : le cache GitHub-hosted est suffisant et évite la maintenance/sécurité d'une machine permanente.
 
 ### V5 — expérimental, PR #8, NE PAS MERGER
 
 - PR **#8**, branche exacte : `agent/v5-poketrace-cardmarket-market-data`.
 - V5 reste un diagnostic **RAW eBay** séparé de la V4 graded GCC.
-- Dernier resync complet **main → V5** après README canonique + P3 : merge `a964ffe97f7031d5d5eede74135b0bd86be7c4f0`. Cela ne merge pas V5 dans `main`.
-- Dernier gros correctif Codex audité : `840c44f89ad6ba7aa4b9524161203c019b2eff47` (`Fix V5 canonical PokeTrace identity matching`).
-- Tests de régression post-audit déjà ajoutés sur la branche V5 : commit `d727ca4325e07087d65d1545fa89219cfa410683`.
+- Architecture retenue : **TCGdex principal multilingue → PokeTrace Free fallback identité + RAW US market → Pokémon TCG API fallback → arbitres locaux visuel/OCR pour `AMBIGUOUS/INSUFFICIENT`**.
+- **JustTCG** reste candidat comme seconde opinion/fallback à benchmarker sur le même échantillon avant toute promotion en principal.
+- **Scrydex / Vision** reste une option sérieuse pour les cas durablement ambigus après épuisement de la chaîne gratuite ; ne pas introduire le coût juste pour forcer le hit-rate.
 - Le workflow live V5 doit rester **manuel (`workflow_dispatch`)** pour protéger le quota PokeTrace Free.
-- PokeTrace Free : clé stockée dans GitHub Secret `POKETRACE_API_KEY`, **250 req/j**, US + RAW uniquement, cadence locale effective ≥2.25 s, pas de Cardmarket EU/graded en Free.
+- PokeTrace Free : clé dans GitHub Secret `POKETRACE_API_KEY`, **250 req/j**, US + RAW uniquement, cadence effective ≥2.25 s, pas de Cardmarket EU/graded en Free.
+- Données listing-level eBay/PokeTrace et images : mémoire-only ; ne pas persister/loguer itemId, titre, URL ou prix individuel.
 
-#### Architecture resolver V5 retenue pour l'instant
+#### Correctifs Codex/post-audit — maintenant appliqués
 
-1. **TCGdex = resolver principal multilingue**.
-2. **PokeTrace Free = fallback identité + source market RAW US**.
-3. Pokémon TCG API = dernier fallback anglais/unknown.
-4. Matching visuel local + OCR ciblé = arbitres conservateurs seulement pour `AMBIGUOUS/INSUFFICIENT`.
-5. **JustTCG** : candidat futur comme fallback / seconde opinion, pas principal tant qu'un benchmark live n'a pas prouvé qu'il bat TCGdex.
-6. **Scrydex / Vision** : option sérieuse pour les cas durablement ambigus après épuisement de la chaîne gratuite ; ne pas introduire le coût avant d'avoir mesuré le pipeline gratuit corrigé.
+Les blockers identifiés après le premier audit Codex ont été corrigés et couverts par tests :
 
-#### Dernière référence live PokeTrace avant le correctif Codex
+1. **PokeTrace `set=`** : aucun nom d'affichage de set n'est envoyé comme slug non vérifié ; le set reste un discriminant strict local.
+2. **Numéro manquant** : Hybrid peut appeler PokeTrace avec deux champs forts, notamment `name + set`, pour récupérer le troisième champ si un gagnant unique existe.
+3. **Conflit de dénominateur TCGdex** : `4/130` vs `004/102` est bloquant ; `4 → 004/102` reste autorisé lorsqu'il est déterministe.
+4. Résolution TCGdex déterministe supplémentaire par `set.id` et compteurs agrégés de no-match/canonicalisation/conflits.
+5. Les matchers identity/market PokeTrace partagent les mêmes règles strictes ; aucune ambiguïté n'est transformée artificiellement en exact.
 
-Échantillon d'environ 20 listings RAW :
+#### Synchronisation et validation offline avant le dernier live
 
-- usable identities : **9** ;
-- TCGdex hits : **4** ;
-- PokeTrace exact : **0** ;
-- rejets apparents nom/set/numéro : **112 / 41 / 2** sur 155 candidats ;
+Le `main` courant a été mergé **dans V5 uniquement** avant le run live ; V5 n'a jamais été mergé dans `main`.
+
+Validation GitHub Actions offline : **run `31482959188`**
+
+- V4 : **167/167** ;
+- V5 : **234/234** ;
+- `python -m compileall -q v5` : OK ;
+- tous les YAML : OK ;
+- `git diff --check` : OK ;
+- fichiers V4 vs `main` : **IDENTIQUES** ;
+- appels PokeTrace live : 0 ;
+- secrets injectés : 0 ;
+- achats/bids/checkout/CardGrader : 0.
+
+Le workflow CI temporaire utilisé pour cette preuve a été supprimé.
+
+#### Dernier live contrôlé PokeTrace Free — référence actuelle
+
+Un seul run Free a été déclenché après la CI puis le trigger temporaire a été retiré immédiatement. Le workflow live est revenu en **`workflow_dispatch` uniquement**.
+
+- run : **`31483091017`** ;
+- job : **`93752247632`** ;
+- fingerprint : **`c48b11c284cf453b`** ;
+- conclusion : success ;
+- eBay OAuth : 200 ;
+- search/getItem : **20/20** ;
+- RAW acceptés : **19** ;
+- usable identities : **11/20** ;
+- ambiguous : 4 ;
+- insufficient : 5 ;
 - market values found : **0** ;
-- PokeTrace Free cache hits : **5** ;
 - achats/bids/checkout : **0/0/0**.
 
-Important : les anciens compteurs de rejet étaient trompeurs parce qu'ils ne comptaient que le premier champ bloquant. Le correctif Codex a ajouté des compteurs indépendants par champ.
+Le fingerprint diffère des runs précédents : **ne pas présenter `9/20 → 11/20` comme une amélioration apples-to-apples**.
 
-#### Correctifs bloquants identifiés après audit du commit Codex
+##### TCGdex sur ce run
 
-**Ne pas lancer le prochain Free live avant ces points + CI complète :**
+- requests : 16 ;
+- hits : **2** ;
+- TCGdex-only rescues : **2** ;
+- appels PokeTrace évités grâce à TCGdex : **2** ;
+- unique set-alias resolutions : 4 ;
+- ambiguous set aliases : 1 ;
+- skipped missing set/card number : 6 ;
+- no-match set : 5 ;
+- no-match card : 6 ;
+- catalog request failures : **3** ;
+- denominator conflicts : 0 sur cet échantillon ;
+- numerator-only canonicalizations : 0 ;
+- canonical name/set/number changes : 0/0/0.
 
-1. **P0 — filtre `set` PokeTrace** : ne pas envoyer le nom d'affichage (`Base Set`, etc.) comme `set=`. Le filtre structuré PokeTrace attend son slug. Tant qu'on ne possède pas un slug PokeTrace vérifié, omettre le filtre `set` côté serveur et garder la validation de set stricte **localement**.
-2. **P0 — numéro manquant** : `HybridPokemonCardResolver` doit pouvoir appeler PokeTrace avec un fort `name + set` même si `card_number` manque. TCGdex/Pokémon TCG peuvent rester dépendants du numéro ; PokeTrace doit pouvoir récupérer le troisième champ lorsqu'au moins 2 des 3 champs `{name,set,card_number}` sont présents.
-3. **P1 — conflit de dénominateur TCGdex** : un numéro eBay complet contradictoire ne doit jamais être silencieusement réécrit. Exemple `4/130` vs TCGdex `004/102` → `AMBIGUOUS/reject`, alors que `4` → `004/102` reste une canonicalisation valide.
-4. Refaire ensuite **toute la CI sur le repo synchronisé** : tous les tests V4, tous les tests V5, `compileall`, tous les YAML, `git diff --check`, sans appel PokeTrace live.
-5. Seulement après : **un unique nouveau run PokeTrace Free**, comparer aux métriques ci-dessus avant toute décision JustTCG/Scrydex/Pro.
+**Diagnostic TCGdex actuel :** il reste resolver principal, mais `2/20` hits + les buckets no-match + 3 request failures doivent être audités avant de conclure que la base elle-même est insuffisante.
 
-Ces blockers et leurs tests d'acceptation sont également documentés dans la conversation de la PR #8 afin qu'un agent Codex puisse reprendre directement depuis GitHub.
+##### PokeTrace identity sur ce run
+
+- identities queried : 12 ;
+- HTTP search attempts : 30 ;
+- exact matches : **0** ;
+- no match : 12 ;
+- request failures : 0 ;
+- 429 : 0 ;
+- unique candidates received : **189** ;
+- candidates name matched : 21 ;
+- set matched : 13 ;
+- card number matched : 5 ;
+- name+set : 2 ;
+- name+number : 1 ;
+- set+number : 3 ;
+- **name+set+number : 1** ;
+- rejected only name : 2 ;
+- rejected only set : 0 ;
+- rejected only card number : 3 ;
+- **rejected variant : 1** ;
+- champs récupérés : 0.
+
+**Nouveau diagnostic PokeTrace prioritaire :** un candidat passe **nom + set + numéro** mais aucun exact n'est retenu, tandis qu'un rejet `variant` est compté. La prochaine analyse P0 est donc la **sémantique des variantes**. Ne pas supprimer le garde-fou : vérifier si PokeTrace et eBay/TCGdex décrivent la même variante avec des conventions différentes ou s'il s'agit d'un vrai conflit.
+
+La récupération PokeTrace n'est plus simplement vide : 189 candidats ont été reçus. Les requêtes structurées sont souvent vides alors que les fallbacks larges trouvent des candidats ; la canonicalisation/retrieval reste donc à surveiller.
+
+##### Visuel / OCR sur ce run
+
+- visual attempted : 6 ;
+- no visual candidates after metadata filter : 4 ;
+- candidate scans considered/downloaded : 16/7 ;
+- candidate image failures : **8** ;
+- visual rescues : 0 ;
+- OCR attempted/calls : 2/12 ;
+- OCR rescues : 0.
+
+Le visuel/OCR reste un arbitre secondaire ; la fiabilité des images canoniques candidates est encore insuffisante pour en faire la voie principale.
+
+##### PokeTrace Free market sur ce run
+
+- live calls : **32** ;
+- cache hits : **9** ;
+- US exact market matches : **0** ;
+- no match : 14 ;
+- ambiguous : 1 ;
+- request failures : 0 ;
+- rate limited : 0 ;
+- EU/CardMarket requests : 0 ;
+- graded values accepted : 0 ;
+- market values found : **0**.
+
+Le provider impose bien `>=2.25s`. Le workflow affiche encore une valeur de compatibilité `2.05` : à aligner à `2.25` pour clarté lors d'un prochain cleanup, même si le runtime est déjà sûr.
+
+#### Prochaines actions V5
+
+**Ne pas merger PR #8 pour l'instant.**
+
+Priorités :
+
+1. auditer le candidat PokeTrace qui passe nom+set+numéro mais échoue sur la variante, sans assouplir l'ambiguïté ;
+2. auditer les faibles hits TCGdex, ses buckets `no-match set/card` et les **3 request failures** ;
+3. aligner l'env affiché `POKETRACE_MIN_REQUEST_INTERVAL_SECONDS` de `2.05` vers `2.25` ;
+4. si la chaîne gratuite reste insuffisante, benchmarker **JustTCG en parallèle sur exactement le même sample** avant toute décision de le rendre principal ;
+5. garder Scrydex/Vision pour les cas persistants après TCGdex/PokeTrace/JustTCG/arbitres locaux.
+
+La cible `15+/20` reste un objectif de couverture **si les preuves disponibles le permettent**, jamais une obligation justifiant des faux positifs.
 
 ### Règles de gouvernance du projet
 
@@ -180,9 +278,10 @@ Chaque run V4 est aussi journalisé dans l'**issue #1** avec notamment :
 La V5 reste séparée de la V4 et travaille actuellement sur les **listings RAW eBay** et leur identité canonique.
 
 - **TCGdex** reste le resolver catalogue multilingue principal ;
-- **PokeTrace Free** a été authentifié et testé en live pour les données RAW US, mais le matching nom/set n'est pas encore suffisamment fiable pour être mergé ;
+- **PokeTrace Free** est authentifié et testé en live pour les données RAW US, mais aucun exact market match n'est encore obtenu ;
 - la PR V5 correspondante reste en **draft** et ne remplace pas le watcher V4 ;
-- **Scrydex** reste dans le radar comme éventuel bridge d'identité canonique si la chaîne gratuite TCGdex → PokeTrace ne suffit pas ;
+- **JustTCG** reste candidat à un benchmark parallèle / seconde opinion ;
+- **Scrydex** reste dans le radar comme éventuel bridge d'identité canonique/Vision si la chaîne gratuite ne suffit pas ;
 - aucune dépendance payante ni passage à PokeTrace Pro n'est justifié tant que le matching exact n'est pas démontré.
 
 La règle de sécurité reste la même pour toutes les versions : **le projet ne passe jamais d'achat, d'enchère ou de checkout automatiquement**.
