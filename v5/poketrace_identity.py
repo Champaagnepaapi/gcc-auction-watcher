@@ -52,6 +52,8 @@ class PokeTraceIdentityCounters:
     rejected_set: int = 0
     rejected_variant: int = 0
     rejected_insufficient: int = 0
+    partial_number_candidates: int = 0
+    partial_number_matches: int = 0
     primed_market_snapshots: int = 0
     card_numbers_recovered: int = 0
     card_names_recovered: int = 0
@@ -83,6 +85,48 @@ def _normalize_card_number(value: object) -> str:
         return f"{int(match.group(1))}{match.group(2).casefold()}"
 
     return "/".join(canonical(part) for part in parts)
+
+
+def _card_number_parts(value: object) -> tuple[str, Optional[str]]:
+    normalized = _normalize_card_number(value)
+    if not normalized:
+        return "", None
+    if "/" not in normalized:
+        return normalized, None
+    numerator, denominator = normalized.split("/", 1)
+    return numerator, denominator or None
+
+
+def _partial_card_number_equivalent(
+    expected: object,
+    candidate: object,
+    *,
+    exact_name: bool,
+    set_similarity: float,
+) -> bool:
+    """Accept numerator-only vs full collector number under strong identity.
+
+    eBay structured aspects sometimes expose only the collector numerator while
+    PokeTrace returns the canonical numerator/denominator. This is not a fuzzy
+    number match: the normalized numerator must be identical, exactly one side
+    must omit the denominator, the card name must be exact, and the set must be
+    a strong normalized/alias match. Two conflicting full numbers never pass.
+    """
+
+    expected_number = _normalize_card_number(expected)
+    candidate_number = _normalize_card_number(candidate)
+    if not expected_number or not candidate_number:
+        return False
+    if expected_number == candidate_number:
+        return False
+
+    expected_numerator, expected_denominator = _card_number_parts(expected)
+    candidate_numerator, candidate_denominator = _card_number_parts(candidate)
+    if not expected_numerator or expected_numerator != candidate_numerator:
+        return False
+    if (expected_denominator is None) == (candidate_denominator is None):
+        return False
+    return exact_name and set_similarity >= 0.86
 
 
 def _numeric_tokens(value: object) -> frozenset[str]:
@@ -134,6 +178,20 @@ def _variant_family(value: object) -> str:
     return aliases.get(normalized, normalized)
 
 
+def _candidate_uses_partial_number(identity: CardIdentity, candidate: Mapping[str, object]) -> bool:
+    expected_name = _normalize(identity.card_name)
+    candidate_name = _normalize(candidate.get("name"))
+    set_payload = candidate.get("set")
+    set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else None
+    set_slug = set_payload.get("slug") if isinstance(set_payload, Mapping) else None
+    return _partial_card_number_equivalent(
+        identity.card_number,
+        candidate.get("cardNumber"),
+        exact_name=bool(expected_name and expected_name == candidate_name),
+        set_similarity=_set_similarity(identity.set, set_name, set_slug),
+    )
+
+
 def _candidate_score_and_rejection(
     identity: CardIdentity, candidate: Mapping[str, object]
 ) -> tuple[Optional[float], Optional[str]]:
@@ -141,15 +199,11 @@ def _candidate_score_and_rejection(
     if product_type and product_type != "single":
         return None, REJECT_PRODUCT_TYPE
 
-    expected_number = _normalize_card_number(identity.card_number)
-    candidate_number = _normalize_card_number(candidate.get("cardNumber"))
-    if expected_number and candidate_number != expected_number:
-        return None, REJECT_CARD_NUMBER
-
     expected_name = _normalize(identity.card_name)
     candidate_name = _normalize(candidate.get("name"))
     if expected_name and candidate_name != expected_name:
         return None, REJECT_CARD_NAME
+    exact_name = bool(expected_name and candidate_name == expected_name)
 
     set_payload = candidate.get("set")
     set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else None
@@ -157,6 +211,18 @@ def _candidate_score_and_rejection(
     set_similarity = _set_similarity(identity.set, set_name, set_slug)
     if identity.set and set_similarity < 0.66:
         return None, REJECT_SET
+
+    expected_number = _normalize_card_number(identity.card_number)
+    candidate_number = _normalize_card_number(candidate.get("cardNumber"))
+    number_exact = bool(expected_number and candidate_number == expected_number)
+    number_partial = _partial_card_number_equivalent(
+        identity.card_number,
+        candidate.get("cardNumber"),
+        exact_name=exact_name,
+        set_similarity=set_similarity,
+    )
+    if expected_number and not (number_exact or number_partial):
+        return None, REJECT_CARD_NUMBER
 
     expected_variant = _variant_family(identity.variant)
     candidate_variant = _variant_family(candidate.get("variant"))
@@ -175,7 +241,11 @@ def _candidate_score_and_rejection(
         return None, REJECT_INSUFFICIENT
 
     score = 4.0 if expected_name else 0.0
-    score += 4.0 if expected_number else 0.0
+    if number_exact:
+        score += 4.0
+    elif number_partial:
+        # Strong but deliberately below a full collector-number equality.
+        score += 3.0
     score += set_similarity * 3.0
     if expected_variant and candidate_variant == expected_variant:
         score += 1.0
@@ -301,6 +371,8 @@ class PokeTraceIdentityResolver:
                     self._count_rejection(rejection)
                     continue
                 if score is not None:
+                    if _candidate_uses_partial_number(identity, candidate):
+                        self.counters.partial_number_candidates += 1
                     scored.append((score, candidate))
 
             if not scored:
@@ -318,6 +390,7 @@ class PokeTraceIdentityResolver:
                 return result
 
             card = best[0]
+            used_partial_number = _candidate_uses_partial_number(identity, card)
             resolved = _resolved_identity(identity, card)
             card_id = str(card.get("id") or "").strip() or None
             result = PokeTraceIdentityResolution(
@@ -331,6 +404,8 @@ class PokeTraceIdentityResolver:
 
             self.counters.matches += 1
             self.provider.counters.us_matches += 1
+            if used_partial_number:
+                self.counters.partial_number_matches += 1
             if not identity.card_number and resolved.card_number:
                 self.counters.card_numbers_recovered += 1
             if not identity.card_name and resolved.card_name:
@@ -550,6 +625,8 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             f"rejected set: {counters.rejected_set}",
             f"rejected variant: {counters.rejected_variant}",
             f"rejected insufficient identity: {counters.rejected_insufficient}",
+            f"partial-number compatible candidates: {counters.partial_number_candidates}",
+            f"partial-number matches accepted: {counters.partial_number_matches}",
             f"card numbers recovered: {counters.card_numbers_recovered}",
             f"card names recovered: {counters.card_names_recovered}",
             f"sets recovered: {counters.sets_recovered}",
