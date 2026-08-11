@@ -111,23 +111,22 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertEqual(resolved.identity.set, "Base Set")
         self.assertEqual(len(session.calls), 1)
         params = session.calls[0][1]["params"]
-        self.assertIn("Charizard", params["search"])
-        self.assertIn("4/102", params["search"])
-        self.assertNotIn("card_number", params)
-        self.assertNotIn("set", params)
+        self.assertEqual(params["search"], "Charizard")
+        self.assertEqual(params["card_number"], "4/102")
+        self.assertEqual(params["set"], "Pokemon TCG Base Set")
         self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))
         self.assertIsNone(snapshot.us_values.psa10_value)
         self.assertEqual(market.counters.live_calls, 1)
         self.assertEqual(market.counters.us_matches, 1)
         self.assertEqual(resolver.counters.primed_market_snapshots, 1)
 
-    def test_leading_zero_number_is_matched_locally_not_server_filtered(self):
+    def test_leading_zero_number_is_matched_locally_after_structured_retrieval(self):
         session = PokeTraceSession(card_payload(card_number="004/102"))
         resolver = PokeTraceIdentityResolver(provider(session))
         resolved = resolver.resolve_identity(identity(card_number="4/102"))
         self.assertTrue(resolved.matched)
         self.assertEqual(resolver.counters.rejected_card_number, 0)
-        self.assertNotIn("card_number", session.calls[0][1]["params"])
+        self.assertEqual(session.calls[0][1]["params"]["card_number"], "4/102")
 
     def test_missing_number_can_be_recovered_from_unique_name_and_set(self):
         session = PokeTraceSession(card_payload())
@@ -148,7 +147,8 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertTrue(resolved.matched)
         self.assertEqual(resolved.identity.card_name, "Charizard")
         self.assertEqual(resolver.counters.card_names_recovered, 1)
-        self.assertIn("4/102", session.calls[0][1]["params"]["search"])
+        self.assertEqual(session.calls[0][1]["params"]["search"], "Base Set")
+        self.assertEqual(session.calls[0][1]["params"]["card_number"], "4/102")
 
     def test_second_broader_search_can_rescue_first_empty_query(self):
         session = PokeTraceSession([

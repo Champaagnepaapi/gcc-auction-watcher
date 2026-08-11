@@ -26,6 +26,46 @@ class _Session:
 
 
 class MultilingualPokemonCardResolverTests(unittest.TestCase):
+    def test_tcgdex_propagates_canonical_name_set_and_printed_number(self):
+        def handler(url, _params, _headers):
+            if url.endswith("/en/sets"):
+                return _Response(200, [{"id": "base1", "name": "Base Set"}])
+            if url.endswith("/fr/sets"):
+                return _Response(200, [])
+            if url.endswith("/en/sets/base1/4"):
+                return _Response(
+                    200,
+                    {
+                        "name": "Charizard",
+                        "localId": "004",
+                        "set": {
+                            "name": "Base Set",
+                            "releaseDate": "1999-01-09",
+                            "cardCount": {"official": 102, "total": 102},
+                        },
+                    },
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        resolver = MultilingualPokemonCardResolver(session=_Session(handler))
+        result = resolver.resolve_identity(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name="Charizard Card",
+                set="Pokemon TCG Base Set",
+                card_number="4",
+                language="English",
+            )
+        )
+
+        self.assertTrue(result.matched)
+        self.assertEqual(result.identity.card_name, "Charizard")
+        self.assertEqual(result.identity.set, "Base Set")
+        self.assertEqual(result.identity.card_number, "004/102")
+        self.assertEqual(resolver.counters.canonical_name_changes, 1)
+        self.assertEqual(resolver.counters.canonical_set_changes, 1)
+        self.assertEqual(resolver.counters.canonical_card_number_changes, 1)
+
     def test_french_identity_is_localized_by_tcgdex_without_losing_language(self):
         def handler(url, params, _headers):
             if url.endswith("/fr/sets"):

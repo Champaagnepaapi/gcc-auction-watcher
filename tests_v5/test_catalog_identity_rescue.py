@@ -44,6 +44,27 @@ class NoRescueResolver:
         return CatalogIdentityResult(identity)
 
 
+class CanonicalIdentityResolver:
+    def __init__(self):
+        self.name_only_calls = 0
+
+    def resolve(self, set_name, card_number, language, year, variant):
+        self.name_only_calls += 1
+        return CardNameLookupResult("Name-only result must not be used")
+
+    def resolve_identity(self, identity):
+        return CatalogIdentityResult(
+            replace(
+                identity,
+                card_name="Canonicalmon",
+                set="Canonical Set",
+                card_number="007/100",
+            ),
+            source="TCGDEX",
+            matched=True,
+        )
+
+
 class StubVisualResolver:
     def __init__(self):
         self.calls = 0
@@ -82,6 +103,36 @@ def disabled_poketrace():
 
 
 class CatalogIdentityRescueTests(unittest.TestCase):
+    def test_pipeline_keeps_complete_catalog_identity_instead_of_name_only_adapter(self):
+        resolver = CanonicalIdentityResolver()
+        diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
+            "client",
+            "secret",
+            card_catalog_resolver=resolver,
+            poketrace_provider=disabled_poketrace(),
+        )
+        diagnostic.discovery._image_fetcher = lambda _url: None
+        record = _DiscoveryRecord(
+            marketplace_id="EBAY_US",
+            summary={},
+            item_id="canonical-fixture-id",
+            enriched=complete_item(),
+            get_item_success=True,
+        )
+
+        candidate, raw = diagnostic._candidate_from_record(
+            record,
+            PipelineIdentityAggregate(),
+            PipelineImageAggregate(),
+        )
+
+        self.assertTrue(raw)
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.identity.card_name, "Canonicalmon")
+        self.assertEqual(candidate.identity.set, "Canonical Set")
+        self.assertEqual(candidate.identity.card_number, "007/100")
+        self.assertEqual(resolver.name_only_calls, 0)
+
     def test_raw_missing_number_is_rescued_before_final_identity_gate(self):
         item = item_without_number()
         resolver = RescueResolver()

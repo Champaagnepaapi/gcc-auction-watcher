@@ -33,9 +33,8 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
             return PokeTraceSnapshot(POKETRACE_DISABLED)
 
         key = ("free",) + _identity_key(identity)
-        cached = self._cache.get(key)
+        cached = self._cached_snapshot(key)
         if cached is not None:
-            self.counters.cache_hits += 1
             return cached
 
         us = self._search_exact(identity, "US")
@@ -118,6 +117,7 @@ def render_free_poketrace_counters(provider: FreeTierPokeTraceProvider) -> str:
             f"ambiguous: {counters.ambiguous}",
             f"request failures: {counters.request_failures}",
             f"rate limited: {counters.rate_limited}",
+            f"extra market calls avoided by identity cache: {counters.primed_market_calls_avoided}",
             "Persisted PokeTrace records: 0",
         )
     )

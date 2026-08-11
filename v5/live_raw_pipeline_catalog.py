@@ -187,7 +187,6 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
 
         initial = resolve_card_identity(
             record.enriched,
-            set_number_resolver=self.discovery._set_number_resolver,
         )
         identity = initial.identity
         source = "eBay structured identity"

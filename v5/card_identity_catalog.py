@@ -11,6 +11,7 @@ import requests
 from .ebay import CardNameLookupResult, SetNumberCardNameResolver
 from .models import CardIdentity
 from .poketrace_identity import PokeTraceIdentityResolver
+from .poketrace_matching import _card_number_parts
 
 
 TCGDEX_BASE = "https://api.tcgdex.net/v2"
@@ -63,6 +64,9 @@ class CardCatalogCounters:
     no_match: int = 0
     failures: int = 0
     cache_hits: int = 0
+    canonical_name_changes: int = 0
+    canonical_set_changes: int = 0
+    canonical_card_number_changes: int = 0
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,7 @@ def _with_catalog_identity(
     *,
     card_name: Optional[str],
     set_name: Optional[str],
+    card_number: Optional[str],
     year: Optional[int],
 ) -> CardIdentity:
     return replace(
@@ -107,6 +112,7 @@ def _with_catalog_identity(
         game=original.game or "Pokémon TCG",
         card_name=(card_name or original.card_name),
         set=(set_name or original.set),
+        card_number=(card_number or original.card_number),
         year=(original.year if original.year is not None else year),
     )
 
@@ -125,7 +131,7 @@ def _set_name_similarity(expected: object, candidate: object) -> float:
 
     expected_numbers = _numeric_tokens(expected)
     candidate_numbers = _numeric_tokens(candidate)
-    if expected_numbers and candidate_numbers and expected_numbers != candidate_numbers:
+    if expected_numbers != candidate_numbers and (expected_numbers or candidate_numbers):
         return 0.0
 
     expected_tokens = set(expected_norm.split())
@@ -137,6 +143,42 @@ def _set_name_similarity(expected: object, candidate: object) -> float:
     if shorter and shorter.issubset(longer) and intersection:
         return max(jaccard, 0.86)
     return jaccard
+
+
+def _tcgdex_printed_card_number(
+    original: CardIdentity, card: Mapping[str, object]
+) -> Optional[str]:
+    local_id = str(card.get("localId") or "").strip()
+    if not local_id:
+        return original.card_number
+    if "/" in local_id:
+        return local_id
+
+    set_payload = card.get("set")
+    card_count = (
+        set_payload.get("cardCount")
+        if isinstance(set_payload, Mapping)
+        else None
+    )
+    official = (
+        card_count.get("official")
+        if isinstance(card_count, Mapping)
+        else None
+    )
+    official_text = str(official or "").strip()
+    if re.fullmatch(r"0*\d+", local_id) and re.fullmatch(r"[1-9]\d*", official_text):
+        return f"{local_id}/{official_text}"
+
+    original_number = str(original.card_number or "").strip()
+    original_numerator, _original_denominator = _card_number_parts(original_number)
+    local_numerator, _local_denominator = _card_number_parts(local_id)
+    if original_number and original_numerator == local_numerator:
+        return original_number
+    return local_id
+
+
+def _canonical_value_changed(before: object, after: object) -> bool:
+    return str(before or "").strip() != str(after or "").strip()
 
 
 class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
@@ -356,7 +398,9 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
 
         card_name = str(card.get("name") or "").strip() or None
         card_local_id = str(card.get("localId") or "").strip()
-        if card_local_id and _normalize(card_local_id) != _normalize(local_number):
+        card_local_numerator, _ = _card_number_parts(card_local_id)
+        lookup_numerator, _ = _card_number_parts(local_number)
+        if card_local_id and card_local_numerator != lookup_numerator:
             self.counters.ambiguous += 1
             return CatalogIdentityResult(identity, "TCGDEX", False, True)
 
@@ -375,7 +419,17 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             identity,
             card_name=card_name,
             set_name=card_set_name,
+            card_number=_tcgdex_printed_card_number(identity, card),
             year=release_year,
+        )
+        self.counters.canonical_name_changes += int(
+            _canonical_value_changed(identity.card_name, resolved.card_name)
+        )
+        self.counters.canonical_set_changes += int(
+            _canonical_value_changed(identity.set, resolved.set)
+        )
+        self.counters.canonical_card_number_changes += int(
+            _canonical_value_changed(identity.card_number, resolved.card_number)
         )
         self.counters.tcgdex_hits += 1
         return CatalogIdentityResult(resolved, "TCGDEX", True, False)
@@ -460,6 +514,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             identity,
             card_name=str(item.get("name") or "").strip() or None,
             set_name=set_name,
+            card_number=identity.card_number,
             year=release_year,
         )
         self.counters.pokemon_tcg_hits += 1
@@ -585,6 +640,12 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             f"no catalog match: {counters.no_match}",
             f"catalog request failures: {counters.failures}",
             f"in-memory cache hits: {counters.cache_hits}",
+            f"canonical identities changed by TCGdex - name: {counters.canonical_name_changes}",
+            f"canonical identities changed by TCGdex - set: {counters.canonical_set_changes}",
+            (
+                "canonical identities changed by TCGdex - card number: "
+                f"{counters.canonical_card_number_changes}"
+            ),
             "language preserved as a first-class identity discriminator: YES",
             "persisted eBay records: 0",
         )

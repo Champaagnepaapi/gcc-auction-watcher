@@ -19,6 +19,7 @@ from .poketrace_identity import (
     _set_similarity,
     _variant_family,
 )
+from .poketrace_matching import _normalize_card_name
 
 
 MAX_VISUAL_IMAGE_BYTES = 8 * 1024 * 1024
@@ -359,7 +360,7 @@ class LocalVisualIdentityResolver:
         candidates: Sequence[Mapping[str, object]],
     ) -> Tuple[_VisualCandidate, ...]:
         unique: dict[tuple[str, str, str, str], _VisualCandidate] = {}
-        expected_name = _normalize(identity.card_name)
+        expected_name = _normalize_card_name(identity.card_name)
         expected_number = _normalize_card_number(identity.card_number)
         expected_variant = _variant_family(identity.variant)
 
@@ -370,7 +371,7 @@ class LocalVisualIdentityResolver:
             image_url = str(candidate.get("image") or "").strip()
             if not image_url:
                 continue
-            candidate_name = _normalize(candidate.get("name"))
+            candidate_name = _normalize_card_name(candidate.get("name"))
             if expected_name and candidate_name != expected_name:
                 continue
             set_payload = candidate.get("set")

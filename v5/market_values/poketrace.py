@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-import re
 import time
-import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -16,6 +14,12 @@ except ModuleNotFoundError:  # Offline tests inject a session.
     requests = None  # type: ignore[assignment]
 
 from ..models import CardIdentity
+from ..poketrace_matching import (
+    _candidate_evidence,
+    _normalize,
+    _normalize_card_name,
+    _normalize_card_number,
+)
 from .models import MarketValues
 
 
@@ -84,6 +88,7 @@ class PokeTraceCounters:
     ambiguous: int = 0
     request_failures: int = 0
     rate_limited: int = 0
+    primed_market_calls_avoided: int = 0
     cardmarket_snapshots: int = 0
     cardmarket_discount_signals: int = 0
     cardmarket_falling_market_guards: int = 0
@@ -143,6 +148,7 @@ class PokeTraceProvider:
         self._last_request_started: Optional[float] = None
         self.counters = PokeTraceCounters()
         self._cache: dict[Tuple[str, ...], PokeTraceSnapshot] = {}
+        self._identity_primed_keys: set[Tuple[str, ...]] = set()
 
     def values_for(self, identity: CardIdentity) -> Optional[MarketValues]:
         return self.snapshot_for(identity).us_values
@@ -152,9 +158,8 @@ class PokeTraceProvider:
             return PokeTraceSnapshot(POKETRACE_DISABLED)
 
         key = _identity_key(identity)
-        cached = self._cache.get(key)
+        cached = self._cached_snapshot(key)
         if cached is not None:
-            self.counters.cache_hits += 1
             return cached
 
         us = self._search_exact(identity, "US")
@@ -224,6 +229,11 @@ class PokeTraceProvider:
             "limit": str(self.config.result_limit),
             "product_type": "single",
         }
+        card_number = _normalize_card_number(identity.card_number)
+        if card_number:
+            params["card_number"] = card_number
+        if identity.set:
+            params["set"] = str(identity.set).strip()
         game = _poketrace_game(identity.language)
         if game:
             params["game"] = game
@@ -264,10 +274,28 @@ class PokeTraceProvider:
                 now = self.monotonic()
         self._last_request_started = now
 
+    def _cached_snapshot(
+        self, key: Tuple[str, ...]
+    ) -> Optional[PokeTraceSnapshot]:
+        cached = self._cache.get(key)
+        if cached is None:
+            return None
+        self.counters.cache_hits += 1
+        if key in self._identity_primed_keys:
+            self.counters.primed_market_calls_avoided += 1
+            self._identity_primed_keys.discard(key)
+        return cached
+
+    def _prime_snapshot(
+        self, key: Tuple[str, ...], snapshot: PokeTraceSnapshot
+    ) -> None:
+        self._cache[key] = snapshot
+        self._identity_primed_keys.add(key)
+
 
 def _identity_key(identity: CardIdentity) -> Tuple[str, ...]:
     return (
-        _normalize(identity.card_name),
+        _normalize_card_name(identity.card_name),
         _normalize(identity.set),
         _normalize_card_number(identity.card_number),
         _normalize(identity.language),
@@ -276,54 +304,16 @@ def _identity_key(identity: CardIdentity) -> Tuple[str, ...]:
 
 
 def _search_query(identity: CardIdentity) -> str:
-    values = (identity.card_name, identity.card_number, identity.set)
-    return " ".join(str(value).strip() for value in values if value)
-
-
-def _normalize(value: object) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
-
-
-def _normalize_card_number(value: object) -> str:
-    compact = re.sub(r"\s+", "", str(value or "")).lstrip("#")
-    parts = compact.split("/", 1)
-
-    def canonical(part: str) -> str:
-        match = re.fullmatch(r"0*(\d+)([A-Za-z]*)", part)
-        if not match:
-            return _normalize(part).replace(" ", "")
-        number = str(int(match.group(1)))
-        suffix = match.group(2).casefold()
-        return f"{number}{suffix}"
-
-    return "/".join(canonical(part) for part in parts)
+    for value in (identity.card_name, identity.set, identity.card_number):
+        if value and str(value).strip():
+            return str(value).strip()
+    return ""
 
 
 def _candidate_matches(
     identity: CardIdentity, candidate: Mapping[str, object]
 ) -> bool:
-    if _normalize(candidate.get("name")) != _normalize(identity.card_name):
-        return False
-    if _normalize_card_number(candidate.get("cardNumber")) != _normalize_card_number(
-        identity.card_number
-    ):
-        return False
-    set_payload = candidate.get("set")
-    set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else None
-    if _normalize(set_name) != _normalize(identity.set):
-        return False
-
-    product_type = _normalize(candidate.get("productType"))
-    if product_type and product_type != "single":
-        return False
-
-    expected_variant = _normalize(identity.variant)
-    candidate_variant = _normalize(candidate.get("variant"))
-    if expected_variant and candidate_variant and expected_variant != candidate_variant:
-        return False
-    return True
+    return _candidate_evidence(identity, candidate).rejection is None
 
 
 def _poketrace_game(language: Optional[str]) -> Optional[str]:
@@ -529,6 +519,7 @@ def render_poketrace_counters(provider: PokeTraceProvider) -> str:
             f"ambiguous: {counters.ambiguous}",
             f"request failures: {counters.request_failures}",
             f"rate limited: {counters.rate_limited}",
+            f"extra market calls avoided by identity cache: {counters.primed_market_calls_avoided}",
             f"CardMarket snapshots: {counters.cardmarket_snapshots}",
             f"CardMarket discount signals: {counters.cardmarket_discount_signals}",
             (
