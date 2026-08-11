@@ -86,6 +86,56 @@ Validation historique item-level : API primaire au moins égale au collector leg
 - PSA Auction Prices Realized en premier pour PSA exact lorsque possible ;
 - eBay public en fallback si APR insuffisant.
 
+### Arbitrage indépendant avant rejet terminal
+
+Implémentation isolée de l’issue #28 :
+
+```text
+branche: agent/v4-independent-external-market-valuation
+base origin/main: 510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d
+PR V4: séparée, draft, vers main
+PR #8 / branche V5: séparées et inchangées
+validation offline V4: 221/221 tests
+```
+
+Le résultat GCC est désormais une preuve structurée (`STRONG`, `WEAK` ou
+`UNAVAILABLE`), pas nécessairement une décision terminale. Les cas suivants
+restent terminaux avant toute recherche externe : grader/grade illisible,
+qualifier spécial, identité commerciale exacte insuffisante, produit non-carte
+ou non supporté, et prix hors périmètre de discovery. En revanche, historique
+vide, comparables insuffisants, décote GCC insuffisante et borne prudente GCC
+non achetable peuvent entrer dans la file de preuve externe.
+
+Arbitrage déterministe :
+
+- GCC fort positif + marché externe fort concordant :
+  `GCC_EXTERNAL_CONFIRMED`, avec les bornes source par source les plus prudentes ;
+- GCC faible/indisponible + marché externe fort positif : `EXTERNAL_RESCUE` ;
+  la faiblesse GCC n’est pas utilisée comme plafond dur ;
+- deux marchés forts matériellement contradictoires, ou un marché fort positif
+  contre l’autre fort négatif : `MARKET_CONFLICT_BLOCKED` ;
+- source externe indisponible : une opportunité GCC déjà valide est conservée
+  sous `GCC_ONLY` ;
+- budget externe épuisé : `EXTERNAL_PENDING`, jamais converti en faux
+  « aucun comparable ».
+
+La preuve externe est strictement limitée à la même identité commerciale, au
+même grader et au même grade. Les conflits de référence, langue, édition ou
+finish/variant sont bloquants. PSA utilise APR au grade exact en premier puis
+eBay en fallback ; les autres graders utilisent eBay au même grader/grade.
+PokeTrace et les proxys inter-graders ne participent pas à cette V4.
+
+Le cache `state.json` utilise une clé hashée de l’identité commerciale stricte,
+un schéma versionné et une TTL de 24 h. Une preuve fraîche ne consomme aucun
+budget. Les misses/stales sont dédupliqués puis priorisés : enchères finissant
+le plus tôt, fixed `NEW/CHANGED`, rejets GCC récupérables, puis refresh stale.
+Les budgets restent bornés séparément par provider.
+
+Les diagnostics de run exposent les forces et décisions GCC/externe, hits/miss/
+stale du cache, profondeur et déduplication de file, tentatives APR/eBay,
+rescues, conflits, différés et chemins finaux. Les notifications et l’état
+anti-spam conservent également le chemin de valorisation et la provenance.
+
 ### Grade arbitrage
 
 Une carte de grade supérieur peut être intéressante si son prix est autour du marché robuste d’un grade inférieur du **même grader**.
