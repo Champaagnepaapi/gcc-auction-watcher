@@ -19,22 +19,23 @@
 - Chaque run est journalisé dans l'**issue #1** avec `trigger`, exit code, durée, opportunités, mode/scope auction, lignes/timers et fallback.
 - **Aucun achat, bid ou checkout automatique.**
 
-### V4 — optimisation runtime Playwright en cours
+### V4 — optimisation runtime Playwright déployée
 
-- PR **#13** : `ops/v4-playwright-cache`.
+- PR **#13** mergée dans `main` au commit `19942ce7cb26b2ba05bd51de8744d212933299bb`.
 - Objectif : éviter de retélécharger Chromium/Headless Shell/FFmpeg à chaque VM GitHub.
 - GitHub-hosted runners étant jetables, Chromium ne peut pas rester installé sur la même machine ; la stratégie est donc **cache Playwright + cache pip + probe de lancement**.
-- Sur cache hit : payload navigateur restauré, pas de redownload complet.
-- Si le probe Chromium échoue à cause des libs système du runner : fallback automatique `playwright install --with-deps chromium`.
-- Cette PR est une optimisation P3 uniquement : elle ne change pas discovery/valorisation/alertes.
-- Ne la considérer terminée qu'après CI verte puis observation d'au moins un premier run cache-miss et un run cache-hit en production.
+- Premier run production post-merge : `31479526838`, **cache miss attendu**, téléchargement initial puis sauvegarde d'environ 279 MB de cache Playwright ; le probe Chromium a réussi sans fallback `playwright install --with-deps chromium` ; scan V4 sain en **15 s**.
+- Le prochain run production doit confirmer le **cache hit** : payload navigateur restauré, aucun redownload Chromium/FFmpeg/Headless Shell. Tant que ce deuxième run n'est pas audité, considérer P3 comme déployé mais validation cache-hit encore en attente.
+- Si le probe Chromium échoue à cause des libs système d'un runner futur, fallback automatique `playwright install --with-deps chromium`.
+- Cette optimisation ne change pas discovery/valorisation/alertes.
 
 ### V5 — expérimental, PR #8, NE PAS MERGER
 
 - PR **#8**, branche exacte : `agent/v5-poketrace-cardmarket-market-data`.
 - V5 reste un diagnostic **RAW eBay** séparé de la V4 graded GCC.
-- La branche V5 a été synchronisée avec le `main` actuel via merge **main → V5** au commit `09e512f3ac1aef381974de493fa39e45c70049c7`. Cela ne merge pas V5 dans `main`.
+- Dernier resync complet **main → V5** après README canonique + P3 : merge `a964ffe97f7031d5d5eede74135b0bd86be7c4f0`. Cela ne merge pas V5 dans `main`.
 - Dernier gros correctif Codex audité : `840c44f89ad6ba7aa4b9524161203c019b2eff47` (`Fix V5 canonical PokeTrace identity matching`).
+- Tests de régression post-audit déjà ajoutés sur la branche V5 : commit `d727ca4325e07087d65d1545fa89219cfa410683`.
 - Le workflow live V5 doit rester **manuel (`workflow_dispatch`)** pour protéger le quota PokeTrace Free.
 - PokeTrace Free : clé stockée dans GitHub Secret `POKETRACE_API_KEY`, **250 req/j**, US + RAW uniquement, cadence locale effective ≥2.25 s, pas de Cardmarket EU/graded en Free.
 
@@ -71,7 +72,7 @@ Important : les anciens compteurs de rejet étaient trompeurs parce qu'ils ne co
 4. Refaire ensuite **toute la CI sur le repo synchronisé** : tous les tests V4, tous les tests V5, `compileall`, tous les YAML, `git diff --check`, sans appel PokeTrace live.
 5. Seulement après : **un unique nouveau run PokeTrace Free**, comparer aux métriques ci-dessus avant toute décision JustTCG/Scrydex/Pro.
 
-Ces blockers sont aussi documentés dans un commentaire de la PR #8 afin qu'un agent Codex puisse les reprendre directement depuis GitHub.
+Ces blockers et leurs tests d'acceptation sont également documentés dans la conversation de la PR #8 afin qu'un agent Codex puisse reprendre directement depuis GitHub.
 
 ### Règles de gouvernance du projet
 
