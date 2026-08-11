@@ -1,146 +1,325 @@
 # GCC Auction Watcher — Cloud GitHub Actions
 
-Cette version tourne dans GitHub Actions : **aucun Mac ne doit rester allumé**.
+Cette version tourne dans **GitHub Actions** : aucun Mac ne doit rester allumé.
 
-## Réglage actuel
+## Réglage de production actuel
 
-- GCC Marketplace : prix fixes et enchères (enchères à **60 minutes maximum**)
-- cartes Pokémon uniquement, hors boosters/packs/accessoires
-- prix courant : **10 à 100 €**
-- décote minimale : **30 %**, relevée automatiquement lorsque les comparables sont faibles
-- scan : **toutes les 10 minutes, 24/7**
-- notification : **ntfy sur iPhone**
-- aucun achat ni aucune enchère automatique
+- marketplace : **GCC Marketplace** ;
+- produits : **cartes Pokémon individuelles uniquement** ;
+- découverte prix : **0 à 100 €** ;
+- enchères : timer individuel **≤ 60 minutes** ;
+- décote minimale : **30 %**, relevée automatiquement lorsque les comparables sont faibles ;
+- scan : **toutes les 10 minutes, 24/7** ;
+- notification : **ntfy** ;
+- aucun achat, aucune enchère et aucun checkout automatique.
 
-## Installation la plus simple
+La cible économique historique était principalement 10–100 €. La découverte a ensuite été élargie à **0–100 €** pour éviter de rater une anomalie extrême. Un prix très bas ne crée jamais à lui seul une opportunité : les contrôles d'identité, de grade, de comparables, de prix maximal prudent et de validation externe restent obligatoires.
 
-### 1. Créer un repo GitHub
+Les produits scellés/non-cartes sont exclus : boosters, packs, displays, boxes, ETB, coffrets, blisters, bundles, decks, tins, cases, etc.
 
-Sur GitHub, crée un nouveau repository, de préférence **public** si tu veux éviter de consommer le quota Actions d'un repo privé à haute fréquence.
+## Fréquence GitHub Actions
 
-Décompresse ce dossier puis, depuis Terminal :
+Le workflow `.github/workflows/watcher.yml` utilise :
 
-```bash
-git init
-git add .
-git commit -m "GCC auction watcher"
-git branch -M main
-git remote add origin URL_DU_REPO_GITHUB
-git push -u origin main
+```yaml
+schedule:
+  - cron: "3,13,23,33,43,53 * * * *"
 ```
 
-Tu peux aussi téléverser les fichiers depuis l'interface GitHub si tu préfères éviter Git.
+Les minutes `03,13,23,33,43,53` évitent les pics habituels du début de l'heure. GitHub Actions n'est pas un ordonnanceur temps réel : un run planifié peut parfois démarrer avec un léger retard.
 
-### 2. Configurer ntfy
+Le workflow peut également être lancé manuellement via **Actions → GCC Auction Watcher → Run workflow**.
 
-Sur l'iPhone :
+## Architecture de découverte
 
-1. installer **ntfy** ;
-2. s'abonner à un topic long et aléatoire, par exemple `gcc-...` ;
-3. ne pas publier ce nom de topic.
+### 1. Prix fixes
 
-Sur GitHub :
+Le watcher utilise l'API publique GCC `/on-sale-items` avec pagination jusqu'à couverture complète de la requête de production.
 
-**Repository → Settings → Secrets and variables → Actions → New repository secret**
+Le chemin fixed applique les filtres GCC disponibles puis conserve des défenses locales :
 
-Nom :
+```text
+/on-sale-items
+        ↓
+FIXED_PRICE
+        ↓
+Pokémon
+        ↓
+CARDS
+        ↓
+0–100 €
+        ↓
+file économique V4
+```
+
+La file économique fixed ne réanalyse pas inutilement tout l'inventaire à chaque run. Elle priorise :
+
+```text
+NEW → CHANGED → NEVER_EVALUATED → STALE
+```
+
+La TTL de réévaluation est de 24 h par défaut.
+
+### 2. Enchères — item-level
+
+Le chemin primaire auction ne dépend plus de la découverte des pages de ventes une par une. Il reproduit la logique de `/filtres/auctions` via l'API publique GCC :
+
+```text
+/on-sale-items
+sellingTypeGroup=AUCTION
+sortType=ENDING_SOON
+status=ON_SALE
+        ↓
+pagination
+        ↓
+lots individuels
+        ↓
+endTime individuel
+        ↓
+Pokémon
++ carte
++ 0–100 €
++ timer ≤60 min
+        ↓
+analyse économique V4
+```
+
+Le watcher parcourt les lots dans l'ordre `ENDING_SOON`. Il peut s'arrêter lorsque :
+
+- l'horizon de 60 minutes est prouvé comme franchi dans cet ordre ; ou
+- l'inventaire correspondant est épuisé.
+
+Chaque lot doit fournir un `endTime` exploitable. Si le watcher ne peut plus prouver correctement l'ordre, la pagination ou l'horizon, il ne prétend pas avoir une couverture complète.
+
+### Statut spécifique auction
+
+Lorsque le primaire item-level a correctement parcouru tout ce qui devait l'être jusqu'à l'horizon, le watcher expose :
+
+```text
+COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+```
+
+Ce statut signifie que la couverture est complète pour les **listings auction découverts selon la requête production et l'ordre ENDING_SOON**, pas que le bot affirme avoir audité tout GCC sans filtre.
+
+### Fallback legacy
+
+L'ancien collector auction reste présent comme fallback de sécurité. Il est utilisé si le chemin API item-level ne peut plus établir une couverture fiable.
+
+Le log expose explicitement :
+
+```text
+auction discovery mode: AUCTION_API_ITEM_LEVEL
+auction discovery scope status: COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+auction legacy fallback used: false
+```
+
+## Couverture et diagnostic
+
+Le watcher sépare désormais clairement :
+
+1. **discovery coverage** : avons-nous correctement parcouru l'univers de découverte configuré ?
+2. **economic coverage** : avons-nous correctement comptabilisé/évalué les candidats économiques ?
+
+Le log affiche notamment pour fixed et auctions :
+
+- protocole utilisé ;
+- pages demandées/réussies/échouées ;
+- retries ;
+- lignes reçues ;
+- listings uniques ;
+- doublons ;
+- raison de fin de pagination ;
+- listings comptabilisés/non comptabilisés ;
+- rejets par règles existantes ;
+- échecs de parsing ;
+- statut de couverture final.
+
+Pour les auctions, on suit également :
+
+- nombre de lots découverts ;
+- nombre de `endTime` parsés ;
+- nombre de candidats dans l'horizon ≤60 min ;
+- nombre de lots sans timer exploitable ;
+- utilisation ou non du fallback legacy.
+
+Un résultat `0 opportunities` n'est présenté comme fiable que si les invariants de couverture sont cohérents.
+
+## Journal issue #1
+
+Chaque run V4, planifié ou manuel, écrit un commentaire dans l'**issue #1**.
+
+Exemple de champs :
+
+```text
+timestamp_utc=...
+run_id=...
+run_attempt=1
+trigger=schedule
+commit_sha=...
+scan_status=success
+scan_exit_code=0
+duration_seconds=...
+final_opportunities=...
+auction_discovery_mode=AUCTION_API_ITEM_LEVEL
+auction_scope_status=COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+auction_discovered_rows=...
+auction_timer_parsed=...
+auction_ending_soon=...
+auction_fallback_used=false
+```
+
+`trigger=schedule` permet de distinguer un vrai cron de production d'un `workflow_dispatch` manuel.
+
+## État et anti-spam
+
+GitHub Actions utilise des machines éphémères. Le workflow sauvegarde donc `state.json` dans le cache Actions et restaure cet état au run suivant.
+
+La file économique fixed stocke uniquement les informations minimales nécessaires à son fonctionnement : identifiant GCC, dates de première/dernière observation et d'évaluation, dernier prix, empreintes de métadonnées cheap, version d'évaluation, dernier statut et indicateur actif. Aucun HTML, historique complet de ventes ou image n'est persisté dans cet état.
+
+Une opportunité déjà signalée n'est renotifiée que si :
+
+- son prix baisse d'au moins **10 %** ;
+- sa décote gagne au moins **5 points** ; ou
+- une enchère franchit un seuil temporel important.
+
+Une alerte haute priorité unique peut être envoyée à **≤5 minutes** si le prix reste inférieur ou égal au prix maximal conseillé.
+
+## Valorisation robuste
+
+Le scanner GCC fonctionne indépendamment des sources externes. Le moteur de valorisation reste volontairement conservateur : il ne valide une opportunité que lorsque les comparables sont suffisamment exploitables.
+
+### Pondération de récence
+
+- ≤30 jours : `1.00` ;
+- ≤90 jours : `0.70` ;
+- ≤180 jours : `0.40` ;
+- ≤365 jours : `0.20` ;
+- au-delà : minimum `0.10` ;
+- date inconnue : poids prudent `0.45`.
+
+### Outliers
+
+Les prix aberrants sont filtrés par **MAD** (écart absolu médian), avec fallback **IQR** lorsque le MAD est nul.
+
+La notification peut afficher : borne basse, estimation centrale, borne haute, prix maximal conseillé, liquidité, dispersion, confiance, langue, numéro de carte et série.
+
+Le prix actuel doit rester inférieur ou égal au prix maximal conseillé pour un prix fixe comme pour une enchère.
+
+## Grades et arbitrage de grade
+
+Le signal principal est toujours une vente de la **même société de grading et du même grade**.
+
+En l'absence de marché suffisamment exploitable au grade cible, un grade inférieur de la même société peut produire une voie distincte **ARBITRAGE GRADE** lorsque son marché robuste justifie le prix actuel.
+
+Cette logique ne transforme jamais artificiellement la valeur du grade inférieur en valeur du grade supérieur :
+
+- la valeur exacte du grade supérieur reste inconnue ;
+- le prix max reste prudent ;
+- la confiance est réduite ;
+- une preuve externe exacte suffisante est exigée avant notification.
+
+Les ventes d'autres graders restent secondaires. Elles ne peuvent créer seules une estimation achetable sans ratio empirique suffisamment documenté et fondé sur assez d'observations.
+
+## PSA Auction Prices Realized et eBay
+
+Pour les lots PSA correctement identifiés, **PSA Auction Prices Realized (APR)** est interrogé en premier comme source indépendante.
+
+Le numéro de carte est prioritaire dans le matching et les résultats ambigus sont rejetés. Les ventes du grade cible sont converties en euros avec le taux de référence disponible, puis estimées séparément afin que leur volume n'écrase pas l'historique GCC.
+
+Si APR fournit au moins deux ventes fiables du grade exact, eBay public n'est pas lancé pour cette carte afin d'éviter les doubles comptes.
+
+Si APR est insuffisant ou indisponible, eBay reste le fallback à échec rapide. Les graders autres que PSA ne déclenchent pas APR directement.
+
+Budgets eBay actuels :
+
+```yaml
+EBAY_MAX_QUERIES_PER_CARD: "2"
+EBAY_MAX_CARDS_PER_RUN: "2"
+```
+
+## Installation
+
+### 1. Repository GitHub
+
+Le code doit être présent dans un repository GitHub avec Actions activé.
+
+### 2. Secrets
+
+Dans :
+
+**Repository → Settings → Secrets and variables → Actions**
+
+les secrets utilisés par la V4 incluent notamment :
 
 ```text
 NTFY_TOPIC
+GCC_SESSION_B64
 ```
 
-Valeur : le nom exact du topic choisi dans ntfy.
+Ne jamais committer leur valeur dans le repository.
 
-Le topic n'est donc pas enregistré dans le code public.
+### 3. Lancer un test manuel
 
-### 3. Autoriser GitHub Actions
+Dans l'onglet **Actions** :
 
-Ouvre l'onglet **Actions** du repository. Si GitHub demande d'activer les workflows, active-les.
+**GCC Auction Watcher → Run workflow**
 
-Le workflow `.github/workflows/watcher.yml` démarrera automatiquement toutes les 10 minutes.
-
-Pour tester immédiatement :
-
-**Actions → GCC Auction Watcher → Run workflow**.
-
-### 4. Vérifier le résultat
-
-Ouvre une exécution dans l'onglet Actions. Le log doit notamment afficher :
+Puis vérifier notamment les sections :
 
 ```text
-Ventes détectées: ...
-Lots <= 100 €: ...
-Opportunités validées: ...
+=== DISCOVERY COVERAGE ===
+=== ECONOMIC COVERAGE ===
+auction discovery mode: ...
+auction discovery scope status: ...
+auction legacy fallback used: ...
 ```
 
-Si une opportunité dépasse le seuil, une notification ntfy est envoyée à l'iPhone.
-
-## Important : fréquence GitHub
-
-GitHub accepte les workflows planifiés jusqu'à une fréquence minimale de 5 minutes, mais les tâches planifiées ne constituent pas un ordonnanceur temps réel : une exécution peut être retardée en période de charge.
-
-J'ai volontairement utilisé les minutes `03,13,23,33,43,53` plutôt que `00,10,20...` afin d'éviter les pics typiques autour du début de l'heure.
-
-## État / anti-spam
-
-GitHub Actions utilise des machines éphémères. Le workflow sauvegarde donc `state.json` dans le cache Actions et restaure l'état au prochain scan. Les anciens fichiers d'état restent compatibles.
-
-La file économique fixed réutilise ce même fichier et ce même cache. Elle ne
-conserve que l'identifiant GCC, les dates de première/dernière observation et
-d'évaluation, le dernier prix, les empreintes de métadonnées cheap, la version
-d'évaluation, le dernier statut et l'indicateur actif. Aucun HTML, historique de
-ventes ou image n'est persisté. Au premier run sans file compatible, l'inventaire
-déjà présent est classé `NEVER_EVALUATED`; les listings découverts aux runs
-suivants sont classés `NEW`. Le budget de 120 est consommé dans l'ordre
-`NEW`, `CHANGED`, `NEVER_EVALUATED`, puis `STALE`. Une évaluation inchangée
-devient `STALE` après `FIXED_REEVALUATION_TTL_HOURS` (24 heures par défaut).
-
-Une opportunité déjà signalée n'est renotifiée que si son prix baisse d'au moins 10 %, si sa décote gagne au moins 5 points, ou si une enchère franchit un seuil de temps important. Une unique alerte haute priorité est envoyée à cinq minutes ou moins lorsque le prix reste sous le prix maximal conseillé.
-
-## Limite actuelle sur la valorisation
-
-Le scanner GCC fonctionne indépendamment. Le moteur de valorisation est volontairement conservateur : il ne valide une décote que lorsque des comparables exploitables sont visibles.
-
-Les ventes sont normalisées dans un format commun à toutes les sources. Leur pondération de récence est progressive : 1,00 jusqu'à 30 jours, 0,70 à 90 jours, 0,40 à 180 jours et 0,20 à 365 jours, puis au minimum 0,10. Une date inconnue reçoit un poids prudent de 0,45 afin de ne pas supprimer les anciennes données lorsque la liquidité est faible.
-
-Les prix aberrants sont filtrés par MAD (écart absolu médian), avec repli IQR lorsque le MAD est nul. La notification affiche la borne basse, l'estimation centrale, la borne haute, le prix max conseillé, la liquidité, la dispersion, la confiance, la langue, le numéro de carte et la série.
-
-Le prix courant doit rester inférieur ou égal au prix max conseillé, aussi bien pour un prix fixe que pour une enchère. Pour la gradation, une vente de la même société et du même grade constitue le signal principal, même si de nombreuses ventes d'autres graders existent.
-
-En l'absence de vente fiable au grade cible, un grade inférieur de la même société peut produire une voie d'éligibilité distincte **ARBITRAGE GRADE** lorsque son marché robuste est supérieur ou égal au prix actuel. La décote classique n'est alors pas exigée une deuxième fois : le prix max est la borne basse prudente du grade inférieur, la confiance reste faible et la valeur exacte du grade supérieur est explicitement indiquée comme inconnue.
-
-Les ventes d'autres graders restent secondaires et ne peuvent créer seules une estimation achetable. Elles ne deviennent utilisables qu'après normalisation par un ratio empirique possédant assez d'observations et des sources reconnues; aucun ratio de valeur inter-grader n'est appliqué par défaut.
-
-Pour les lots PSA dont le grade et l'identité sont lisibles, PSA Auction Prices Realized est interrogé en premier comme source indépendante. Le numéro de carte est prioritaire dans le matching; les résultats ambigus sont rejetés. Les ventes individuelles du grade cible sont converties en euros avec le dernier taux de référence ECB, puis estimées séparément afin que leur volume n'écrase pas l'historique GCC. La moyenne affichée par PSA et la population ne sont jamais injectées comme ventes artificielles.
-
-Si APR fournit au moins deux ventes fiables au grade exact, le scraping eBay public n'est pas lancé pour cette carte afin d'éviter les doubles comptes. Si APR est insuffisant, indisponible, refusé par PSA ou privé de taux de change, eBay reste le fallback à échec rapide. Les graders autres que PSA ne déclenchent jamais APR directement.
-
-APR utilise uniquement les pages PSA publiques, sans connexion. Comme toute interface publique, elle peut changer, limiter les requêtes ou refuser une exécution GitHub Actions; le bot abandonne alors rapidement cette validation sans interrompre le scan GCC.
-
-Deux budgets eBay indépendants évitent toute ambiguïté : `EBAY_MAX_QUERIES_PER_CARD` limite les reformulations pour une carte et `EBAY_MAX_CARDS_PER_RUN` limite le nombre d'opportunités contrôlées pendant un scan.
-
-## Modifier les seuils
+## Paramètres principaux
 
 Dans `.github/workflows/watcher.yml` :
 
 ```yaml
-MAX_PRICE_EUR: '100'
-MIN_DISCOUNT_PCT: '30'
-EBAY_MAX_QUERIES_PER_CARD: '2'
-EBAY_MAX_CARDS_PER_RUN: '2'
-PSA_APR_ENABLED: 'true'
-PSA_APR_MIN_COMPS: '2'
-PSA_APR_MAX_CARDS_PER_RUN: '2'
-PSA_APR_MAX_RESULTS: '20'
-PSA_APR_NAV_TIMEOUT: '6000'
+MAX_PRICE_EUR: "100"
+MIN_DISCOUNT_PCT: "30"
+MAX_AUCTION_MINUTES: "60"
+FIXED_REEVALUATION_TTL_HOURS: "24"
+EBAY_MAX_QUERIES_PER_CARD: "2"
+EBAY_MAX_CARDS_PER_RUN: "2"
+PSA_APR_ENABLED: "true"
+PSA_APR_MIN_COMPS: "2"
+PSA_APR_MAX_CARDS_PER_RUN: "2"
+PSA_APR_MAX_RESULTS: "20"
+PSA_APR_NAV_TIMEOUT: "6000"
 ```
 
-Le taux USD/EUR est récupéré une seule fois par run depuis l'ECB. Si tu veux un repli explicite lorsque l'ECB est indisponible, crée une variable GitHub Actions `PSA_APR_USD_PER_EUR_FALLBACK` contenant le nombre de dollars pour 1 euro (par exemple `1.15`). Sans taux ECB et sans cette variable, APR est simplement ignoré; aucun taux n'est inventé.
+## V5 — expérimental
 
-Pour un scan toutes les 5 minutes :
+La V5 n'est **pas** la production actuelle et ne remplace pas la V4.
 
-```yaml
-- cron: '3/5 * * * *'
+Son diagnostic RAW eBay travaille sur l'identité canonique et les données de marché :
+
+- **TCGdex** : resolver catalogue multilingue principal ;
+- **PokeTrace Free** : authentification et appels live validés, US RAW uniquement dans la phase actuelle ;
+- matching exact PokeTrace : encore insuffisant sur le nom/set, donc aucune valeur n'est acceptée artificiellement ;
+- PR V5 : conservée en draft tant que le matching exact n'est pas démontré ;
+- **Scrydex** : candidat possible comme bridge d'identité canonique si la chaîne gratuite ne suffit pas.
+
+Aucun passage à une dépendance payante ou à PokeTrace Pro n'est considéré comme nécessaire avant d'avoir prouvé le chemin d'identité de façon fiable.
+
+## Optimisation future — Playwright/Chromium
+
+Le workflow V4 exécute encore :
+
+```text
+playwright install --with-deps chromium
 ```
 
-Le réglage 10 minutes est préférable au départ pour limiter les requêtes inutiles sur GCC.
+à chaque run. Le téléchargement/installation de Chromium représente une part importante du temps de préparation GitHub Actions, même si le scan V4 lui-même est désormais rapide grâce à l'API item-level.
+
+Cette optimisation est volontairement classée **P3** : elle pourra être traitée plus tard via cache/image/installation conditionnelle après stabilisation fonctionnelle. Elle ne doit pas modifier la logique de découverte ou de valorisation.
+
+## Sécurité
+
+Le projet est un watcher/outil d'aide à la décision uniquement.
+
+**Purchases = 0 — Bids = 0 — Checkout = 0.**
