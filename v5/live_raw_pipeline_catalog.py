@@ -43,6 +43,7 @@ from .market_values.gcc_history.provider import GCCProviderConfig, GCCHistoryPro
 from .market_values.poketrace import (
     PokeTraceConfig,
     PokeTraceProvider,
+    pro_tier_config_from_env,
     render_poketrace_counters,
 )
 from .market_values.poketrace_free import (
@@ -116,7 +117,7 @@ def _build_poketrace_provider() -> PokeTraceProvider:
     if plan_mode == "free":
         config = _workflow_safe_poketrace_config(free_tier_config_from_env())
         return FreeTierPokeTraceProvider(config=config)
-    config = _workflow_safe_poketrace_config(PokeTraceConfig.from_env())
+    config = _workflow_safe_poketrace_config(pro_tier_config_from_env())
     return PokeTraceProvider(config=config)
 
 

@@ -136,12 +136,12 @@ Les anciens noms peuvent rester visibles dans l’historique/sidebar GitHub Acti
 - PR reste **draft, ouverte, non mergée**.
 - V5 = diagnostic **RAW eBay** séparé de la V4 graded GCC.
 - Aucun achat/bid/checkout/CardGrader.
-- Ne pas passer PokeTrace Pro/Cardmarket payant avant d’avoir prouvé que la brique PokeTrace apporte des identités/valeurs utiles.
+- Le plan PokeTrace Pro est désormais activé pour **un unique diagnostic manuel de 20 listings**, précédé d’un preflight `/auth/info` fail-closed. Aucun live n’est lancé depuis le développement local.
 
 ## Architecture resolver retenue
 
 1. **TCGdex = resolver principal multilingue**.
-2. **PokeTrace Free = fallback identité + RAW US market**.
+2. **PokeTrace = fallback identité strict + marché US**, avec Free toujours disponible comme mode de repli.
 3. Pokémon TCG API = fallback anglais/unknown.
 4. Matching visuel local + OCR ciblé = arbitres conservateurs pour `AMBIGUOUS/INSUFFICIENT` seulement.
 5. **JustTCG = seconde opinion / benchmark expérimental**, pas principal.
@@ -149,15 +149,32 @@ Les anciens noms peuvent rester visibles dans l’historique/sidebar GitHub Acti
 
 Les workflows V5 live et benchmark restent **`workflow_dispatch` uniquement**. Aucun déclenchement automatique PokeTrace/JustTCG.
 
-## PokeTrace Free / `market=US`
+## Transition PokeTrace Free → Pro
 
-Audit Codex ciblé : aucun changement de code.
+Le provider Free et ses tests restent disponibles avec `POKETRACE_PLAN=free` :
+recherche explicite `market=US`, prix RAW US uniquement et cadence minimale de
+2,25 s. Le workflow manuel principal utilise maintenant `POKETRACE_PLAN=pro`.
+Un preflight lit uniquement le schéma officiel `/auth/info`, accepte Pro ou un
+plan documenté supérieur, et arrête le job avant le pipeline si
+l’authentification est invalide, la clé inactive ou le plan inférieur à Pro.
+Les logs du preflight sont limités au statut HTTP, tier normalisé, quota
+journalier/usage/remaining/reset disponibles et raison technique agrégée.
 
-- `/v1/cards` accepte contractuellement l’absence de `market`, mais le comportement Free sans `market` n’est pas documenté.
-- Free est garanti **US + RAW** ; EU/Cardmarket est Pro+.
-- Les records PokeTrace sont market-specific ; aucun ID canonique global transversal n’est documenté.
-- `market=US` reste donc volontairement appliqué au resolver Free.
-- Une future séparation identité globale / valorisation US nécessiterait des caches et IDs qualifiés par marché ; ne pas simplement retirer `market=US`.
+La cadence Pro est fixée à **≥0,40 s/requête**, marge conservatrice sous le burst
+documenté de 30 requêtes/10 s. Le circuit-breaker 429 et son unique retry court
+restent inchangés.
+
+Les recherches d’identité sont toujours market-explicites : **US d’abord**, puis
+**EU uniquement après un clean no-match US**. Un match, une ambiguïté, une
+erreur, un conflit bloquant de variante ou un rate-limit US interdit le fallback
+EU. Les IDs, résultats et caches sont qualifiés par marché et par identité
+complète/variante/provenance ; aucun no-match ou échec US n’empoisonne EU.
+
+Pour la valorisation, US/USD reste la seule entrée du moteur économique RAW et
+fournit aussi PSA8/PSA9/PSA10 lorsqu’ils existent, uniquement comme comparaison
+grading optionnelle. EU/EUR reste un diagnostic séparé :
+`cardmarket.AGGREGATED` est une tendance/référence et `cardmarket_unsold` décrit
+des demandes actives, jamais des ventes réalisées. Aucun mélange USD/EUR.
 
 ## Alias fournisseur multilingues déterministes
 
@@ -185,15 +202,16 @@ PokeTrace US existe, ni qu’il contienne une valeur RAW.
 
 # V5 — validation offline la plus récente
 
-Baseline du circuit-breaker PokeTrace :
+Baseline antérieure du circuit-breaker PokeTrace :
 
 ```text
 bdd1abc7b479ed980f4f4896b17e3b184b701ed5
 ```
 
-Validation offline de la phase RAW→RAW MVP et des alias multilingues :
+Validation offline de la transition Free → Pro, incluant les régressions
+RAW→RAW et alias multilingues :
 
-- V5 : **333/333** ;
+- V5 : **345/345** ;
 - V4 : **167/167** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
@@ -348,7 +366,7 @@ Near-matches effectivement observés avant rate-limit : 2, tous deux échouant u
 
 ### Interprétation du 429
 
-Le workflow impose ≥2,25 s entre appels, mais le run a reçu 15×429 persistants. Comme plusieurs runs Free avaient déjà consommé du quota le même jour, le diagnostic est compatible avec une limite de quota/serveur Free ; le type exact n’est pas prouvé par les logs actuels. **Ne pas relancer PokeTrace avant reset du quota ou avant un diagnostic explicite du type de 429.**
+Ce run historique Free imposait ≥2,25 s entre appels mais a reçu 15×429 persistants. Plusieurs runs Free avaient déjà consommé du quota le même jour ; le type exact n’était pas prouvé par les anciens logs. Cette consigne d’attente Free est désormais remplacée par le preflight Pro fail-closed et le circuit-breaker partagé.
 
 ---
 
@@ -387,11 +405,11 @@ Conclusion : **TCGdex reste clairement principal.** JustTCG reste second avis ex
 
 Ordre recommandé :
 
-1. ne lancer **aucun nouveau PokeTrace live tant que le quota Free n’a pas reset** ;
-2. après reset, faire **un seul** live propre de 20 listings sur le code actuel pour mesurer le circuit-breaker, les diagnostics near-match, le rendement par stratégie et les nouveaux compteurs RAW ;
+1. lancer manuellement **une seule validation Pro de 20 listings** via `V5 Live Raw Pipeline Diagnostic`, après revue de cette PR ;
+2. vérifier d’abord le résumé du preflight Pro, puis mesurer US→EU, circuit-breaker, diagnostics near-match, rendement par stratégie et compteurs RAW ;
 3. seulement après ce run propre, décider si `structured`, `broad-name`, `broad-set` ou d’autres fallbacks peuvent être réduits/supprimés ;
 4. continuer à chercher des équivalences uniquement déterministes ; ne jamais assouplir le matching pour atteindre `15+/20` ;
-5. si PokeTrace reste à 0 exact/0 market value après un run propre, réévaluer l’intérêt de PokeTrace Free avant de payer Pro ;
+5. si PokeTrace reste à 0 exact/0 market value après ce run Pro propre, réévaluer les stratégies sans relâcher le matcher ;
 6. Scrydex/Vision reste différé tant que l’identité structurée et les sources marché ne sont pas mieux comprises.
 
 ---

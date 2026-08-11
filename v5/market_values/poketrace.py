@@ -36,6 +36,14 @@ POKETRACE_MATCHED = "POKETRACE_MATCHED"
 POKETRACE_NO_MATCH = "POKETRACE_NO_MATCH"
 POKETRACE_RATE_LIMITED = "POKETRACE_RATE_LIMITED"
 
+MARKET_SEARCH_MATCHED = "MATCHED"
+MARKET_SEARCH_CLEAN_NO_MATCH = "CLEAN_NO_MATCH"
+MARKET_SEARCH_AMBIGUOUS = "AMBIGUOUS"
+MARKET_SEARCH_ERROR = "ERROR"
+MARKET_SEARCH_RATE_LIMITED = "RATE_LIMITED"
+
+PRO_MIN_REQUEST_INTERVAL_SECONDS = 0.40
+
 RATE_LIMIT_SHORT_RETRYABLE = "SHORT_RETRYABLE"
 RATE_LIMIT_LONG_NON_RETRYABLE = "LONG_NON_RETRYABLE"
 RATE_LIMIT_UNCLASSIFIED = "UNCLASSIFIED"
@@ -95,6 +103,19 @@ class PokeTraceConfig:
         )
 
 
+def pro_tier_config_from_env() -> PokeTraceConfig:
+    """Build the generic Pro config with margin below the 30/10s burst."""
+
+    config = PokeTraceConfig.from_env()
+    return replace(
+        config,
+        minimum_request_interval_seconds=max(
+            config.minimum_request_interval_seconds,
+            PRO_MIN_REQUEST_INTERVAL_SECONDS,
+        ),
+    )
+
+
 @dataclass
 class PokeTraceCounters:
     live_calls: int = 0
@@ -118,6 +139,20 @@ class PokeTraceCounters:
     cardmarket_falling_market_guards: int = 0
     provider_alias_market_searches: int = 0
     alias_market_matches: int = 0
+    provider_alias_market_searches_us: int = 0
+    provider_alias_market_searches_eu: int = 0
+    alias_market_matches_us: int = 0
+    alias_market_matches_eu: int = 0
+    us_clean_no_matches: int = 0
+    eu_clean_no_matches: int = 0
+    us_raw_available: int = 0
+    us_psa8_available: int = 0
+    us_psa9_available: int = 0
+    us_psa10_available: int = 0
+    eu_cardmarket_aggregated_available: int = 0
+    eu_active_ask_available: int = 0
+    market_record_cache_hits: int = 0
+    market_mismatch_rejections: int = 0
 
 
 @dataclass(frozen=True)
@@ -141,6 +176,15 @@ class PokeTraceSnapshot:
     status: str
     us_values: Optional[MarketValues] = None
     cardmarket: Optional[CardmarketOpportunity] = None
+    us_record_id: Optional[str] = None
+    eu_record_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PokeTraceMarketSearchResult:
+    market: str
+    status: str
+    card: Optional[Mapping[str, object]] = None
 
 
 @dataclass(frozen=True)
@@ -227,12 +271,20 @@ class PokeTraceProvider:
         self.counters = PokeTraceCounters()
         self._cache: dict[Tuple[str, ...], PokeTraceSnapshot] = {}
         self._identity_primed_keys: set[Tuple[str, ...]] = set()
+        self._market_cache: dict[
+            Tuple[str, ...], PokeTraceMarketSearchResult
+        ] = {}
+        self._identity_primed_market_keys: set[Tuple[str, ...]] = set()
         self._search_aliases: dict[Tuple[str, ...], ProviderSearchAlias] = {}
         self._circuit_open = False
 
     @property
     def circuit_open(self) -> bool:
         return self._circuit_open
+
+    @property
+    def supports_eu_market(self) -> bool:
+        return True
 
     def _record_call_avoided_after_breaker(self) -> None:
         self.counters.calls_avoided_after_breaker += 1
@@ -334,6 +386,68 @@ class PokeTraceProvider:
         )
         return _identity_key(identity) + suffix
 
+    def _market_cache_key(
+        self, identity: CardIdentity, market: str
+    ) -> Tuple[str, ...]:
+        return ("market-record", market.upper()) + self._snapshot_key(identity)
+
+    def _prime_market_match(
+        self,
+        identity: CardIdentity,
+        market: str,
+        card: Mapping[str, object],
+        *,
+        count_match: bool = True,
+    ) -> bool:
+        normalized_market = market.upper()
+        returned_market = str(card.get("market") or "").strip().upper()
+        if returned_market and returned_market != normalized_market:
+            self.counters.market_mismatch_rejections += 1
+            return False
+        key = self._market_cache_key(identity, normalized_market)
+        self._market_cache[key] = PokeTraceMarketSearchResult(
+            normalized_market,
+            MARKET_SEARCH_MATCHED,
+            card,
+        )
+        self._identity_primed_market_keys.add(key)
+        if count_match:
+            self._count_market_match(normalized_market)
+            if self.has_search_alias(identity):
+                self._count_alias_market_match(normalized_market)
+        return True
+
+    def _prime_market_no_match(
+        self, identity: CardIdentity, market: str
+    ) -> None:
+        normalized_market = market.upper()
+        key = self._market_cache_key(identity, normalized_market)
+        self._market_cache[key] = PokeTraceMarketSearchResult(
+            normalized_market,
+            MARKET_SEARCH_CLEAN_NO_MATCH,
+        )
+        self._identity_primed_market_keys.add(key)
+
+    def _count_market_match(self, market: str) -> None:
+        if market == "US":
+            self.counters.us_matches += 1
+        else:
+            self.counters.eu_matches += 1
+
+    def _count_alias_market_search(self, market: str) -> None:
+        self.counters.provider_alias_market_searches += 1
+        if market == "US":
+            self.counters.provider_alias_market_searches_us += 1
+        else:
+            self.counters.provider_alias_market_searches_eu += 1
+
+    def _count_alias_market_match(self, market: str) -> None:
+        self.counters.alias_market_matches += 1
+        if market == "US":
+            self.counters.alias_market_matches_us += 1
+        else:
+            self.counters.alias_market_matches_eu += 1
+
     def snapshot_for(self, identity: CardIdentity) -> PokeTraceSnapshot:
         if not self.config.enabled or not self.config.api_key:
             return PokeTraceSnapshot(POKETRACE_DISABLED)
@@ -343,21 +457,35 @@ class PokeTraceProvider:
         if cached is not None:
             return cached
 
-        us = self._search_exact(identity, "US")
-        if self.circuit_open and us is None:
+        us_result = self._search_exact_result(identity, "US")
+        if (
+            self.circuit_open
+            and us_result.status == MARKET_SEARCH_RATE_LIMITED
+        ):
             # A Pro snapshot would otherwise proceed to its EU request.
             self._record_call_avoided_after_breaker()
             result = PokeTraceSnapshot(POKETRACE_RATE_LIMITED)
             self._cache[key] = result
             return result
-        eu = self._search_exact(identity, "EU")
+
+        eu_result = self._search_exact_result(identity, "EU")
+        us = us_result.card if us_result.status == MARKET_SEARCH_MATCHED else None
+        eu = eu_result.card if eu_result.status == MARKET_SEARCH_MATCHED else None
         if us is None and eu is None:
+            clean_no_match = bool(
+                us_result.status == MARKET_SEARCH_CLEAN_NO_MATCH
+                and eu_result.status == MARKET_SEARCH_CLEAN_NO_MATCH
+            )
             result = PokeTraceSnapshot(
                 POKETRACE_RATE_LIMITED
                 if self.circuit_open
-                else POKETRACE_NO_MATCH
+                else (
+                    POKETRACE_NO_MATCH
+                    if clean_no_match
+                    else POKETRACE_DISABLED
+                )
             )
-            if not self.circuit_open:
+            if clean_no_match:
                 self.counters.no_match += 1
             self._cache[key] = result
             return result
@@ -366,6 +494,23 @@ class PokeTraceProvider:
         cardmarket = (
             _cardmarket_opportunity(eu, self.config) if eu is not None else None
         )
+        if us_values is not None:
+            self.counters.us_raw_available += int(
+                us_values.ungraded_value is not None
+            )
+            self.counters.us_psa8_available += int(
+                us_values.grade8_generic_value is not None
+            )
+            self.counters.us_psa9_available += int(
+                us_values.grade9_generic_value is not None
+            )
+            self.counters.us_psa10_available += int(
+                us_values.psa10_value is not None
+            )
+        if eu is not None:
+            aggregated, active_asks = _eu_cardmarket_availability(eu)
+            self.counters.eu_cardmarket_aggregated_available += int(aggregated)
+            self.counters.eu_active_ask_available += int(active_asks)
         if cardmarket is not None:
             self.counters.cardmarket_snapshots += 1
             if cardmarket.status == CARDMARKET_DISCOUNT:
@@ -379,6 +524,8 @@ class PokeTraceProvider:
             else POKETRACE_NO_MATCH,
             us_values=us_values,
             cardmarket=cardmarket,
+            us_record_id=_provider_record_id(us),
+            eu_record_id=_provider_record_id(eu),
         )
         self._cache[key] = result
         return result
@@ -386,38 +533,93 @@ class PokeTraceProvider:
     def _search_exact(
         self, identity: CardIdentity, market: str
     ) -> Optional[Mapping[str, object]]:
+        result = self._search_exact_result(identity, market)
+        return result.card if result.status == MARKET_SEARCH_MATCHED else None
+
+    def _search_exact_result(
+        self, identity: CardIdentity, market: str
+    ) -> PokeTraceMarketSearchResult:
+        normalized_market = market.upper()
+        cache_key = self._market_cache_key(identity, normalized_market)
+        cached = self._market_cache.get(cache_key)
+        if cached is not None:
+            self.counters.market_record_cache_hits += 1
+            if cache_key in self._identity_primed_market_keys:
+                self.counters.primed_market_calls_avoided += 1
+                self._identity_primed_market_keys.discard(cache_key)
+            return cached
+
         search_identity, alias = self.identity_for_search(identity)
         if alias is not None:
-            self.counters.provider_alias_market_searches += 1
-        payload = self._request_cards(search_identity, market)
+            self._count_alias_market_search(normalized_market)
+        payload, request_status = self._request_cards(
+            search_identity, normalized_market
+        )
         if payload is None:
-            return None
+            result = PokeTraceMarketSearchResult(
+                normalized_market,
+                request_status,
+            )
+            self._market_cache[cache_key] = result
+            return result
         raw_data = payload.get("data")
         if not isinstance(raw_data, Sequence) or isinstance(raw_data, (str, bytes)):
-            return None
-        candidates = tuple(item for item in raw_data if isinstance(item, Mapping))
+            result = PokeTraceMarketSearchResult(
+                normalized_market,
+                MARKET_SEARCH_ERROR,
+            )
+            self._market_cache[cache_key] = result
+            return result
+        candidates = tuple(
+            item
+            for item in raw_data
+            if isinstance(item, Mapping)
+            and _candidate_market_compatible(item, normalized_market)
+        )
+        self.counters.market_mismatch_rejections += sum(
+            1
+            for item in raw_data
+            if isinstance(item, Mapping)
+            and not _candidate_market_compatible(item, normalized_market)
+        )
         matches = tuple(
             item for item in candidates if _candidate_matches(search_identity, item)
         )
         if len(matches) > 1:
             self.counters.ambiguous += 1
-            return None
+            result = PokeTraceMarketSearchResult(
+                normalized_market,
+                MARKET_SEARCH_AMBIGUOUS,
+            )
+            self._market_cache[cache_key] = result
+            return result
         if not matches:
-            return None
-        if market == "US":
-            self.counters.us_matches += 1
+            if normalized_market == "US":
+                self.counters.us_clean_no_matches += 1
+            else:
+                self.counters.eu_clean_no_matches += 1
+            result = PokeTraceMarketSearchResult(
+                normalized_market,
+                MARKET_SEARCH_CLEAN_NO_MATCH,
+            )
         else:
-            self.counters.eu_matches += 1
-        if alias is not None:
-            self.counters.alias_market_matches += 1
-        return matches[0]
+            self._count_market_match(normalized_market)
+            if alias is not None:
+                self._count_alias_market_match(normalized_market)
+            result = PokeTraceMarketSearchResult(
+                normalized_market,
+                MARKET_SEARCH_MATCHED,
+                matches[0],
+            )
+        self._market_cache[cache_key] = result
+        return result
 
     def _request_cards(
         self, identity: CardIdentity, market: str
-    ) -> Optional[Mapping[str, object]]:
+    ) -> tuple[Optional[Mapping[str, object]], str]:
         if self.circuit_open:
             self._record_call_avoided_after_breaker()
-            return None
+            return None, MARKET_SEARCH_RATE_LIMITED
         headers = {
             "Accept": "application/json",
             "X-API-Key": self.config.api_key or "",
@@ -437,30 +639,33 @@ class PokeTraceProvider:
 
         response = self._request_cards_once(headers, params)
         if response is None:
-            return None
+            return None, MARKET_SEARCH_ERROR
         status = getattr(response, "status_code", None)
         if status == 429:
             decision = self._record_rate_limit(response)
             if not decision.retryable:
-                return None
+                return None, MARKET_SEARCH_RATE_LIMITED
             self.counters.rate_limit_retry_attempts += 1
             self.sleeper(self._rate_limit_wait_seconds(decision))
             response = self._request_cards_once(headers, params)
             if response is None:
-                return None
+                return None, MARKET_SEARCH_ERROR
             status = getattr(response, "status_code", None)
             if status == 429:
                 self._record_rate_limit(response, retry_exhausted=True)
-                return None
+                return None, MARKET_SEARCH_RATE_LIMITED
         if status != 200:
             self.counters.request_failures += 1
-            return None
+            return None, MARKET_SEARCH_ERROR
         try:
             payload = response.json()
         except Exception:
             self.counters.request_failures += 1
-            return None
-        return payload if isinstance(payload, Mapping) else None
+            return None, MARKET_SEARCH_ERROR
+        if not isinstance(payload, Mapping):
+            self.counters.request_failures += 1
+            return None, MARKET_SEARCH_ERROR
+        return payload, "OK"
 
     def _request_cards_once(
         self,
@@ -542,6 +747,21 @@ def _candidate_matches(
     identity: CardIdentity, candidate: Mapping[str, object]
 ) -> bool:
     return _candidate_evidence(identity, candidate).rejection is None
+
+
+def _candidate_market_compatible(
+    candidate: Mapping[str, object], market: str
+) -> bool:
+    candidate_market = str(candidate.get("market") or "").strip().upper()
+    return not candidate_market or candidate_market == market.upper()
+
+
+def _provider_record_id(
+    card: Optional[Mapping[str, object]],
+) -> Optional[str]:
+    if card is None:
+        return None
+    return str(card.get("id") or "").strip() or None
 
 
 def _poketrace_game(language: Optional[str]) -> Optional[str]:
@@ -730,6 +950,25 @@ def _cardmarket_opportunity(
     )
 
 
+def _eu_cardmarket_availability(
+    card: Mapping[str, object],
+) -> tuple[bool, bool]:
+    prices = card.get("prices")
+    if not isinstance(prices, Mapping):
+        return False, False
+    cardmarket = prices.get("cardmarket")
+    active = prices.get("cardmarket_unsold")
+    aggregated_available = bool(
+        isinstance(cardmarket, Mapping)
+        and isinstance(cardmarket.get("AGGREGATED"), Mapping)
+    )
+    active_ask_available = bool(
+        isinstance(active, Mapping)
+        and any(isinstance(value, Mapping) for value in active.values())
+    )
+    return aggregated_available, active_ask_available
+
+
 def render_poketrace_counters(provider: PokeTraceProvider) -> str:
     counters = provider.counters
     return "\n".join(
@@ -737,20 +976,41 @@ def render_poketrace_counters(provider: PokeTraceProvider) -> str:
             "=== V5 POKETRACE / CARDMARKET MARKET DATA ===",
             f"enabled: {str(provider.config.enabled).lower()}",
             "role: primary market-data provider for V5 when enabled",
+            "plan mode: PRO_OR_HIGHER",
+            "enforced minimum interval: >=0.40s",
             "US sources: eBay sold + TCGPlayer",
+            "EU role: separate EUR validation/opportunity diagnostic only",
             "EU sources: CardMarket Price Trend + active asking inventory",
+            "EU active asks classified as completed sales: NO",
             f"live calls: {counters.live_calls}",
             f"cache hits: {counters.cache_hits}",
-            f"US exact matches: {counters.us_matches}",
-            f"EU exact matches: {counters.eu_matches}",
+            f"US exact market matches: {counters.us_matches}",
+            f"EU exact market matches: {counters.eu_matches}",
+            f"US market clean no-matches: {counters.us_clean_no_matches}",
+            f"EU market clean no-matches: {counters.eu_clean_no_matches}",
             (
-                "deterministic aliases used in market searches: "
-                f"{counters.provider_alias_market_searches}"
+                "deterministic-alias market searches US/EU: "
+                f"{counters.provider_alias_market_searches_us}/"
+                f"{counters.provider_alias_market_searches_eu}"
             ),
             (
-                "market matches attributable to deterministic aliases: "
-                f"{counters.alias_market_matches}"
+                "deterministic-alias market matches US/EU: "
+                f"{counters.alias_market_matches_us}/"
+                f"{counters.alias_market_matches_eu}"
             ),
+            f"US RAW available: {counters.us_raw_available}",
+            f"US PSA8 available: {counters.us_psa8_available}",
+            f"US PSA9 available: {counters.us_psa9_available}",
+            f"US PSA10 available: {counters.us_psa10_available}",
+            (
+                "EU CardMarket AGGREGATED available: "
+                f"{counters.eu_cardmarket_aggregated_available}"
+            ),
+            f"EU active-ask data available: {counters.eu_active_ask_available}",
+            f"market-qualified record cache hits: {counters.market_record_cache_hits}",
+            f"cross-market candidate rejections: {counters.market_mismatch_rejections}",
+            "provider US/EU record IDs kept separate: YES",
+            "USD/EUR values silently mixed: NO",
             f"no match: {counters.no_match}",
             f"ambiguous: {counters.ambiguous}",
             f"request failures: {counters.request_failures}",

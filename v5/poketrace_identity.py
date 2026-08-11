@@ -14,10 +14,9 @@ from .market_values.poketrace import (
     RATE_LIMIT_SHORT_RETRYABLE,
     PokeTraceProvider,
     PokeTraceSnapshot,
+    _candidate_market_compatible,
     _poketrace_game,
-    _us_market_values,
 )
-from .market_values.poketrace_free import FreeTierPokeTraceProvider
 from .models import CardIdentity, ProviderSearchAlias
 from .poketrace_matching import (
     REJECT_CARD_NAME,
@@ -67,6 +66,13 @@ REQUEST_OK = "OK"
 REQUEST_ERROR = "ERROR"
 REQUEST_RATE_LIMITED = "RATE_LIMITED"
 REQUEST_CIRCUIT_OPEN = "CIRCUIT_OPEN"
+
+IDENTITY_MATCHED = "MATCHED"
+IDENTITY_CLEAN_NO_MATCH = "CLEAN_NO_MATCH"
+IDENTITY_AMBIGUOUS = "AMBIGUOUS"
+IDENTITY_ERROR = "ERROR"
+IDENTITY_RATE_LIMITED = "RATE_LIMITED"
+IDENTITY_BLOCKING_CONFLICT = "BLOCKING_CONFLICT"
 
 POKETRACE_STRATEGIES = (
     "contextual_canonical",
@@ -197,6 +203,21 @@ class PokeTraceIdentityCounters:
     variant_other_conflicts: int = 0
     provider_alias_identity_searches: int = 0
     alias_identity_matches: int = 0
+    identity_us_queries: int = 0
+    identity_us_exact_matches: int = 0
+    identity_us_clean_no_matches: int = 0
+    identity_eu_fallback_queries: int = 0
+    identity_eu_exact_matches: int = 0
+    identity_eu_clean_no_matches: int = 0
+    alias_identity_searches_us: int = 0
+    alias_identity_searches_eu: int = 0
+    alias_identity_matches_us: int = 0
+    alias_identity_matches_eu: int = 0
+    eu_fallback_avoided_us_match: int = 0
+    eu_fallback_suppressed_us_ambiguous: int = 0
+    eu_fallback_suppressed_us_error: int = 0
+    eu_fallback_suppressed_us_rate_limit: int = 0
+    eu_fallback_suppressed_us_blocking_conflict: int = 0
 
 
 @dataclass(frozen=True)
@@ -206,6 +227,15 @@ class PokeTraceIdentityResolution:
     ambiguous: bool = False
     card_id: Optional[str] = None
     provider_status: Optional[str] = None
+    provider_market: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _MarketIdentityOutcome:
+    market: str
+    status: str
+    resolution: Optional[PokeTraceIdentityResolution] = None
+    card: Optional[Mapping[str, object]] = None
 
 
 def _candidate_uses_partial_number(
@@ -358,52 +388,114 @@ class PokeTraceIdentityResolver:
 
         self.counters.queries += 1
         self._progress(f"PokeTrace identity {self.counters.queries}: query")
-        seen_candidates: set[Tuple[str, ...]] = set()
         search_identity, provider_alias = self.provider.identity_for_search(identity)
+        self.counters.identity_us_queries += 1
+        us = self._resolve_market(
+            identity,
+            search_identity,
+            provider_alias,
+            "US",
+        )
+        if us.status == IDENTITY_MATCHED:
+            self.counters.identity_us_exact_matches += 1
+            if self.provider.supports_eu_market:
+                self.counters.eu_fallback_avoided_us_match += 1
+            return self._accept_market_match(key, identity, us, provider_alias)
 
+        if us.status == IDENTITY_CLEAN_NO_MATCH:
+            self.counters.identity_us_clean_no_matches += 1
+            self.provider._prime_market_no_match(identity, "US")
+            if not self.provider.supports_eu_market:
+                return self._accept_overall_no_match(key, identity)
+
+            self.counters.identity_eu_fallback_queries += 1
+            eu = self._resolve_market(
+                identity,
+                search_identity,
+                provider_alias,
+                "EU",
+            )
+            if eu.status == IDENTITY_MATCHED:
+                self.counters.identity_eu_exact_matches += 1
+                return self._accept_market_match(key, identity, eu, provider_alias)
+            if eu.status == IDENTITY_CLEAN_NO_MATCH:
+                self.counters.identity_eu_clean_no_matches += 1
+                self.provider._prime_market_no_match(identity, "EU")
+                return self._accept_overall_no_match(key, identity)
+            return self._accept_terminal_outcome(key, identity, eu)
+
+        if us.status == IDENTITY_AMBIGUOUS:
+            self.counters.eu_fallback_suppressed_us_ambiguous += int(
+                self.provider.supports_eu_market
+            )
+        elif us.status == IDENTITY_RATE_LIMITED:
+            self.counters.eu_fallback_suppressed_us_rate_limit += int(
+                self.provider.supports_eu_market
+            )
+        elif us.status == IDENTITY_BLOCKING_CONFLICT:
+            self.counters.eu_fallback_suppressed_us_blocking_conflict += int(
+                self.provider.supports_eu_market
+            )
+        else:
+            self.counters.eu_fallback_suppressed_us_error += int(
+                self.provider.supports_eu_market
+            )
+        return self._accept_terminal_outcome(key, identity, us)
+
+    def _resolve_market(
+        self,
+        identity: CardIdentity,
+        search_identity: CardIdentity,
+        provider_alias: Optional[ProviderSearchAlias],
+        market: str,
+    ) -> _MarketIdentityOutcome:
+        seen_candidates: set[Tuple[str, ...]] = set()
         for index, (strategy, search_text, structured) in enumerate(
             _search_strategies(search_identity)
         ):
             self._count_query_strategy(strategy)
             strategy_counters = self.strategy_counters[strategy]
-            if index > 0:
+            if index > 0 or market == "EU":
                 self.counters.fallback_searches += 1
                 self._progress(
-                    f"PokeTrace identity {self.counters.queries}: fallback {strategy}"
+                    f"PokeTrace identity {self.counters.queries}: "
+                    f"{market} fallback {strategy}"
                 )
             payload, request_status = self._request(
                 search_identity,
                 search_text,
                 use_structured_filters=structured,
+                market=market,
             )
             if provider_alias is not None:
                 self.counters.provider_alias_identity_searches += 1
-            if request_status != REQUEST_OK or payload is None:
-                provider_status = (
-                    POKETRACE_RATE_LIMITED
-                    if request_status
-                    in {REQUEST_RATE_LIMITED, REQUEST_CIRCUIT_OPEN}
-                    else POKETRACE_DISABLED
-                )
-                result = PokeTraceIdentityResolution(
-                    identity,
-                    provider_status=provider_status,
-                )
-                self._cache[key] = result
-                if provider_status == POKETRACE_RATE_LIMITED:
-                    self._prime_rate_limited(identity)
+                if market == "US":
+                    self.counters.alias_identity_searches_us += 1
                 else:
-                    self._prime_unavailable(identity)
-                self._progress(
-                    f"PokeTrace identity {self.counters.queries}: {request_status.casefold()}"
+                    self.counters.alias_identity_searches_eu += 1
+            if request_status != REQUEST_OK or payload is None:
+                status = (
+                    IDENTITY_RATE_LIMITED
+                    if request_status in {REQUEST_RATE_LIMITED, REQUEST_CIRCUIT_OPEN}
+                    else IDENTITY_ERROR
                 )
-                return result
+                return _MarketIdentityOutcome(market, status)
 
             data = payload.get("data")
-            candidates = (
+            raw_candidates = (
                 tuple(item for item in data if isinstance(item, Mapping))
                 if isinstance(data, Sequence) and not isinstance(data, (str, bytes))
                 else ()
+            )
+            self.provider.counters.market_mismatch_rejections += sum(
+                1
+                for candidate in raw_candidates
+                if not _candidate_market_compatible(candidate, market)
+            )
+            candidates = tuple(
+                candidate
+                for candidate in raw_candidates
+                if _candidate_market_compatible(candidate, market)
             )
             if not candidates:
                 self.counters.api_empty_results += 1
@@ -411,6 +503,7 @@ class PokeTraceIdentityResolver:
                 continue
 
             scored = []
+            blocking_variant_conflict = False
             for candidate in candidates:
                 candidate_key = _candidate_key(candidate)
                 if candidate_key in seen_candidates:
@@ -433,6 +526,10 @@ class PokeTraceIdentityResolver:
                 score, rejection = evidence.score, evidence.rejection
                 if rejection is not None:
                     self._count_rejection(rejection, evidence)
+                    blocking_variant_conflict = bool(
+                        blocking_variant_conflict
+                        or (all_three and rejection == REJECT_VARIANT)
+                    )
                     continue
                 if score is not None:
                     strategy_counters.exacts_introduced += 1
@@ -442,6 +539,10 @@ class PokeTraceIdentityResolver:
 
             if not scored:
                 self.counters.candidate_queries_without_exact_match += 1
+                if blocking_variant_conflict:
+                    return _MarketIdentityOutcome(
+                        market, IDENTITY_BLOCKING_CONFLICT
+                    )
                 continue
 
             best_score = max(score for score, _candidate in scored)
@@ -450,58 +551,106 @@ class PokeTraceIdentityResolver:
                 self.counters.candidate_queries_without_exact_match += 1
                 self.counters.ambiguous += 1
                 self.provider.counters.ambiguous += 1
-                result = PokeTraceIdentityResolution(identity, ambiguous=True)
-                self._cache[key] = result
-                self._prime_unavailable(identity)
-                self._progress(f"PokeTrace identity {self.counters.queries}: ambiguous")
-                return result
+                return _MarketIdentityOutcome(market, IDENTITY_AMBIGUOUS)
 
             card = best[0]
-            used_partial_number = _candidate_uses_partial_number(
-                search_identity, card
-            )
-            # An alias is retrieval evidence only. The exact TCGdex-backed
-            # listing identity remains the user-facing and economic identity.
             resolved = (
                 identity
                 if provider_alias is not None
                 else _resolved_identity(identity, card)
             )
-            card_id = str(card.get("id") or "").strip() or None
             result = PokeTraceIdentityResolution(
                 resolved,
                 matched=bool(resolved.card_name and resolved.set and resolved.card_number),
-                card_id=card_id,
+                card_id=str(card.get("id") or "").strip() or None,
                 provider_status=POKETRACE_MATCHED,
+                provider_market=market,
             )
             if not result.matched:
                 self._count_rejection(REJECT_INSUFFICIENT)
                 continue
-
-            self.counters.matches += 1
-            if provider_alias is not None:
-                self.counters.alias_identity_matches += 1
-            self.provider.counters.us_matches += 1
-            if used_partial_number:
+            if _candidate_uses_partial_number(search_identity, card):
                 self.counters.partial_number_matches += 1
-            if not identity.card_number and resolved.card_number:
-                self.counters.card_numbers_recovered += 1
-            if not identity.card_name and resolved.card_name:
-                self.counters.card_names_recovered += 1
-            if not identity.set and resolved.set:
-                self.counters.sets_recovered += 1
-            self._cache[key] = result
-            self._cache[self._resolution_key(resolved)] = result
-            self._prime_market_snapshot(identity, resolved, card)
-            self._progress(f"PokeTrace identity {self.counters.queries}: exact")
-            return result
+            return _MarketIdentityOutcome(market, IDENTITY_MATCHED, result, card)
 
+        return _MarketIdentityOutcome(market, IDENTITY_CLEAN_NO_MATCH)
+
+    def _accept_market_match(
+        self,
+        key: Tuple[str, ...],
+        original: CardIdentity,
+        outcome: _MarketIdentityOutcome,
+        provider_alias: Optional[ProviderSearchAlias],
+    ) -> PokeTraceIdentityResolution:
+        result = outcome.resolution
+        card = outcome.card
+        assert result is not None and card is not None
+        resolved = result.identity
+        self.counters.matches += 1
+        if provider_alias is not None:
+            self.counters.alias_identity_matches += 1
+            if outcome.market == "US":
+                self.counters.alias_identity_matches_us += 1
+            else:
+                self.counters.alias_identity_matches_eu += 1
+        if not original.card_number and resolved.card_number:
+            self.counters.card_numbers_recovered += 1
+        if not original.card_name and resolved.card_name:
+            self.counters.card_names_recovered += 1
+        if not original.set and resolved.set:
+            self.counters.sets_recovered += 1
+        self._cache[key] = result
+        self._cache[self._resolution_key(resolved)] = result
+        self._prime_market_snapshot(
+            original,
+            resolved,
+            card,
+            market=outcome.market,
+        )
+        if outcome.market == "EU":
+            self.provider._prime_market_no_match(resolved, "US")
+        self._progress(
+            f"PokeTrace identity {self.counters.queries}: {outcome.market} exact"
+        )
+        return result
+
+    def _accept_overall_no_match(
+        self, key: Tuple[str, ...], identity: CardIdentity
+    ) -> PokeTraceIdentityResolution:
         self.counters.no_match += 1
         self.provider.counters.no_match += 1
         result = PokeTraceIdentityResolution(identity)
         self._cache[key] = result
         self._prime_no_match(identity)
         self._progress(f"PokeTrace identity {self.counters.queries}: no match")
+        return result
+
+    def _accept_terminal_outcome(
+        self,
+        key: Tuple[str, ...],
+        identity: CardIdentity,
+        outcome: _MarketIdentityOutcome,
+    ) -> PokeTraceIdentityResolution:
+        if outcome.status == IDENTITY_AMBIGUOUS:
+            result = PokeTraceIdentityResolution(identity, ambiguous=True)
+            self._prime_unavailable(identity)
+        elif outcome.status == IDENTITY_RATE_LIMITED:
+            result = PokeTraceIdentityResolution(
+                identity,
+                provider_status=POKETRACE_RATE_LIMITED,
+            )
+            self._prime_rate_limited(identity)
+        else:
+            result = PokeTraceIdentityResolution(
+                identity,
+                provider_status=POKETRACE_DISABLED,
+            )
+            self._prime_unavailable(identity)
+        self._cache[key] = result
+        self._progress(
+            f"PokeTrace identity {self.counters.queries}: "
+            f"{outcome.market} {outcome.status.casefold()}"
+        )
         return result
 
     def alias_cached_result(self, source: CardIdentity, target: CardIdentity) -> None:
@@ -520,10 +669,11 @@ class PokeTraceIdentityResolver:
         identity: CardIdentity,
         search_text: str,
         *,
+        market: str,
         use_structured_filters: bool = False,
     ) -> dict[str, str]:
         params = {
-            "market": "US",
+            "market": market.upper(),
             "limit": str(self.provider.config.result_limit),
             "product_type": "single",
             "search": search_text,
@@ -542,12 +692,14 @@ class PokeTraceIdentityResolver:
         identity: CardIdentity,
         search_text: str,
         *,
+        market: str,
         use_structured_filters: bool = False,
     ) -> tuple[Optional[Mapping[str, object]], str]:
         params = self._base_params(
             identity,
             search_text,
             use_structured_filters=use_structured_filters,
+            market=market,
         )
         response, status = self._request_once(params)
         if status != REQUEST_RATE_LIMITED:
@@ -756,33 +908,11 @@ class PokeTraceIdentityResolver:
         original: CardIdentity,
         resolved: CardIdentity,
         card: Mapping[str, object],
+        *,
+        market: str,
     ) -> None:
-        values = _us_market_values(resolved, card)
-        if isinstance(self.provider, FreeTierPokeTraceProvider) and values is not None:
-            values = replace(
-                values,
-                source="PokeTrace Free US: eBay + TCGPlayer raw",
-                grade8_generic_value=None,
-                grade9_generic_value=None,
-                psa10_value=None,
-                notes=(
-                    "Free-tier validation: identity and US raw price reused from one response",
-                    "No EU/CardMarket request performed",
-                    "No graded value accepted from the Free tier",
-                ),
-                limitations=(
-                    "PokeTrace Free: 250 requests/day",
-                    "PokeTrace Free burst: 1 request per 2 seconds",
-                    "EU/CardMarket and graded tiers require Pro or higher",
-                ),
-            )
-        snapshot = PokeTraceSnapshot(
-            POKETRACE_MATCHED if values is not None else POKETRACE_NO_MATCH,
-            us_values=values,
-            cardmarket=None,
-        )
-        self._cache_snapshot(original, snapshot)
-        self._cache_snapshot(resolved, snapshot)
+        self.provider._prime_market_match(original, market, card, count_match=True)
+        self.provider._prime_market_match(resolved, market, card, count_match=False)
         self.counters.primed_market_snapshots += 1
 
     def _prime_no_match(self, identity: CardIdentity) -> None:
@@ -845,13 +975,67 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
                 f"{counters.candidate_queries_without_exact_match}"
             ),
             f"exact matches: {counters.matches}",
+            f"identity US queries: {counters.identity_us_queries}",
+            f"identity US exact matches: {counters.identity_us_exact_matches}",
+            (
+                "identity US clean no-match: "
+                f"{counters.identity_us_clean_no_matches}"
+            ),
+            (
+                "identity EU fallback queries: "
+                f"{counters.identity_eu_fallback_queries}"
+            ),
+            (
+                "identity EU exact matches: "
+                f"{counters.identity_eu_exact_matches}"
+            ),
+            (
+                "identity EU clean no-match: "
+                f"{counters.identity_eu_clean_no_matches}"
+            ),
             (
                 "deterministic aliases used in identity searches: "
                 f"{counters.provider_alias_identity_searches}"
             ),
             (
+                "deterministic alias identity searches US: "
+                f"{counters.alias_identity_searches_us}"
+            ),
+            (
+                "deterministic alias identity searches EU: "
+                f"{counters.alias_identity_searches_eu}"
+            ),
+            (
                 "identity exacts attributable to deterministic aliases: "
                 f"{counters.alias_identity_matches}"
+            ),
+            (
+                "deterministic alias identity matches US: "
+                f"{counters.alias_identity_matches_us}"
+            ),
+            (
+                "deterministic alias identity matches EU: "
+                f"{counters.alias_identity_matches_eu}"
+            ),
+            (
+                "EU fallback avoided after US exact: "
+                f"{counters.eu_fallback_avoided_us_match}"
+            ),
+            (
+                "EU fallback suppressed after US ambiguity: "
+                f"{counters.eu_fallback_suppressed_us_ambiguous}"
+            ),
+            (
+                "EU fallback suppressed after US error: "
+                f"{counters.eu_fallback_suppressed_us_error}"
+            ),
+            (
+                "EU fallback suppressed after US rate limit: "
+                f"{counters.eu_fallback_suppressed_us_rate_limit}"
+            ),
+            (
+                "EU fallback suppressed after US blocking conflict: "
+                f"{counters.eu_fallback_suppressed_us_blocking_conflict}"
             ),
             f"ambiguous: {counters.ambiguous}",
             f"no match: {counters.no_match}",

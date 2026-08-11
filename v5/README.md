@@ -117,6 +117,21 @@ Hub, application mobile, Playwright, scraping ni endpoint interne.
 Aucun workflow V5 ne contient encore de schedule. Les payloads, titres, itemId,
 URL, vendeurs, prix et images ne sont ni logges individuellement ni persistes.
 
+Le workflow effectue d'abord un preflight PokeTrace `/auth/info` en lecture
+seule. Il n'affiche que statut HTTP, plan normalise et compteurs de quota
+documentes, puis echoue avant le pipeline si Pro (ou un plan documente
+superieur) n'est pas confirme. Le provider Pro respecte au moins 0,40 s entre
+requêtes et conserve le circuit-breaker 429 existant. Le provider Free US/RAW
+reste disponible separement avec `POKETRACE_PLAN=free`.
+
+L'identite PokeTrace cherche explicitement US, puis EU seulement apres un
+`clean no-match` US. Ambiguite, erreur, rate-limit ou conflit bloquant en US
+interdit EU. Caches, IDs et provenance restent qualifies par marche. Pour la
+valorisation, US/USD alimente seul l'economie RAW ; PSA8/9/10 sont une
+comparaison optionnelle. EU/EUR et CardMarket restent un diagnostic separe :
+`AGGREGATED` est une reference de tendance et `cardmarket_unsold` une demande
+active, jamais une vente realisee.
+
 ## Prix RAW
 
 `RAW_MIN_PRICE_EUR` vaut `0` par defaut et accepte donc 0,50 €, 1 €, 2 € ou

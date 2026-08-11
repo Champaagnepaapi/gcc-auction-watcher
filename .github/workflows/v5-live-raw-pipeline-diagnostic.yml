@@ -16,10 +16,10 @@ jobs:
       GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       POKETRACE_ENABLED: "true"
-      POKETRACE_PLAN: "free"
+      POKETRACE_PLAN: "pro"
       POKETRACE_RESULT_LIMIT: "20"
-      # FreeTierPokeTraceProvider also enforces >=2.25s at runtime.
-      POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.25"
+      # Pro documents a 30 requests / 10s burst. Keep a conservative margin.
+      POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "0.40"
       POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
       POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
       V5_PROGRESS_LOGS: "true"
@@ -95,6 +95,9 @@ jobs:
           if [ "${V5_SKIP_GCC_LIVE_FOR_POKETRACE_VALIDATION}" != "true" ]; then
             playwright install --with-deps chromium
           fi
+
+      - name: Verify PokeTrace Pro plan without exposing account data
+        run: python -m v5.poketrace_preflight
 
       - name: Prepare existing authenticated GCC session
         shell: bash

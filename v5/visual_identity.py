@@ -184,7 +184,9 @@ class LocalVisualIdentityResolver:
 
         self.counters.attempted += 1
         self.counters.api_searches += 1
-        payload, status = self.poketrace_identity._request(identity, search_text)
+        payload, status = self.poketrace_identity._request(
+            identity, search_text, market="US"
+        )
         if status != REQUEST_OK or payload is None:
             self.counters.api_unavailable += 1
             return VisualIdentityResolution(identity)
@@ -288,10 +290,11 @@ class LocalVisualIdentityResolver:
         if identity.ambiguities:
             self.counters.ambiguities_cleared += 1
 
-        self.poketrace_identity._prime_market_snapshot(identity, resolved, best.payload)
+        self.poketrace_identity._prime_market_snapshot(
+            identity, resolved, best.payload, market="US"
+        )
         self.counters.market_snapshots_primed += 1
         self.counters.rescued += 1
-        self.provider.counters.us_matches += 1
         return VisualIdentityResolution(
             resolved,
             matched=True,
@@ -334,11 +337,10 @@ class LocalVisualIdentityResolver:
             return None
 
         self.poketrace_identity._prime_market_snapshot(
-            identity, resolved, result.candidate
+            identity, resolved, result.candidate, market="US"
         )
         self.counters.ocr_rescued += 1
         self.counters.ocr_market_snapshots_primed += 1
-        self.provider.counters.us_matches += 1
         return VisualIdentityResolution(
             resolved,
             matched=True,

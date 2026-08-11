@@ -4,6 +4,9 @@ from dataclasses import replace
 
 from ..models import CardIdentity
 from .poketrace import (
+    MARKET_SEARCH_CLEAN_NO_MATCH,
+    MARKET_SEARCH_MATCHED,
+    MARKET_SEARCH_RATE_LIMITED,
     POKETRACE_DISABLED,
     POKETRACE_MATCHED,
     POKETRACE_NO_MATCH,
@@ -28,6 +31,10 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
     prime this provider's cache so valuation itself does not repeat the call.
     """
 
+    @property
+    def supports_eu_market(self) -> bool:
+        return False
+
     def snapshot_for(self, identity: CardIdentity) -> PokeTraceSnapshot:
         if not self.config.enabled or not self.config.api_key:
             return PokeTraceSnapshot(POKETRACE_DISABLED)
@@ -37,18 +44,25 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
         if cached is not None:
             return cached
 
-        us = self._search_exact(identity, "US")
-        if us is None:
+        us_result = self._search_exact_result(identity, "US")
+        if us_result.status != MARKET_SEARCH_MATCHED:
+            clean_no_match = us_result.status == MARKET_SEARCH_CLEAN_NO_MATCH
             result = PokeTraceSnapshot(
                 POKETRACE_RATE_LIMITED
-                if self.circuit_open
-                else POKETRACE_NO_MATCH
+                if us_result.status == MARKET_SEARCH_RATE_LIMITED
+                else (
+                    POKETRACE_NO_MATCH
+                    if clean_no_match
+                    else POKETRACE_DISABLED
+                )
             )
-            if not self.circuit_open:
+            if clean_no_match:
                 self.counters.no_match += 1
             self._cache[key] = result
             return result
 
+        us = us_result.card
+        assert us is not None
         values = _us_market_values(identity, us)
         if values is not None:
             values = replace(
@@ -77,6 +91,10 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
         )
         if values is None:
             self.counters.no_match += 1
+        else:
+            self.counters.us_raw_available += int(
+                values.ungraded_value is not None
+            )
         self._cache[key] = result
         return result
 
