@@ -87,6 +87,12 @@ def _safe_reset_time(value: object) -> Optional[str]:
     text = str(value or "").strip()
     if not text or len(text) > 64:
         return None
+    if text.isdecimal():
+        try:
+            parsed = datetime.fromtimestamp(int(text), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return parsed.isoformat().replace("+00:00", "Z")
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
@@ -170,10 +176,16 @@ def run_poketrace_plan_preflight(
 
     active = data.get("active") is True
     headers = getattr(response, "headers", None)
-    raw_plan = user.get("plan") or _header(headers, "X-Plan")
+    raw_plan = (
+        user.get("plan")
+        if user.get("plan") is not None
+        else _header(headers, "X-Plan")
+    )
     plan = _normalized_plan(raw_plan)
     daily_limit = _safe_nonnegative_int(
-        user.get("limit") or _header(headers, "X-RateLimit-Limit")
+        user.get("limit")
+        if user.get("limit") is not None
+        else _header(headers, "X-RateLimit-Limit")
     )
     daily_remaining = _safe_nonnegative_int(
         user.get("remaining")
@@ -181,7 +193,9 @@ def run_poketrace_plan_preflight(
         else _header(headers, "X-RateLimit-Remaining")
     )
     resets_at = _safe_reset_time(
-        user.get("resetsAt") or _header(headers, "X-RateLimit-Reset")
+        user.get("resetsAt")
+        if user.get("resetsAt") is not None
+        else _header(headers, "X-RateLimit-Reset")
     )
     daily_used = (
         max(0, daily_limit - daily_remaining)

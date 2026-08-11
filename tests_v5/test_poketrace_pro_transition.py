@@ -121,6 +121,90 @@ def _provider(session):
 
 
 class PokeTraceProPreflightTests(unittest.TestCase):
+    def test_documented_rate_limit_headers_fill_missing_body_quota_safely(self):
+        secret = "secret-header-fallback"
+        session = _Session(
+            lambda _url, _kwargs: _Response(
+                payload={"data": {"active": True, "user": {}}},
+                headers={
+                    "x-plan": "Pro",
+                    "X-RateLimit-Limit": "10000",
+                    "x-ratelimit-remaining": "9750",
+                    "X-RateLimit-Reset": "1786492800",
+                    "X-Private-Diagnostic": "must-never-render",
+                },
+            )
+        )
+
+        result = run_poketrace_plan_preflight(
+            PokeTracePlanPreflightConfig(api_key=secret),
+            session=session,
+        )
+        rendered = render_poketrace_plan_preflight(result)
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.plan, "PRO")
+        self.assertEqual(result.daily_limit, 10000)
+        self.assertEqual(result.daily_remaining, 9750)
+        self.assertEqual(result.daily_used, 250)
+        self.assertEqual(result.resets_at, "2026-08-12T00:00:00Z")
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn("must-never-render", rendered)
+        self.assertNotIn("X-RateLimit", rendered)
+
+    def test_body_quota_has_precedence_over_conflicting_headers(self):
+        session = _Session(
+            lambda _url, _kwargs: _Response(
+                payload={
+                    "data": {
+                        "active": True,
+                        "user": {
+                            "plan": "Growth",
+                            "limit": 50000,
+                            "remaining": 49900,
+                            "resetsAt": "2026-08-13T00:00:00Z",
+                        },
+                    }
+                },
+                headers={
+                    "X-Plan": "Free",
+                    "X-RateLimit-Limit": "1",
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": "1786492800",
+                },
+            )
+        )
+
+        result = run_poketrace_plan_preflight(
+            PokeTracePlanPreflightConfig(api_key="offline"),
+            session=session,
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.plan, "GROWTH")
+        self.assertEqual(result.daily_limit, 50000)
+        self.assertEqual(result.daily_remaining, 49900)
+        self.assertEqual(result.resets_at, "2026-08-13T00:00:00Z")
+
+    def test_valid_pro_does_not_fail_when_usage_is_unavailable(self):
+        session = _Session(
+            lambda _url, _kwargs: _Response(
+                payload={
+                    "data": {"active": True, "user": {"plan": "Pro"}}
+                }
+            )
+        )
+
+        result = run_poketrace_plan_preflight(
+            PokeTracePlanPreflightConfig(api_key="offline"),
+            session=session,
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertIsNone(result.daily_limit)
+        self.assertIsNone(result.daily_remaining)
+        self.assertIsNone(result.daily_used)
+
     def test_official_pro_schema_is_accepted_and_render_is_safe(self):
         secret = "secret-never-render"
         session = _Session(

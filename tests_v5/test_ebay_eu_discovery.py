@@ -13,12 +13,14 @@ from tests_v5.test_ebay_live_diagnostic import (
 )
 from v5.ebay import parse_ebay_item, resolve_card_identity
 from v5.ebay_live_diagnostic import (
+    CATEGORY_QUERIES,
     DEFAULT_LIVE_MARKETPLACES,
     DEFAULT_CATEGORY_TREE_URL,
     RESULT_LIMIT,
     SEARCH_URL,
     SUPPORTED_MARKETPLACES,
     EbayLiveDiagnostic,
+    _normalized_marker,
 )
 from v5.live_raw_pipeline import (
     ECONOMICS_DEFERRED_CURRENCY_POLICY,
@@ -55,7 +57,7 @@ SAFE_CATEGORY_NAMES = {
     "EBAY_US": "CCG Individual Cards",
     "EBAY_CH": "CCG Individual Cards",
     "EBAY_DE": "Pokémon Sammelkartenspiel Einzelkarten",
-    "EBAY_FR": "Cartes individuelles Pokémon",
+    "EBAY_FR": "JCC : cartes à l’unité",
     "EBAY_IT": "Carte singole Pokémon",
     "EBAY_ES": "Cartas sueltas Pokémon",
     "EBAY_AT": "Pokémon Sammelkartenspiel Einzelkarten",
@@ -154,6 +156,30 @@ class EbayEuConfigurationTests(unittest.TestCase):
 
 
 class EbayEuDiscoveryTests(unittest.TestCase):
+    def test_french_query_and_realistic_single_card_taxonomy_are_supported(self):
+        session = make_session({"EBAY_FR": 1})
+
+        summary = EbayLiveDiagnostic(
+            "client", "secret", session=session, marketplaces=("EBAY_FR",)
+        ).run()
+
+        self.assertTrue(summary.marketplaces[0].taxonomy_ok)
+        suggestion_call = next(
+            call for call in session.gets if "get_category_suggestions" in call[0]
+        )
+        self.assertEqual(
+            suggestion_call[1]["params"]["q"],
+            "Pokémon JCC cartes à l'unité",
+        )
+        self.assertEqual(CATEGORY_QUERIES["EBAY_FR"], suggestion_call[1]["params"]["q"])
+
+    def test_straight_and_typographic_apostrophes_normalize_identically(self):
+        straight = _normalized_marker("JCC : cartes à l'unité")
+        curly = _normalized_marker("JCC : cartes à l’unité")
+        modifier = _normalized_marker("JCC : cartes à lʼunité")
+        self.assertEqual(straight, curly)
+        self.assertEqual(curly, modifier)
+
     def test_taxonomy_and_category_ids_are_independent_per_marketplace(self):
         markets = DEFAULT_LIVE_MARKETPLACES
         session = make_session({marketplace: 1 for marketplace in markets})
@@ -202,6 +228,25 @@ class EbayEuDiscoveryTests(unittest.TestCase):
             "SAFE_INDIVIDUAL_CATEGORY_MISSING",
         )
         self.assertFalse(any(call[0] == SEARCH_URL for call in session.gets))
+
+    def test_french_lot_box_and_sealed_taxonomies_are_fail_closed(self):
+        unsafe_names = (
+            "JCC : cartes à l'unité et lots",
+            "JCC : cartes à l’unité et boîtes",
+            "JCC : cartes à l’unité scellées",
+        )
+        for category_name in unsafe_names:
+            with self.subTest(category_name=category_name):
+                session = make_session({"EBAY_FR": 1})
+                session.taxonomy_names["EBAY_FR"] = category_name
+                summary = EbayLiveDiagnostic(
+                    "client", "secret", session=session, marketplaces=("EBAY_FR",)
+                ).run()
+                self.assertEqual(
+                    summary.marketplaces[0].taxonomy_error_type,
+                    "SAFE_INDIVIDUAL_CATEGORY_MISSING",
+                )
+                self.assertFalse(any(call[0] == SEARCH_URL for call in session.gets))
 
     def test_delivery_country_ch_is_applied_to_priority_eu_marketplaces(self):
         markets = ("EBAY_DE", "EBAY_FR", "EBAY_IT", "EBAY_ES")
@@ -354,6 +399,7 @@ class EbayEuIdentityCurrencyTests(unittest.TestCase):
         summary = diagnostic.run()
         rendered = render_live_raw_pipeline_summary(summary)
         self.assertEqual(summary.market.values_found, 1)
+        self.assertEqual(summary.marketplaces[0].market_values_found, 1)
         self.assertEqual(summary.economic.deferred_currency_policy, 1)
         self.assertEqual(summary.economic.raw_path_evaluated, 0)
         self.assertEqual(summary.marketplaces[0].economics_deferred, 1)
@@ -404,6 +450,11 @@ class EbayEuIdentityCurrencyTests(unittest.TestCase):
             "cross-market duplicates:",
             "ship-to-CH eligible:",
             "currency distribution: EUR=1",
+            "market values found:",
+            "PokeTrace accepted US/USD:",
+            "PokeTrace accepted EU/EUR:",
+            "non-US with US-only snapshot:",
+            "EUR listings with usable EU/CardMarket value:",
             "CardGrader calls: 0",
             "Purchases: 0",
             "Bids: 0",

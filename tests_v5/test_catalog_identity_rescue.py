@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from decimal import Decimal
 
 from tests_v5.test_ebay_live_diagnostic import complete_item
 from v5.card_identity_catalog import CatalogIdentityResult
 from v5.ebay import CardNameLookupResult
-from v5.ebay_live_diagnostic import _DiscoveryRecord
+from v5.ebay_live_diagnostic import MarketplaceAggregate, _DiscoveryRecord
 from v5.live_raw_pipeline import PipelineIdentityAggregate, PipelineImageAggregate
 from v5.live_raw_pipeline_catalog import CatalogAwareLiveRawPipelineDiagnostic
-from v5.market_values.poketrace import PokeTraceConfig
+from v5.market_values.models import MarketValues
+from v5.market_values.poketrace import (
+    CARDMARKET_NO_DISCOUNT,
+    POKETRACE_MATCHED,
+    CardmarketOpportunity,
+    PokeTraceConfig,
+    PokeTraceSnapshot,
+)
 from v5.market_values.poketrace_free import FreeTierPokeTraceProvider
 from v5.visual_identity import VisualIdentityResolution
 
@@ -69,9 +77,10 @@ class StubVisualResolver:
     def __init__(self):
         self.calls = 0
 
-    def resolve_identity(self, identity, image_urls):
+    def resolve_identity(self, identity, image_urls, *, marketplace_id=None):
         self.calls += 1
         self.image_urls = tuple(image_urls)
+        self.marketplace_id = marketplace_id
         return VisualIdentityResolution(
             replace(identity, card_number="7/100", ambiguities=()),
             matched=True,
@@ -103,6 +112,20 @@ def disabled_poketrace():
 
 
 class CatalogIdentityRescueTests(unittest.TestCase):
+    @staticmethod
+    def _usd_values(identity):
+        return MarketValues(
+            source="offline PokeTrace fixture",
+            currency="USD",
+            ungraded_value=Decimal("25"),
+            grade8_generic_value=None,
+            grade9_generic_value=None,
+            psa10_value=None,
+            matched_identity=identity,
+            match_confidence=Decimal("1"),
+            matched_product_id="provider-record",
+        )
+
     def test_pipeline_keeps_complete_catalog_identity_instead_of_name_only_adapter(self):
         resolver = CanonicalIdentityResolver()
         diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
@@ -194,6 +217,7 @@ class CatalogIdentityRescueTests(unittest.TestCase):
         self.assertEqual(identities.ok, 1)
         self.assertEqual(identities.insufficient, 0)
         self.assertTrue(visual.image_urls)
+        self.assertEqual(visual.marketplace_id, "EBAY_US")
 
     def test_clean_identity_does_not_call_visual_resolver(self):
         visual = StubVisualResolver()
@@ -222,6 +246,72 @@ class CatalogIdentityRescueTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         self.assertEqual(visual.calls, 0)
         self.assertEqual(identities.ok, 1)
+
+    def test_market_provenance_is_aggregate_and_marketplace_scoped(self):
+        diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
+            "client",
+            "secret",
+            card_catalog_resolver=NoRescueResolver(),
+            poketrace_provider=disabled_poketrace(),
+        )
+        diagnostic.discovery._image_fetcher = lambda _url: None
+        item = complete_item()
+        item["price"] = {"value": "12.50", "currency": "EUR"}
+        record = _DiscoveryRecord(
+            marketplace_id="EBAY_IT",
+            summary={},
+            item_id="aggregate-only-fixture",
+            enriched=item,
+            get_item_success=True,
+        )
+        candidate, _raw = diagnostic._candidate_from_record(
+            record,
+            PipelineIdentityAggregate(),
+            PipelineImageAggregate(),
+        )
+        self.assertIsNotNone(candidate)
+        aggregate = MarketplaceAggregate("EBAY_IT")
+
+        diagnostic.poketrace_market_source.last_snapshot = PokeTraceSnapshot(
+            POKETRACE_MATCHED,
+            us_values=self._usd_values(candidate.identity),
+            us_record_id="us-record",
+        )
+        diagnostic._record_market_provenance(candidate, aggregate)
+
+        self.assertEqual(aggregate.poketrace_us_usd_accepted, 1)
+        self.assertEqual(aggregate.poketrace_eu_eur_accepted, 0)
+        self.assertEqual(aggregate.non_us_with_us_only_snapshot, 1)
+        self.assertEqual(aggregate.eur_without_usable_eu_value, 1)
+
+        diagnostic.poketrace_market_source.last_snapshot = PokeTraceSnapshot(
+            POKETRACE_MATCHED,
+            cardmarket=CardmarketOpportunity(
+                CARDMARKET_NO_DISCOUNT,
+                robust_reference=Decimal("80"),
+            ),
+            eu_record_id="eu-record",
+        )
+        diagnostic._record_market_provenance(candidate, aggregate)
+        self.assertEqual(aggregate.poketrace_eu_eur_accepted, 1)
+        self.assertEqual(aggregate.eur_with_usable_eu_value, 1)
+
+        us_candidate = replace(
+            candidate,
+            marketplace_id="EBAY_US",
+            listing=replace(candidate.listing, currency="USD"),
+        )
+        us_aggregate = MarketplaceAggregate("EBAY_US")
+        diagnostic.poketrace_market_source.last_snapshot = None
+        diagnostic._record_market_provenance(us_candidate, us_aggregate)
+        diagnostic.poketrace_market_source.last_snapshot = PokeTraceSnapshot(
+            POKETRACE_MATCHED,
+            us_values=self._usd_values(us_candidate.identity),
+            us_record_id="us-record",
+        )
+        diagnostic._record_market_provenance(us_candidate, us_aggregate)
+        self.assertEqual(us_aggregate.us_without_usable_usd_value, 1)
+        self.assertEqual(us_aggregate.us_with_usable_usd_value, 1)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ from .market_values.gcc_history.provider import GCCProviderConfig, GCCHistoryPro
 from .market_values.poketrace import (
     PokeTraceConfig,
     PokeTraceProvider,
+    PokeTraceSnapshot,
     pro_tier_config_from_env,
     render_poketrace_counters,
 )
@@ -84,8 +85,10 @@ class _PokeTracePrimaryMarketSource:
 
     def __init__(self, provider: PokeTraceProvider) -> None:
         self.provider = provider
+        self.last_snapshot: Optional[PokeTraceSnapshot] = None
 
     def values_for(self, identity):
+        self.last_snapshot = None
         language = str(identity.language or "").strip().casefold()
         deterministic_alias = self.provider.has_search_alias(identity)
         if (
@@ -95,6 +98,7 @@ class _PokeTracePrimaryMarketSource:
         ):
             return None
         snapshot = self.provider.snapshot_for(identity)
+        self.last_snapshot = snapshot
         if (
             language not in self._SUPPORTED_US_LANGUAGES
             and not deterministic_alias
@@ -253,6 +257,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             visual = self.visual_identity.resolve_identity(
                 identity,
                 listing.image_urls,
+                marketplace_id=record.marketplace_id,
             )
             if visual.matched:
                 identity = visual.identity
@@ -284,6 +289,54 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             record.marketplace_id,
             record.ship_to_ch_eligible,
         ), True
+
+    def _record_market_provenance(
+        self,
+        candidate: _PipelineCandidate,
+        marketplace: MarketplaceAggregate,
+    ) -> None:
+        snapshot = self.poketrace_market_source.last_snapshot
+        us_values = snapshot.us_values if snapshot is not None else None
+        cardmarket = snapshot.cardmarket if snapshot is not None else None
+        usable_us = bool(
+            us_values is not None
+            and str(us_values.currency or "").upper() == "USD"
+            and us_values.has_any_value()
+        )
+        accepted_us = bool(
+            usable_us
+            and snapshot is not None
+            and snapshot.us_record_id is not None
+        )
+        accepted_eu = bool(
+            cardmarket is not None
+            and str(cardmarket.currency or "").upper() == "EUR"
+            and snapshot is not None
+            and snapshot.eu_record_id is not None
+        )
+        usable_eu = bool(
+            accepted_eu
+            and (
+                cardmarket.robust_reference is not None
+                or cardmarket.lowest_active_ask is not None
+            )
+        )
+
+        marketplace.poketrace_us_usd_accepted += int(accepted_us)
+        marketplace.poketrace_eu_eur_accepted += int(accepted_eu)
+        marketplace.non_us_with_us_only_snapshot += int(
+            candidate.marketplace_id != "EBAY_US"
+            and accepted_us
+            and not accepted_eu
+        )
+
+        if candidate.marketplace_id == "EBAY_US":
+            marketplace.us_with_usable_usd_value += int(usable_us)
+            marketplace.us_without_usable_usd_value += int(not usable_us)
+
+        if str(candidate.listing.currency or "").upper() == "EUR":
+            marketplace.eur_with_usable_eu_value += int(usable_eu)
+            marketplace.eur_without_usable_eu_value += int(not usable_eu)
 
     @staticmethod
     def _count_identity(

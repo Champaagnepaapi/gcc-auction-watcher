@@ -7,7 +7,7 @@ from decimal import Decimal
 from PIL import Image, ImageDraw
 
 from v5.card_number_ocr import CardNumberOCRConfig, LocalCardNumberOCR
-from v5.market_values.poketrace import PokeTraceConfig
+from v5.market_values.poketrace import PokeTraceConfig, PokeTraceProvider
 from v5.market_values.poketrace_free import FreeTierPokeTraceProvider
 from v5.models import CardIdentity
 from v5.poketrace_identity import PokeTraceIdentityResolver
@@ -32,12 +32,14 @@ class PokeTraceSession:
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
         if url.endswith("/v1/cards"):
-            return Response(self.payload)
+            payload = self.payload(kwargs) if callable(self.payload) else self.payload
+            return Response(payload)
         raise AssertionError(f"unexpected network image request: {url}")
 
 
-def provider(session):
-    return FreeTierPokeTraceProvider(
+def provider(session, *, pro=False):
+    provider_type = PokeTraceProvider if pro else FreeTierPokeTraceProvider
+    return provider_type(
         config=PokeTraceConfig(
             enabled=True,
             api_key="secret-never-render",
@@ -48,7 +50,14 @@ def provider(session):
     )
 
 
-def card_payload(card_id, number, image_url, *, variant="Holofoil"):
+def card_payload(
+    card_id,
+    number,
+    image_url,
+    *,
+    variant="Holofoil",
+    market="US",
+):
     return {
         "id": card_id,
         "name": "Charizard",
@@ -57,13 +66,22 @@ def card_payload(card_id, number, image_url, *, variant="Holofoil"):
         "variant": variant,
         "rarity": "Rare Holo",
         "productType": "single",
-        "market": "US",
-        "currency": "USD",
+        "market": market,
+        "currency": "USD" if market == "US" else "EUR",
         "image": image_url,
-        "prices": {
-            "ebay": {"NEAR_MINT": {"median7d": 100}},
-            "tcgplayer": {"NEAR_MINT": {"median7d": 110}},
-        },
+        "prices": (
+            {
+                "ebay": {"NEAR_MINT": {"median7d": 100}},
+                "tcgplayer": {"NEAR_MINT": {"median7d": 110}},
+            }
+            if market == "US"
+            else {
+                "cardmarket": {
+                    "AGGREGATED": {"avg": 80, "avg7d": 82, "avg30d": 85}
+                },
+                "cardmarket_unsold": {"NEAR_MINT": {"low": 65, "median7d": 81}},
+            }
+        ),
     }
 
 
@@ -124,7 +142,7 @@ class SequenceOCRRunner:
 class LocalVisualIdentityTests(unittest.TestCase):
     def make_resolver(self, payload, ebay_images, canonical_images, **kwargs):
         session = PokeTraceSession(payload)
-        market = provider(session)
+        market = provider(session, pro=kwargs.pop("pro", False))
         identity_resolver = PokeTraceIdentityResolver(market)
         visual = LocalVisualIdentityResolver(
             identity_resolver,
@@ -321,6 +339,215 @@ class LocalVisualIdentityTests(unittest.TestCase):
         self.assertIn("model API calls: 0", rendered)
         self.assertIn("no visual candidates after metadata filter", rendered)
         self.assertIn("no usable eBay image after fetch", rendered)
+
+    def test_non_us_rescue_primes_strict_eu_snapshot_without_replacing_identity(self):
+        a = card_image("a")
+        us = card_payload("us-char", "004/102", "https://cdn.poketrace.com/us.png")
+        eu = card_payload(
+            "eu-char", "004/102", "https://cdn.poketrace.com/eu.png", market="EU"
+        )
+        payload = lambda kwargs: {
+            "data": [us if kwargs["params"]["market"] == "US" else eu]
+        }
+        session, market, visual = self.make_resolver(
+            payload,
+            {"https://i.ebayimg.com/front.png": ebay_photo(a)},
+            {"https://cdn.poketrace.com/us.png": a},
+            eu_enrichment_enabled=True,
+            pro=True,
+        )
+
+        result = visual.resolve_identity(
+            identity(number=None),
+            ["https://i.ebayimg.com/front.png"],
+            marketplace_id="EBAY_IT",
+        )
+        snapshot = market.snapshot_for(result.identity)
+
+        self.assertTrue(result.matched)
+        self.assertEqual(result.identity.language, "English")
+        self.assertEqual(snapshot.us_record_id, "us-char")
+        self.assertEqual(snapshot.eu_record_id, "eu-char")
+        self.assertEqual(visual.counters.eu_enrichment_attempts, 1)
+        self.assertEqual(visual.counters.eu_enrichment_matches, 1)
+        self.assertEqual(visual.counters.cardmarket_snapshots_recovered, 1)
+        self.assertEqual(
+            [call[1]["params"]["market"] for call in session.calls],
+            ["US", "EU"],
+        )
+
+    def test_eu_missing_variant_requires_independent_visual_confirmation(self):
+        a = card_image("a")
+        us = card_payload("us-char", "004/102", "https://cdn.poketrace.com/us.png")
+        eu = card_payload(
+            "eu-char",
+            "004/102",
+            "https://cdn.poketrace.com/eu.png",
+            market="EU",
+            variant=None,
+        )
+        payload = lambda kwargs: {
+            "data": [us if kwargs["params"]["market"] == "US" else eu]
+        }
+        _session, market, visual = self.make_resolver(
+            payload,
+            {"https://i.ebayimg.com/front.png": ebay_photo(a)},
+            {
+                "https://cdn.poketrace.com/us.png": a,
+                "https://cdn.poketrace.com/eu.png": a,
+            },
+            eu_enrichment_enabled=True,
+            pro=True,
+        )
+
+        result = visual.resolve_identity(
+            identity(number=None),
+            ["https://i.ebayimg.com/front.png"],
+            marketplace_id="EBAY_ES",
+        )
+
+        self.assertTrue(result.matched)
+        self.assertEqual(market.snapshot_for(result.identity).eu_record_id, "eu-char")
+        self.assertEqual(visual.counters.eu_enrichment_matches, 1)
+
+    def test_eu_explicit_variant_conflict_is_rejected_even_if_image_matches(self):
+        a = card_image("a")
+        us = card_payload("us-char", "004/102", "https://cdn.poketrace.com/us.png")
+        eu = card_payload(
+            "eu-reverse",
+            "004/102",
+            "https://cdn.poketrace.com/eu.png",
+            market="EU",
+            variant="Reverse Holofoil",
+        )
+        payload = lambda kwargs: {
+            "data": [us if kwargs["params"]["market"] == "US" else eu]
+        }
+        _session, _market, visual = self.make_resolver(
+            payload,
+            {"https://i.ebayimg.com/front.png": ebay_photo(a)},
+            {
+                "https://cdn.poketrace.com/us.png": a,
+                "https://cdn.poketrace.com/eu.png": a,
+            },
+            eu_enrichment_enabled=True,
+            pro=True,
+        )
+
+        visual.resolve_identity(
+            identity(number=None),
+            ["https://i.ebayimg.com/front.png"],
+            marketplace_id="EBAY_FR",
+        )
+
+        self.assertEqual(visual.counters.eu_enrichment_matches, 0)
+        self.assertEqual(visual.counters.eu_enrichment_rejected_variant, 1)
+
+    def test_eu_wrong_core_and_missing_image_stay_rejected(self):
+        a = card_image("a")
+        us = card_payload("us-char", "004/102", "https://cdn.poketrace.com/us.png")
+        wrong_core = card_payload(
+            "eu-partial-number",
+            "004",
+            "https://cdn.poketrace.com/wrong.png",
+            market="EU",
+        )
+        missing_scan = card_payload(
+            "eu-no-scan",
+            "004/102",
+            "",
+            market="EU",
+            variant=None,
+        )
+        payload = lambda kwargs: {
+            "data": [
+                us
+                if kwargs["params"]["market"] == "US"
+                else wrong_core,
+                *(
+                    []
+                    if kwargs["params"]["market"] == "US"
+                    else [missing_scan]
+                ),
+            ]
+        }
+        _session, _market, visual = self.make_resolver(
+            payload,
+            {"https://i.ebayimg.com/front.png": ebay_photo(a)},
+            {"https://cdn.poketrace.com/us.png": a},
+            eu_enrichment_enabled=True,
+            pro=True,
+        )
+
+        visual.resolve_identity(
+            identity(number=None),
+            ["https://i.ebayimg.com/front.png"],
+            marketplace_id="EBAY_DE",
+        )
+
+        self.assertEqual(visual.counters.eu_enrichment_matches, 0)
+        self.assertEqual(visual.counters.eu_enrichment_rejected_core, 1)
+        self.assertEqual(visual.counters.eu_enrichment_rejected_no_image, 1)
+
+    def test_multiple_exact_eu_variants_remain_ambiguous(self):
+        a = card_image("a")
+        us = card_payload("us-char", "004/102", "https://cdn.poketrace.com/us.png")
+        eu_one = card_payload(
+            "eu-one", "004/102", "https://cdn.poketrace.com/eu-one.png", market="EU"
+        )
+        eu_two = card_payload(
+            "eu-two", "004/102", "https://cdn.poketrace.com/eu-two.png", market="EU"
+        )
+        payload = lambda kwargs: {
+            "data": [
+                us
+                if kwargs["params"]["market"] == "US"
+                else eu_one,
+                *([] if kwargs["params"]["market"] == "US" else [eu_two]),
+            ]
+        }
+        _session, _market, visual = self.make_resolver(
+            payload,
+            {"https://i.ebayimg.com/front.png": ebay_photo(a)},
+            {"https://cdn.poketrace.com/us.png": a},
+            eu_enrichment_enabled=True,
+            pro=True,
+        )
+
+        visual.resolve_identity(
+            identity(number=None),
+            ["https://i.ebayimg.com/front.png"],
+            marketplace_id="EBAY_IT",
+        )
+
+        self.assertEqual(visual.counters.eu_enrichment_matches, 0)
+        self.assertEqual(visual.counters.eu_enrichment_ambiguous, 1)
+
+    def test_us_rescue_never_attempts_eu_enrichment(self):
+        a = card_image("a")
+        payload = {
+            "data": [
+                card_payload(
+                    "us-char", "004/102", "https://cdn.poketrace.com/us.png"
+                )
+            ]
+        }
+        session, _market, visual = self.make_resolver(
+            payload,
+            {"https://i.ebayimg.com/front.png": ebay_photo(a)},
+            {"https://cdn.poketrace.com/us.png": a},
+            eu_enrichment_enabled=True,
+            pro=True,
+        )
+
+        visual.resolve_identity(
+            identity(number=None),
+            ["https://i.ebayimg.com/front.png"],
+            marketplace_id="EBAY_US",
+        )
+
+        self.assertEqual(visual.counters.eu_enrichment_attempts, 0)
+        self.assertEqual(len(session.calls), 1)
 
 
 if __name__ == "__main__":

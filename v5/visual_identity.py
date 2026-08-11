@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 
 from .card_number_ocr import LocalCardNumberOCR
+from .market_values.poketrace import _candidate_market_compatible
 from .models import CardIdentity
 from .poketrace_identity import (
     REQUEST_OK,
@@ -19,7 +20,7 @@ from .poketrace_identity import (
     _set_similarity,
     _variant_family,
 )
-from .poketrace_matching import _normalize_card_name
+from .poketrace_matching import _candidate_evidence, _normalize_card_name
 
 
 MAX_VISUAL_IMAGE_BYTES = 8 * 1024 * 1024
@@ -46,6 +47,14 @@ class VisualIdentityCounters:
     market_snapshots_primed: int = 0
     ocr_rescued: int = 0
     ocr_market_snapshots_primed: int = 0
+    eu_enrichment_attempts: int = 0
+    eu_enrichment_candidates: int = 0
+    eu_enrichment_matches: int = 0
+    eu_enrichment_ambiguous: int = 0
+    eu_enrichment_rejected_no_image: int = 0
+    eu_enrichment_rejected_variant: int = 0
+    eu_enrichment_rejected_core: int = 0
+    cardmarket_snapshots_recovered: int = 0
 
 
 @dataclass(frozen=True)
@@ -99,6 +108,7 @@ class LocalVisualIdentityResolver:
         minimum_margin: Optional[float] = None,
         override_number_minimum_score: Optional[float] = None,
         override_number_minimum_margin: Optional[float] = None,
+        eu_enrichment_enabled: Optional[bool] = None,
         card_number_ocr: Optional[LocalCardNumberOCR] = None,
     ) -> None:
         self.poketrace_identity = poketrace_identity
@@ -151,6 +161,14 @@ class LocalVisualIdentityResolver:
             if override_number_minimum_margin is not None
             else float(os.getenv("V5_VISUAL_IDENTITY_OVERRIDE_NUMBER_MIN_MARGIN", "0.12"))
         )
+        self.eu_enrichment_enabled = (
+            eu_enrichment_enabled
+            if eu_enrichment_enabled is not None
+            else os.getenv(
+                "V5_VISUAL_IDENTITY_EU_ENRICHMENT_ENABLED", "false"
+            ).strip().casefold()
+            == "true"
+        )
         self.card_number_ocr = card_number_ocr or LocalCardNumberOCR()
         self.counters = VisualIdentityCounters()
         self._scan_signature_cache: dict[str, Tuple[_ImageSignature, ...]] = {}
@@ -159,6 +177,8 @@ class LocalVisualIdentityResolver:
         self,
         identity: CardIdentity,
         image_urls: Sequence[str],
+        *,
+        marketplace_id: Optional[str] = None,
     ) -> VisualIdentityResolution:
         if (
             not self.enabled
@@ -237,7 +257,13 @@ class LocalVisualIdentityResolver:
 
         if not scored:
             self.counters.low_confidence += 1
-            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            ocr = self._try_ocr_rescue(
+                identity,
+                candidates,
+                ebay_image_bytes,
+                ebay_signatures,
+                marketplace_id,
+            )
             return ocr or VisualIdentityResolution(identity)
 
         scored.sort(key=lambda value: (value[0], value[1]), reverse=True)
@@ -263,13 +289,25 @@ class LocalVisualIdentityResolver:
 
         if best_score < score_floor:
             self.counters.low_confidence += 1
-            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            ocr = self._try_ocr_rescue(
+                identity,
+                candidates,
+                ebay_image_bytes,
+                ebay_signatures,
+                marketplace_id,
+            )
             if ocr is not None:
                 return ocr
             return VisualIdentityResolution(identity, score=best_score, margin=margin)
         if len(scored) > 1 and margin < margin_floor:
             self.counters.close_second += 1
-            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            ocr = self._try_ocr_rescue(
+                identity,
+                candidates,
+                ebay_image_bytes,
+                ebay_signatures,
+                marketplace_id,
+            )
             if ocr is not None:
                 return ocr
             return VisualIdentityResolution(identity, score=best_score, margin=margin)
@@ -280,7 +318,13 @@ class LocalVisualIdentityResolver:
         )
         if not (resolved.card_name and resolved.set and resolved.card_number):
             self.counters.low_confidence += 1
-            ocr = self._try_ocr_rescue(identity, candidates, ebay_image_bytes)
+            ocr = self._try_ocr_rescue(
+                identity,
+                candidates,
+                ebay_image_bytes,
+                ebay_signatures,
+                marketplace_id,
+            )
             if ocr is not None:
                 return ocr
             return VisualIdentityResolution(identity, score=best_score, margin=margin)
@@ -295,6 +339,11 @@ class LocalVisualIdentityResolver:
         )
         self.counters.market_snapshots_primed += 1
         self.counters.rescued += 1
+        self._enrich_eu_market(
+            resolved,
+            ebay_signatures,
+            marketplace_id,
+        )
         return VisualIdentityResolution(
             resolved,
             matched=True,
@@ -308,6 +357,8 @@ class LocalVisualIdentityResolver:
         identity: CardIdentity,
         candidates: Sequence[_VisualCandidate],
         ebay_image_bytes: Sequence[bytes],
+        ebay_signatures: Sequence[_ImageSignature],
+        marketplace_id: Optional[str],
     ) -> Optional[VisualIdentityResolution]:
         result = self.card_number_ocr.resolve(
             ebay_image_bytes,
@@ -341,11 +392,164 @@ class LocalVisualIdentityResolver:
         )
         self.counters.ocr_rescued += 1
         self.counters.ocr_market_snapshots_primed += 1
+        self._enrich_eu_market(
+            resolved,
+            ebay_signatures,
+            marketplace_id,
+        )
         return VisualIdentityResolution(
             resolved,
             matched=True,
             card_id=str(result.candidate.get("id") or "").strip() or None,
         )
+
+    def _enrich_eu_market(
+        self,
+        resolved: CardIdentity,
+        ebay_signatures: Sequence[_ImageSignature],
+        marketplace_id: Optional[str],
+    ) -> None:
+        """Prime one strict EU record after a non-US visual/OCR rescue.
+
+        This is valuation provenance only. The returned listing identity is
+        never replaced by the EU provider payload, and a failed enrichment
+        never weakens the existing identity or variant gates.
+        """
+
+        if (
+            not self.eu_enrichment_enabled
+            or not marketplace_id
+            or marketplace_id == "EBAY_US"
+            or not self.provider.supports_eu_market
+            or not (resolved.card_name and resolved.set and resolved.card_number)
+            or self.provider.circuit_open
+        ):
+            return
+
+        search_identity, _alias = self.provider.identity_for_search(resolved)
+        search_text = self._visual_search_text(search_identity)
+        if not search_text:
+            return
+
+        self.counters.eu_enrichment_attempts += 1
+        payload, status = self.poketrace_identity._request(
+            search_identity,
+            search_text,
+            market="EU",
+            use_structured_filters=True,
+        )
+        if status != REQUEST_OK or payload is None:
+            return
+
+        data = payload.get("data")
+        raw_candidates = (
+            tuple(item for item in data if isinstance(item, Mapping))
+            if isinstance(data, Sequence) and not isinstance(data, (str, bytes))
+            else ()
+        )
+        candidates = tuple(
+            item
+            for item in raw_candidates
+            if _candidate_market_compatible(item, "EU")
+        )
+        self.provider.counters.market_mismatch_rejections += (
+            len(raw_candidates) - len(candidates)
+        )
+        self.counters.eu_enrichment_candidates += len(candidates)
+
+        metadata_proven: list[Mapping[str, object]] = []
+        visual_required: list[Mapping[str, object]] = []
+        for candidate in candidates:
+            evidence = _candidate_evidence(search_identity, candidate)
+            if _normalize(candidate.get("productType")) not in {"", "single"}:
+                self.counters.eu_enrichment_rejected_core += 1
+                continue
+            exact_core = bool(
+                evidence.name_matched
+                and evidence.set_matched
+                and evidence.number_exact
+            )
+            if not exact_core:
+                self.counters.eu_enrichment_rejected_core += 1
+                continue
+
+            if not evidence.variant_compatible and not evidence.variant_metadata_missing:
+                self.counters.eu_enrichment_rejected_variant += 1
+                continue
+
+            expected_variant = _normalize(search_identity.variant)
+            candidate_variant = _normalize(candidate.get("variant"))
+            deterministic_variant_match = bool(
+                expected_variant
+                and candidate_variant
+                and expected_variant == candidate_variant
+            )
+            if evidence.variant_compatible and (
+                evidence.variant_exact or deterministic_variant_match
+            ):
+                metadata_proven.append(candidate)
+            else:
+                # Missing/incomplete variant metadata can only be bridged by an
+                # independent comparison against the EU canonical scan.
+                visual_required.append(candidate)
+
+        visual_scored: list[tuple[float, Mapping[str, object]]] = []
+        unresolved_without_image = 0
+        for candidate in visual_required:
+            image_url = str(candidate.get("image") or "").strip()
+            signatures = self._canonical_signatures(image_url) if image_url else ()
+            if not signatures:
+                self.counters.eu_enrichment_rejected_no_image += 1
+                unresolved_without_image += 1
+                continue
+            visual_score = max(
+                _signature_similarity(left, right)
+                for left in ebay_signatures
+                for right in signatures
+            )
+            visual_scored.append((visual_score, candidate))
+
+        visual_proven: list[Mapping[str, object]] = []
+        if visual_scored:
+            visual_scored.sort(key=lambda value: value[0], reverse=True)
+            best_score, best_candidate = visual_scored[0]
+            second_score = visual_scored[1][0] if len(visual_scored) > 1 else 0.0
+            if best_score >= self.minimum_score:
+                if (
+                    len(visual_scored) > 1
+                    and best_score - second_score < self.minimum_margin
+                ):
+                    self.counters.eu_enrichment_ambiguous += 1
+                    return
+                visual_proven.append(best_candidate)
+
+        accepted = metadata_proven + visual_proven
+        if unresolved_without_image and accepted:
+            # An exact-core candidate with no variant proof and no usable scan
+            # remains plausible, so even a metadata-proven neighbour cannot be
+            # accepted uniquely.
+            self.counters.eu_enrichment_ambiguous += 1
+            return
+        if len(accepted) != 1:
+            if len(accepted) > 1:
+                self.counters.eu_enrichment_ambiguous += 1
+            return
+
+        card = accepted[0]
+        if not self.provider._prime_market_match(
+            resolved,
+            "EU",
+            card,
+            count_match=True,
+        ):
+            return
+        self.counters.eu_enrichment_matches += 1
+        prices = card.get("prices")
+        if (
+            str(card.get("currency") or "").strip().upper() == "EUR"
+            and isinstance(prices, Mapping)
+        ):
+            self.counters.cardmarket_snapshots_recovered += 1
 
     @staticmethod
     def _visual_search_text(identity: CardIdentity) -> str:
@@ -529,6 +733,22 @@ def render_visual_identity_counters(resolver: LocalVisualIdentityResolver) -> st
             f"OCR identities rescued: {counters.ocr_rescued}",
             f"OCR structured card-number overrides: {ocr.structured_number_overrides}",
             f"market snapshots primed from OCR match: {counters.ocr_market_snapshots_primed}",
+            "--- strict EU/CardMarket enrichment after non-US rescue ---",
+            f"EU enrichment enabled: {str(resolver.eu_enrichment_enabled).lower()}",
+            f"EU enrichment attempts: {counters.eu_enrichment_attempts}",
+            f"EU candidates: {counters.eu_enrichment_candidates}",
+            f"EU matches: {counters.eu_enrichment_matches}",
+            f"EU ambiguous: {counters.eu_enrichment_ambiguous}",
+            (
+                "EU rejected no usable canonical image: "
+                f"{counters.eu_enrichment_rejected_no_image}"
+            ),
+            f"EU rejected variant: {counters.eu_enrichment_rejected_variant}",
+            f"EU rejected core identity: {counters.eu_enrichment_rejected_core}",
+            (
+                "CardMarket snapshots recovered: "
+                f"{counters.cardmarket_snapshots_recovered}"
+            ),
             "persisted images/OCR text: 0",
             "persisted eBay identifiers: 0",
         )

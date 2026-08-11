@@ -573,6 +573,7 @@ class LiveRawPipelineDiagnostic:
             value = source.values_for(candidate.identity)
             if value is not None:
                 provider_values.append(value)
+        self._record_market_provenance(candidate, marketplace)
         if self.gcc_history.counters.enabled:
             gcc_result = self.gcc_history.market_for(
                 candidate.identity,
@@ -611,6 +612,7 @@ class LiveRawPipelineDiagnostic:
             return
 
         market_counts.values_found += 1
+        marketplace.market_values_found += 1
         if not candidate.ship_to_ch_eligible:
             economic_counts.shipping_ineligible += 1
             return
@@ -667,6 +669,13 @@ class LiveRawPipelineDiagnostic:
         economic_counts.cost_model_incomplete += int(
             COST_MODEL_INCOMPLETE in economic.signals
         )
+
+    def _record_market_provenance(
+        self,
+        candidate: _PipelineCandidate,
+        marketplace: MarketplaceAggregate,
+    ) -> None:
+        """Hook for provider-specific, aggregate-only provenance diagnostics."""
 
     def _summary(
         self,
@@ -1022,6 +1031,35 @@ def _render_marketplace_diagnostics(
                     f"{aggregate.shipping_estimate_limited}"
                 ),
                 f"currency distribution: {currencies}",
+                f"market values found: {aggregate.market_values_found}",
+                (
+                    "PokeTrace accepted US/USD: "
+                    f"{aggregate.poketrace_us_usd_accepted}"
+                ),
+                (
+                    "PokeTrace accepted EU/EUR: "
+                    f"{aggregate.poketrace_eu_eur_accepted}"
+                ),
+                (
+                    "non-US with US-only snapshot: "
+                    f"{aggregate.non_us_with_us_only_snapshot}"
+                ),
+                (
+                    "US listings with usable USD value: "
+                    f"{aggregate.us_with_usable_usd_value}"
+                ),
+                (
+                    "US listings without usable USD value: "
+                    f"{aggregate.us_without_usable_usd_value}"
+                ),
+                (
+                    "EUR listings with usable EU/CardMarket value: "
+                    f"{aggregate.eur_with_usable_eu_value}"
+                ),
+                (
+                    "EUR listings without usable EU/CardMarket value: "
+                    f"{aggregate.eur_without_usable_eu_value}"
+                ),
                 f"economics deferred: {aggregate.economics_deferred}",
             )
         )

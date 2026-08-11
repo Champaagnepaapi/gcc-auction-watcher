@@ -163,6 +163,11 @@ plan documenté supérieur, et arrête le job avant le pipeline si
 l’authentification est invalide, la clé inactive ou le plan inférieur à Pro.
 Les logs du preflight sont limités au statut HTTP, tier normalisé, quota
 journalier/usage/remaining/reset disponibles et raison technique agrégée.
+Lorsque le corps authentifié ne fournit pas les champs de quota, le preflight
+peut lire les headers documentés `X-Plan`, `X-RateLimit-Limit`,
+`X-RateLimit-Remaining` et `X-RateLimit-Reset`. Le corps reste prioritaire, les
+headers complets ne sont jamais affichés et un Pro valide n'est pas refusé
+uniquement parce que les chiffres d'usage sont indisponibles.
 
 La cadence Pro est fixée à **≥0,40 s/requête**, marge conservatrice sous le burst
 documenté de 30 requêtes/10 s. Le circuit-breaker 429 et son unique retry court
@@ -228,6 +233,64 @@ explicitement fourni par `V5_EBAY_DELIVERY_POSTAL_CODE`; aucun postcode ni coût
 de livraison n'est inventé. Sans coût fourni par Browse, le diagnostic indique
 `shipping estimate limited` et une annonce sans preuve d'éligibilité Suisse ne
 peut pas entrer dans l'économie.
+
+## Constat du premier live Pro et correctifs offline suivants
+
+Le run manuel Pro `31525792380` / job `93893666902` a produit le baseline
+agrégé suivant :
+
+- preflight HTTP 200, plan `PRO`, accepté ; quota/usage/remaining/reset
+  `UNAVAILABLE` ;
+- échantillon global de 20 annonces uniques sur US/DE/FR/IT/ES, 20 appels
+  `getItem` réussis et 19 RAW acceptées ;
+- US/DE/IT/ES : taxonomie et recherche OK, 5 annonces sélectionnées par marché ;
+  ES comptait aussi 3 doublons cross-market ;
+- FR : taxonomie HTTP 200/200, mais `SAFE_INDIVIDUAL_CATEGORY_MISSING` et
+  Browse correctement `NOT_CALLED` ;
+- identité : 9 utilisables, 2 ambiguës, 9 insuffisantes ; TCGdex 0 hit ;
+  matching visuel 14 tentatives/5 sauvetages et OCR 3 tentatives/0 sauvetage ;
+- PokeTrace : 0 identité exacte, 0×429, 0 panne de requête ; 5 snapshots
+  US avec RAW/PSA8/PSA9/PSA10 et 0 snapshot EU/CardMarket ;
+- valeurs marché trouvées pour 5 des 9 identités utilisables, mais chemin
+  économique RAW évalué 0 fois et `ECONOMICS_DEFERRED_CURRENCY_POLICY=6`.
+
+FR a été arrêté avant Browse parce que la suggestion réaliste
+`JCC : cartes à l’unité` n'était pas reconnue par la whitelist, alors que la
+taxonomie répondait 200.
+Le marqueur de taxonomie normalise maintenant de façon déterministe les
+apostrophes ASCII/Unicode et accepte cette formulation, tout en rejetant
+toujours les lots, boîtes et produits scellés. Il n'existe toujours aucun ID de
+catégorie codé en dur ni fallback vers une recherche large.
+
+Les cinq sauvetages visuels ont tous concerné des marketplaces non-US. Ils ont
+amorcé cinq snapshots US/USD, mais aucun snapshot EU/EUR ; trois
+identités US utilisables sont en outre restées sans valeur USD. Le diagnostic
+rapporte donc désormais, par marketplace eBay, les valeurs trouvées, les sources
+PokeTrace US/USD et EU/EUR acceptées, les annonces non-US avec snapshot US seul,
+les annonces US avec/sans valeur USD et les annonces EUR avec/sans valeur
+EU/CardMarket. Ces sorties restent uniquement agrégées.
+
+Le chemin économique à zéro n'était donc pas un bug de calcul : aucune
+annonce ne réunissait simultanément `EBAY_US`, un prix listing USD et une valeur
+marché USD. Les snapshots US issus des sauvetages appartenaient aux annonces
+EUR IT/ES, tandis que les trois annonces US utilisables n'avaient aucune
+valeur PokeTrace.
+
+Après un sauvetage visuel/OCR réussi sur une annonce non-US, un unique lookup
+EU optionnel peut maintenant enrichir le cache CardMarket. Le cœur nom + set +
+numéro doit rester exact. Une variante/finition explicitement compatible suffit ;
+si sa métadonnée est absente, le scan canonique EU doit confirmer localement le
+match avec les mêmes seuils et marges conservateurs que le sauvetage US. Un
+conflit explicite, plusieurs candidats plausibles ou l'absence d'image
+utilisable interdisent le match. L'identité eBay/TCGdex n'est jamais remplacée
+par l'enrichissement EU, les IDs/caches restent séparés par marché et aucune
+valeur EUR n'entre dans l'économie RAW.
+
+Le prochain live doit rester le workflow manuel existant et ne sera justifié
+qu'après revue de ces changements offline. Il devra vérifier : Browse FR via la
+catégorie sûre résolue, la provenance par marketplace, les compteurs
+d'enrichissement EU (tentatives/candidats/matches/ambiguïtés/rejets) et les
+snapshots CardMarket récupérés, sans recommandation d'achat ni économie EUR.
 
 La devise du listing reste inchangée. Le chemin économique existant continue
 uniquement pour un listing `EBAY_US` en USD avec des valeurs marché USD. EUR,

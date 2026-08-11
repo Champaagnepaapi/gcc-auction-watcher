@@ -78,7 +78,7 @@ DEFAULT_LIVE_MARKETPLACES = (
 CATEGORY_QUERY = "Pokémon CCG Individual Cards"
 CATEGORY_QUERIES = {
     "EBAY_DE": "Pokémon Sammelkarten Einzelkarten",
-    "EBAY_FR": "Pokémon cartes à collectionner individuelles",
+    "EBAY_FR": "Pokémon JCC cartes à l'unité",
     "EBAY_IT": "Pokémon carte collezionabili singole",
     "EBAY_ES": "Pokémon cartas coleccionables individuales",
     "EBAY_AT": "Pokémon Sammelkarten Einzelkarten",
@@ -140,6 +140,9 @@ _SEALED_OR_MULTI_PRODUCT_TERMS = (
     "bundles",
     "sealed",
     "scelle",
+    "scelles",
+    "scellee",
+    "scellees",
     "versiegelt",
     "sigillato",
     "sellado",
@@ -188,6 +191,14 @@ class MarketplaceAggregate:
     shipping_estimate_limited: int = 0
     currency_counts: Dict[str, int] = field(default_factory=dict)
     economics_deferred: int = 0
+    market_values_found: int = 0
+    poketrace_us_usd_accepted: int = 0
+    poketrace_eu_eur_accepted: int = 0
+    non_us_with_us_only_snapshot: int = 0
+    us_with_usable_usd_value: int = 0
+    us_without_usable_usd_value: int = 0
+    eur_with_usable_eu_value: int = 0
+    eur_without_usable_eu_value: int = 0
     empty_reason: str = "autre"
 
 
@@ -954,11 +965,26 @@ def _all_image_urls(payload: Mapping[str, object]) -> Tuple[str, ...]:
 
 def _normalized_marker(value: object) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
+    # Taxonomy display labels use both ASCII and typographic apostrophes.
+    # Canonicalize them only in this category/product marker path; card identity
+    # matching deliberately keeps its own stricter normalization semantics.
+    text = text.translate(
+        str.maketrans(
+            {
+                "\u2018": "'",
+                "\u2019": "'",
+                "\u201b": "'",
+                "\u02bc": "'",
+                "\uff07": "'",
+            }
+        )
+    )
     return " ".join(
         "".join(character for character in text if not unicodedata.combining(character))
         .casefold()
         .replace("_", " ")
         .replace("-", " ")
+        .replace("'", " ")
         .split()
     )
 
@@ -966,6 +992,12 @@ def _normalized_marker(value: object) -> str:
 def _is_safe_individual_category(marketplace_id: str, value: object) -> bool:
     normalized = _normalized_marker(value)
     if not normalized:
+        return False
+    padded = f" {normalized} "
+    if any(
+        f" {_normalized_marker(term)} " in padded
+        for term in _SEALED_OR_MULTI_PRODUCT_TERMS
+    ):
         return False
     return any(
         _normalized_marker(phrase) in normalized
