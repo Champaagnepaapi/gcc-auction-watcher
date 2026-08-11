@@ -90,7 +90,22 @@ class PokeTraceSetBridgeDiagnosticTests(unittest.TestCase):
         resolver = self.resolver()
         rendered = render_poketrace_identity_counters(resolver)
         self.assertIn("exact TCGdex bridge available: 0", rendered)
-        self.assertIn("acceptance unchanged", rendered)
+        self.assertIn("exact provenance only; no fuzzy acceptance", rendered)
+        for label in (
+            "candidates name+number+bridged_set: 0",
+            "candidates all_three_before_bridge: 0",
+            "candidates all_three_after_bridge: 0",
+            "candidates all_three_variant_compatible_after_bridge: 0",
+            "set_bridge_attempts: 0",
+            "set_bridge_exact: 0",
+            "set_bridge_no_mapping: 0",
+            "set_bridge_ambiguous: 0",
+            "set_bridge_collision: 0",
+            "set_bridge_via_tcgdex_alias: 0",
+            "set_bridge_via_english_twin: 0",
+            "set_bridge_via_versioned_mapping: 0",
+        ):
+            self.assertIn(label, rendered)
         self.assertNotIn("Set de Base", rendered)
 
 

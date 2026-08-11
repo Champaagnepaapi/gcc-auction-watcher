@@ -18,6 +18,12 @@ from .market_values.poketrace import (
     _poketrace_game,
 )
 from .models import CardIdentity, ProviderSearchAlias
+from .poketrace_set_bridge import (
+    SET_BRIDGE_AMBIGUOUS,
+    SET_BRIDGE_COLLISION,
+    TCGdexSetProvenance,
+    collision_index,
+)
 from .poketrace_matching import (
     REJECT_CARD_NAME,
     REJECT_CARD_NUMBER,
@@ -178,6 +184,10 @@ class PokeTraceIdentityCounters:
     candidates_name_number_matched: int = 0
     candidates_set_number_matched: int = 0
     candidates_all_three_matched: int = 0
+    candidates_name_number_bridged_set: int = 0
+    candidates_all_three_before_bridge: int = 0
+    candidates_all_three_after_bridge: int = 0
+    candidates_all_three_variant_compatible_after_bridge: int = 0
     candidates_all_three_variant_compatible: int = 0
     candidates_all_three_variant_blocked: int = 0
     candidates_failing_only_one_field: int = 0
@@ -365,6 +375,11 @@ class PokeTraceIdentityResolver:
     ) -> bool:
         return self.provider.register_search_alias(identity, alias)
 
+    def register_set_provenance(
+        self, identity: CardIdentity, provenance: TCGdexSetProvenance
+    ) -> bool:
+        return self.provider.register_set_provenance(identity, provenance)
+
     def has_deterministic_alias(self, identity: CardIdentity) -> bool:
         return self.provider.has_search_alias(identity)
 
@@ -509,6 +524,7 @@ class PokeTraceIdentityResolver:
                 for candidate in raw_candidates
                 if _candidate_market_compatible(candidate, market)
             )
+            set_collisions = collision_index(candidates)
             if not candidates:
                 self.counters.api_empty_results += 1
                 self.counters.zero_candidate_queries += 1
@@ -516,6 +532,7 @@ class PokeTraceIdentityResolver:
 
             scored = []
             blocking_variant_conflict = False
+            blocking_set_bridge_conflict = False
             for candidate in candidates:
                 candidate_key = _candidate_key(candidate)
                 if candidate_key in seen_candidates:
@@ -546,6 +563,43 @@ class PokeTraceIdentityResolver:
                 self.counters.candidates_received += 1
                 strategy_counters.unique_candidates_introduced += 1
                 evidence = _candidate_evidence(search_identity, candidate)
+                set_payload = candidate.get("set")
+                provider_collision = bool(
+                    isinstance(set_payload, Mapping)
+                    and set_collisions.conflicts(
+                        set_payload.get("name"),
+                        set_payload.get("slug"),
+                        set_payload.get("id"),
+                    )
+                )
+                should_evaluate_bridge = bool(
+                    evidence.name_matched
+                    and evidence.number_exact
+                    and (
+                        not evidence.set_matched
+                        or provider_collision
+                        or self.provider.has_set_provenance(identity)
+                    )
+                )
+                if should_evaluate_bridge:
+                    decision = self.provider.evaluate_set_bridge(
+                        identity,
+                        candidate,
+                        provider_alias=provider_alias,
+                        core_identity_exact=True,
+                        collisions=set_collisions,
+                    )
+                    if decision.status in {
+                        SET_BRIDGE_AMBIGUOUS,
+                        SET_BRIDGE_COLLISION,
+                    }:
+                        blocking_set_bridge_conflict = True
+                    elif not evidence.set_matched:
+                        evidence = _candidate_evidence(
+                            search_identity,
+                            candidate,
+                            set_bridge=decision,
+                        )
                 self._count_match_evidence(
                     evidence,
                     search_identity=search_identity,
@@ -570,12 +624,19 @@ class PokeTraceIdentityResolver:
                         or (all_three and rejection == REJECT_VARIANT)
                     )
                     continue
+                if blocking_set_bridge_conflict:
+                    continue
                 if score is not None:
                     strategy_counters.exacts_introduced += 1
                     if evidence.number_partial:
                         self.counters.partial_number_candidates += 1
                     scored.append((score, candidate))
 
+            if blocking_set_bridge_conflict:
+                self.counters.candidate_queries_without_exact_match += 1
+                self.counters.ambiguous += 1
+                self.provider.counters.ambiguous += 1
+                return _MarketIdentityOutcome(market, IDENTITY_AMBIGUOUS)
             if not scored:
                 self.counters.candidate_queries_without_exact_match += 1
                 if blocking_variant_conflict:
@@ -908,6 +969,23 @@ class PokeTraceIdentityResolver:
             and evidence.card_number_matched
         )
         counters.candidates_all_three_matched += int(all_three)
+        all_three_before_bridge = bool(
+            evidence.name_matched
+            and evidence.set_matched_before_bridge
+            and evidence.card_number_matched
+        )
+        counters.candidates_name_number_bridged_set += int(
+            evidence.name_matched
+            and evidence.number_exact
+            and evidence.set_bridged
+        )
+        counters.candidates_all_three_before_bridge += int(
+            all_three_before_bridge
+        )
+        counters.candidates_all_three_after_bridge += int(all_three)
+        counters.candidates_all_three_variant_compatible_after_bridge += int(
+            all_three and evidence.variant_compatible
+        )
         counters.candidates_all_three_variant_compatible += int(
             all_three and evidence.variant_compatible
         )
@@ -1031,6 +1109,7 @@ class PokeTraceIdentityResolver:
 
 def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> str:
     counters = resolver.counters
+    bridge = resolver.provider.set_bridge_registry.counters
     return "\n".join(
         (
             "=== V5 POKETRACE IDENTITY ===",
@@ -1177,6 +1256,39 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             ),
             f"candidates all three matched: {counters.candidates_all_three_matched}",
             (
+                "candidates name+number+bridged_set: "
+                f"{counters.candidates_name_number_bridged_set}"
+            ),
+            (
+                "candidates all_three_before_bridge: "
+                f"{counters.candidates_all_three_before_bridge}"
+            ),
+            (
+                "candidates all_three_after_bridge: "
+                f"{counters.candidates_all_three_after_bridge}"
+            ),
+            (
+                "candidates all_three_variant_compatible_after_bridge: "
+                f"{counters.candidates_all_three_variant_compatible_after_bridge}"
+            ),
+            f"set_bridge_attempts: {bridge.set_bridge_attempts}",
+            f"set_bridge_exact: {bridge.set_bridge_exact}",
+            f"set_bridge_no_mapping: {bridge.set_bridge_no_mapping}",
+            f"set_bridge_ambiguous: {bridge.set_bridge_ambiguous}",
+            f"set_bridge_collision: {bridge.set_bridge_collision}",
+            (
+                "set_bridge_via_tcgdex_alias: "
+                f"{bridge.set_bridge_via_tcgdex_alias}"
+            ),
+            (
+                "set_bridge_via_english_twin: "
+                f"{bridge.set_bridge_via_english_twin}"
+            ),
+            (
+                "set_bridge_via_versioned_mapping: "
+                f"{bridge.set_bridge_via_versioned_mapping}"
+            ),
+            (
                 "candidates all three + variant compatible: "
                 f"{counters.candidates_all_three_variant_compatible}"
             ),
@@ -1200,7 +1312,10 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
                 f"{resolver.near_match_counters.set_differences[category]}"
                 for category in SET_DIFFERENCE_CATEGORIES
             ),
-            "near-match SET deterministic bridge diagnostics (acceptance unchanged):",
+            (
+                "near-match SET deterministic bridge diagnostics "
+                "(exact provenance only; no fuzzy acceptance):"
+            ),
             (
                 "near-match SET provider name exact after safe normalization: "
                 f"{counters.near_set_provider_name_exact_normalized}"

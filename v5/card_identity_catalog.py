@@ -21,6 +21,7 @@ from .microvariants import (
 )
 from .poketrace_identity import PokeTraceIdentityResolver
 from .poketrace_matching import _card_number_parts
+from .poketrace_set_bridge import OfficialSetName, TCGdexSetProvenance
 from .variant_semantics import tcgdex_variant_supports_identity
 
 
@@ -148,6 +149,7 @@ class CatalogIdentityResult:
     microvariant_applicability: MicrovariantApplicability = (
         MicrovariantApplicability()
     )
+    set_provenance: Optional[TCGdexSetProvenance] = None
 
 
 def _normalize(value: object) -> str:
@@ -848,6 +850,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             _canonical_value_changed(identity.card_number, resolved.card_number)
         )
         provider_alias = None
+        set_provenance = None
         if target_language != "en" and card_language == target_language:
             self.counters.localized_identities_seen += 1
             provider_alias = self._exact_english_provider_alias(card, set_id=set_id)
@@ -855,6 +858,32 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
                 self.counters.alias_unavailable_no_exact_english_twin += 1
             else:
                 self.counters.deterministic_english_aliases_found += 1
+        catalog_card_id = str(card.get("id") or "").strip()
+        if card_language == target_language and catalog_card_id and card_local_id:
+            official_names = {
+                OfficialSetName(language, name)
+                for language in lookup_languages
+                for candidate_id, name in self._all_sets_cache.get(language, ())
+                if candidate_id == set_id and str(name).strip()
+            }
+            if card_set_name:
+                official_names.add(OfficialSetName(card_language, card_set_name))
+            set_provenance = TCGdexSetProvenance(
+                listing_set=str(identity.set or "").strip(),
+                listing_language=str(identity.language or target_language).strip(),
+                language=card_language,
+                set_id=set_id,
+                set_name=str(card_set_name or candidate_set_name).strip(),
+                official_names=tuple(
+                    sorted(
+                        official_names,
+                        key=lambda value: (value.language, value.name),
+                    )
+                ),
+                catalog_card_id=catalog_card_id,
+                catalog_card_name=card_name,
+                local_id=card_local_id,
+            )
         self.counters.tcgdex_hits += 1
         return CatalogIdentityResult(
             resolved,
@@ -864,6 +893,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             False,
             provider_alias,
             tcgdex_microvariant_applicability(card),
+            set_provenance,
         )
 
     @staticmethod
@@ -1014,6 +1044,15 @@ class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
             self._identity_cache[key] = tcgdex
             return tcgdex
         if tcgdex.matched:
+            if tcgdex.set_provenance is not None:
+                self.poketrace_identity.register_set_provenance(
+                    identity,
+                    tcgdex.set_provenance,
+                )
+                self.poketrace_identity.register_set_provenance(
+                    tcgdex.identity,
+                    tcgdex.set_provenance,
+                )
             if tcgdex.provider_alias is not None:
                 self.poketrace_identity.register_provider_alias(
                     tcgdex.identity,

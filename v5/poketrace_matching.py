@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 
 from .models import CardIdentity
+from .poketrace_set_bridge import SET_BRIDGE_EXACT, SetBridgeDecision
 from .variant_semantics import (
     FINISH_HOLO,
     FINISH_REVERSE,
@@ -57,6 +58,7 @@ class CandidateMatchEvidence:
     card_number_supplied: bool
     name_matched: bool
     set_matched: bool
+    set_matched_before_bridge: bool
     card_number_matched: bool
     number_exact: bool
     number_partial: bool
@@ -74,6 +76,9 @@ class CandidateMatchEvidence:
     name_difference: str = NAME_DIFF_SIGNIFICANT
     set_difference: str = SET_DIFF_NO_RELATION
     card_number_difference: str = NUMBER_DIFF_OTHER
+    set_bridged: bool = False
+    set_bridge_status: Optional[str] = None
+    set_bridge_reason: Optional[str] = None
 
 
 def _normalize(value: object) -> str:
@@ -483,7 +488,10 @@ def _variant_family(value: object) -> str:
 
 
 def _candidate_evidence(
-    identity: CardIdentity, candidate: Mapping[str, object]
+    identity: CardIdentity,
+    candidate: Mapping[str, object],
+    *,
+    set_bridge: Optional[SetBridgeDecision] = None,
 ) -> CandidateMatchEvidence:
     product_type = _normalize(candidate.get("productType"))
 
@@ -502,7 +510,8 @@ def _candidate_evidence(
     set_slug = set_payload.get("slug") if isinstance(set_payload, Mapping) else None
     set_supplied = bool(_normalize(identity.set))
     set_similarity = _set_similarity(identity.set, set_name, set_slug)
-    set_matched = bool(set_supplied and set_similarity >= 0.66)
+    set_matched_before_bridge = bool(set_supplied and set_similarity >= 0.66)
+    set_matched = set_matched_before_bridge
     set_difference = _set_difference(identity.set, set_name, set_slug)
 
     expected_number = _normalize_card_number(identity.card_number)
@@ -521,6 +530,19 @@ def _candidate_evidence(
     card_number_matched = bool(
         card_number_supplied and (number_exact or number_partial)
     )
+
+    # A set bridge is never a substitute for another core field.  Even a
+    # registry bug or a misused decision cannot bridge a candidate unless name
+    # and collector number are independently exact.
+    set_bridged = bool(
+        set_bridge is not None
+        and set_bridge.status == SET_BRIDGE_EXACT
+        and name_matched
+        and number_exact
+    )
+    if set_bridged:
+        set_matched = True
+        set_similarity = 1.0
 
     failed_core_fields = tuple(
         field_name
@@ -589,6 +611,7 @@ def _candidate_evidence(
         card_number_supplied=card_number_supplied,
         name_matched=name_matched,
         set_matched=set_matched,
+        set_matched_before_bridge=set_matched_before_bridge,
         card_number_matched=card_number_matched,
         number_exact=number_exact,
         number_partial=number_partial,
@@ -606,6 +629,9 @@ def _candidate_evidence(
         name_difference=name_difference,
         set_difference=set_difference,
         card_number_difference=card_number_difference,
+        set_bridged=set_bridged,
+        set_bridge_status=(set_bridge.status if set_bridge is not None else None),
+        set_bridge_reason=(set_bridge.reason if set_bridge is not None else None),
     )
 
 

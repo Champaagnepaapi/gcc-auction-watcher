@@ -27,6 +27,15 @@ from ..poketrace_matching import (
     _normalize_card_name,
     _normalize_card_number,
 )
+from ..poketrace_set_bridge import (
+    SET_BRIDGE_AMBIGUOUS,
+    SET_BRIDGE_COLLISION,
+    DeterministicSetBridgeRegistry,
+    PokeTraceSetCollisionIndex,
+    SetBridgeDecision,
+    TCGdexSetProvenance,
+    collision_index,
+)
 from .models import MarketValues
 
 
@@ -153,6 +162,10 @@ class PokeTraceCounters:
     eu_active_ask_available: int = 0
     market_record_cache_hits: int = 0
     market_mismatch_rejections: int = 0
+    candidates_name_number_bridged_set: int = 0
+    candidates_all_three_before_bridge: int = 0
+    candidates_all_three_after_bridge: int = 0
+    candidates_all_three_variant_compatible_after_bridge: int = 0
 
 
 @dataclass(frozen=True)
@@ -276,6 +289,7 @@ class PokeTraceProvider:
         ] = {}
         self._identity_primed_market_keys: set[Tuple[str, ...]] = set()
         self._search_aliases: dict[Tuple[str, ...], ProviderSearchAlias] = {}
+        self.set_bridge_registry = DeterministicSetBridgeRegistry()
         self._circuit_open = False
 
     @property
@@ -349,6 +363,36 @@ class PokeTraceProvider:
         self._search_aliases[key] = alias
         return True
 
+    def register_set_provenance(
+        self, identity: CardIdentity, provenance: TCGdexSetProvenance
+    ) -> bool:
+        """Attach exact TCGdex set coordinates without changing the identity."""
+
+        return self.set_bridge_registry.register(_identity_key(identity), provenance)
+
+    def has_set_provenance(self, identity: CardIdentity) -> bool:
+        return (
+            self.set_bridge_registry.provenance_for(_identity_key(identity))
+            is not None
+        )
+
+    def evaluate_set_bridge(
+        self,
+        identity: CardIdentity,
+        candidate: Mapping[str, object],
+        *,
+        provider_alias: Optional[ProviderSearchAlias],
+        core_identity_exact: bool,
+        collisions: PokeTraceSetCollisionIndex,
+    ) -> SetBridgeDecision:
+        return self.set_bridge_registry.evaluate(
+            _identity_key(identity),
+            candidate,
+            provider_alias=provider_alias,
+            core_identity_exact=core_identity_exact,
+            collisions=collisions,
+        )
+
     def search_alias_for(
         self, identity: CardIdentity
     ) -> Optional[ProviderSearchAlias]:
@@ -384,7 +428,11 @@ class PokeTraceProvider:
             if alias is not None
             else ("provider-alias", "none")
         )
-        return _identity_key(identity) + suffix
+        bridge_suffix = (
+            "set-bridge",
+            *self.set_bridge_registry.cache_key(_identity_key(identity)),
+        )
+        return _identity_key(identity) + suffix + bridge_suffix
 
     def _market_cache_key(
         self, identity: CardIdentity, market: str
@@ -582,9 +630,87 @@ class PokeTraceProvider:
             if isinstance(item, Mapping)
             and not _candidate_market_compatible(item, normalized_market)
         )
-        matches = tuple(
-            item for item in candidates if _candidate_matches(search_identity, item)
-        )
+        collisions = collision_index(candidates)
+        matches = []
+        bridge_blocked = False
+        identity_key = _identity_key(identity)
+        for item in candidates:
+            evidence = _candidate_evidence(search_identity, item)
+            set_payload = item.get("set")
+            provider_collision = bool(
+                isinstance(set_payload, Mapping)
+                and collisions.conflicts(
+                    set_payload.get("name"),
+                    set_payload.get("slug"),
+                    set_payload.get("id"),
+                )
+            )
+            should_evaluate_bridge = bool(
+                evidence.name_matched
+                and evidence.number_exact
+                and (
+                    not evidence.set_matched
+                    or provider_collision
+                    or self.has_set_provenance(identity)
+                )
+            )
+            if should_evaluate_bridge:
+                decision = self.set_bridge_registry.evaluate(
+                    identity_key,
+                    item,
+                    provider_alias=alias,
+                    core_identity_exact=True,
+                    collisions=collisions,
+                )
+                bridge_blocked = bool(
+                    bridge_blocked
+                    or decision.status
+                    in {SET_BRIDGE_AMBIGUOUS, SET_BRIDGE_COLLISION}
+                )
+                if not evidence.set_matched:
+                    evidence = _candidate_evidence(
+                        search_identity, item, set_bridge=decision
+                    )
+                if decision.status in {
+                    SET_BRIDGE_AMBIGUOUS,
+                    SET_BRIDGE_COLLISION,
+                }:
+                    continue
+            all_three_before_bridge = bool(
+                evidence.name_matched
+                and evidence.set_matched_before_bridge
+                and evidence.card_number_matched
+            )
+            all_three_after_bridge = bool(
+                evidence.name_matched
+                and evidence.set_matched
+                and evidence.card_number_matched
+            )
+            self.counters.candidates_name_number_bridged_set += int(
+                evidence.name_matched
+                and evidence.number_exact
+                and evidence.set_bridged
+            )
+            self.counters.candidates_all_three_before_bridge += int(
+                all_three_before_bridge
+            )
+            self.counters.candidates_all_three_after_bridge += int(
+                all_three_after_bridge
+            )
+            self.counters.candidates_all_three_variant_compatible_after_bridge += int(
+                all_three_after_bridge and evidence.variant_compatible
+            )
+            if evidence.rejection is None:
+                matches.append(item)
+        matches = tuple(matches)
+        if bridge_blocked:
+            self.counters.ambiguous += 1
+            result = PokeTraceMarketSearchResult(
+                normalized_market,
+                MARKET_SEARCH_AMBIGUOUS,
+            )
+            self._market_cache[cache_key] = result
+            return result
         if len(matches) > 1:
             self.counters.ambiguous += 1
             result = PokeTraceMarketSearchResult(
@@ -971,6 +1097,7 @@ def _eu_cardmarket_availability(
 
 def render_poketrace_counters(provider: PokeTraceProvider) -> str:
     counters = provider.counters
+    bridge = provider.set_bridge_registry.counters
     return "\n".join(
         (
             "=== V5 POKETRACE / CARDMARKET MARKET DATA ===",
@@ -1009,6 +1136,48 @@ def render_poketrace_counters(provider: PokeTraceProvider) -> str:
             f"EU active-ask data available: {counters.eu_active_ask_available}",
             f"market-qualified record cache hits: {counters.market_record_cache_hits}",
             f"cross-market candidate rejections: {counters.market_mismatch_rejections}",
+            (
+                "market candidates name+number+bridged_set: "
+                f"{counters.candidates_name_number_bridged_set}"
+            ),
+            (
+                "market candidates all_three_before_bridge: "
+                f"{counters.candidates_all_three_before_bridge}"
+            ),
+            (
+                "market candidates all_three_after_bridge: "
+                f"{counters.candidates_all_three_after_bridge}"
+            ),
+            (
+                "market candidates all_three_variant_compatible_after_bridge: "
+                f"{counters.candidates_all_three_variant_compatible_after_bridge}"
+            ),
+            "--- deterministic TCGdex -> PokeTrace set bridge ---",
+            f"set_bridge_attempts: {bridge.set_bridge_attempts}",
+            f"set_bridge_exact: {bridge.set_bridge_exact}",
+            f"set_bridge_no_mapping: {bridge.set_bridge_no_mapping}",
+            f"set_bridge_ambiguous: {bridge.set_bridge_ambiguous}",
+            f"set_bridge_collision: {bridge.set_bridge_collision}",
+            (
+                "set_bridge_via_tcgdex_alias: "
+                f"{bridge.set_bridge_via_tcgdex_alias}"
+            ),
+            (
+                "set_bridge_via_english_twin: "
+                f"{bridge.set_bridge_via_english_twin}"
+            ),
+            (
+                "set_bridge_via_versioned_mapping: "
+                f"{bridge.set_bridge_via_versioned_mapping}"
+            ),
+            (
+                "set_bridge_via_observed_exact: "
+                f"{bridge.set_bridge_via_observed_exact}"
+            ),
+            *(
+                f"set_bridge remaining no-match {reason}: {count}"
+                for reason, count in sorted(bridge.no_match_reasons.items())
+            ),
             "provider US/EU record IDs kept separate: YES",
             "USD/EUR values silently mixed: NO",
             f"no match: {counters.no_match}",

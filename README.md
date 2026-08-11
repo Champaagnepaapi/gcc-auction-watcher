@@ -134,8 +134,8 @@ Les anciens noms peuvent rester visibles dans l’historique/sidebar GitHub Acti
 - PR : **#8**.
 - Branche exacte : `agent/v5-poketrace-cardmarket-market-data`.
 - PR reste **draft, ouverte, non mergée**.
-- HEAD fonctionnel V5 validé pour l'extension eBay EU :
-  `f920e647171df758adb91ad3b1bc8aca46730ff2`.
+- Baseline de cette passe offline avant le pont de set :
+  `336358e64e24dbe5f7712490bf62d2c589fab153`.
 - `main` réellement synchronisé dans V5 :
   `510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d`.
 - V5 = diagnostic **RAW eBay** séparé de la V4 graded GCC.
@@ -196,16 +196,40 @@ même `set.id` et le même `localId`, avec un nom et un set anglais présents.
 L’alias et sa provenance `TCGDEX_EXACT_ENGLISH_TWIN` restent séparés du
 `CardIdentity` réel. Le nom/set anglais servent uniquement à la requête et à la
 comparaison locale PokeTrace ; le nom, le set, la langue, le numéro et la
-variante affichés/économiques restent ceux de l’identité localisée. Le set et
-le numéro PokeTrace doivent correspondre strictement au jumeau exact, et les
-contraintes de variante restent inchangées. Sans jumeau anglais exact, aucun
-alias n’est inventé et aucune nouvelle langue n’est rendue fuzzy-éligible.
+variante affichés/économiques restent ceux de l’identité localisée. Le numéro
+PokeTrace doit correspondre exactement au jumeau et le set doit être identique
+ou relié par le pont déterministe décrit ci-dessous ; les contraintes de
+variante restent inchangées. Sans jumeau anglais exact, aucun alias n’est
+inventé et aucune nouvelle langue n’est rendue fuzzy-éligible.
 
 Ce pont peut donc bénéficier, carte par carte, aux langues TCGdex documentées
 et déjà routées par V5 (`fr`, `de`, `es`, `it`, `ja`, `pt`, `pt-br`, `pt-pt`,
 `zh-tw`, `zh-cn`, `ko`, `nl`, `pl`, `ru`, `id`, `th`) uniquement lorsque cette
 preuve de coordonnées identiques existe. Cela ne garantit ni qu’un record
 PokeTrace US existe, ni qu’il contienne une valeur RAW.
+
+## Pont déterministe TCGdex → nomenclature de set PokeTrace
+
+Une résolution TCGdex exacte conserve désormais, dans un objet séparé du
+listing, la langue catalogue, `set.id`, `set.name`, les noms officiels localisés
+déjà chargés, `card.id`, `localId` et le nom catalogue. Aucun de ces champs ne
+remplace le set, la langue ou l’identité commerciale du listing.
+
+Le matcher peut prouver uniquement le champ set d’un candidat PokeTrace lorsque
+le nom de carte et le numéro sont déjà exacts. Les seules relations admises
+sont : nom officiel TCGdex exact, jumeau anglais exact existant, clé PokeTrace
+observée en mémoire après une concordance exacte, ou exception statique petite,
+versionnée, sourcée et testée. La table de production est vide à cette étape.
+Les noms, slugs et IDs PokeTrace restent trois namespaces distincts : un
+`set.id` TCGdex identique par hasard à un slug/ID PokeTrace ne constitue aucune
+preuve.
+
+Il n’existe aucun chemin substring, containment, token overlap, traduction
+supposée, Levenshtein ou seuil fuzzy. Un nom ou slug partagé, un même nom avec
+des IDs contradictoires, un alias officiel vers plusieurs sets, une langue
+incompatible, un parent/subset ou un main set/promo subset reste
+`AMBIGUOUS`/bloquant. Le pont ne prouve aucune microvariante et ne modifie aucun
+gate visuel ou économique.
 
 ## Discovery eBay Europe
 
@@ -352,17 +376,17 @@ n'est loggée ou persistée.
 
 # V5 — validation offline la plus récente
 
-Baseline antérieure du circuit-breaker PokeTrace :
+Baseline d’entrée de ce pont de nomenclature :
 
 ```text
-bdd1abc7b479ed980f4f4896b17e3b184b701ed5
+336358e64e24dbe5f7712490bf62d2c589fab153
 ```
 
 Validation offline après synchronisation de `main`, transition Free → Pro,
-extension eBay EU, séparation macro/microvariante et détecteur local par paire
-de références :
+extension eBay EU, séparation macro/microvariante, détecteur local par paire de
+références et pont exact TCGdex → PokeTrace :
 
-- V5 : **429/429** ;
+- V5 : **454/454** ;
 - V4 : **169/169** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
@@ -422,10 +446,10 @@ Le merge post-Codex `0e3660ed330d0fc5220dfa239911d934d700398c` resynchronise `ma
 - l'ancien `economics_blocked_microvariant_unknown` reste présent mais signifie
   uniquement « valeurs marché trouvées, puis économie bloquée » ; il ne mesure
   pas les snapshots empêchés avant le marché ;
-- diagnostics set PokeTrace enrichis sans assouplissement : nom listing/jumeau
-  TCGdex vs nom PokeTrace après normalisation sûre, slug présent/absent, pont
-  alias/jumeau exact présent/absent, name+number exact mais set irrésolu,
-  collisions ID/slug entre sets distincts et disponibilité d'un pont TCGdex.
+- diagnostics set PokeTrace enrichis sans fuzzy : état avant/après pont,
+  name+number+set ponté, compatibilité variante après pont, tentatives/exacts/
+  absences de mapping/ambiguïtés/collisions et provenance exacte TCGdex,
+  jumeau anglais ou mapping versionné ;
 - alias anglais PokeTrace autorisé uniquement par un jumeau TCGdex exact
   `id + set.id + localId`, conservé en mémoire et isolé des caches par identité
   complète/variante/provenance ;

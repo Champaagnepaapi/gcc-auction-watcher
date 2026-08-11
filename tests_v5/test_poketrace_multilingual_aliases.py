@@ -152,6 +152,21 @@ class DeterministicMultilingualAliasTests(unittest.TestCase):
         self.assertEqual(result.identity.card_name, "Léviator")
         self.assertEqual(result.identity.language, "French")
         self.assertEqual(result.provider_alias, _provider_alias())
+        self.assertIsNotNone(result.set_provenance)
+        self.assertEqual(result.set_provenance.listing_set, "Set de Base")
+        self.assertEqual(result.set_provenance.listing_language, "French")
+        self.assertEqual(result.set_provenance.language, "fr")
+        self.assertEqual(result.set_provenance.set_id, "base1")
+        self.assertEqual(result.set_provenance.set_name, "Set de Base")
+        self.assertEqual(result.set_provenance.catalog_card_id, "base1-6")
+        self.assertEqual(result.set_provenance.local_id, "6")
+        self.assertIn(
+            ("en", "Base Set"),
+            {
+                (value.language, value.name)
+                for value in result.set_provenance.official_names
+            },
+        )
         self.assertEqual(resolver.counters.localized_identities_seen, 1)
         self.assertEqual(resolver.counters.deterministic_english_aliases_found, 1)
 

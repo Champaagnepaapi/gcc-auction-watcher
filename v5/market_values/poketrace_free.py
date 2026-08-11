@@ -124,6 +124,7 @@ def free_tier_config_from_env() -> PokeTraceConfig:
 
 def render_free_poketrace_counters(provider: FreeTierPokeTraceProvider) -> str:
     counters = provider.counters
+    bridge = provider.set_bridge_registry.counters
     return "\n".join(
         (
             "=== V5 POKETRACE FREE VALIDATION ===",
@@ -163,6 +164,39 @@ def render_free_poketrace_counters(provider: FreeTierPokeTraceProvider) -> str:
                 f"{counters.calls_avoided_after_breaker}"
             ),
             f"extra market calls avoided by identity cache: {counters.primed_market_calls_avoided}",
+            (
+                "market candidates name+number+bridged_set: "
+                f"{counters.candidates_name_number_bridged_set}"
+            ),
+            (
+                "market candidates all_three_before_bridge: "
+                f"{counters.candidates_all_three_before_bridge}"
+            ),
+            (
+                "market candidates all_three_after_bridge: "
+                f"{counters.candidates_all_three_after_bridge}"
+            ),
+            (
+                "market candidates all_three_variant_compatible_after_bridge: "
+                f"{counters.candidates_all_three_variant_compatible_after_bridge}"
+            ),
+            f"set_bridge_attempts: {bridge.set_bridge_attempts}",
+            f"set_bridge_exact: {bridge.set_bridge_exact}",
+            f"set_bridge_no_mapping: {bridge.set_bridge_no_mapping}",
+            f"set_bridge_ambiguous: {bridge.set_bridge_ambiguous}",
+            f"set_bridge_collision: {bridge.set_bridge_collision}",
+            (
+                "set_bridge_via_tcgdex_alias: "
+                f"{bridge.set_bridge_via_tcgdex_alias}"
+            ),
+            (
+                "set_bridge_via_english_twin: "
+                f"{bridge.set_bridge_via_english_twin}"
+            ),
+            (
+                "set_bridge_via_versioned_mapping: "
+                f"{bridge.set_bridge_via_versioned_mapping}"
+            ),
             "Persisted PokeTrace records: 0",
         )
     )
