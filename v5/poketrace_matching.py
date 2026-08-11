@@ -120,9 +120,17 @@ def _numeric_tokens(value: object) -> frozenset[str]:
     return frozenset(re.findall(r"\d+(?:\.\d+)?", _normalize(value)))
 
 
+def _canonical_set_label(value: object) -> str:
+    normalized = _normalize(value)
+    for prefix in ("pokemon trading card game ", "pokemon tcg "):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):].strip()
+    return normalized
+
+
 def _single_set_similarity(expected: object, candidate: object) -> float:
-    expected_norm = _normalize(expected)
-    candidate_norm = _normalize(candidate)
+    expected_norm = _canonical_set_label(expected)
+    candidate_norm = _canonical_set_label(candidate)
     if not expected_norm or not candidate_norm:
         return 0.0
     if expected_norm == candidate_norm:
@@ -138,10 +146,11 @@ def _single_set_similarity(expected: object, candidate: object) -> float:
     intersection = len(expected_tokens & candidate_tokens)
     union = len(expected_tokens | candidate_tokens)
     jaccard = intersection / union if union else 0.0
-    shorter, longer = sorted((expected_tokens, candidate_tokens), key=len)
-    if shorter and shorter.issubset(longer) and intersection:
-        return max(jaccard, 0.86)
-    return jaccard
+    # Similarity below the acceptance threshold remains useful for diagnostics,
+    # but containment alone is not an alias: Team Rocket and Team Rocket
+    # Returns are different sets. Only exact labels after a known wrapper is
+    # removed may reach the matching threshold.
+    return min(jaccard, 0.65)
 
 
 def _set_similarity(

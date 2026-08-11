@@ -16,7 +16,7 @@ from .poketrace_matching import (
     _partial_card_number_equivalent,
     _set_similarity,
 )
-from .variant_semantics import semantics_from_identity, variant_compatibility
+from .variant_semantics import variant_compatibility
 
 
 JUSTTCG_CARDS_URL = "https://api.justtcg.com/v1/cards"
@@ -112,21 +112,10 @@ def _language_matches(expected: object, actual: object) -> bool:
     return aliases.get(expected_norm, expected_norm) == aliases.get(actual_norm, actual_norm)
 
 
-def _variant_required(identity: CardIdentity) -> bool:
-    semantics, conflict = semantics_from_identity(identity)
-    return bool(
-        conflict
-        or semantics.finish
-        or semantics.edition
-        or semantics.promo is True
-        or semantics.special_finish
-    )
-
-
 def _candidate_variant_supported(identity: CardIdentity, card: Mapping[str, object]) -> tuple[bool, bool]:
     variants = card.get("variants")
     if not isinstance(variants, Sequence) or isinstance(variants, (str, bytes)):
-        return (not _variant_required(identity), False)
+        return False, False
 
     relevant_language = False
     relevant_variant = False
@@ -136,8 +125,11 @@ def _candidate_variant_supported(identity: CardIdentity, card: Mapping[str, obje
         if identity.language and not _language_matches(identity.language, variant.get("language")):
             continue
         relevant_language = True
+        printing = str(variant.get("printing") or "").strip()
+        if not printing:
+            continue
         pseudo = {
-            "variant": variant.get("printing"),
+            "variant": printing,
             "rarity": card.get("rarity"),
             "set": {"name": card.get("set_name"), "slug": card.get("set")},
         }
@@ -148,7 +140,7 @@ def _candidate_variant_supported(identity: CardIdentity, card: Mapping[str, obje
 
     if identity.language and not relevant_language:
         return False, False
-    if _variant_required(identity) and not relevant_variant:
+    if not relevant_variant:
         return False, relevant_language
     return True, relevant_variant
 
@@ -208,13 +200,18 @@ class JustTCGIdentityResolver:
     @staticmethod
     def _key(identity: CardIdentity) -> Tuple[str, ...]:
         return (
+            _normalize(identity.game),
             _normalize_card_name(identity.card_name),
             _normalize(identity.set),
             _normalize_card_number(identity.card_number),
+            str(identity.year or ""),
             _normalize(identity.language),
             _normalize(identity.variant),
+            _normalize(identity.rarity),
             _normalize(identity.finish),
             _normalize(identity.edition),
+            _normalize(identity.illustrator),
+            "|".join(_normalize(value) for value in identity.ambiguities),
         )
 
     @staticmethod
@@ -420,6 +417,13 @@ class JustTCGIdentityResolver:
             result = JustTCGIdentityResolution(identity, ambiguous=True)
             self._cache[key] = result
             return result
+        if self.use_set_catalog and identity.set and set_id is None:
+            # A loaded/attempted catalogue that cannot prove one stable set ID
+            # must not fall through to a broader quota-consuming card query.
+            self.counters.no_match += 1
+            result = JustTCGIdentityResolution(identity)
+            self._cache[key] = result
+            return result
 
         params = {
             "game": game,
@@ -480,13 +484,19 @@ class JustTCGIdentityResolver:
             variant_ok, variant_supported = _candidate_variant_supported(identity, card)
             if not variant_ok:
                 variants = card.get("variants")
-                if identity.language and isinstance(variants, Sequence):
+                if identity.language:
                     languages = [
                         item.get("language")
                         for item in variants
                         if isinstance(item, Mapping)
-                    ]
-                    if languages and not any(_language_matches(identity.language, value) for value in languages):
+                    ] if (
+                        isinstance(variants, Sequence)
+                        and not isinstance(variants, (str, bytes))
+                    ) else []
+                    if not languages or not any(
+                        _language_matches(identity.language, value)
+                        for value in languages
+                    ):
                         self.counters.rejected_language += 1
                         continue
                 self.counters.rejected_variant += 1

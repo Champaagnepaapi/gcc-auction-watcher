@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 
 from v5.card_identity_catalog import HybridPokemonCardResolver
 from v5.market_values.poketrace import POKETRACE_DISABLED, PokeTraceConfig
 from v5.market_values.poketrace_free import FreeTierPokeTraceProvider
 from v5.models import CardIdentity
-from v5.poketrace_identity import PokeTraceIdentityResolver
+from v5.poketrace_identity import PokeTraceIdentityResolver, _candidate_key
 
 
 class Response:
@@ -111,7 +112,7 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertEqual(resolved.identity.set, "Base Set")
         self.assertEqual(len(session.calls), 1)
         params = session.calls[0][1]["params"]
-        self.assertEqual(params["search"], "Charizard Pokemon TCG Base Set 4/102")
+        self.assertEqual(params["search"], "Charizard Base Set 4/102")
         self.assertEqual(params["card_number"], "4/102")
         self.assertNotIn("set", params)
         self.assertEqual(snapshot.us_values.ungraded_value, Decimal("105"))
@@ -119,6 +120,41 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         self.assertEqual(market.counters.live_calls, 1)
         self.assertEqual(market.counters.us_matches, 1)
         self.assertEqual(resolver.counters.primed_market_snapshots, 1)
+
+    def test_contextual_search_canonicalizes_safe_wrapper_and_padded_number(self):
+        session = PokeTraceSession(card_payload())
+        resolver = PokeTraceIdentityResolver(provider(session))
+
+        resolved = resolver.resolve_identity(identity(card_number="004/102"))
+
+        self.assertTrue(resolved.matched)
+        params = session.calls[0][1]["params"]
+        self.assertEqual(params["search"], "Charizard Base Set 4/102")
+        self.assertEqual(params["card_number"], "4/102")
+        self.assertNotIn("set", params)
+        self.assertEqual(resolver.counters.canonical_contextual_searches, 1)
+
+    def test_cache_never_reuses_a_different_finish(self):
+        responses = [Response(200, card_payload())]
+        responses.extend(Response(200, card_payload()) for _ in range(4))
+        session = PokeTraceSession(responses)
+        resolver = PokeTraceIdentityResolver(provider(session))
+        holo = replace(identity(), variant=None, finish="Holo")
+        reverse = replace(identity(), variant=None, finish="Reverse Holo")
+
+        self.assertTrue(resolver.resolve_identity(holo).matched)
+        reverse_result = resolver.resolve_identity(reverse)
+
+        self.assertFalse(reverse_result.matched)
+        self.assertGreater(len(session.calls), 1)
+        self.assertGreater(resolver.counters.variant_finish_conflicts, 0)
+
+    def test_candidate_deduplication_keeps_distinct_rarity_semantics(self):
+        regular = card_payload()["data"][0]
+        promo = dict(regular)
+        promo["rarity"] = "Promo"
+
+        self.assertNotEqual(_candidate_key(regular), _candidate_key(promo))
 
     def test_leading_zero_number_is_matched_locally_after_structured_retrieval(self):
         session = PokeTraceSession(card_payload(card_number="004/102"))
@@ -161,7 +197,10 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
 
         self.assertTrue(resolved.matched)
         self.assertEqual(len(session.calls), 2)
-        self.assertEqual(session.calls[1][1]["params"]["search"], "Charizard")
+        self.assertEqual(
+            session.calls[1][1]["params"]["search"],
+            "Charizard Pokemon TCG Base Set 4/102",
+        )
         self.assertEqual(resolver.counters.fallback_searches, 1)
         self.assertEqual(resolver.counters.api_empty_results, 1)
 

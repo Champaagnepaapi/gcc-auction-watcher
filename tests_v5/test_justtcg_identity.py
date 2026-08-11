@@ -195,6 +195,38 @@ class JustTCGIdentityTests(unittest.TestCase):
         self.assertEqual(len(session.calls), 1)
         self.assertEqual(resolver.counters.set_catalog_ambiguous, 1)
 
+    def test_contained_but_distinct_set_name_is_not_a_catalog_alias(self):
+        session = SequenceSession(
+            [
+                Response(
+                    200,
+                    {
+                        "data": [
+                            {
+                                "id": "team-rocket-returns-pokemon",
+                                "name": "Team Rocket Returns",
+                            }
+                        ]
+                    },
+                ),
+                Response(
+                    200,
+                    {"data": [card(set_name="Team Rocket Returns")]},
+                ),
+            ]
+        )
+        resolver = JustTCGIdentityResolver(
+            api_key="secret",
+            session=session,
+            sleeper=lambda _seconds: None,
+        )
+
+        result = resolver.resolve_identity(identity(set="Team Rocket"))
+
+        self.assertFalse(result.matched)
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(resolver.counters.set_catalog_no_match, 1)
+
     def test_wrong_set_is_rejected(self):
         resolver = resolver_without_set_catalog(
             Session({"data": [card(set_name="Jungle")]})
@@ -218,6 +250,35 @@ class JustTCGIdentityTests(unittest.TestCase):
         result = resolver.resolve_identity(identity())
         self.assertFalse(result.matched)
         self.assertEqual(resolver.counters.rejected_language, 1)
+
+    def test_missing_variant_language_evidence_is_rejected(self):
+        candidate = card()
+        candidate.pop("variants")
+        resolver = resolver_without_set_catalog(Session({"data": [candidate]}))
+
+        result = resolver.resolve_identity(identity(finish=None))
+
+        self.assertFalse(result.matched)
+        self.assertEqual(resolver.counters.rejected_language, 1)
+
+    def test_missing_listing_finish_does_not_accept_holo_printing(self):
+        resolver = resolver_without_set_catalog(Session({"data": [card()]}))
+
+        result = resolver.resolve_identity(identity(finish=None))
+
+        self.assertFalse(result.matched)
+        self.assertEqual(resolver.counters.rejected_variant, 1)
+
+    def test_identity_cache_never_reuses_different_rarity_semantics(self):
+        session = Session({"data": [card()]})
+        resolver = resolver_without_set_catalog(session)
+
+        self.assertTrue(resolver.resolve_identity(identity(rarity=None)).matched)
+        special = resolver.resolve_identity(identity(rarity="Promo"))
+
+        self.assertFalse(special.matched)
+        self.assertEqual(resolver.counters.rejected_variant, 1)
+        self.assertEqual(len(session.calls), 2)
 
     def test_first_edition_listing_requires_compatible_printing(self):
         resolver = resolver_without_set_catalog(

@@ -293,11 +293,18 @@ class PokeTraceProvider:
 
 def _identity_key(identity: CardIdentity) -> Tuple[str, ...]:
     return (
+        _normalize(identity.game),
         _normalize_card_name(identity.card_name),
         _normalize(identity.set),
         _normalize_card_number(identity.card_number),
+        str(identity.year or ""),
         _normalize(identity.language),
         _normalize(identity.variant),
+        _normalize(identity.rarity),
+        _normalize(identity.finish),
+        _normalize(identity.edition),
+        _normalize(identity.illustrator),
+        "|".join(_normalize(value) for value in identity.ambiguities),
     )
 
 

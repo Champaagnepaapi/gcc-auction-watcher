@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, replace
 from typing import Mapping, Optional, Sequence, Tuple
 
@@ -81,6 +82,7 @@ class PokeTraceIdentityCounters:
     candidates_failing_only_set: int = 0
     candidates_failing_only_card_number: int = 0
     contextual_searches: int = 0
+    canonical_contextual_searches: int = 0
     structured_searches: int = 0
     broad_name_searches: int = 0
     broad_number_searches: int = 0
@@ -140,7 +142,22 @@ def _candidate_key(candidate: Mapping[str, object]) -> Tuple[str, ...]:
         _normalize_card_number(candidate.get("cardNumber")),
         _normalize(set_name),
         _normalize(candidate.get("variant")),
+        _normalize(candidate.get("rarity")),
     )
+
+
+_POKEMON_TCG_SET_PREFIX = re.compile(
+    r"^\s*pok[eé]mon\s+(?:trading\s+card\s+game|tcg)\s*(?:[-:–—]\s*)?",
+    flags=re.IGNORECASE,
+)
+
+
+def _canonical_search_set_name(value: object) -> str:
+    """Remove only a known marketplace wrapper from a display set name."""
+
+    raw = str(value or "").strip()
+    stripped = _POKEMON_TCG_SET_PREFIX.sub("", raw).strip()
+    return stripped or raw
 
 
 def _search_strategies(
@@ -157,10 +174,21 @@ def _search_strategies(
     name = str(identity.card_name or "").strip()
     number = str(identity.card_number or "").strip()
     set_name = str(identity.set or "").strip()
+    canonical_number = _normalize_card_number(number)
+    canonical_set_name = _canonical_search_set_name(set_name)
 
     strategies: list[tuple[str, str, bool]] = []
     contextual_parts = tuple(value for value in (name, set_name, number) if value)
     if len(contextual_parts) >= 2:
+        canonical_parts = tuple(
+            value
+            for value in (name, canonical_set_name, canonical_number)
+            if value
+        )
+        if canonical_parts != contextual_parts:
+            strategies.append(
+                ("contextual_canonical", " ".join(canonical_parts), bool(number))
+            )
         strategies.append(("contextual", " ".join(contextual_parts), bool(number)))
 
     primary_search = name or set_name or number
@@ -450,12 +478,21 @@ class PokeTraceIdentityResolver:
             if variant_reason == "finish_conflict":
                 self.counters.variant_finish_conflicts += 1
             elif variant_reason in {
+                "candidate_finish_missing",
+                "listing_finish_missing",
+            }:
+                self.counters.variant_finish_conflicts += 1
+            elif variant_reason in {
                 "edition_conflict",
                 "candidate_edition_missing",
                 "listing_edition_missing",
             }:
                 self.counters.variant_edition_conflicts += 1
-            elif variant_reason == "promo_conflict":
+            elif variant_reason in {
+                "promo_conflict",
+                "candidate_promo_missing",
+                "listing_promo_missing",
+            }:
                 self.counters.variant_promo_conflicts += 1
             elif variant_reason in {
                 "special_finish_conflict",
@@ -469,8 +506,11 @@ class PokeTraceIdentityResolver:
             self.counters.rejected_insufficient += 1
 
     def _count_query_strategy(self, strategy: str) -> None:
-        if strategy == "contextual":
+        if strategy in {"contextual", "contextual_canonical"}:
             self.counters.contextual_searches += 1
+            self.counters.canonical_contextual_searches += int(
+                strategy == "contextual_canonical"
+            )
         elif strategy == "structured":
             self.counters.structured_searches += 1
         elif strategy == "broad_name":
@@ -588,6 +628,10 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             f"HTTP search attempts: {counters.search_attempts}",
             f"fallback searches: {counters.fallback_searches}",
             f"query strategy contextual: {counters.contextual_searches}",
+            (
+                "query strategy canonical contextual: "
+                f"{counters.canonical_contextual_searches}"
+            ),
             f"query strategy structured: {counters.structured_searches}",
             f"query strategy broad-name: {counters.broad_name_searches}",
             f"query strategy broad-number: {counters.broad_number_searches}",

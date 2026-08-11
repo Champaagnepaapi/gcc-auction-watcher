@@ -58,6 +58,43 @@ class VariantSemanticsTests(unittest.TestCase):
         evidence = _candidate_evidence(identity(finish="Reverse Holo"), candidate())
         self.assertEqual(evidence.rejection, REJECT_VARIANT)
 
+    def test_rarity_holo_does_not_override_explicit_reverse_finish(self):
+        parsed, conflict = semantics_from_identity(
+            identity(finish="Reverse Holo", rarity="Rare Holo")
+        )
+        self.assertFalse(conflict)
+        self.assertEqual(parsed.finish, FINISH_REVERSE)
+
+        result = variant_compatibility(
+            identity(finish="Reverse Holo", rarity="Rare Holo"),
+            candidate(variant="Reverse Holofoil", rarity="Rare Holo"),
+        )
+        self.assertTrue(result.compatible)
+        self.assertTrue(result.finish_match)
+
+    def test_set_name_finish_word_is_not_physical_finish_evidence(self):
+        parsed, conflict = semantics_from_identity(identity(set="Holo Collection"))
+        self.assertFalse(conflict)
+        self.assertIsNone(parsed.finish)
+
+    def test_missing_candidate_finish_evidence_is_blocking(self):
+        result = variant_compatibility(
+            identity(finish="Holo"),
+            candidate(variant=None, rarity="Rare Holo"),
+        )
+        self.assertFalse(result.compatible)
+        self.assertEqual(result.reason, "candidate_finish_missing")
+        self.assertTrue(result.metadata_missing)
+
+    def test_missing_listing_finish_evidence_is_blocking(self):
+        result = variant_compatibility(
+            identity(),
+            candidate(variant="Holofoil", rarity="Rare Holo"),
+        )
+        self.assertFalse(result.compatible)
+        self.assertEqual(result.reason, "listing_finish_missing")
+        self.assertTrue(result.metadata_missing)
+
     def test_normal_and_non_holo_share_standard_family(self):
         self.assertEqual(semantics_from_text("Normal").finish, FINISH_STANDARD)
         result = variant_compatibility(
@@ -66,6 +103,21 @@ class VariantSemanticsTests(unittest.TestCase):
         )
         self.assertTrue(result.compatible)
         self.assertTrue(result.finish_match)
+
+    def test_ebay_standard_parallel_does_not_conflict_with_holo_finish(self):
+        parsed, conflict = semantics_from_identity(
+            identity(variant="Standard", finish="Holo", edition="Unlimited")
+        )
+        self.assertFalse(conflict)
+        self.assertEqual(parsed.finish, FINISH_HOLO)
+
+        result = variant_compatibility(
+            identity(variant="Standard", finish="Holo", edition="Unlimited"),
+            candidate(variant="Unlimited Holofoil"),
+        )
+        self.assertTrue(result.compatible)
+        self.assertTrue(result.finish_match)
+        self.assertTrue(result.edition_match)
 
     def test_first_edition_holo_is_split_into_edition_and_finish(self):
         parsed, conflict = semantics_from_identity(
@@ -115,6 +167,24 @@ class VariantSemanticsTests(unittest.TestCase):
         )
         self.assertTrue(result.compatible)
         self.assertTrue(result.promo_match)
+
+    def test_listing_promo_requires_candidate_promo_evidence(self):
+        result = variant_compatibility(
+            identity(rarity="Promo", finish="Holo"),
+            candidate(variant="Holofoil", rarity="Rare Holo", set_name="Base Set"),
+        )
+        self.assertFalse(result.compatible)
+        self.assertEqual(result.reason, "candidate_promo_missing")
+        self.assertTrue(result.metadata_missing)
+
+    def test_candidate_promo_requires_listing_promo_evidence(self):
+        result = variant_compatibility(
+            identity(finish="Holo"),
+            candidate(variant="Holofoil", rarity="Promo", set_name="Promo Set"),
+        )
+        self.assertFalse(result.compatible)
+        self.assertEqual(result.reason, "listing_promo_missing")
+        self.assertTrue(result.metadata_missing)
 
     def test_special_finish_is_not_collapsed_to_generic_holo(self):
         result = variant_compatibility(

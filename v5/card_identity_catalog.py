@@ -43,14 +43,34 @@ _LANGUAGE_CODES = {
     "japonais": "ja",
     "ja": "ja",
     "jp": "ja",
-    "portuguese": "pt-br",
-    "portugais": "pt-br",
+    "portuguese": "pt",
+    "portugais": "pt",
+    "pt": "pt",
     "brazilian portuguese": "pt-br",
-    "pt": "pt-br",
+    "portuguese brazilian": "pt-br",
     "pt br": "pt-br",
+    "european portuguese": "pt-pt",
+    "portugal portuguese": "pt-pt",
+    "portuguese portugal": "pt-pt",
+    "pt pt": "pt-pt",
     "traditional chinese": "zh-tw",
     "chinese traditional": "zh-tw",
     "zh tw": "zh-tw",
+    "simplified chinese": "zh-cn",
+    "chinese simplified": "zh-cn",
+    "zh cn": "zh-cn",
+    "korean": "ko",
+    "coreen": "ko",
+    "ko": "ko",
+    "dutch": "nl",
+    "neerlandais": "nl",
+    "nl": "nl",
+    "polish": "pl",
+    "polonais": "pl",
+    "pl": "pl",
+    "russian": "ru",
+    "russe": "ru",
+    "ru": "ru",
     "indonesian": "id",
     "indonesien": "id",
     "id": "id",
@@ -164,9 +184,17 @@ def _numeric_tokens(value: object) -> frozenset[str]:
     return frozenset(re.findall(r"\d+(?:\.\d+)?", _normalize(value)))
 
 
+def _canonical_set_label(value: object) -> str:
+    normalized = _normalize(value)
+    for prefix in ("pokemon trading card game ", "pokemon tcg "):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):].strip()
+    return normalized
+
+
 def _set_name_similarity(expected: object, candidate: object) -> float:
-    expected_norm = _normalize(expected)
-    candidate_norm = _normalize(candidate)
+    expected_norm = _canonical_set_label(expected)
+    candidate_norm = _canonical_set_label(candidate)
     if not expected_norm or not candidate_norm:
         return 0.0
     if expected_norm == candidate_norm:
@@ -182,14 +210,13 @@ def _set_name_similarity(expected: object, candidate: object) -> float:
     intersection = len(expected_tokens & candidate_tokens)
     union = len(expected_tokens | candidate_tokens)
     jaccard = intersection / union if union else 0.0
-    shorter, longer = sorted((expected_tokens, candidate_tokens), key=len)
-    if shorter and shorter.issubset(longer) and intersection:
-        return max(jaccard, 0.86)
-    return jaccard
+    return min(jaccard, 0.65)
 
 
 def _tcgdex_printed_card_number(
-    original: CardIdentity, card: Mapping[str, object]
+    original: CardIdentity,
+    card: Mapping[str, object],
+    catalog_official_count: Optional[str] = None,
 ) -> Optional[str]:
     local_id = str(card.get("localId") or "").strip()
     if not local_id:
@@ -208,7 +235,7 @@ def _tcgdex_printed_card_number(
         if isinstance(card_count, Mapping)
         else None
     )
-    official_text = str(official or "").strip()
+    official_text = str(official or catalog_official_count or "").strip()
     if re.fullmatch(r"0*\d+", local_id) and re.fullmatch(r"[1-9]\d*", official_text):
         return f"{local_id}/{official_text}"
 
@@ -264,17 +291,24 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         self._identity_cache: dict[Tuple[str, ...], CatalogIdentityResult] = {}
         self._set_cache: dict[Tuple[str, str], Tuple[Tuple[str, str], ...]] = {}
         self._all_sets_cache: dict[str, Tuple[Tuple[str, str], ...]] = {}
+        self._set_official_counts: dict[Tuple[str, str], str] = {}
         self._card_cache: dict[Tuple[str, str, str, str], Optional[Mapping[str, object]]] = {}
 
     @staticmethod
     def _identity_key(identity: CardIdentity) -> Tuple[str, ...]:
         return (
+            _normalize(identity.game),
             _normalize(identity.set),
             _normalize(identity.card_number),
             _normalize(identity.language),
             _normalize(identity.card_name),
             str(identity.year or ""),
             _normalize(identity.variant),
+            _normalize(identity.rarity),
+            _normalize(identity.finish),
+            _normalize(identity.edition),
+            _normalize(identity.illustrator),
+            "|".join(_normalize(value) for value in identity.ambiguities),
         )
 
     def resolve(
@@ -392,6 +426,15 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
                 name = str(item.get("name") or "").strip()
                 if set_id and name:
                     rows.append((set_id, name))
+                    card_count = item.get("cardCount")
+                    official = (
+                        card_count.get("official")
+                        if isinstance(card_count, Mapping)
+                        else None
+                    )
+                    official_text = str(official or "").strip()
+                    if re.fullmatch(r"[1-9]\d*", official_text):
+                        self._set_official_counts[(language, set_id)] = official_text
         result = tuple(dict.fromkeys(rows))
         self._all_sets_cache[language] = result
         return result
@@ -425,7 +468,9 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             )
             for set_id, name in rows
         ]
-        scored = [value for value in scored if value[0] >= 0.66]
+        # Keep close labels only to diagnose ambiguity. A single fuzzy label is
+        # never promoted to an alias by _resolve_tcgdex.
+        scored = [value for value in scored if value[0] >= 0.65]
         if not scored:
             result: Tuple[Tuple[str, str], ...] = ()
         else:
@@ -503,12 +548,21 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             for set_id, name in self._tcgdex_sets(language, identity.set or ""):
                 loose_ids.setdefault(set_id, name)
                 if (
-                    _normalize(name) == normalized_set
+                    _set_name_similarity(identity.set, name) == 1.0
                     or _normalize(set_id) == normalized_set
                 ):
                     exact_ids.setdefault(set_id, name)
 
-        candidate_ids = exact_ids or loose_ids
+        if exact_ids:
+            candidate_ids = exact_ids
+        elif len(loose_ids) > 1:
+            self.counters.ambiguous += 1
+            self.counters.tcgdex_ambiguous_set_aliases += 1
+            return CatalogIdentityResult(identity, "TCGDEX", False, True)
+        else:
+            # A single fuzzy/contained label is not a verified alias.
+            self.counters.tcgdex_no_match_set += 1
+            return CatalogIdentityResult(identity)
         if len(candidate_ids) != 1:
             if len(candidate_ids) > 1:
                 self.counters.ambiguous += 1
@@ -564,7 +618,19 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         if not card_name:
             self.counters.tcgdex_no_match_missing_name += 1
             return CatalogIdentityResult(identity)
-        canonical_card_number = _tcgdex_printed_card_number(identity, card)
+        catalog_counts = {
+            self._set_official_counts[(language, set_id)]
+            for language in lookup_languages
+            if (language, set_id) in self._set_official_counts
+        }
+        catalog_official_count = (
+            next(iter(catalog_counts)) if len(catalog_counts) == 1 else None
+        )
+        canonical_card_number = _tcgdex_printed_card_number(
+            identity,
+            card,
+            catalog_official_count,
+        )
         if _complete_card_number_conflict(
             identity.card_number, canonical_card_number
         ):

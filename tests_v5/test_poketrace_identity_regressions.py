@@ -109,6 +109,16 @@ class PokeTraceIdentityRegressionTests(unittest.TestCase):
         self.assertEqual(rejection, REJECT_SET)
         self.assertFalse(_candidate_matches(identity, candidate))
 
+    def test_contained_but_distinct_set_name_is_not_a_fuzzy_alias(self):
+        identity = _identity(set_name="Team Rocket")
+        candidate = _candidate(set_name="Team Rocket Returns")
+
+        score, rejection = _candidate_score_and_rejection(identity, candidate)
+
+        self.assertIsNone(score)
+        self.assertEqual(rejection, REJECT_SET)
+        self.assertFalse(_candidate_matches(identity, candidate))
+
     def test_meaningful_name_suffix_case_is_not_erased(self):
         identity = _identity(card_name="Charizard EX")
         candidate = _candidate(card_name="Charizard ex")
@@ -127,10 +137,11 @@ class PokeTraceIdentityRegressionTests(unittest.TestCase):
 
         self.assertTrue(result.matched)
         params = session.calls[0][1]["params"]
-        self.assertEqual(params["search"], "Charizard Pokemon TCG Base Set 4/102")
+        self.assertEqual(params["search"], "Charizard Base Set 4/102")
         self.assertEqual(params["card_number"], "4/102")
         self.assertNotIn("set", params)
         self.assertEqual(resolver.counters.contextual_searches, 1)
+        self.assertEqual(resolver.counters.canonical_contextual_searches, 1)
 
     def test_candidate_field_counters_are_independent_of_rejection_order(self):
         wrong_name = _candidate(card_name="Blastoise")

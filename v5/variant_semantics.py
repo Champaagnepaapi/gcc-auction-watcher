@@ -159,15 +159,38 @@ def _merge_semantics(*values: VariantSemantics) -> tuple[VariantSemantics, bool]
 
 
 def semantics_from_identity(identity: CardIdentity) -> tuple[VariantSemantics, bool]:
+    variant = semantics_from_text(identity.variant)
+    # eBay's Parallel/Variety value "Standard" means no named parallel; it
+    # does not prove a non-holographic physical finish. Keep explicit finish
+    # and edition aspects authoritative instead of manufacturing a conflict.
+    if (
+        variant.finish == FINISH_STANDARD
+        and _normalize(identity.variant) in {"normal", "standard"}
+    ):
+        variant = VariantSemantics(
+            edition=variant.edition,
+            promo=variant.promo,
+            special_finish=variant.special_finish,
+            explicit=variant.explicit,
+        )
     values = [
-        semantics_from_text(identity.variant),
+        variant,
         semantics_from_text(identity.finish),
         semantics_from_text(identity.edition),
     ]
     # Promo is frequently represented by rarity or by the promo set itself,
     # rather than by Parallel/Variety. This is identity evidence, not a guess.
-    rarity = semantics_from_text(identity.rarity)
-    set_semantics = semantics_from_text(identity.set)
+    parsed_rarity = semantics_from_text(identity.rarity)
+    rarity = VariantSemantics(
+        promo=parsed_rarity.promo,
+        explicit=parsed_rarity.promo is not None,
+    )
+    parsed_set = semantics_from_text(identity.set)
+    set_semantics = VariantSemantics(
+        edition=parsed_set.edition,
+        promo=parsed_set.promo,
+        explicit=bool(parsed_set.edition or parsed_set.promo is not None),
+    )
     values.extend((rarity, set_semantics))
     return _merge_semantics(*values)
 
@@ -175,10 +198,19 @@ def semantics_from_identity(identity: CardIdentity) -> tuple[VariantSemantics, b
 def semantics_from_poketrace_candidate(candidate: Mapping[str, object]) -> VariantSemantics:
     set_payload = candidate.get("set")
     set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else None
+    parsed_rarity = semantics_from_text(candidate.get("rarity"))
+    parsed_set = semantics_from_text(set_name)
     values = (
         semantics_from_text(candidate.get("variant")),
-        semantics_from_text(candidate.get("rarity")),
-        semantics_from_text(set_name),
+        VariantSemantics(
+            promo=parsed_rarity.promo,
+            explicit=parsed_rarity.promo is not None,
+        ),
+        VariantSemantics(
+            edition=parsed_set.edition,
+            promo=parsed_set.promo,
+            explicit=bool(parsed_set.edition or parsed_set.promo is not None),
+        ),
     )
     return _merge_semantics(*values)[0]
 
@@ -196,6 +228,14 @@ def variant_compatibility(
         return VariantCompatibility(False, reason="finish_conflict")
     if expected.special_finish and actual.special_finish and expected.special_finish != actual.special_finish:
         return VariantCompatibility(False, reason="special_finish_conflict")
+    if expected.special_finish and not actual.special_finish:
+        return VariantCompatibility(False, reason="candidate_special_finish_missing", metadata_missing=True)
+    if actual.special_finish and not expected.special_finish:
+        return VariantCompatibility(False, reason="listing_special_finish_missing", metadata_missing=True)
+    if expected.finish and actual.finish is None:
+        return VariantCompatibility(False, reason="candidate_finish_missing", metadata_missing=True)
+    if actual.finish and expected.finish is None:
+        return VariantCompatibility(False, reason="listing_finish_missing", metadata_missing=True)
 
     # Edition is price-sensitive. Never map a proven 1st-edition/shadowless card
     # to a candidate that explicitly says Unlimited, or vice versa.
@@ -212,24 +252,28 @@ def variant_compatibility(
         return VariantCompatibility(False, reason="listing_edition_missing", metadata_missing=True)
 
     # Promo may be proven by the shared promo set / rarity even when the eBay
-    # Parallel/Variety field is empty. If either side explicitly proves promo,
-    # do not accept an explicit non-promo contradiction (currently PokeTrace
-    # exposes promo positively, so absence remains unknown rather than false).
+    # Parallel/Variety field is empty. It is price-sensitive: positive evidence
+    # on only one side is insufficient for an exact commercial-variant match.
     if expected.promo is True and actual.promo is False:
         return VariantCompatibility(False, reason="promo_conflict")
     if actual.promo is True and expected.promo is False:
         return VariantCompatibility(False, reason="promo_conflict")
+    if expected.promo is True and actual.promo is None:
+        return VariantCompatibility(
+            False,
+            reason="candidate_promo_missing",
+            metadata_missing=True,
+        )
+    if actual.promo is True and expected.promo is None:
+        return VariantCompatibility(
+            False,
+            reason="listing_promo_missing",
+            metadata_missing=True,
+        )
 
     finish_match = bool(expected.finish and actual.finish and expected.finish == actual.finish)
     edition_match = bool(expected.edition and actual.edition and expected.edition == actual.edition)
     promo_match = bool(expected.promo is True and actual.promo is True)
-
-    # A candidate that adds a special finish not proved by the listing cannot
-    # be treated as the exact same commercial variant.
-    if actual.special_finish and not expected.special_finish:
-        return VariantCompatibility(False, reason="listing_special_finish_missing", metadata_missing=True)
-    if expected.special_finish and not actual.special_finish:
-        return VariantCompatibility(False, reason="candidate_special_finish_missing", metadata_missing=True)
 
     comparable_dimensions = sum(
         1
