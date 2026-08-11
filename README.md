@@ -1,20 +1,20 @@
 # GCC Auction Watcher
 
 > **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
-> Ce README doit être mis à jour après chaque changement important afin qu'un nouveau ChatGPT/Codex puisse reprendre le projet sans reconstruire l'historique complet.
+> Ce README doit rester la source de vérité pour reprendre le projet sans reconstruire l’historique complet.
 
-## Reprise du projet — état canonique au 11 août 2026
+## État canonique — 11 août 2026
 
 ### Principes non négociables
 
 - **V4 sur `main` = production canonique.** V5 ne la remplace pas implicitement.
 - Pokémon **cartes individuelles uniquement**. Produits scellés/non-cartes exclus : boosters, packs, displays, boxes, ETB, coffrets, blisters, bundles, decks, tins, cases, etc.
-- Découverte économique : **0–100 €** afin de ne pas rater une anomalie très basse ; `MAX_PRICE=100`.
-- Décote minimale : **30 %**, éventuellement relevée si les comparables sont faibles.
+- Découverte économique : **0–100 €** afin de ne pas rater les anomalies très basses ; `MAX_PRICE=100`.
+- Décote minimale : **30 %**, éventuellement relevée lorsque les comparables sont faibles.
 - Enchères pertinentes uniquement si fin **≤60 min**.
 - Aucun achat, bid, checkout ou grading payant automatique.
-- Les données listing-level eBay/PokeTrace/JustTCG (itemId, titre, URL, prix, images) restent **mémoire-only** dans les diagnostics V5.
-- Une ambiguïté d'identité reste bloquante. La cible `15+/20` est un objectif de couverture **seulement si les preuves le permettent**.
+- Les données listing-level eBay/PokeTrace/JustTCG restent **mémoire-only** dans les diagnostics V5 : pas de persistance d’itemId, titre, URL, prix ou images.
+- Une ambiguïté d’identité reste bloquante. La cible `15+/20` est un objectif de couverture uniquement si les preuves le permettent.
 
 ---
 
@@ -22,21 +22,20 @@
 
 ## Scheduler et persistance
 
-- Production cloud : **Cron-job.org → `workflow_dispatch` GitHub Actions environ toutes les 10 minutes**.
-- L'ancien `schedule:` GitHub `3,13,23,33,43,53` a été supprimé pour éviter irrégularité et double scan.
+- Production : **Cron-job.org → `workflow_dispatch` GitHub Actions environ toutes les 10 minutes**.
+- Ne pas réintroduire de `schedule:` GitHub en parallèle : cela doublerait les scans.
 - `state.json` est restauré/sauvegardé via cache GitHub Actions.
-- Chaque run V4 est aussi journalisé dans l'**issue #1** avec trigger, exit code, durée, opportunités, mode/scope auction, timers et fallback.
+- Chaque run V4 est journalisé dans l’**issue #1** avec trigger, durée, opportunités, mode/scope auction, timers et fallback.
 
-## Découverte GCC
-
-### Fixed price
+## Découverte fixed
 
 - API publique GCC `/on-sale-items`.
 - File de priorité : `NEW → CHANGED → NEVER_EVALUATED → STALE`.
-- TTL de réévaluation : 24 h par défaut.
-- Découverte volontairement 0–100 € ; un prix très bas **ne crée jamais à lui seul** une opportunité.
+- TTL de réévaluation : 24 h.
+- Budget de traitement fixe : 120.
+- Découverte 0–100 € ; un prix très bas ne crée jamais à lui seul une opportunité.
 
-### Auctions
+## Découverte auctions
 
 Discovery primaire lot par lot :
 
@@ -55,13 +54,13 @@ Pokémon + carte + 0–100 € + ≤60 min
 analyse économique V4
 ```
 
-Le watcher s'arrête lorsque l'ordre `ENDING_SOON` prouve que l'horizon de 60 min a été franchi ou lorsque l'inventaire est épuisé. Statut attendu lorsque prouvé :
+Le watcher s’arrête lorsque l’ordre `ENDING_SOON` prouve que l’horizon de 60 min est franchi ou lorsque l’inventaire est épuisé. Statut attendu :
 
 ```text
 COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
 ```
 
-Si API/pagination/ordre/endTime deviennent incohérents, l'ancien collector auction reste fallback de sécurité.
+L’ancien collector auction reste fallback uniquement si l’API/pagination/ordre/endTime ne permet plus de prouver la couverture.
 
 ## Valorisation V4
 
@@ -74,43 +73,59 @@ Si API/pagination/ordre/endTime deviennent incohérents, l'ancien collector auct
 
 ### Grade arbitrage
 
-Une carte de grade supérieur peut être intéressante si son prix est autour du marché robuste d'un grade inférieur du **même grader**. Cette voie :
+Une carte de grade supérieur peut être intéressante si son prix est autour du marché robuste d’un grade inférieur du **même grader**. Cette voie :
 
 - ne doit jamais inventer la valeur du grade supérieur ;
 - exige une preuve externe exacte suffisante avant notification ;
-- garde les autres graders comme comparables secondaires seulement ;
-- interdit qu'un proxy cross-grader crée seul une valeur achetable sans ratio empirique documenté.
+- garde les autres graders comme comparables secondaires ;
+- interdit qu’un proxy cross-grader crée seul une valeur achetable sans ratio empirique documenté.
 
-## Anti-spam et ntfy
+## ntfy / anti-spam
 
 Renotifier une opportunité déjà signalée uniquement si :
 
 - prix baisse ≥10 % ;
-- décote s'améliore ≥5 points ;
-- franchissement d'un seuil temporel ;
+- décote s’améliore ≥5 points ;
+- franchissement d’un seuil temporel ;
 - une alerte haute priorité unique peut partir à ≤5 min si le prix reste sous le max prudent.
 
 ### Alertes techniques
 
-Un petit drift dynamique fixed pendant une pagination saine, par exemple `2953/2954` avec pages réussies, aucun backlog, aucune erreur et comptabilité saine, reste **dans les logs mais ne doit pas notifier le téléphone**.
-
-Les cas techniques réellement actionnables restent notifiables :
-
-- page API échouée / pagination structurellement incohérente ;
-- écart fixed matériel ;
-- couverture auction/économique incomplète ;
-- `NEW`/`CHANGED` urgent non traité à cause du budget ;
-- échec d'évaluation ;
-- cache/état incompatible ;
-- invariant comptable cassé.
+Les petits drifts dynamiques fixed pendant une pagination saine restent dans les logs mais ne notifient pas le téléphone. Sont toujours actionnables : page API échouée, pagination structurelle incohérente, écart matériel, couverture auction/économique incomplète, NEW/CHANGED urgent non traité, état/cache incohérent, invariant comptable cassé.
 
 ## Runtime Playwright
 
-- PR #13 mergée dans `main` : cache pip + cache Playwright + probe Chromium.
-- Run initial `31479526838` : cache miss attendu, téléchargement initial puis cache Playwright ~279 MB, scan sain ~15 s.
-- Run suivant `31480316615` : pip hit + Playwright hit, aucun téléchargement Chromium/FFmpeg/Headless Shell complet, scan sain ~14 s.
-- Les runners GitHub-hosted sont jetables : les installations ne persistent pas physiquement, mais le cache évite les gros téléchargements à chaque production run.
-- Self-hosted : **pas justifié actuellement** ; le cache est suffisant et évite maintenance/sécurité d'une machine permanente.
+- PR #13 : cache pip + cache Playwright + probe Chromium.
+- Run initial `31479526838` : cache miss attendu, téléchargement initial puis cache Playwright ~279 MB.
+- Run `31480316615` : pip hit + Playwright hit, aucun gros téléchargement Chromium/FFmpeg/Headless Shell.
+- Les runners GitHub-hosted restent jetables ; le cache évite les gros téléchargements.
+- Runner self-hosted : **pas justifié actuellement**.
+
+---
+
+# Workflows GitHub Actions — inventaire utile après nettoyage
+
+Le nettoyage PR #24 a supprimé du repo les workflows redondants :
+
+- `V5 eBay Enrichment Diagnostic` ;
+- `V5 GCC History Diagnostic` ;
+- `V5 Market Valuation Diagnostic`.
+
+Le cleanup a été mergé dans `main` (`a10740cb67aa80372bb0a2dc1add89f12541b660`) puis resynchronisé dans V5 via PR #25. La branche V5 est revenue à `behind main = 0`.
+
+Workflows à conserver :
+
+1. **GCC Auction Watcher** — production V4.
+2. **V4 Auction Discovery Validation** — validation spécialisée auction.
+3. **V4 GCC Coverage Audit** — audit de couverture V4.
+4. **PSA Public API Diagnostic** — diagnostic APR/PSA.
+5. **V5 Live Raw Pipeline Diagnostic** — diagnostic live eBay → identité → marché.
+6. **V5 Catalog Identity Benchmark** — benchmark manuel TCGdex ↔ JustTCG sur la branche V5.
+7. **V5 GCC Catalog Refresh** — fonction unique : entretenir le catalogue cumulatif GCC ; conserve son refresh quotidien.
+
+Ne plus créer de workflows `Temp`, `one-shot`, `repair`, `handoff` ou reporter dédiés pour chaque micro-opération. Pour le développement : **Codex/tests locaux → une validation finale si nécessaire → workflow manuel existant pour le live**.
+
+Les anciens noms peuvent rester visibles dans l’historique/sidebar GitHub Actions même après suppression du YAML ; ils ne correspondent plus à des workflows actifs du repo.
 
 ---
 
@@ -121,223 +136,217 @@ Les cas techniques réellement actionnables restent notifiables :
 - PR reste **draft, ouverte, non mergée**.
 - V5 = diagnostic **RAW eBay** séparé de la V4 graded GCC.
 - Aucun achat/bid/checkout/CardGrader.
-- Ne pas passer PokeTrace Pro / Cardmarket payant avant validation Free exploitable.
+- Ne pas passer PokeTrace Pro/Cardmarket payant avant d’avoir prouvé que la brique PokeTrace apporte des identités/valeurs utiles.
 
 ## Architecture resolver retenue
 
 1. **TCGdex = resolver principal multilingue**.
 2. **PokeTrace Free = fallback identité + RAW US market**.
-3. Pokémon TCG API = fallback ultérieur anglais/unknown.
+3. Pokémon TCG API = fallback anglais/unknown.
 4. Matching visuel local + OCR ciblé = arbitres conservateurs pour `AMBIGUOUS/INSUFFICIENT` seulement.
 5. **JustTCG = seconde opinion / benchmark expérimental**, pas principal.
-6. **Scrydex / Vision** = option réservée aux ambiguïtés persistantes après la chaîne gratuite.
+6. **Scrydex / Vision** = réservé aux ambiguïtés persistantes après la chaîne gratuite.
 
-Les workflows V5 live et benchmark doivent rester **`workflow_dispatch` uniquement** hors déclencheur ponctuel explicitement contrôlé.
+Les workflows V5 live et benchmark restent **`workflow_dispatch` uniquement**. Aucun déclenchement automatique PokeTrace/JustTCG.
 
-## PokeTrace Free — référence live précédente
+## PokeTrace Free / `market=US`
 
-Dernier live PokeTrace avant les nouveaux correctifs :
+Audit Codex ciblé : aucun changement de code.
 
-- run : **`31483091017`** ;
-- job : **`93752247632`** ;
-- fingerprint : **`c48b11c284cf453b`** ;
-- eBay search/getItem : **20/20** ;
-- RAW acceptés : 19 ;
-- usable : **11/20** ; ambiguous 4 ; insufficient 5 ;
-- TCGdex : 16 requêtes, **2 hits**, 3 failures ;
-- PokeTrace : 12 identities / 30 HTTP / **189 candidats uniques / 0 exact** ;
-- candidats avec nom compatible : 21 ; set : 13 ; numéro : 5 ;
-- nom+set : 2 ; nom+numéro : 1 ; set+numéro : 3 ;
-- **nom+set+numéro : 1** ;
-- `rejected variant : 1` ;
-- visual/OCR rescues : 0 ;
-- market values found : **0** ;
-- achats/bids/checkout/CardGrader : 0.
-
-### Important
-
-**Aucun nouveau run PokeTrace live n'a été effectué depuis les changements variant/retrieval décrits ci-dessous.** Leur gain réel sur le ratio de candidats compatibles/exacts reste donc à mesurer. Ne jamais présenter le patch offline comme une amélioration live déjà démontrée.
-
-## Nouveau modèle de variantes
-
-Le matcher ne compare plus simplement une chaîne brute `variant`. Les dimensions sont canonicalisées séparément :
-
-- finish : `normal/standard`, `holo/holographic/holofoil`, `reverse holo` ;
-- edition : `1st Edition`, `Unlimited`, `Shadowless` ;
-- promo : preuve par variante/rareté/set lorsqu'elle existe ;
-- finishes spéciaux : Cosmos, Galaxy, Cracked Ice, Stamped, Poké Ball, Master Ball, etc.
-
-Règles :
-
-- holo ≠ reverse ;
-- 1st Edition/Unlimited/Shadowless contradictoires = rejet ;
-- une édition premium absente d'un côté n'est jamais inventée ;
-- une finition spéciale non corroborée reste bloquante ;
-- le variant peut départager des candidats mais **ne remplace jamais** nom+set+numéro.
-
-Nouveaux compteurs :
-
-- `all three + variant compatible` ;
-- `all three but variant blocked` ;
-- finish/edition/promo matches ;
-- metadata missing ;
-- conflits finish/edition/promo/special-finish séparés.
-
-## PokeTrace retrieval — nouveau patch, pas encore live-validé
-
-Objectif : corriger le problème du précédent run (**189 candidats mais très peu compatibles**) sans assouplir l'acceptation locale.
-
-Ordre actuel :
-
-1. recherche textuelle **contextuelle** avec les indices disponibles, par ex. `name + set + number` ;
-2. `card_number` structuré lorsqu'il existe ;
-3. fallbacks bornés broad-name / broad-number / broad-set selon les champs ;
-4. **jamais** de nom d'affichage envoyé comme `set=` tant qu'un slug PokeTrace vérifié n'existe pas ;
-5. acceptance locale toujours stricte nom/set/numéro/variant avec gagnant unique.
-
-Le workflow PokeTrace affiche désormais `POKETRACE_MIN_REQUEST_INTERVAL_SECONDS=2.25` et le provider impose également ≥2.25 s.
-
-## TCGdex — renforcé et toujours principal
-
-Améliorations déterministes :
-
-- uniquement langues API réellement supportées ; sinon métadonnées catalogue anglaises sans changer `CardIdentity.language` ;
-- résolution set par nom et `set.id` ;
-- formes sûres de `localId`, ex. `004 → 4`, ou casse alphanumérique ;
-- lookup set/localId puis fallback direct `setId-localId` ;
-- dénominateur complet contradictoire toujours bloquant (`4/130` ≠ `004/102`) ;
-- numerator-only `4 → 004/102` reste autorisé lorsqu'il est déterministe ;
-- `variants.firstEdition/holo/normal/reverse/wPromo` sert seulement à détecter une variante impossible, jamais à inventer la variante du listing ;
-- failures séparées transport / HTTP / JSON / set-catalog / card-lookup.
+- `/v1/cards` accepte contractuellement l’absence de `market`, mais le comportement Free sans `market` n’est pas documenté.
+- Free est garanti **US + RAW** ; EU/Cardmarket est Pro+.
+- Les records PokeTrace sont market-specific ; aucun ID canonique global transversal n’est documenté.
+- `market=US` reste donc volontairement appliqué au resolver Free.
+- Une future séparation identité globale / valorisation US nécessiterait des caches et IDs qualifiés par marché ; ne pas simplement retirer `market=US`.
 
 ---
 
-# Benchmark TCGdex ↔ JustTCG sur le même sample
+# V5 — validation offline la plus récente
 
-## Benchmark final — source de vérité = run `31489148268`
+Commit de logique audité avant le dernier live :
 
-- run : **`31489148268`** ;
-- job : **`93771289624`** ;
-- fingerprint : **`7ef358f50c335f7d`** ;
-- PokeTrace : **non injecté, non instancié, 0 appel** ;
-- eBay : 20/20 ; RAW : 20 ; core identity suffisante : 14.
+```text
+d4e445b3e450339a8ff576c36b66abd9f6da2f9d
+```
+
+Validation Codex :
+
+- V5 : **303/303** ;
+- V4 : **167/167** ;
+- V4 identique à `origin/main` ;
+- `compileall v5` : OK ;
+- YAML : **10/10** avant le nettoyage des trois workflows redondants ;
+- `git diff --check` : OK ;
+- aucun appel PokeTrace/JustTCG/eBay live depuis cette validation ;
+- aucun secret consulté ;
+- aucun CardGrader, achat, bid ou checkout.
+
+Le merge de synchronisation workflow-only `231b067517fc14126215532019d7f46f68d7b5d0` ne modifie pas la logique V5.
+
+## Durcissements déjà intégrés
+
+- isolation des caches par variante/finition/édition/rareté ;
+- suppression des alias fuzzy dangereux (`Team Rocket` ≠ `Team Rocket Returns`) ;
+- finish/promo/premium missing restent bloquants ;
+- requêtes PokeTrace canonisées sans `set=` non vérifié ;
+- faux conflit eBay `Standard` + `Holo` corrigé ;
+- reconstruction prudente du numéro complet via `cardCount.official` TCGdex ;
+- langues TCGdex alignées sur les codes documentés ;
+- JustTCG exige langue + printing et un set ID fiable ;
+- diagnostics near-match SET/NUMBER/NAME détaillés ;
+- équivalences acceptées uniquement lorsqu’elles sont déterministes : wrapper Pokémon TCG, ponctuation/espacement, zéros initiaux, casse alphanumérique, préfixes explicites de numéro ;
+- parent/subset, containment, traduction, préfixes significatifs, genre, mécaniques EX/GX/V/VMAX/VSTAR et numéros contradictoires restent bloqués ;
+- rendement PokeTrace mesuré par stratégie ;
+- parser eBay enrichi uniquement avec aliases structurés déterministes ;
+- failures TCGdex et Pokémon TCG API séparées dans les diagnostics.
+
+---
+
+# Références live PokeTrace
+
+## Baseline propre avant diagnostics near-match — run `31498195243`
+
+Commit : `9ec5ebf66792802ef7f4a4f20aad56ea11034bc3`.
+
+- eBay search/getItem : **20/20** ; RAW : **20/20** ;
+- identity usable : **9** ; ambiguous 4 ; insufficient 7 ;
+- TCGdex : 5 requêtes, **0 hit** ;
+- PokeTrace : 12 identities / **66 HTTP** / **401 candidats uniques** ;
+- name matched 27 ; set 34 ; number 19 ;
+- name+set 1 ; set+number 5 ;
+- **all-three 0 ; exact 0** ;
+- 51 near-matches à un seul champ près : 5 name-only, 25 set-only, 21 number-only ;
+- PokeTrace request failures 0 ; 429 = 0 ;
+- visual/OCR rescues = 0 ;
+- market values found = **0**.
+
+Ce run a motivé les nouveaux diagnostics détaillés et le rendement par stratégie.
+
+## Dernier live — run `31504468613`, job `93822427440`
+
+Commit testé : `d4e445b3e450339a8ff576c36b66abd9f6da2f9d`.
+Fingerprint : `031a3770c6e599d8`.
+
+### eBay / identité
+
+- OAuth : 200 ;
+- search/getItem : **20/20** ; RAW : **20/20** ;
+- identity usable : **11** ; ambiguous 3 ; insufficient 6 ;
+- card_name coverage : **12/20** ;
+- set coverage : **18/20** ;
+- card_number coverage : **14/20** ;
+- unmapped card-name-like / card-number-like aspect labels : **0/0**.
+
+### TCGdex / Pokémon TCG API
+
+- TCGdex requests : 7 ; hits : **0** ;
+- TCGdex failures transport/HTTP/JSON/set/card : **0/0/0/0/0** ;
+- no-match set/card : 10/2 ; skipped missing set/number : 6 ;
+- Pokémon TCG API requests : 6 ; hits : 0 ; HTTP failures : **4** ;
+- l’ancien compteur ambigu `catalog request failures` est maintenant correctement attribué : les 4 failures venaient du fallback Pokémon TCG API, pas de TCGdex.
+
+### PokeTrace — run PARTIELLEMENT CENSURÉ PAR 429
+
+- identities queried : **13** ;
+- HTTP search attempts : **38** ; fallback searches : 18 ;
+- unique candidates received : **121** ;
+- exact matches : **0** ;
+- **429 responses : 15** ; retries : 0 ; request failures : 0 ;
+- le 429 commence pendant l’identité 5 puis affecte la majorité des identités suivantes ;
+- ce run ne doit donc **pas** être utilisé comme comparaison complète de qualité contre le run `31498195243`.
+
+Rendement observé avant/pendant le rate-limit :
+
+| stratégie | requêtes | uniques | near-match | all-three | exact | redondants |
+|---|---:|---:|---:|---:|---:|---:|
+| contextual-canonical | 12 | 2 | 0 | 0 | 0 | 0 |
+| contextual | 5 | 1 | 1 | 0 | 0 | 2 |
+| structured | 5 | 0 | 0 | 0 | 0 | 3 |
+| broad-name | 4 | 58 | 0 | 0 | 0 | 2 |
+| broad-number | 4 | 40 | 1 | 0 | 0 | 2 |
+| broad-set | 1 | 20 | 0 | 0 | 0 | 0 |
+
+Signal provisoire seulement : `broad-name`/`broad-set` ramènent beaucoup de candidats mais aucun near-match/exact sur la portion observée ; `structured` a été entièrement redondant sur cette portion. **Ne pas supprimer une stratégie uniquement sur ce run censuré.**
+
+Near-matches effectivement observés avant rate-limit : 2, tous deux échouant uniquement sur le nom :
+
+- translation/localization : 1 ;
+- différence significative : 1.
+
+### Visual/OCR / marché
+
+- visual attempted : 7 ; candidate searches unavailable : **6** à cause de l’indisponibilité PokeTrace ; rescues : 0 ;
+- OCR attempted/calls : 0/0 sur ce run ;
+- market values found : **0/11** ;
+- RAW direct / PSA9 / PSA10 : 0/0/0 ;
+- achats/bids/checkout/CardGrader : **0/0/0/0**.
+
+### Interprétation du 429
+
+Le workflow impose ≥2,25 s entre appels, mais le run a reçu 15×429 persistants. Comme plusieurs runs Free avaient déjà consommé du quota le même jour, le diagnostic est compatible avec une limite de quota/serveur Free ; le type exact n’est pas prouvé par les logs actuels. **Ne pas relancer PokeTrace avant reset du quota ou avant un diagnostic explicite du type de 429.**
+
+---
+
+# Benchmark TCGdex ↔ JustTCG — source de vérité
+
+Run `31489148268`, job `93771289624`, fingerprint `7ef358f50c335f7d`.
+PokeTrace non injecté : 0 appel.
 
 ### TCGdex
 
 - exact : **5/20** ;
-- ambiguous : **3** ;
-- unresolved : **12** ;
-- requests : **28** ;
-- failures : **0** ;
-- transport / HTTP / JSON / set-catalog / card-lookup failures : **0/0/0/0/0** ;
+- ambiguous : 3 ; unresolved 12 ;
+- requests : 28 ; failures : 0 ;
 - canonical changes name/set/number : 3/4/1 ;
 - denominator conflicts : 2 ;
 - set aliases unique/ambiguous : 8/1 ;
 - no-match set/card : 2/3 ;
-- localId alternate attempts/hits : **4/2** ;
-- direct-card fallbacks/hits : **9/0** ;
-- variant-impossible : **0** ;
-- unsupported-language fallback : **1**.
+- localId alternate attempts/hits : 4/2 ;
+- direct-card fallbacks/hits : 9/0.
 
-### JustTCG set-aware
+### JustTCG
 
-Le premier prototype JustTCG avait un mauvais contrat de requête et aucune cadence Free correcte ; ce benchmark initial ne doit pas être utilisé pour comparer les providers. Le resolver a ensuite été corrigé :
-
-- suppression du paramètre invalide `include_statistics=false` ;
-- cadence Free conservatrice **≥6.25 s** ;
-- `Retry-After` + un retry sur 429 transitoire ;
-- aucun retry pour quota daily/monthly ;
-- catalogue `/sets` chargé/caché par jeu ;
-- résolution locale d'un unique set ID stable ;
-- requête carte `q + set ID + number` ;
-- validation locale stricte nom/set/numéro/language/printing ;
-- aucun prix JustTCG accepté par l'économie V5.
-
-Résultat final :
-
-- set catalog queries : 2 ;
-- sets en cache : **655** ;
-- set mappings uniques/ambigus/no-match : **4/2/3** ;
-- card queries : 9 ;
 - exact : **0/20** ;
-- ambiguous : 3 ;
-- unresolved : 17 ;
-- request failures : **0** ;
-- 429 : **0** ;
-- candidats reçus : 6 ;
-- rejetés nom : 5 ;
-- candidats all-core : 1 ;
-- ce dernier a été rejeté sur la variante.
+- ambiguous : 3 ; unresolved 17 ;
+- request failures/429 : 0/0 ;
+- candidates received : 6 ;
+- all-core candidate : 1, rejeté sur variante.
 
-### Conclusion benchmark
-
-- both exact : 0 ;
-- safe exact consensus : 0 ;
-- hard exact disagreement : 0 ;
-- **TCGdex-only exact : 5** ;
-- JustTCG-only exact : 0 ;
-- neither exact : 15.
-
-**TCGdex reste clairement le resolver principal.** JustTCG reste un second avis expérimental ; il n'est pas promu en principal et ne nourrit pas encore l'économie V5.
-
----
-
-# CI finale / post-resync — source de vérité actuelle
-
-Après le benchmark, le `main` courant a été synchronisé **dans V5 uniquement**. La validation post-resync exacte est :
-
-- run : **`31491040536`** ;
-- job : **`93777368722`** ;
-- V4 : **167/167** ;
-- V5 : **270/270** ;
-- `python -m compileall -q v5` : OK ;
-- YAML : **11/11** pendant le run, workflow temporaire de validation inclus puis supprimé ;
-- `git diff --check origin/main...HEAD` : OK ;
-- fichiers V4 vs `main` : **IDENTIQUES** ;
-- branche V5 behind `main` : **0** au moment de la validation ;
-- appels PokeTrace / JustTCG / eBay live depuis cette CI : **0/0/0** ;
-- secrets injectés dans cette CI : **0** ;
-- achats/bids/checkout/CardGrader : **0**.
-
-Les workflows temporaires de validation/patch doivent être supprimés après usage. Les deux workflows permanents V5 concernés restent manuels :
-
-- `v5-live-raw-pipeline-diagnostic.yml` → `workflow_dispatch` ;
-- `v5-catalog-identity-benchmark.yml` → `workflow_dispatch`.
+Conclusion : **TCGdex reste clairement principal.** JustTCG reste second avis expérimental.
 
 ---
 
 # Prochaines actions V5
 
-**Ne pas merger PR #8 pour l'instant.**
+**Ne pas merger PR #8.**
 
 Ordre recommandé :
 
-1. faire un **audit offline indépendant** du nouveau modèle variant, du retrieval contextuel PokeTrace, du TCGdex renforcé et du benchmark JustTCG ;
-2. chercher spécifiquement comment **augmenter fortement la proportion de candidats PokeTrace réellement compatibles parmi les candidats reçus**, par meilleure canonicalisation/retrieval, jamais en relâchant l'acceptation ;
-3. ensuite seulement, **un unique prochain run PokeTrace Free de 20 listings** ;
-4. mesurer surtout : candidats `all three`, `all three + variant compatible`, exacts, reasons de rejet, champs récupérés, market exacts ;
-5. comparer au dernier live PokeTrace `31483091017` sans confondre des fingerprints différents ;
-6. conserver TCGdex principal ; JustTCG second avis ;
-7. utiliser Scrydex/Vision seulement si les ambiguïtés persistantes restent matérielles ;
-8. ne pas passer PokeTrace Pro/Cardmarket avant exacts/valeurs Free réellement exploitables.
+1. ne lancer **aucun nouveau PokeTrace live tant que le quota Free n’a pas reset** ;
+2. ajouter/valider un diagnostic de 429 permettant de distinguer au minimum un `Retry-After` court d’une indisponibilité/quota long, sans logger de données sensibles ;
+3. idéalement activer un circuit-breaker de run : lorsqu’un 429 non-retryable/quota est détecté, arrêter les nouveaux appels PokeTrace du run au lieu d’accumuler des 429 inutiles ;
+4. après reset, faire **un seul** live propre de 20 listings sur le code actuel pour obtenir les diagnostics near-match + rendement par stratégie sans censure ;
+5. seulement après ce run propre, décider si `structured`, `broad-name`, `broad-set` ou d’autres fallbacks peuvent être réduits/supprimés ;
+6. continuer à chercher des équivalences uniquement déterministes ; ne jamais assouplir le matching pour atteindre `15+/20` ;
+7. si PokeTrace reste à 0 exact/0 market value après un run propre, réévaluer l’intérêt de PokeTrace Free avant de payer Pro ;
+8. Scrydex/Vision reste différé tant que l’identité structurée et les sources marché ne sont pas mieux comprises.
 
 ---
 
 # Gouvernance et sécurité
 
 - **Ne jamais merger silencieusement PR #8.**
-- Ne jamais assouplir le matching uniquement pour atteindre `15+/20`.
 - `AMBIGUOUS` reste bloquant.
+- Ne jamais assouplir le matching uniquement pour atteindre `15+/20`.
 - Une source externe ne peut pas inventer une valeur achetable.
 - Même grader/même grade reste la preuve principale pour le graded.
-- Aucune identité higher-grade ne doit être inventée à partir d'un lower-grade.
+- Aucune identité higher-grade ne doit être inventée à partir d’un lower-grade.
 - Données listing-level eBay/PokeTrace/JustTCG restent memory-only.
 - Aucun achat, bid ou checkout automatique.
 - Aucun CardGrader payant dans les diagnostics actuels.
-- PokeTrace Pro/Cardmarket : pas maintenant.
 
 ---
 
 # Référence cloud
 
-La version de production recommandée est la **V4 cloud GitHub Actions** : aucun Mac ne doit rester allumé. Voir [`README_CLOUD.md`](README_CLOUD.md) pour l'installation et le fonctionnement détaillé.
+La production recommandée reste la **V4 cloud GitHub Actions** : aucun Mac ne doit rester allumé. Voir [`README_CLOUD.md`](README_CLOUD.md) pour l’installation et le fonctionnement détaillé.
