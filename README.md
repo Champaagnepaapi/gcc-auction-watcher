@@ -95,7 +95,7 @@ branche: agent/v4-independent-external-market-valuation
 base origin/main: 510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d
 PR V4: séparée, draft, vers main
 PR #8 / branche V5: séparées et inchangées
-validation offline V4: 221/221 tests
+validation offline V4: 249/249 tests
 ```
 
 Le résultat GCC est désormais une preuve structurée (`STRONG`, `WEAK` ou
@@ -120,21 +120,38 @@ Arbitrage déterministe :
   « aucun comparable ».
 
 La preuve externe est strictement limitée à la même identité commerciale, au
-même grader et au même grade. Les conflits de référence, langue, édition ou
-finish/variant sont bloquants. PSA utilise APR au grade exact en premier puis
-eBay en fallback ; les autres graders utilisent eBay au même grader/grade.
-PokeTrace et les proxys inter-graders ne participent pas à cette V4.
+même grader et au même grade. Pour toute dimension commerciale matériellement
+sensible connue côté GCC (langue, édition, Shadowless, Holo/Reverse/Non-Holo,
+Promo/stamped ou autre variante), l’absence de preuve externe est bloquante au
+même titre qu’un conflit explicite. PSA APR transporte une provenance
+`psa_spec_exact` depuis la fiche/spec réellement sélectionnée ; chaque dimension
+n’est prouvée que si cette fiche la contient réellement. eBay doit la prouver
+dans le résultat ou son contexte observé. PSA utilise APR au grade exact en
+premier puis eBay en fallback ; les autres graders utilisent eBay au même
+grader/grade. PokeTrace et les proxys inter-graders ne participent pas à cette
+V4.
+
+Deux marchés forts ne sont concordants que si leurs intervalles prudents
+`low/high` se chevauchent et si le ratio de leurs valeurs centrales reste dans
+la plage explicite `0.80–1.25`. Sinon, l’arbitrage termine en
+`MARKET_CONFLICT_BLOCKED`.
 
 Le cache `state.json` utilise une clé hashée de l’identité commerciale stricte,
-un schéma versionné et une TTL de 24 h. Une preuve fraîche ne consomme aucun
-budget. Les misses/stales sont dédupliqués puis priorisés : enchères finissant
-le plus tôt, fixed `NEW/CHANGED`, rejets GCC récupérables, puis refresh stale.
-Les budgets restent bornés séparément par provider.
+un schéma versionné et une TTL de 24 h. Seuls `MATCHED`, `CLEAN_NO_MATCH` et
+`CLEAN_INSUFFICIENT` sont cachables. `PROVIDER_ERROR`,
+`TRANSIENT_UNAVAILABLE` et `RATE_LIMIT` ne sont jamais transformés en résultat
+propre ni cachés 24 h : ils restent à retenter au run suivant.
+`PENDING_BUDGET` conserve sa requeue dédiée. Une preuve fraîche ne consomme
+aucun budget. Les misses/stales sont dédupliqués puis priorisés : enchères
+finissant le plus tôt, fixed `NEW/CHANGED`, rejets GCC récupérables, puis refresh
+stale. Les budgets restent bornés séparément par provider.
 
 Les diagnostics de run exposent les forces et décisions GCC/externe, hits/miss/
-stale du cache, profondeur et déduplication de file, tentatives APR/eBay,
-rescues, conflits, différés et chemins finaux. Les notifications et l’état
-anti-spam conservent également le chemin de valorisation et la provenance.
+stale du cache, résultats propres, erreurs provider, indisponibilités
+transitoires, rate limits non cachés, profondeur et déduplication de file,
+tentatives APR/eBay, rescues, conflits, différés et chemins finaux. Les
+notifications et l’état anti-spam conservent également le chemin de
+valorisation et la provenance.
 
 ### Grade arbitrage
 

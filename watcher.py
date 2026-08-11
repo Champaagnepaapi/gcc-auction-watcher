@@ -76,8 +76,10 @@ MAX_FIXED_CANDIDATES = 120
 EXTERNAL_EVIDENCE_TTL_HOURS = max(
     1, int(os.getenv("EXTERNAL_EVIDENCE_TTL_HOURS", "24"))
 )
-EXTERNAL_CACHE_SCHEMA_VERSION = 1
+EXTERNAL_CACHE_SCHEMA_VERSION = 2
 EXTERNAL_CACHE_STATE_KEY = "external_market_cache"
+MARKET_AGREEMENT_MIN_CENTRAL_RATIO = 0.80
+MARKET_AGREEMENT_MAX_CENTRAL_RATIO = 1.25
 FIXED_REEVALUATION_TTL_HOURS = max(
     1, int(os.getenv("FIXED_REEVALUATION_TTL_HOURS", "24"))
 )
@@ -152,6 +154,8 @@ class ComparableSale:
     exact_card: bool = True
     match_score: int = 100
     grade_qualifier: Optional[str] = None
+    proven_commercial_dimensions: tuple[str, ...] = ()
+    identity_provenance: str = ""
 
 
 # Alias conservé pour les intégrations qui importeraient encore l'ancien nom.
@@ -264,6 +268,13 @@ class PsaAprData:
     matched_url: str = ""
     match_score: int = 0
     note: str = ""
+    provider_status: str = ""
+
+    def __post_init__(self) -> None:
+        # Conserve les constructions historiques de tests/intégrations tout en
+        # permettant au scraper de signaler explicitement une panne fournisseur.
+        if not self.provider_status:
+            self.provider_status = "MATCHED" if self.sales else "CLEAN_NO_MATCH"
 
 
 @dataclass
@@ -287,9 +298,21 @@ GCC_BRANCH_REJECTED = "REJECTED"
 GCC_BRANCH_UNAVAILABLE = "UNAVAILABLE"
 
 EXTERNAL_MATCHED = "MATCHED"
-EXTERNAL_INSUFFICIENT = "INSUFFICIENT"
-EXTERNAL_UNAVAILABLE = "UNAVAILABLE"
+EXTERNAL_CLEAN_NO_MATCH = "CLEAN_NO_MATCH"
+EXTERNAL_CLEAN_INSUFFICIENT = "CLEAN_INSUFFICIENT"
+EXTERNAL_PROVIDER_ERROR = "PROVIDER_ERROR"
+EXTERNAL_TRANSIENT_UNAVAILABLE = "TRANSIENT_UNAVAILABLE"
+EXTERNAL_RATE_LIMITED = "RATE_LIMIT"
 EXTERNAL_PENDING = "PENDING_BUDGET"
+# Alias conservés pour les imports/tests V4 antérieurs à l'audit de la PR #29.
+EXTERNAL_INSUFFICIENT = EXTERNAL_CLEAN_INSUFFICIENT
+EXTERNAL_UNAVAILABLE = EXTERNAL_TRANSIENT_UNAVAILABLE
+EXTERNAL_CACHEABLE_STATUSES = frozenset(
+    {EXTERNAL_MATCHED, EXTERNAL_CLEAN_NO_MATCH, EXTERNAL_CLEAN_INSUFFICIENT}
+)
+EXTERNAL_RETRY_STATUSES = frozenset(
+    {EXTERNAL_PROVIDER_ERROR, EXTERNAL_TRANSIENT_UNAVAILABLE, EXTERNAL_RATE_LIMITED}
+)
 
 PATH_GCC_ONLY = "GCC_ONLY"
 PATH_GCC_EXTERNAL_CONFIRMED = "GCC_EXTERNAL_CONFIRMED"
@@ -339,6 +362,13 @@ class ExternalMarketEvidence:
 
 
 @dataclass
+class ExternalScrapeResult:
+    sales: list[ComparableSale]
+    status: str
+    note: str = ""
+
+
+@dataclass
 class ArbitrationResult:
     path: str
     opportunity: Optional[Opportunity]
@@ -362,10 +392,22 @@ class ExternalMarketDiagnostics:
     apr_sufficient: int = 0
     apr_insufficient: int = 0
     apr_unavailable: int = 0
+    apr_provider_errors: int = 0
+    apr_transient_unavailable: int = 0
+    apr_rate_limited: int = 0
     ebay_attempted: int = 0
     ebay_sufficient: int = 0
     ebay_insufficient: int = 0
     ebay_unavailable: int = 0
+    ebay_provider_errors: int = 0
+    ebay_transient_unavailable: int = 0
+    ebay_rate_limited: int = 0
+    clean_no_match: int = 0
+    clean_insufficient: int = 0
+    provider_errors: int = 0
+    transient_unavailable: int = 0
+    rate_limited: int = 0
+    cache_skipped_transient: int = 0
     external_strengths: dict[str, int] = field(default_factory=dict)
     final_paths: dict[str, int] = field(default_factory=dict)
     rescues: int = 0
@@ -381,6 +423,16 @@ class ExternalMarketDiagnostics:
 
     def record_external(self, evidence: ExternalMarketEvidence) -> None:
         self.increment(self.external_strengths, evidence.strength)
+        if evidence.status == EXTERNAL_CLEAN_NO_MATCH:
+            self.clean_no_match += 1
+        elif evidence.status == EXTERNAL_CLEAN_INSUFFICIENT:
+            self.clean_insufficient += 1
+        elif evidence.status == EXTERNAL_PROVIDER_ERROR:
+            self.provider_errors += 1
+        elif evidence.status == EXTERNAL_TRANSIENT_UNAVAILABLE:
+            self.transient_unavailable += 1
+        elif evidence.status == EXTERNAL_RATE_LIMITED:
+            self.rate_limited += 1
 
     def record_path(self, path: str) -> None:
         self.increment(self.final_paths, path)
@@ -401,6 +453,7 @@ REJECTION_INSUFFICIENT_DISCOUNT = "insufficient_discount"
 REJECTION_FIXED_ABOVE_MAX = "fixed_above_prudent_max"
 REJECTION_OTHER = "other"
 REJECTION_EXTERNAL_PENDING = "external_pending"
+REJECTION_EXTERNAL_RETRY = "external_retry"
 REJECTION_MARKET_CONFLICT = "market_conflict"
 
 COVERAGE_COMPLETE = "COMPLETE"
@@ -3470,26 +3523,108 @@ def external_commercial_identity_key(lot: Lot) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _explicit_material_terms(text: str) -> set[str]:
-    plain = _normalized_identity_value(text)
-    detected = set()
-    patterns = {
-        "reverse": r"\b(?:reverse|reverse holo|holo reverse)\b",
-        "holo": r"\b(?:holo|holographic|holographique)\b",
-        "non_holo": r"\b(?:non holo|non holographic)\b",
+COMMERCIAL_DIMENSION_PATTERNS = {
+    "language": {
+        "french": r"\b(?:french|francais)\b",
+        "japanese": r"\b(?:japanese|japonais)\b",
+        "english": r"\b(?:english|anglais)\b",
+        "german": r"\b(?:german|allemand)\b",
+        "spanish": r"\b(?:spanish|espagnol)\b",
+        "italian": r"\b(?:italian|italien)\b",
+    },
+    "edition": {
         "first_edition": r"\b(?:1st edition|first edition|premiere edition)\b",
         "unlimited": r"\b(?:unlimited|illimitee)\b",
-        "shadowless": r"\bshadowless\b",
+    },
+    "shadow": {"shadowless": r"\bshadowless\b"},
+    "finish": {
+        "reverse": r"\b(?:reverse|reverse holo|holo reverse)\b",
+        "non_holo": r"\b(?:non holo|non holographic|non holographique)\b",
+        "holo": r"\b(?:holo|holographic|holographique)\b",
+    },
+    "printing": {
+        "stamped": r"\b(?:stamped|stamp|estampillee?)\b",
         "promo": r"\bpromo(?:tional)?\b",
+    },
+}
+SENSITIVE_COMMERCIAL_DIMENSIONS = frozenset(
+    {"edition", "shadow", "finish", "printing", "special_finish", "variant"}
+)
+
+
+def _commercial_dimension_candidates(text: str) -> dict[str, set[str]]:
+    plain = _normalized_identity_value(text)
+    found: dict[str, set[str]] = {}
+    for dimension, values in COMMERCIAL_DIMENSION_PATTERNS.items():
+        for value, pattern in values.items():
+            if re.search(pattern, plain):
+                found.setdefault(dimension, set()).add(value)
+    # "reverse holo" et "non-holo" contiennent lexicalement "holo".
+    finish = found.get("finish", set())
+    if "reverse" in finish or "non_holo" in finish:
+        finish.discard("holo")
+    return found
+
+
+def _commercial_dimension_tokens(text: str) -> tuple[str, ...]:
+    found = _commercial_dimension_candidates(text)
+    return tuple(
+        f"{dimension}:{value}"
+        for dimension in sorted(found)
+        for value in sorted(found[dimension])
+        if len(found[dimension]) == 1
+    )
+
+
+def expected_commercial_dimensions(lot: Lot) -> dict[str, str]:
+    """Dimensions matérielles connues du lot; aucune absence n'est inventée."""
+    identity = extract_card_identity(lot)
+    observed = _commercial_dimension_candidates(
+        " ".join(str(value or "") for value in (lot.title, lot.listing_text))
+    )
+    explicit_variant = _commercial_dimension_candidates(lot.variant)
+    for dimension, values in explicit_variant.items():
+        observed[dimension] = values
+
+    expected = {
+        dimension: next(iter(values))
+        for dimension, values in observed.items()
+        if len(values) == 1
     }
-    for label, pattern in patterns.items():
-        if re.search(pattern, plain):
-            detected.add(label)
-    if "non_holo" in detected:
-        detected.discard("holo")
-    if "reverse" in detected:
-        detected.discard("holo")
-    return detected
+    language_text = str(lot.language or identity.get("language") or "")
+    language_candidates = _commercial_dimension_candidates(language_text).get(
+        "language", set()
+    )
+    if len(language_candidates) == 1:
+        expected["language"] = next(iter(language_candidates))
+
+    normalized_variant = _normalized_identity_value(lot.variant)
+    recognized_values = {
+        value for values in explicit_variant.values() for value in values
+    }
+    if normalized_variant and not recognized_values:
+        expected["variant"] = normalized_variant
+    return expected
+
+
+def _explicit_material_terms(text: str) -> set[str]:
+    return {
+        value
+        for dimension, values in _commercial_dimension_candidates(text).items()
+        if dimension != "language"
+        for value in values
+    }
+
+
+def _sale_commercial_dimension_candidates(
+    sale: ComparableSale,
+) -> dict[str, set[str]]:
+    observed = _commercial_dimension_candidates(sale.context)
+    for token in sale.proven_commercial_dimensions:
+        dimension, separator, value = str(token).partition(":")
+        if separator and dimension and value:
+            observed.setdefault(dimension, set()).add(value)
+    return observed
 
 
 def external_comparable_is_exact(lot: Lot, sale: ComparableSale) -> bool:
@@ -3505,9 +3640,7 @@ def external_comparable_is_exact(lot: Lot, sale: ComparableSale) -> bool:
     ):
         return False
 
-    payload = commercial_identity_payload(lot)
     context = sale.context or ""
-    normalized_context = _normalized_identity_value(context)
     identity = extract_card_identity(lot)
     target_reference = lot.card_number or identity.get("ref") or ""
     candidate_references = re.findall(
@@ -3522,33 +3655,22 @@ def external_comparable_is_exact(lot: Lot, sale: ComparableSale) -> bool:
     elif target_reference:
         # APR rows inherit their exact Spec identity from the selected page;
         # an injected/API comparable may also carry a strict upstream score.
-        if sale.source != "psa" and sale.match_score < 90:
+        if sale.identity_provenance != "psa_spec_exact" and sale.match_score < 90:
             return False
 
-    expected_language = str(payload["language"] or "")
-    observed_languages = {
-        value
-        for value in ("french", "japanese", "english", "german", "spanish", "italian")
-        if re.search(rf"\b{value}\b", normalized_context)
-    }
-    if expected_language and observed_languages and expected_language not in observed_languages:
-        return False
-
-    expected_variant = _explicit_material_terms(
-        " ".join(
-            str(value or "")
-            for value in (lot.variant, lot.title, lot.listing_text, lot.body)
-        )
-    )
-    observed_variant = _explicit_material_terms(context)
-    exclusive_groups = (
-        {"reverse", "holo", "non_holo"},
-        {"first_edition", "unlimited", "shadowless"},
-    )
-    for group in exclusive_groups:
-        expected = expected_variant & group
-        observed = observed_variant & group
-        if expected and observed and expected != observed:
+    expected_dimensions = expected_commercial_dimensions(lot)
+    observed_dimensions = _sale_commercial_dimension_candidates(sale)
+    expected_free_variant = expected_dimensions.get("variant")
+    if expected_free_variant and re.search(
+        rf"\b{re.escape(expected_free_variant)}\b",
+        _normalized_identity_value(context),
+    ):
+        observed_dimensions.setdefault("variant", set()).add(expected_free_variant)
+    for dimension, expected_value in expected_dimensions.items():
+        if observed_dimensions.get(dimension, set()) != {expected_value}:
+            return False
+    for dimension in SENSITIVE_COMMERCIAL_DIMENSIONS:
+        if dimension in observed_dimensions and dimension not in expected_dimensions:
             return False
     return True
 
@@ -3900,12 +4022,73 @@ def parse_psa_apr_page(
     population, pop_higher, most_recent = parse_psa_apr_grade_metadata(
         rows, target_grade, usd_per_eur
     )
+    sales = parse_psa_apr_sales(rows, usd_per_eur, now)
     return PsaAprData(
-        sales=parse_psa_apr_sales(rows, usd_per_eur, now),
+        sales=sales,
         population=population,
         pop_higher=pop_higher,
         most_recent_price=most_recent,
+        provider_status=EXTERNAL_MATCHED if sales else EXTERNAL_CLEAN_NO_MATCH,
     )
+
+
+def _psa_spec_identity_proof_text(detail_body: str, lot: Optional[Lot]) -> str:
+    """Isole l'identité Spec et exclut navigation/historique des preuves."""
+    identity_section = re.split(
+        r"\b(?:Auction Results|Sales History|Sales of Similar Items)\b",
+        detail_body or "",
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    identity = extract_card_identity(lot) if lot is not None else {}
+    target_reference = _normalized_identity_value(
+        (lot.card_number if lot is not None else "")
+        or identity.get("ref", "")
+    )
+    core_tokens = _identity_tokens(str(identity.get("core") or ""))
+    proof_lines = []
+    for raw_line in identity_section.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        normalized = _normalized_identity_value(line)
+        if not normalized:
+            continue
+        explicitly_labeled = bool(
+            re.match(
+                r"^(?:language|langue|edition|finish|finition|variety|"
+                r"variante|pedigree|brand title|title|subject|description|"
+                r"item|card)\b",
+                normalized,
+            )
+        )
+        has_card_reference = bool(
+            re.search(r"\b[A-Z0-9-]{1,10}/[A-Z0-9-]{1,10}\b", line, re.I)
+        )
+        reference_matches = bool(
+            target_reference and target_reference in normalized
+        )
+        core_matches = bool(
+            core_tokens and all(token in normalized for token in core_tokens[:3])
+        )
+        if explicitly_labeled or has_card_reference or reference_matches or core_matches:
+            proof_lines.append(line)
+    return "\n".join(proof_lines)
+
+
+def attach_psa_spec_provenance(
+    data: PsaAprData, detail_body: str, lot: Optional[Lot] = None
+) -> PsaAprData:
+    """Transporte seulement les dimensions prouvées par l'identité de la Spec."""
+    proof_text = _psa_spec_identity_proof_text(detail_body, lot)
+    proven_dimensions = _commercial_dimension_tokens(proof_text)
+    data.sales = [
+        replace(
+            sale,
+            identity_provenance="psa_spec_exact",
+            proven_commercial_dimensions=proven_dimensions,
+        )
+        for sale in data.sales
+    ]
+    return data
 
 
 def scrape_psa_apr(
@@ -3921,11 +4104,16 @@ def scrape_psa_apr(
         or _target_grade(lot) is None
         or not psa_apr_identity_is_sufficient(lot)
     ):
-        return PsaAprData([], note="APR non applicable")
+        return PsaAprData(
+            [], note="APR non applicable", provider_status=EXTERNAL_CLEAN_NO_MATCH
+        )
 
     rate = usd_per_eur if usd_per_eur is not None else get_psa_apr_usd_per_eur()
     if rate is None:
-        return PsaAprData([], note="conversion USD/EUR indisponible")
+        return PsaAprData(
+            [], note="conversion USD/EUR indisponible",
+            provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+        )
 
     query = psa_apr_search_query(lot)
     log(f"APR recherche: {query}")
@@ -3939,20 +4127,29 @@ def scrape_psa_apr(
             'input[name="q"], input[placeholder*="Search PSA-Graded Items"]'
         ).first
         if search.count() == 0:
-            return PsaAprData([], note="formulaire APR indisponible")
+            return PsaAprData(
+                [], note="formulaire APR indisponible",
+                provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+            )
         search.fill(query, timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
         submit = page.locator(
             '[role="search"] button[aria-label="Search"], '
             'button:has-text("Search")'
         ).first
         if submit.count() == 0:
-            return PsaAprData([], note="recherche APR indisponible")
+            return PsaAprData(
+                [], note="recherche APR indisponible",
+                provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+            )
         submit.click(timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
         page.wait_for_timeout(700)
         body = page.locator("body").inner_text(timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
     except Exception as error:
         log(f"APR: {type(error).__name__} -> abandon APR pour cette carte")
-        return PsaAprData([], note=f"APR indisponible ({type(error).__name__})")
+        return PsaAprData(
+            [], note=f"APR indisponible ({type(error).__name__})",
+            provider_status=EXTERNAL_PROVIDER_ERROR,
+        )
 
     lower_body = body.lower()
     if any(
@@ -3963,7 +4160,14 @@ def scrape_psa_apr(
         )
     ):
         log("APR: refus/anti-bot détecté -> abandon APR pour cette carte")
-        return PsaAprData([], note="APR refusé ou anti-bot")
+        status = (
+            EXTERNAL_RATE_LIMITED
+            if "too many requests" in lower_body
+            else EXTERNAL_TRANSIENT_UNAVAILABLE
+        )
+        return PsaAprData(
+            [], note="APR refusé ou anti-bot", provider_status=status
+        )
 
     current_url = page.url
     detail_candidate = None
@@ -3994,7 +4198,9 @@ def scrape_psa_apr(
 
     if detail_candidate is None:
         log(f"APR correspondance: rejetée ({detail_reason})")
-        return PsaAprData([], note=detail_reason)
+        return PsaAprData(
+            [], note=detail_reason, provider_status=EXTERNAL_CLEAN_NO_MATCH
+        )
 
     log(
         f"APR correspondance: score {detail_score} ({detail_reason}) | "
@@ -4013,7 +4219,10 @@ def scrape_psa_apr(
         verified_score, verified_reason = psa_apr_match_score(lot, detail_body)
         if verified_score < PSA_APR_MATCH_MIN_SCORE:
             log(f"APR correspondance: fiche rejetée ({verified_reason})")
-            return PsaAprData([], note="fiche APR non confirmée")
+            return PsaAprData(
+                [], note="fiche APR non confirmée",
+                provider_status=EXTERNAL_CLEAN_NO_MATCH,
+            )
         table_rows = page.locator("tr")
         rows = [
             table_rows.nth(index).inner_text(timeout=500)
@@ -4021,10 +4230,14 @@ def scrape_psa_apr(
         ]
     except Exception as error:
         log(f"APR: {type(error).__name__} sur la fiche -> abandon APR")
-        return PsaAprData([], note=f"fiche APR indisponible ({type(error).__name__})")
+        return PsaAprData(
+            [], note=f"fiche APR indisponible ({type(error).__name__})",
+            provider_status=EXTERNAL_PROVIDER_ERROR,
+        )
 
     target_grade = _target_grade(lot)
     data = parse_psa_apr_page(rows, target_grade, rate, now)
+    data = attach_psa_spec_provenance(data, detail_body, lot)
     data.matched_url = detail_candidate.url
     data.match_score = verified_score
     exact_count = sum(sale.grade == target_grade for sale in data.sales)
@@ -4245,7 +4458,9 @@ def robust_median_prices(prices: list[float]) -> list[float]:
     return sorted(sale.price for sale in kept)
 
 
-def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
+def scrape_ebay_sold(
+    page, lot: Lot, *, with_status: bool = False
+) -> list[HistoricalSale] | ExternalScrapeResult:
     """
     Recherche publique eBay Sold/Completed sans API Developer.
 
@@ -4257,8 +4472,14 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     - abandon immédiat après timeout/anti-bot;
     - ne ralentit plus le scan GCC de plusieurs minutes.
     """
+    def result(
+        sales: list[ComparableSale], status: str, note: str = ""
+    ) -> list[ComparableSale] | ExternalScrapeResult:
+        payload = ExternalScrapeResult(sales, status, note)
+        return payload if with_status else sales
+
     if not EBAY_ENABLED:
-        return []
+        return result([], EXTERNAL_CLEAN_NO_MATCH, "eBay désactivé")
 
     collected: list[HistoricalSale] = []
     seen = set()
@@ -4281,7 +4502,10 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             body = page.locator("body").inner_text(timeout=min(TEXT_TIMEOUT, 2500))
         except Exception as e:
             log(f"eBay q{q_index}: {type(e).__name__} -> abandon eBay pour cette carte")
-            return []
+            return result(
+                [], EXTERNAL_PROVIDER_ERROR,
+                f"eBay navigation {type(e).__name__}",
+            )
 
         lower_body = body.lower()
         if (
@@ -4289,9 +4513,15 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             or "vérifiez votre identité" in lower_body
             or "verify your identity" in lower_body
             or "captcha" in lower_body
+            or "too many requests" in lower_body
         ):
             log("eBay: anti-bot/captcha détecté -> abandon eBay pour cette carte")
-            return []
+            status = (
+                EXTERNAL_RATE_LIMITED
+                if "too many requests" in lower_body
+                else EXTERNAL_TRANSIENT_UNAVAILABLE
+            )
+            return result([], status, "eBay refusé ou anti-bot")
 
         cards = page.locator("li.s-item")
         raw_count = min(cards.count(), 120)
@@ -4299,7 +4529,7 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
         # Si eBay ne fournit même aucun item structuré, inutile d'insister.
         if raw_count == 0:
             log(f"eBay q{q_index}: 0 résultat visible -> abandon eBay pour cette carte")
-            return []
+            return result([], EXTERNAL_CLEAN_NO_MATCH, "eBay 0 résultat visible")
 
         matched_this_query = 0
 
@@ -4387,7 +4617,12 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
         # Si la première requête a des résultats mais zéro comparable, on tente une seule requête plus large.
         # Après la deuxième, on s'arrête quoi qu'il arrive.
 
-    return collected[:EBAY_MAX_RESULTS]
+    final_sales = collected[:EBAY_MAX_RESULTS]
+    return result(
+        final_sales,
+        EXTERNAL_MATCHED if final_sales else EXTERNAL_CLEAN_NO_MATCH,
+        f"eBay {len(final_sales)} comparable(s) candidat(s)",
+    )
 
 
 def _target_grade(lot: Lot) -> Optional[float]:
@@ -5455,12 +5690,26 @@ def build_external_market_evidence(
     pop_higher: Optional[int] = None,
     most_recent_price: Optional[float] = None,
     minimum_comparables: int = 2,
+    provider_status: str = EXTERNAL_MATCHED,
 ) -> ExternalMarketEvidence:
     key = external_commercial_identity_key(lot)
+    if provider_status in EXTERNAL_RETRY_STATUSES or provider_status == EXTERNAL_PENDING:
+        return ExternalMarketEvidence(
+            key,
+            provider_status,
+            EVIDENCE_UNAVAILABLE,
+            source,
+            note=note or provider_status,
+            fetched_at=now or datetime.now(timezone.utc),
+        )
     exact_sales = exact_external_comparables(lot, sales)
     if len(exact_sales) < minimum_comparables:
+        clean_status = (
+            EXTERNAL_CLEAN_INSUFFICIENT
+            if exact_sales else EXTERNAL_CLEAN_NO_MATCH
+        )
         return ExternalMarketEvidence(
-            key, EXTERNAL_INSUFFICIENT,
+            key, clean_status,
             EVIDENCE_WEAK if exact_sales else EVIDENCE_UNAVAILABLE,
             source, comparables=exact_sales,
             note=note or f"{len(exact_sales)} comparable(s) exact(s)",
@@ -5474,7 +5723,7 @@ def build_external_market_evidence(
     )
     return ExternalMarketEvidence(
         key,
-        EXTERNAL_MATCHED if estimate is not None else EXTERNAL_INSUFFICIENT,
+        EXTERNAL_MATCHED if estimate is not None else EXTERNAL_CLEAN_INSUFFICIENT,
         strength,
         source,
         estimate,
@@ -5509,6 +5758,10 @@ def _serialize_external_evidence(evidence: ExternalMarketEvidence) -> dict:
                 "sold_at": sale.sold_at.isoformat() if sale.sold_at else "",
                 "exact_card": sale.exact_card,
                 "match_score": sale.match_score,
+                "proven_commercial_dimensions": list(
+                    sale.proven_commercial_dimensions
+                ),
+                "identity_provenance": sale.identity_provenance,
             }
             for sale in evidence.comparables[:20]
         ],
@@ -5562,6 +5815,15 @@ def _deserialize_external_evidence(
                     context="cache externe strict",
                     exact_card=bool(raw.get("exact_card", True)),
                     match_score=int(raw.get("match_score", 100)),
+                    proven_commercial_dimensions=tuple(
+                        str(value)
+                        for value in raw.get(
+                            "proven_commercial_dimensions", []
+                        )
+                    ),
+                    identity_provenance=str(
+                        raw.get("identity_provenance") or ""
+                    ),
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -5630,7 +5892,11 @@ def cached_external_evidence(
     return evidence, "HIT"
 
 
-def store_external_evidence(state: dict, evidence: ExternalMarketEvidence) -> None:
+def store_external_evidence(
+    state: dict, evidence: ExternalMarketEvidence
+) -> bool:
+    if evidence.status not in EXTERNAL_CACHEABLE_STATUSES:
+        return False
     cache = state.get(EXTERNAL_CACHE_STATE_KEY)
     if not isinstance(cache, dict) or cache.get("schema_version") != EXTERNAL_CACHE_SCHEMA_VERSION:
         cache = {"schema_version": EXTERNAL_CACHE_SCHEMA_VERSION, "entries": {}}
@@ -5638,6 +5904,8 @@ def store_external_evidence(state: dict, evidence: ExternalMarketEvidence) -> No
     entries = cache.setdefault("entries", {})
     if isinstance(entries, dict):
         entries[evidence.identity_key] = _serialize_external_evidence(evidence)
+        return True
+    return False
 
 
 def _with_valuation_path(
@@ -5681,8 +5949,16 @@ def markets_materially_agree(
 ) -> bool:
     if first.central <= 0 or second.central <= 0:
         return False
-    ratio = second.central / first.central
-    return 0.60 <= ratio <= 1.60
+    intervals_overlap = max(first.low, second.low) <= min(
+        first.high, second.high
+    )
+    central_ratio = second.central / first.central
+    return (
+        intervals_overlap
+        and MARKET_AGREEMENT_MIN_CENTRAL_RATIO
+        <= central_ratio
+        <= MARKET_AGREEMENT_MAX_CENTRAL_RATIO
+    )
 
 
 def arbitrate_market_evidence(
@@ -5820,6 +6096,33 @@ def arbitrate_market_evidence(
     )
 
 
+def _record_provider_evidence_diagnostic(
+    diagnostics: ExternalMarketDiagnostics,
+    source: str,
+    evidence: ExternalMarketEvidence,
+) -> None:
+    prefix = "apr" if source == "psa" else "ebay"
+    if evidence.strength == EVIDENCE_STRONG:
+        counter = f"{prefix}_sufficient"
+    elif evidence.status in {
+        EXTERNAL_CLEAN_NO_MATCH, EXTERNAL_CLEAN_INSUFFICIENT
+    }:
+        counter = f"{prefix}_insufficient"
+    else:
+        counter = f"{prefix}_unavailable"
+    setattr(diagnostics, counter, getattr(diagnostics, counter) + 1)
+
+    if evidence.status == EXTERNAL_PROVIDER_ERROR:
+        counter = f"{prefix}_provider_errors"
+    elif evidence.status == EXTERNAL_TRANSIENT_UNAVAILABLE:
+        counter = f"{prefix}_transient_unavailable"
+    elif evidence.status == EXTERNAL_RATE_LIMITED:
+        counter = f"{prefix}_rate_limited"
+    else:
+        return
+    setattr(diagnostics, counter, getattr(diagnostics, counter) + 1)
+
+
 def fetch_external_market_evidence(
     page,
     candidate: ValuationCandidate,
@@ -5854,20 +6157,25 @@ def fetch_external_market_evidence(
                     pop_higher=data.pop_higher,
                     most_recent_price=data.most_recent_price,
                     minimum_comparables=PSA_APR_MIN_COMPS,
+                    provider_status=data.provider_status,
                 )
             except Exception as error:
-                diagnostics.apr_unavailable += 1
                 apr_result = ExternalMarketEvidence(
-                    key, EXTERNAL_UNAVAILABLE, note=f"APR {type(error).__name__}"
+                    key, EXTERNAL_PROVIDER_ERROR,
+                    note=f"APR {type(error).__name__}",
+                    fetched_at=now,
                 )
+            _record_provider_evidence_diagnostic(
+                diagnostics, "psa", apr_result
+            )
             if apr_result.strength == EVIDENCE_STRONG:
-                diagnostics.apr_sufficient += 1
                 return apr_result
-            diagnostics.apr_insufficient += 1
-        elif not EBAY_ENABLED:
-            return ExternalMarketEvidence(
+        else:
+            apr_result = ExternalMarketEvidence(
                 key, EXTERNAL_PENDING, note="budget PSA APR épuisé"
             )
+            if not EBAY_ENABLED:
+                return apr_result
 
     if EBAY_ENABLED:
         if budgets.ebay_cards >= max(0, EBAY_MAX_CARDS_PER_RUN):
@@ -5883,24 +6191,45 @@ def fetch_external_market_evidence(
         budgets.ebay_cards += 1
         diagnostics.ebay_attempted += 1
         try:
-            sales = scrape_ebay_sold(page, lot)
+            scraped = scrape_ebay_sold(page, lot, with_status=True)
+            if isinstance(scraped, ExternalScrapeResult):
+                scrape_result = scraped
+            else:
+                scrape_result = ExternalScrapeResult(
+                    list(scraped), EXTERNAL_MATCHED,
+                    f"eBay: {len(scraped)} résultat(s) brut(s)",
+                )
             evidence = build_external_market_evidence(
                 lot,
-                sales,
+                scrape_result.sales,
                 "ebay",
                 now,
-                note=f"eBay: {len(sales)} résultat(s) brut(s)",
+                note=scrape_result.note,
                 minimum_comparables=EBAY_MIN_COMPS,
+                provider_status=scrape_result.status,
             )
         except Exception as error:
-            diagnostics.ebay_unavailable += 1
             evidence = ExternalMarketEvidence(
-                key, EXTERNAL_UNAVAILABLE, note=f"eBay {type(error).__name__}"
+                key, EXTERNAL_PROVIDER_ERROR,
+                note=f"eBay {type(error).__name__}",
+                fetched_at=now,
             )
-        if evidence.strength == EVIDENCE_STRONG:
-            diagnostics.ebay_sufficient += 1
-        else:
-            diagnostics.ebay_insufficient += 1
+        _record_provider_evidence_diagnostic(diagnostics, "ebay", evidence)
+        if (
+            evidence.strength != EVIDENCE_STRONG
+            and apr_result is not None
+            and (
+                apr_result.status in EXTERNAL_RETRY_STATUSES
+                or apr_result.status == EXTERNAL_PENDING
+            )
+        ):
+            return replace(
+                apr_result,
+                note=(
+                    f"{apr_result.note}; fallback eBay {evidence.status}: "
+                    f"{evidence.note}"
+                ).strip("; "),
+            )
         return evidence
 
     if apr_result is not None:
@@ -5908,7 +6237,8 @@ def fetch_external_market_evidence(
     diagnostics.apr_unavailable += int(grader == "PSA")
     diagnostics.ebay_unavailable += 1
     return ExternalMarketEvidence(
-        key, EXTERNAL_UNAVAILABLE, note="sources externes désactivées"
+        key, EXTERNAL_TRANSIENT_UNAVAILABLE,
+        note="sources externes désactivées", fetched_at=now,
     )
 
 
@@ -6008,8 +6338,10 @@ def process_external_market_candidates(
         if after != before or evidence.status != EXTERNAL_PENDING:
             external_diagnostics.queue_selected += 1
         evidence_by_key[key] = evidence
-        if evidence.status != EXTERNAL_PENDING:
+        if evidence.status in EXTERNAL_CACHEABLE_STATUSES:
             store_external_evidence(state, evidence)
+        elif evidence.status in EXTERNAL_RETRY_STATUSES:
+            external_diagnostics.cache_skipped_transient += 1
 
     final_opportunities = []
     for candidate in candidates:
@@ -6026,7 +6358,11 @@ def process_external_market_candidates(
             (
                 REJECTION_EXTERNAL_PENDING
                 if result.path == PATH_EXTERNAL_PENDING
-                else result.path
+                else (
+                    REJECTION_EXTERNAL_RETRY
+                    if evidence.status in EXTERNAL_RETRY_STATUSES
+                    else result.path
+                )
             ),
         )
         if result.opportunity is not None:
@@ -6038,6 +6374,8 @@ def process_external_market_candidates(
             run_diagnostics.record_external_rejection(candidate.lot)
         elif result.path == PATH_EXTERNAL_PENDING:
             rejection = REJECTION_EXTERNAL_PENDING
+        elif evidence.status in EXTERNAL_RETRY_STATUSES:
+            rejection = REJECTION_EXTERNAL_RETRY
         else:
             rejection = candidate.gcc.rejection_category or REJECTION_OTHER
         run_diagnostics.record_valuation(candidate.lot, rejection)
@@ -6487,7 +6825,9 @@ def _fixed_queue_category(
     last_evaluated = _parse_state_datetime(record.get("last_evaluated_at"))
     evaluated_fingerprint = record.get("evaluated_fingerprint")
     evaluation_version = record.get("evaluation_version")
-    if record.get("last_evaluation_status") == REJECTION_EXTERNAL_PENDING:
+    if record.get("last_evaluation_status") in {
+        REJECTION_EXTERNAL_PENDING, REJECTION_EXTERNAL_RETRY
+    }:
         return QUEUE_P1_CHANGED
     if (
         last_evaluated is None
@@ -6831,6 +7171,10 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
             f"{diagnostics.rejection_count(REJECTION_EXTERNAL_PENDING)}"
         ),
         (
+            "- marché externe à retenter après erreur provider: "
+            f"{diagnostics.rejection_count(REJECTION_EXTERNAL_RETRY)}"
+        ),
+        (
             "- conflit de marchés forts: "
             f"{diagnostics.rejection_count(REJECTION_MARKET_CONFLICT)}"
         ),
@@ -6919,7 +7263,9 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
                 "External cache: "
                 f"hit {diagnostics.external_market.cache_hits} | "
                 f"miss {diagnostics.external_market.cache_misses} | "
-                f"stale {diagnostics.external_market.cache_stale}"
+                f"stale {diagnostics.external_market.cache_stale} | "
+                "transient not cached "
+                f"{diagnostics.external_market.cache_skipped_transient}"
             ),
             (
                 "External queue: "
@@ -6933,14 +7279,32 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
                 f"attempted {diagnostics.external_market.apr_attempted} | "
                 f"sufficient {diagnostics.external_market.apr_sufficient} | "
                 f"insufficient {diagnostics.external_market.apr_insufficient} | "
-                f"unavailable {diagnostics.external_market.apr_unavailable}"
+                f"unavailable {diagnostics.external_market.apr_unavailable} | "
+                f"errors {diagnostics.external_market.apr_provider_errors} | "
+                "transient "
+                f"{diagnostics.external_market.apr_transient_unavailable} | "
+                f"rate-limit {diagnostics.external_market.apr_rate_limited}"
             ),
             (
                 "eBay: "
                 f"attempted {diagnostics.external_market.ebay_attempted} | "
                 f"sufficient {diagnostics.external_market.ebay_sufficient} | "
                 f"insufficient {diagnostics.external_market.ebay_insufficient} | "
-                f"unavailable {diagnostics.external_market.ebay_unavailable}"
+                f"unavailable {diagnostics.external_market.ebay_unavailable} | "
+                f"errors {diagnostics.external_market.ebay_provider_errors} | "
+                "transient "
+                f"{diagnostics.external_market.ebay_transient_unavailable} | "
+                f"rate-limit {diagnostics.external_market.ebay_rate_limited}"
+            ),
+            (
+                "External outcomes: "
+                f"clean no-match {diagnostics.external_market.clean_no_match} | "
+                "clean insufficient "
+                f"{diagnostics.external_market.clean_insufficient} | "
+                f"provider errors {diagnostics.external_market.provider_errors} | "
+                "transient unavailable "
+                f"{diagnostics.external_market.transient_unavailable} | "
+                f"rate-limited {diagnostics.external_market.rate_limited}"
             ),
             (
                 "External evidence: "

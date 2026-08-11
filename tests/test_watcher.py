@@ -2708,9 +2708,32 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
                 match_score=kwargs.get("match_score", 100),
                 exact_card=kwargs.get("exact_card", True),
                 grade_qualifier=kwargs.get("grade_qualifier"),
+                proven_commercial_dimensions=kwargs.get(
+                    "proven_commercial_dimensions", ()
+                ),
+                identity_provenance=kwargs.get("identity_provenance", ""),
             )
             for price in prices
         ]
+
+    def market_estimate(self, low, central, high):
+        return watcher.MarketEstimate(
+            low=low,
+            central=central,
+            high=high,
+            kept_comparables=[],
+            rejected_outliers=[],
+            recent_90_count=0,
+            dated_count=0,
+            liquidity="faible",
+            dispersion="faible",
+            confidence="faible",
+            adaptive_discount_pct=30,
+            rationale="test agreement",
+            source_counts={},
+            exact_grade_count=2,
+            same_grader_count=2,
+        )
 
     def gcc(self, lot, prices):
         return watcher.build_gcc_market_evidence(
@@ -2822,6 +2845,60 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
         )[0]
         self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
 
+    def test_external_comparable_rejects_missing_french_proof(self):
+        lot = self.lot()
+        comparable = self.external_sales(
+            [200], context="Pokemon Zorua Holo 045/132"
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_external_comparable_rejects_missing_holo_proof(self):
+        lot = self.lot(variant="Holo")
+        comparable = self.external_sales(
+            [200], context="Pokemon Zorua 045/132 French"
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_external_comparable_rejects_missing_first_edition_proof(self):
+        lot = self.lot(variant="1st Edition")
+        comparable = self.external_sales(
+            [200], context="Pokemon Zorua Holo 045/132 French"
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_external_comparable_rejects_other_missing_sensitive_dimensions(self):
+        cases = (
+            ("Unlimited", "Pokemon Zorua Holo 045/132 French"),
+            ("Shadowless", "Pokemon Zorua Holo 045/132 French"),
+            ("Promo", "Pokemon Zorua Holo 045/132 French"),
+            ("Stamped", "Pokemon Zorua Holo 045/132 French"),
+        )
+        for variant, context in cases:
+            with self.subTest(variant=variant):
+                comparable = self.external_sales([200], context=context)[0]
+                self.assertFalse(
+                    watcher.external_comparable_is_exact(
+                        self.lot(variant=variant), comparable
+                    )
+                )
+
+    def test_japanese_listing_rejects_missing_language_proof(self):
+        lot = self.lot()
+        lot.language = "Japanese"
+        lot.body = lot.body.replace("Français", "Japonais")
+        comparable = self.external_sales(
+            [200], context="Pokemon Zorua Holo 045/132"
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_external_comparable_rejects_unlimited_for_first_edition(self):
+        lot = self.lot(variant="1st Edition")
+        comparable = self.external_sales(
+            [200],
+            context="Pokemon Zorua Holo Unlimited 045/132 French",
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
     def test_external_comparable_rejects_conflicting_reference(self):
         lot = self.lot()
         comparable = self.external_sales(
@@ -2832,9 +2909,59 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
     def test_psa_comparable_inherits_exact_spec_identity(self):
         lot = self.lot()
         comparable = self.external_sales(
-            [200], source="psa", context="PSA APR | Goldin"
+            [200],
+            source="psa",
+            context="PSA APR | Goldin",
+            identity_provenance="psa_spec_exact",
+            proven_commercial_dimensions=("finish:holo", "language:french"),
         )[0]
         self.assertTrue(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_psa_comparable_without_spec_provenance_is_rejected(self):
+        lot = self.lot()
+        comparable = self.external_sales(
+            [200], source="psa", context="PSA APR | Goldin"
+        )[0]
+        self.assertFalse(watcher.external_comparable_is_exact(lot, comparable))
+
+    def test_psa_spec_page_proves_identity_and_commercial_dimensions(self):
+        lot = self.lot()
+        data = watcher.PsaAprData(
+            self.external_sales([200], source="psa", context="PSA APR")
+        )
+        watcher.attach_psa_spec_provenance(
+            data,
+            "2026 Pokemon Mega Evolution Zorua #045/132 French Holo",
+        )
+        self.assertTrue(watcher.external_comparable_is_exact(lot, data.sales[0]))
+
+    def test_psa_spec_page_missing_finish_fails_closed(self):
+        lot = self.lot()
+        data = watcher.PsaAprData(
+            self.external_sales([200], source="psa", context="PSA APR")
+        )
+        watcher.attach_psa_spec_provenance(
+            data,
+            "2026 Pokemon Mega Evolution Zorua #045/132 French",
+        )
+        self.assertFalse(watcher.external_comparable_is_exact(lot, data.sales[0]))
+
+    def test_psa_spec_does_not_use_navigation_or_sales_as_dimension_proof(self):
+        lot = self.lot()
+        data = watcher.PsaAprData(
+            self.external_sales([200], source="psa", context="PSA APR")
+        )
+        watcher.attach_psa_spec_provenance(
+            data,
+            (
+                "English\n"
+                "2026 Pokemon Mega Evolution Zorua #045/132\n"
+                "Sales History\n"
+                "French Holo $200"
+            ),
+            lot,
+        )
+        self.assertFalse(watcher.external_comparable_is_exact(lot, data.sales[0]))
 
     def test_empty_gcc_history_is_rescuable_unavailable_evidence(self):
         evidence = self.gcc(self.lot(), [])
@@ -2967,10 +3094,55 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
         lot = self.lot(price=50)
         result = watcher.arbitrate_market_evidence(
             self.gcc(lot, [100, 101, 102]),
-            self.external(lot, [104, 105, 106]),
+            self.external(lot, [101, 102, 103]),
         )
         self.assertEqual(result.path, watcher.PATH_GCC_EXTERNAL_CONFIRMED)
         self.assertIsNotNone(result.opportunity)
+
+    def test_market_agreement_accepts_close_centers_with_overlap(self):
+        first = self.market_estimate(90, 100, 110)
+        second = self.market_estimate(95, 105, 115)
+        self.assertTrue(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_accepts_upper_ratio_boundary(self):
+        first = self.market_estimate(90, 100, 125)
+        second = self.market_estimate(100, 125, 140)
+        self.assertTrue(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_accepts_center_ratio_120_with_overlap(self):
+        first = self.market_estimate(90, 100, 125)
+        second = self.market_estimate(100, 120, 135)
+        self.assertTrue(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_accepts_lower_ratio_boundary(self):
+        first = self.market_estimate(70, 100, 110)
+        second = self.market_estimate(65, 80, 105)
+        self.assertTrue(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_rejects_below_lower_ratio_boundary(self):
+        first = self.market_estimate(60, 100, 110)
+        second = self.market_estimate(55, 79, 105)
+        self.assertFalse(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_rejects_center_ratio_130_despite_overlap(self):
+        first = self.market_estimate(90, 100, 135)
+        second = self.market_estimate(95, 130, 145)
+        self.assertFalse(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_rejects_center_ratio_160(self):
+        first = self.market_estimate(90, 100, 165)
+        second = self.market_estimate(95, 160, 175)
+        self.assertFalse(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_rejects_close_centers_without_interval_overlap(self):
+        first = self.market_estimate(90, 100, 101)
+        second = self.market_estimate(102, 105, 110)
+        self.assertFalse(watcher.markets_materially_agree(first, second))
+
+    def test_market_agreement_rejects_overlap_when_centers_exceed_ratio(self):
+        first = self.market_estimate(90, 100, 140)
+        second = self.market_estimate(120, 130, 145)
+        self.assertFalse(watcher.markets_materially_agree(first, second))
 
     def test_external_unavailable_preserves_valid_gcc_opportunity(self):
         lot = self.lot(price=50)
@@ -3070,6 +3242,55 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
             watcher.EXTERNAL_CACHE_SCHEMA_VERSION,
         )
 
+    def test_external_cache_stores_clean_insufficient_result(self):
+        lot = self.lot()
+        evidence = self.external(lot, [240])
+        state = {}
+        self.assertEqual(evidence.status, watcher.EXTERNAL_CLEAN_INSUFFICIENT)
+        self.assertTrue(watcher.store_external_evidence(state, evidence))
+        cached, status = watcher.cached_external_evidence(
+            state, evidence.identity_key, NOW
+        )
+        self.assertEqual(status, "HIT")
+        self.assertEqual(cached.status, watcher.EXTERNAL_CLEAN_INSUFFICIENT)
+
+    def test_external_cache_never_stores_transient_or_rate_limited_result(self):
+        lot = self.lot()
+        key = watcher.external_commercial_identity_key(lot)
+        for provider_status in (
+            watcher.EXTERNAL_PROVIDER_ERROR,
+            watcher.EXTERNAL_TRANSIENT_UNAVAILABLE,
+            watcher.EXTERNAL_RATE_LIMITED,
+        ):
+            state = {}
+            evidence = watcher.ExternalMarketEvidence(
+                key, provider_status, fetched_at=NOW
+            )
+            self.assertFalse(watcher.store_external_evidence(state, evidence))
+            self.assertNotIn(watcher.EXTERNAL_CACHE_STATE_KEY, state)
+
+    def test_fresh_clean_no_match_cache_hit_uses_no_provider_budget(self):
+        lot = self.lot()
+        candidate = watcher.ValuationCandidate(self.gcc(lot, []))
+        clean = watcher.build_external_market_evidence(
+            lot, [], "ebay", NOW,
+            provider_status=watcher.EXTERNAL_CLEAN_NO_MATCH,
+        )
+        state = {}
+        watcher.store_external_evidence(state, clean)
+        budgets = watcher.ValidationBudgets()
+        result = watcher.process_external_market_candidates(
+            None,
+            [candidate],
+            state,
+            budgets,
+            watcher.RunDiagnostics(),
+            NOW,
+            provider=lambda *_: self.fail("clean cache hit must skip provider"),
+        )
+        self.assertEqual(result, [])
+        self.assertEqual((budgets.psa_apr_cards, budgets.ebay_cards), (0, 0))
+
     def test_external_queue_deduplicates_same_commercial_identity(self):
         first_lot = self.lot(suffix="dedup-a")
         second_lot = self.lot(suffix="dedup-b")
@@ -3137,6 +3358,42 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
             provider=lambda item, *_: watcher.ExternalMarketEvidence(
                 watcher.external_commercial_identity_key(item.lot),
                 watcher.EXTERNAL_PENDING,
+            ),
+        )
+        record = state[watcher.FIXED_QUEUE_STATE_KEY]["items"][item_id]
+        self.assertEqual(
+            watcher._fixed_queue_category(record, "same", NOW),
+            watcher.QUEUE_P1_CHANGED,
+        )
+
+    def test_transient_fixed_external_work_is_requeued_next_run(self):
+        lot = self.lot(suffix="transient-fixed")
+        item_id = watcher.fixed_listing_id(lot)
+        state = {
+            watcher.FIXED_QUEUE_STATE_KEY: {
+                "schema_version": watcher.FIXED_QUEUE_SCHEMA_VERSION,
+                "items": {
+                    item_id: {
+                        "last_evaluated_at": NOW.isoformat(),
+                        "evaluated_fingerprint": "same",
+                        "evaluation_version": watcher.ECONOMIC_EVALUATION_VERSION,
+                        "last_evaluation_status": "completed",
+                    }
+                },
+            }
+        }
+        candidate = watcher.ValuationCandidate(self.gcc(lot, []))
+        watcher.process_external_market_candidates(
+            None,
+            [candidate],
+            state,
+            watcher.ValidationBudgets(),
+            watcher.RunDiagnostics(),
+            NOW,
+            provider=lambda item, *_: watcher.ExternalMarketEvidence(
+                watcher.external_commercial_identity_key(item.lot),
+                watcher.EXTERNAL_TRANSIENT_UNAVAILABLE,
+                fetched_at=NOW,
             ),
         )
         record = state[watcher.FIXED_QUEUE_STATE_KEY]["items"][item_id]
@@ -3225,7 +3482,15 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
         lot = self.lot()
         candidate = watcher.ValuationCandidate(self.gcc(lot, []))
         data = watcher.PsaAprData(
-            self.external_sales([240, 250], source="psa", context="PSA APR")
+            self.external_sales(
+                [240, 250],
+                source="psa",
+                context="PSA APR",
+                identity_provenance="psa_spec_exact",
+                proven_commercial_dimensions=(
+                    "finish:holo", "language:french"
+                ),
+            )
         )
         diagnostics = watcher.ExternalMarketDiagnostics()
         with patch.object(watcher, "PSA_APR_ENABLED", True), patch.object(
@@ -3241,7 +3506,15 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
         lot = self.lot()
         candidate = watcher.ValuationCandidate(self.gcc(lot, []))
         apr = watcher.PsaAprData(
-            self.external_sales([240], source="psa", context="PSA APR")
+            self.external_sales(
+                [240],
+                source="psa",
+                context="PSA APR",
+                identity_provenance="psa_spec_exact",
+                proven_commercial_dimensions=(
+                    "finish:holo", "language:french"
+                ),
+            )
         )
         ebay_sales = self.external_sales([245, 250], source="ebay")
         diagnostics = watcher.ExternalMarketDiagnostics()
@@ -3253,6 +3526,122 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
             )
         self.assertEqual(evidence.source, "ebay")
         self.assertEqual(diagnostics.apr_insufficient, 1)
+
+    def test_ebay_exception_is_not_cached_and_is_retried(self):
+        lot = self.lot()
+        candidate = watcher.ValuationCandidate(self.gcc(lot, []))
+        state = {}
+        diagnostics = watcher.RunDiagnostics()
+        with patch.object(watcher, "PSA_APR_ENABLED", False), patch.object(
+            watcher, "EBAY_ENABLED", True
+        ), patch.object(
+            watcher, "scrape_ebay_sold", side_effect=TimeoutError("timeout")
+        ):
+            watcher.process_external_market_candidates(
+                None,
+                [candidate],
+                state,
+                watcher.ValidationBudgets(),
+                diagnostics,
+                NOW,
+            )
+        self.assertNotIn(watcher.EXTERNAL_CACHE_STATE_KEY, state)
+        self.assertEqual(diagnostics.external_market.ebay_provider_errors, 1)
+        self.assertEqual(diagnostics.external_market.cache_skipped_transient, 1)
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_EXTERNAL_RETRY), 1
+        )
+
+    def test_apr_exception_is_not_cached_and_is_retried(self):
+        lot = self.lot()
+        candidate = watcher.ValuationCandidate(self.gcc(lot, []))
+        state = {}
+        diagnostics = watcher.RunDiagnostics()
+        with patch.object(watcher, "PSA_APR_ENABLED", True), patch.object(
+            watcher, "PSA_APR_MAX_CARDS_PER_RUN", 1
+        ), patch.object(watcher, "EBAY_ENABLED", False), patch.object(
+            watcher, "scrape_psa_apr", side_effect=RuntimeError("provider")
+        ):
+            watcher.process_external_market_candidates(
+                None,
+                [candidate],
+                state,
+                watcher.ValidationBudgets(),
+                diagnostics,
+                NOW,
+            )
+        self.assertNotIn(watcher.EXTERNAL_CACHE_STATE_KEY, state)
+        self.assertEqual(diagnostics.external_market.apr_provider_errors, 1)
+        self.assertEqual(diagnostics.external_market.cache_skipped_transient, 1)
+
+    def test_apr_exception_is_not_hidden_by_clean_ebay_fallback(self):
+        lot = self.lot()
+        candidate = watcher.ValuationCandidate(self.gcc(lot, []))
+        state = {}
+        diagnostics = watcher.RunDiagnostics()
+        with patch.object(watcher, "PSA_APR_ENABLED", True), patch.object(
+            watcher, "PSA_APR_MAX_CARDS_PER_RUN", 1
+        ), patch.object(watcher, "EBAY_ENABLED", True), patch.object(
+            watcher, "scrape_psa_apr", side_effect=RuntimeError("provider")
+        ), patch.object(watcher, "scrape_ebay_sold", return_value=[]):
+            watcher.process_external_market_candidates(
+                None,
+                [candidate],
+                state,
+                watcher.ValidationBudgets(),
+                diagnostics,
+                NOW,
+            )
+        self.assertNotIn(watcher.EXTERNAL_CACHE_STATE_KEY, state)
+        self.assertEqual(diagnostics.external_market.apr_provider_errors, 1)
+        self.assertEqual(diagnostics.external_market.ebay_insufficient, 1)
+        self.assertEqual(diagnostics.external_market.provider_errors, 1)
+
+    def test_apr_budget_pending_is_not_hidden_by_clean_ebay_fallback(self):
+        lot = self.lot()
+        candidate = watcher.ValuationCandidate(self.gcc(lot, []))
+        state = {}
+        diagnostics = watcher.RunDiagnostics()
+        with patch.object(watcher, "PSA_APR_ENABLED", True), patch.object(
+            watcher, "PSA_APR_MAX_CARDS_PER_RUN", 0
+        ), patch.object(watcher, "EBAY_ENABLED", True), patch.object(
+            watcher, "scrape_ebay_sold", return_value=[]
+        ):
+            watcher.process_external_market_candidates(
+                None,
+                [candidate],
+                state,
+                watcher.ValidationBudgets(),
+                diagnostics,
+                NOW,
+            )
+        self.assertNotIn(watcher.EXTERNAL_CACHE_STATE_KEY, state)
+        self.assertEqual(
+            diagnostics.rejection_count(watcher.REJECTION_EXTERNAL_PENDING), 1
+        )
+
+    def test_rate_limited_provider_result_is_not_cached(self):
+        lot = self.lot()
+        candidate = watcher.ValuationCandidate(self.gcc(lot, []))
+        state = {}
+        diagnostics = watcher.RunDiagnostics()
+        watcher.process_external_market_candidates(
+            None,
+            [candidate],
+            state,
+            watcher.ValidationBudgets(),
+            diagnostics,
+            NOW,
+            provider=lambda item, *_: watcher.ExternalMarketEvidence(
+                watcher.external_commercial_identity_key(item.lot),
+                watcher.EXTERNAL_RATE_LIMITED,
+                note="429",
+                fetched_at=NOW,
+            ),
+        )
+        self.assertNotIn(watcher.EXTERNAL_CACHE_STATE_KEY, state)
+        self.assertEqual(diagnostics.external_market.rate_limited, 1)
+        self.assertEqual(diagnostics.external_market.cache_skipped_transient, 1)
 
     def test_non_psa_route_uses_same_grader_ebay_only(self):
         lot = self.lot(grader="PCA")
