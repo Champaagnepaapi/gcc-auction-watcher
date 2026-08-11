@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run complete repaired V5 suite
+      - name: Run final targeted V5 suite
         run: |
           python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
           python -m unittest discover -s tests_v5 -p 'test*.py' -v
