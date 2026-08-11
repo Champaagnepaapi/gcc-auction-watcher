@@ -4,6 +4,7 @@ on:
   # Production cadence is driven externally (Cron-job.org) through
   # workflow_dispatch. Do not add a GitHub schedule here: scheduled Actions
   # proved unreliable for this watcher and would also duplicate external runs.
+  # Historical GitHub schedule intentionally removed: cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch:
 
 concurrency:
