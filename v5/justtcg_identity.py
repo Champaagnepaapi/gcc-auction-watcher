@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, replace
-from typing import Mapping, Optional, Sequence, Tuple
+from typing import Callable, Mapping, Optional, Sequence, Tuple
 
 import requests
 
@@ -19,6 +20,7 @@ from .variant_semantics import semantics_from_identity, variant_compatibility
 
 
 JUSTTCG_CARDS_URL = "https://api.justtcg.com/v1/cards"
+JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS = 6.25
 
 
 @dataclass
@@ -30,6 +32,15 @@ class JustTCGCounters:
     skipped_insufficient: int = 0
     request_failures: int = 0
     rate_limited: int = 0
+    retry_attempts: int = 0
+    bad_request: int = 0
+    unauthorized: int = 0
+    forbidden: int = 0
+    server_errors: int = 0
+    other_http_failures: int = 0
+    json_failures: int = 0
+    daily_limit_exceeded: int = 0
+    monthly_limit_exceeded: int = 0
     candidates_received: int = 0
     rejected_name: int = 0
     rejected_set: int = 0
@@ -154,6 +165,10 @@ class JustTCGIdentityResolver:
     resolvable identity uses JustTCG's stable v1 search + card-number filter,
     then every candidate is revalidated locally against name, set, number,
     language and printing semantics.
+
+    Free currently allows 10 requests/minute, so this resolver spaces live
+    requests by at least 6.25 seconds. A transient minute-limit 429 may be
+    retried once after Retry-After; daily/monthly quota errors are never retried.
     """
 
     def __init__(
@@ -162,12 +177,22 @@ class JustTCGIdentityResolver:
         api_key: Optional[str] = None,
         session: Optional[requests.Session] = None,
         timeout_seconds: float = 12.0,
+        min_request_interval_seconds: float = JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self.api_key = api_key if api_key is not None else os.getenv("JUSTTCG_API_KEY", "").strip()
         self.session = session or requests.Session()
         self.timeout_seconds = timeout_seconds
+        self.min_request_interval_seconds = max(
+            JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS,
+            float(min_request_interval_seconds),
+        )
+        self.clock = clock
+        self.sleeper = sleeper
         self.counters = JustTCGCounters()
         self._cache: dict[Tuple[str, ...], JustTCGIdentityResolution] = {}
+        self._last_request_at: Optional[float] = None
 
     @staticmethod
     def _key(identity: CardIdentity) -> Tuple[str, ...]:
@@ -180,6 +205,96 @@ class JustTCGIdentityResolver:
             _normalize(identity.finish),
             _normalize(identity.edition),
         )
+
+    def _respect_rate_limit(self) -> None:
+        if self._last_request_at is not None:
+            elapsed = self.clock() - self._last_request_at
+            remaining = self.min_request_interval_seconds - elapsed
+            if remaining > 0:
+                self.sleeper(remaining)
+        self._last_request_at = self.clock()
+
+    @staticmethod
+    def _safe_error_code(response: object) -> Optional[str]:
+        try:
+            payload = response.json()
+        except Exception:
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        code = str(payload.get("code") or "").strip().upper()
+        return code or None
+
+    @staticmethod
+    def _retry_after_seconds(response: object) -> Optional[float]:
+        headers = getattr(response, "headers", None)
+        if isinstance(headers, Mapping):
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+            try:
+                if raw is not None:
+                    return max(0.0, float(str(raw).strip()))
+            except ValueError:
+                return None
+        return None
+
+    def _request_once(self, params: Mapping[str, str]) -> tuple[Optional[object], Optional[str]]:
+        self._respect_rate_limit()
+        try:
+            response = self.session.get(
+                JUSTTCG_CARDS_URL,
+                headers={"Accept": "application/json", "x-api-key": self.api_key},
+                params=dict(params),
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException:
+            self.counters.request_failures += 1
+            return None, "TRANSPORT"
+
+        status = getattr(response, "status_code", None)
+        if status == 200:
+            return response, None
+        if status == 429:
+            self.counters.rate_limited += 1
+            code = self._safe_error_code(response)
+            if code == "DAILY_LIMIT_EXCEEDED":
+                self.counters.daily_limit_exceeded += 1
+            elif code == "REQUEST_LIMIT_EXCEEDED":
+                self.counters.monthly_limit_exceeded += 1
+            return response, code or "RATE_LIMIT_EXCEEDED"
+
+        self.counters.request_failures += 1
+        if status == 400:
+            self.counters.bad_request += 1
+        elif status == 401:
+            self.counters.unauthorized += 1
+        elif status == 403:
+            self.counters.forbidden += 1
+        elif isinstance(status, int) and status >= 500:
+            self.counters.server_errors += 1
+        else:
+            self.counters.other_http_failures += 1
+        return response, f"HTTP_{status}"
+
+    def _request(self, params: Mapping[str, str]) -> Optional[object]:
+        response, error = self._request_once(params)
+        if error is None:
+            return response
+        if error in {"DAILY_LIMIT_EXCEEDED", "REQUEST_LIMIT_EXCEEDED"}:
+            return None
+        if getattr(response, "status_code", None) != 429:
+            return None
+
+        wait_seconds = self._retry_after_seconds(response)
+        if wait_seconds is None:
+            # Our own 6.25s cadence should make this rare. A small extra backoff
+            # is safer than an immediate retry when the provider omits the header.
+            wait_seconds = self.min_request_interval_seconds
+        if wait_seconds > 65:
+            return None
+        self.counters.retry_attempts += 1
+        self.sleeper(max(wait_seconds, self.min_request_interval_seconds))
+        retried, retry_error = self._request_once(params)
+        return retried if retry_error is None else None
 
     def resolve_identity(self, identity: CardIdentity) -> JustTCGIdentityResolution:
         if not self.api_key:
@@ -199,40 +314,23 @@ class JustTCGIdentityResolver:
             "limit": "20",
             "include_null_prices": "true",
             "include_price_history": "false",
-            "include_statistics": "false",
         }
         numerator, _denominator = _card_number_parts(identity.card_number)
         if numerator:
             params["number"] = numerator
 
         self.counters.queries += 1
-        try:
-            response = self.session.get(
-                JUSTTCG_CARDS_URL,
-                headers={"Accept": "application/json", "x-api-key": self.api_key},
-                params=params,
-                timeout=self.timeout_seconds,
-            )
-        except requests.RequestException:
-            self.counters.request_failures += 1
+        response = self._request(params)
+        if response is None:
             result = JustTCGIdentityResolution(identity)
             self._cache[key] = result
             return result
 
-        if response.status_code == 429:
-            self.counters.rate_limited += 1
-            result = JustTCGIdentityResolution(identity)
-            self._cache[key] = result
-            return result
-        if response.status_code != 200:
-            self.counters.request_failures += 1
-            result = JustTCGIdentityResolution(identity)
-            self._cache[key] = result
-            return result
         try:
             payload = response.json()
         except ValueError:
             self.counters.request_failures += 1
+            self.counters.json_failures += 1
             result = JustTCGIdentityResolution(identity)
             self._cache[key] = result
             return result
@@ -305,6 +403,7 @@ def render_justtcg_counters(resolver: JustTCGIdentityResolver) -> str:
         (
             "=== V5 JUSTTCG IDENTITY BENCHMARK ===",
             "role: same-sample second opinion only; no economic value accepted",
+            f"enforced Free interval: >={resolver.min_request_interval_seconds:.2f}s",
             f"queries: {c.queries}",
             f"matches: {c.matches}",
             f"ambiguous: {c.ambiguous}",
@@ -312,6 +411,15 @@ def render_justtcg_counters(resolver: JustTCGIdentityResolver) -> str:
             f"skipped insufficient: {c.skipped_insufficient}",
             f"request failures: {c.request_failures}",
             f"rate limited: {c.rate_limited}",
+            f"retry attempts: {c.retry_attempts}",
+            f"HTTP 400 bad request: {c.bad_request}",
+            f"HTTP 401 unauthorized: {c.unauthorized}",
+            f"HTTP 403 forbidden: {c.forbidden}",
+            f"HTTP 5xx server errors: {c.server_errors}",
+            f"other HTTP failures: {c.other_http_failures}",
+            f"JSON failures: {c.json_failures}",
+            f"daily quota exceeded: {c.daily_limit_exceeded}",
+            f"monthly quota exceeded: {c.monthly_limit_exceeded}",
             f"candidates received: {c.candidates_received}",
             f"candidates all core matched: {c.candidates_all_core_matched}",
             f"rejected name: {c.rejected_name}",
