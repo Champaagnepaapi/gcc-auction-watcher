@@ -227,4 +227,23 @@ if __name__ == "__main__":
     install_fixed_queue_backlog_diagnostics()
     install_v4_auction_item_discovery()
     install_current_auction_discovery_diagnostics()
-    raise SystemExit(watcher.main())
+
+    status = watcher.main()
+    if status == 0:
+        # The normal scan cadence is ~10 minutes.  Run a bounded, targeted
+        # post-scan check only for already-notified auctions that crossed the
+        # <=15 minute reminder.  This helper never performs discovery, market
+        # valuation or any bid/purchase action.
+        try:
+            from v4_auction_last_chance import run_targeted_final_checks
+
+            run_targeted_final_checks()
+        except Exception as error:
+            # Supplemental final-alert reliability must never poison the normal
+            # production scan/state.  A later normal scan can still alert if it
+            # happens to land inside <=5 minutes.
+            watcher.log(
+                "Dernière chance indisponible: "
+                f"{type(error).__name__}; scan V4 principal conservé"
+            )
+    raise SystemExit(status)
