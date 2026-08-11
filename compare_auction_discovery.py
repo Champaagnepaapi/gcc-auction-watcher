@@ -10,6 +10,8 @@ from v4_auction_item_discovery import (
     PRIMARY_SCOPE_STATUS,
     _ORIGINAL_COLLECT_LIVE_AUCTION_URLS,
     _ORIGINAL_COLLECT_LOTS_FROM_LISTING,
+    _parse_visible_rows,
+    classify_auction_listing,
     discover_auction_index_lots,
 )
 
@@ -20,57 +22,6 @@ def write_output(name: str, value: object) -> None:
         return
     with Path(output_path).open("a", encoding="utf-8") as handle:
         handle.write(f"{name}={value}\n")
-
-
-def print_public_index_diagnostics(page) -> None:
-    """Print only public DOM/resource structure; never cookies or headers."""
-    try:
-        resources = page.evaluate(
-            """() => performance.getEntriesByType('resource')
-                .map(entry => entry.name)
-                .filter(url => url.includes('gradedcardcenter'))
-                .slice(-40)"""
-        )
-    except Exception:
-        resources = []
-    print("--- PUBLIC AUCTION INDEX RESOURCES ---", flush=True)
-    for resource in resources:
-        print(f"RESOURCE {resource}", flush=True)
-
-    try:
-        bid_buttons = page.get_by_role("button", name="Enchérir")
-        button_count = bid_buttons.count()
-    except Exception:
-        bid_buttons = None
-        button_count = 0
-    print(f"bid buttons visible: {button_count}", flush=True)
-
-    if not bid_buttons or button_count <= 0:
-        return
-
-    try:
-        node = bid_buttons.first
-        for level in range(1, 8):
-            node = node.locator("xpath=..")
-            snapshot = node.evaluate(
-                """el => ({
-                    tag: el.tagName,
-                    id: el.id || '',
-                    className: typeof el.className === 'string' ? el.className : '',
-                    role: el.getAttribute('role') || '',
-                    href: el.getAttribute('href') || '',
-                    data: Object.fromEntries(
-                        Array.from(el.attributes)
-                            .filter(a => a.name.startsWith('data-'))
-                            .map(a => [a.name, a.value])
-                    ),
-                    text: (el.innerText || '').slice(0, 500),
-                    html: (el.outerHTML || '').slice(0, 3500)
-                })"""
-            )
-            print(f"ANCESTOR_LEVEL_{level} {snapshot}", flush=True)
-    except Exception as error:
-        print(f"DOM_DIAGNOSTIC_ERROR {type(error).__name__}", flush=True)
 
 
 def resolve_ending_soon_ids(
@@ -117,6 +68,53 @@ def collect_legacy(page, horizon: int) -> list[watcher.Lot]:
         watcher.MAX_AUCTION_MINUTES = previous_horizon
 
 
+def print_legacy_only_diagnostics(
+    primary_page,
+    primary_result,
+    legacy_lots: list[watcher.Lot],
+    legacy_only: list[str],
+    horizon: int,
+) -> None:
+    if not legacy_only:
+        return
+    try:
+        visible_rows = {row[0]: row for row in _parse_visible_rows(primary_page)}
+    except Exception:
+        visible_rows = {}
+    legacy_by_url = {lot.url: lot for lot in legacy_lots}
+
+    print("--- LEGACY-ONLY DIAGNOSTICS ---", flush=True)
+    for url in legacy_only:
+        legacy = legacy_by_url.get(url)
+        print(
+            f"LEGACY_ONLY_DIAG url={url} "
+            f"present_in_primary_coverage={url in primary_result.coverage.listing_ids} "
+            f"present_in_primary_dom={url in visible_rows}",
+            flush=True,
+        )
+        if legacy is not None:
+            print(
+                "LEGACY_ONLY_META "
+                f"title={legacy.title!r} price={legacy.current_price!r} "
+                f"minutes={legacy.minutes_to_end!r} "
+                f"listing={legacy.listing_text[:700]!r}",
+                flush=True,
+            )
+        primary_row = visible_rows.get(url)
+        if primary_row is not None:
+            _, anchor_text, blob, minutes = primary_row
+            classified = classify_auction_listing(
+                url, anchor_text, blob, max_minutes=horizon
+            )
+            print(
+                "PRIMARY_ROW_DIAG "
+                f"anchor={anchor_text[:300]!r} minutes={minutes!r} "
+                f"status={classified.terminal_status!r} "
+                f"kept={classified.lot is not None} blob={blob[:1000]!r}",
+                flush=True,
+            )
+
+
 def main() -> int:
     horizon = max(60, int(os.getenv("V4_AUCTION_COMPARE_MINUTES", "720")))
     print("=== V4 AUCTION DISCOVERY COMPARISON ===", flush=True)
@@ -137,8 +135,6 @@ def main() -> int:
             primary_page,
             max_minutes=horizon,
         )
-        if primary_result.rows_seen == 0:
-            print_public_index_diagnostics(primary_page)
         legacy_lots = collect_legacy(legacy_page, horizon)
 
         primary_ids, primary_unresolved = resolve_ending_soon_ids(
@@ -147,10 +143,16 @@ def main() -> int:
         legacy_ids, legacy_unresolved = resolve_ending_soon_ids(
             legacy_page, legacy_lots, horizon
         )
+        primary_only = sorted(primary_ids.difference(legacy_ids))
+        legacy_only = sorted(legacy_ids.difference(primary_ids))
+        print_legacy_only_diagnostics(
+            primary_page,
+            primary_result,
+            legacy_lots,
+            legacy_only,
+            horizon,
+        )
         browser.close()
-
-    primary_only = sorted(primary_ids.difference(legacy_ids))
-    legacy_only = sorted(legacy_ids.difference(primary_ids))
 
     print(f"primary complete: {str(primary_result.complete).lower()}", flush=True)
     print(f"primary scope: {primary_result.scope_status}", flush=True)
