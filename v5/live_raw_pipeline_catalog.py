@@ -86,13 +86,18 @@ class _PokeTracePrimaryMarketSource:
 
     def values_for(self, identity):
         language = str(identity.language or "").strip().casefold()
+        deterministic_alias = self.provider.has_search_alias(identity)
         if (
             isinstance(self.provider, FreeTierPokeTraceProvider)
             and language not in self._SUPPORTED_US_LANGUAGES
+            and not deterministic_alias
         ):
             return None
         snapshot = self.provider.snapshot_for(identity)
-        if language not in self._SUPPORTED_US_LANGUAGES:
+        if (
+            language not in self._SUPPORTED_US_LANGUAGES
+            and not deterministic_alias
+        ):
             return None
         return snapshot.us_values
 

@@ -32,6 +32,8 @@ PSA10_DEPENDENT = "PSA10_DEPENDENT"
 RAW_RESALE = "RAW_RESALE"
 GRADING_AFTER_VISUAL_ASSESSMENT = "GRADING_AFTER_VISUAL_ASSESSMENT"
 NO_RECOMMENDED_PATH = "NONE"
+POKETRACE_PROVIDER = "POKETRACE"
+TCGDEX_EXACT_ENGLISH_TWIN = "TCGDEX_EXACT_ENGLISH_TWIN"
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,24 @@ class CardIdentity:
     def display_name(self) -> str:
         parts = [self.card_name or "Carte inconnue", self.set, self.card_number]
         return " · ".join(part for part in parts if part)
+
+
+@dataclass(frozen=True)
+class ProviderSearchAlias:
+    """Deterministic provider-only name backed by one exact catalogue twin.
+
+    The alias is deliberately separate from ``CardIdentity``: it may influence
+    provider retrieval, but it must never relabel the listing or weaken the
+    set, number, language, or variant evidence used for local acceptance.
+    """
+
+    provider: str
+    search_card_name: str
+    search_set_name: str
+    provenance: str
+    catalog_card_id: str
+    catalog_set_id: str
+    catalog_local_id: str
 
 
 @dataclass(frozen=True)

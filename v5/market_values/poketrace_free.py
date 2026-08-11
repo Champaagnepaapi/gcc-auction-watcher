@@ -11,7 +11,6 @@ from .poketrace import (
     PokeTraceConfig,
     PokeTraceProvider,
     PokeTraceSnapshot,
-    _identity_key,
     _us_market_values,
 )
 
@@ -33,7 +32,7 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
         if not self.config.enabled or not self.config.api_key:
             return PokeTraceSnapshot(POKETRACE_DISABLED)
 
-        key = ("free",) + _identity_key(identity)
+        key = self._snapshot_key(identity)
         cached = self._cached_snapshot(key)
         if cached is not None:
             return cached
@@ -81,6 +80,9 @@ class FreeTierPokeTraceProvider(PokeTraceProvider):
         self._cache[key] = result
         return result
 
+    def _snapshot_key(self, identity: CardIdentity) -> tuple[str, ...]:
+        return ("free",) + super()._snapshot_key(identity)
+
 
 def free_tier_config_from_env() -> PokeTraceConfig:
     """Build normal config while adding margin above Free's 1 request/2s burst."""
@@ -120,6 +122,14 @@ def render_free_poketrace_counters(provider: FreeTierPokeTraceProvider) -> str:
             f"live calls: {counters.live_calls}",
             f"cache hits: {counters.cache_hits}",
             f"US exact matches: {counters.us_matches}",
+            (
+                "deterministic aliases used in market searches: "
+                f"{counters.provider_alias_market_searches}"
+            ),
+            (
+                "market matches attributable to deterministic aliases: "
+                f"{counters.alias_market_matches}"
+            ),
             f"no match: {counters.no_match}",
             f"ambiguous: {counters.ambiguous}",
             f"request failures: {counters.request_failures}",

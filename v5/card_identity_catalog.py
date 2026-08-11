@@ -9,7 +9,12 @@ from typing import Mapping, Optional, Tuple
 import requests
 
 from .ebay import CardNameLookupResult, SetNumberCardNameResolver
-from .models import CardIdentity
+from .models import (
+    POKETRACE_PROVIDER,
+    TCGDEX_EXACT_ENGLISH_TWIN,
+    CardIdentity,
+    ProviderSearchAlias,
+)
 from .poketrace_identity import PokeTraceIdentityResolver
 from .poketrace_matching import _card_number_parts
 from .variant_semantics import tcgdex_variant_supports_identity
@@ -118,6 +123,10 @@ class CardCatalogCounters:
     tcgdex_direct_card_hits: int = 0
     tcgdex_variant_impossible: int = 0
     tcgdex_unsupported_language_fallbacks: int = 0
+    localized_identities_seen: int = 0
+    deterministic_english_aliases_found: int = 0
+    alias_unavailable_no_exact_english_twin: int = 0
+    alias_identity_calls_avoided_by_tcgdex_exact: int = 0
 
 
 @dataclass(frozen=True)
@@ -127,6 +136,7 @@ class CatalogIdentityResult:
     matched: bool = False
     ambiguous: bool = False
     blocking: bool = False
+    provider_alias: Optional[ProviderSearchAlias] = None
 
 
 def _normalize(value: object) -> str:
@@ -296,6 +306,9 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         self._all_sets_cache: dict[str, Tuple[Tuple[str, str], ...]] = {}
         self._set_official_counts: dict[Tuple[str, str], str] = {}
         self._card_cache: dict[Tuple[str, str, str, str], Optional[Mapping[str, object]]] = {}
+        self._english_alias_cache: dict[
+            Tuple[str, str, str], Optional[ProviderSearchAlias]
+        ] = {}
 
     @staticmethod
     def _identity_key(identity: CardIdentity) -> Tuple[str, ...]:
@@ -542,6 +555,99 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
                 return card
         return None
 
+    def _tcgdex_card_by_exact_id(
+        self, language: str, card_id: str
+    ) -> Optional[Mapping[str, object]]:
+        cache_key = (language, "", card_id, "exact_card_id")
+        if cache_key in self._card_cache:
+            return self._card_cache[cache_key]
+        # TCGdex IDs are catalogue data, but still reject path-like values
+        # before composing the official exact-card endpoint.
+        if not card_id or "/" in card_id or "\\" in card_id:
+            self._card_cache[cache_key] = None
+            return None
+        payload = self._get_json(
+            f"{TCGDEX_BASE}/{language}/cards/{card_id}",
+            provider="TCGDEX",
+            endpoint_kind="direct_card",
+        )
+        card = payload if isinstance(payload, Mapping) else None
+        self._card_cache[cache_key] = card
+        return card
+
+    def _exact_english_provider_alias(
+        self,
+        localized_card: Mapping[str, object],
+        *,
+        set_id: str,
+    ) -> Optional[ProviderSearchAlias]:
+        card_id = str(localized_card.get("id") or "").strip()
+        local_id = str(localized_card.get("localId") or "").strip()
+        localized_set = localized_card.get("set")
+        localized_set_id = (
+            str(localized_set.get("id") or "").strip()
+            if isinstance(localized_set, Mapping)
+            else ""
+        )
+        cache_key = (card_id, set_id, local_id)
+        if cache_key in self._english_alias_cache:
+            return self._english_alias_cache[cache_key]
+
+        # All three stable coordinates are required. Set/name similarity is
+        # intentionally insufficient evidence for a multilingual alias.
+        if not card_id or not local_id or localized_set_id != set_id:
+            self._english_alias_cache[cache_key] = None
+            return None
+
+        twin = self._tcgdex_card_by_exact_id("en", card_id)
+        twin_set = twin.get("set") if isinstance(twin, Mapping) else None
+        twin_name = (
+            str(twin.get("name") or "").strip()
+            if isinstance(twin, Mapping)
+            else ""
+        )
+        twin_id = (
+            str(twin.get("id") or "").strip()
+            if isinstance(twin, Mapping)
+            else ""
+        )
+        twin_local_id = (
+            str(twin.get("localId") or "").strip()
+            if isinstance(twin, Mapping)
+            else ""
+        )
+        twin_set_id = (
+            str(twin_set.get("id") or "").strip()
+            if isinstance(twin_set, Mapping)
+            else ""
+        )
+        twin_set_name = (
+            str(twin_set.get("name") or "").strip()
+            if isinstance(twin_set, Mapping)
+            else ""
+        )
+        if not (
+            twin_name
+            and twin_set_name
+            and twin_id == card_id
+            and twin_set_id == set_id
+            and twin_local_id.casefold() == local_id.casefold()
+        ):
+            self._english_alias_cache[cache_key] = None
+            return None
+
+        alias = ProviderSearchAlias(
+            provider=POKETRACE_PROVIDER,
+            search_card_name=twin_name,
+            search_set_name=twin_set_name,
+            provenance=TCGDEX_EXACT_ENGLISH_TWIN,
+            catalog_card_id=card_id,
+            catalog_set_id=set_id,
+            catalog_local_id=local_id,
+        )
+        self._english_alias_cache[cache_key] = alias
+        return alias
+
     def _resolve_tcgdex(self, identity: CardIdentity) -> CatalogIdentityResult:
         normalized_language = _normalize(identity.language)
         language_code = _language_code(identity.language)
@@ -592,8 +698,10 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             self.counters.tcgdex_skipped_missing_fields += 1
             return CatalogIdentityResult(identity)
 
+        card_language = target_language
         card = self._find_tcgdex_card(target_language, set_id, identity.card_number or "")
         if card is None and target_language != "en":
+            card_language = "en"
             card = self._find_tcgdex_card("en", set_id, identity.card_number or "")
         if card is None:
             self.counters.tcgdex_no_match_card += 1
@@ -687,8 +795,23 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         self.counters.canonical_card_number_changes += int(
             _canonical_value_changed(identity.card_number, resolved.card_number)
         )
+        provider_alias = None
+        if target_language != "en" and card_language == target_language:
+            self.counters.localized_identities_seen += 1
+            provider_alias = self._exact_english_provider_alias(card, set_id=set_id)
+            if provider_alias is None:
+                self.counters.alias_unavailable_no_exact_english_twin += 1
+            else:
+                self.counters.deterministic_english_aliases_found += 1
         self.counters.tcgdex_hits += 1
-        return CatalogIdentityResult(resolved, "TCGDEX", True, False)
+        return CatalogIdentityResult(
+            resolved,
+            "TCGDEX",
+            True,
+            False,
+            False,
+            provider_alias,
+        )
 
     @staticmethod
     def _pokemon_query_escape(value: str) -> str:
@@ -815,7 +938,10 @@ class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
         self.poketrace_identity = poketrace_identity_resolver
 
     def _poketrace_language_allowed(self, identity: CardIdentity) -> bool:
-        return _normalize(identity.language) in self._POKETRACE_US_LANGUAGES
+        return bool(
+            _normalize(identity.language) in self._POKETRACE_US_LANGUAGES
+            or self.poketrace_identity.has_deterministic_alias(identity)
+        )
 
     def resolve_identity(self, identity: CardIdentity) -> CatalogIdentityResult:
         key = self._identity_key(identity)
@@ -835,6 +961,12 @@ class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
             self._identity_cache[key] = tcgdex
             return tcgdex
         if tcgdex.matched:
+            if tcgdex.provider_alias is not None:
+                self.poketrace_identity.register_provider_alias(
+                    tcgdex.identity,
+                    tcgdex.provider_alias,
+                )
+                self.counters.alias_identity_calls_avoided_by_tcgdex_exact += 1
             self.counters.tcgdex_only_rescues += 1
             self.counters.tcgdex_poketrace_calls_avoided += 1
             self._identity_cache[key] = tcgdex
@@ -975,6 +1107,19 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             (
                 "TCGdex unsupported-language fallbacks to English metadata: "
                 f"{counters.tcgdex_unsupported_language_fallbacks}"
+            ),
+            f"localized identities seen: {counters.localized_identities_seen}",
+            (
+                "deterministic English provider aliases found: "
+                f"{counters.deterministic_english_aliases_found}"
+            ),
+            (
+                "provider alias unavailable/no exact English twin: "
+                f"{counters.alias_unavailable_no_exact_english_twin}"
+            ),
+            (
+                "alias identity calls avoided by TCGdex exact: "
+                f"{counters.alias_identity_calls_avoided_by_tcgdex_exact}"
             ),
             "language preserved as a first-class identity discriminator: YES",
             "persisted eBay records: 0",

@@ -14,12 +14,11 @@ from .market_values.poketrace import (
     RATE_LIMIT_SHORT_RETRYABLE,
     PokeTraceProvider,
     PokeTraceSnapshot,
-    _identity_key,
     _poketrace_game,
     _us_market_values,
 )
 from .market_values.poketrace_free import FreeTierPokeTraceProvider
-from .models import CardIdentity
+from .models import CardIdentity, ProviderSearchAlias
 from .poketrace_matching import (
     REJECT_CARD_NAME,
     REJECT_CARD_NUMBER,
@@ -196,6 +195,8 @@ class PokeTraceIdentityCounters:
     variant_promo_conflicts: int = 0
     variant_special_finish_conflicts: int = 0
     variant_other_conflicts: int = 0
+    provider_alias_identity_searches: int = 0
+    alias_identity_matches: int = 0
 
 
 @dataclass(frozen=True)
@@ -319,13 +320,27 @@ class PokeTraceIdentityResolver:
         self.near_match_counters = PokeTraceNearMatchCounters()
         self._cache: dict[Tuple[str, ...], PokeTraceIdentityResolution] = {}
 
+    def register_provider_alias(
+        self, identity: CardIdentity, alias: ProviderSearchAlias
+    ) -> bool:
+        return self.provider.register_search_alias(identity, alias)
+
+    def has_deterministic_alias(self, identity: CardIdentity) -> bool:
+        return self.provider.has_search_alias(identity)
+
+    def _resolution_key(self, identity: CardIdentity) -> Tuple[str, ...]:
+        # The provider key includes the alias provenance. A no-match cached
+        # before a deterministic alias is discovered cannot poison the later
+        # alias-backed search, and variants remain isolated by _identity_key.
+        return self.provider._snapshot_key(identity)
+
     def resolve_identity(self, identity: CardIdentity) -> PokeTraceIdentityResolution:
         if not self.provider.config.enabled or not self.provider.config.api_key:
             return PokeTraceIdentityResolution(identity)
         if sum(bool(value) for value in (identity.card_name, identity.set, identity.card_number)) < 2:
             return PokeTraceIdentityResolution(identity)
 
-        key = _identity_key(identity)
+        key = self._resolution_key(identity)
         cached = self._cache.get(key)
         if cached is not None:
             self.counters.cache_hits += 1
@@ -344,9 +359,10 @@ class PokeTraceIdentityResolver:
         self.counters.queries += 1
         self._progress(f"PokeTrace identity {self.counters.queries}: query")
         seen_candidates: set[Tuple[str, ...]] = set()
+        search_identity, provider_alias = self.provider.identity_for_search(identity)
 
         for index, (strategy, search_text, structured) in enumerate(
-            _search_strategies(identity)
+            _search_strategies(search_identity)
         ):
             self._count_query_strategy(strategy)
             strategy_counters = self.strategy_counters[strategy]
@@ -356,10 +372,12 @@ class PokeTraceIdentityResolver:
                     f"PokeTrace identity {self.counters.queries}: fallback {strategy}"
                 )
             payload, request_status = self._request(
-                identity,
+                search_identity,
                 search_text,
                 use_structured_filters=structured,
             )
+            if provider_alias is not None:
+                self.counters.provider_alias_identity_searches += 1
             if request_status != REQUEST_OK or payload is None:
                 provider_status = (
                     POKETRACE_RATE_LIMITED
@@ -401,7 +419,7 @@ class PokeTraceIdentityResolver:
                 seen_candidates.add(candidate_key)
                 self.counters.candidates_received += 1
                 strategy_counters.unique_candidates_introduced += 1
-                evidence = _candidate_evidence(identity, candidate)
+                evidence = _candidate_evidence(search_identity, candidate)
                 self._count_match_evidence(evidence)
                 strategy_counters.near_matches_introduced += int(
                     len(evidence.failed_core_fields) == 1
@@ -439,8 +457,16 @@ class PokeTraceIdentityResolver:
                 return result
 
             card = best[0]
-            used_partial_number = _candidate_uses_partial_number(identity, card)
-            resolved = _resolved_identity(identity, card)
+            used_partial_number = _candidate_uses_partial_number(
+                search_identity, card
+            )
+            # An alias is retrieval evidence only. The exact TCGdex-backed
+            # listing identity remains the user-facing and economic identity.
+            resolved = (
+                identity
+                if provider_alias is not None
+                else _resolved_identity(identity, card)
+            )
             card_id = str(card.get("id") or "").strip() or None
             result = PokeTraceIdentityResolution(
                 resolved,
@@ -453,6 +479,8 @@ class PokeTraceIdentityResolver:
                 continue
 
             self.counters.matches += 1
+            if provider_alias is not None:
+                self.counters.alias_identity_matches += 1
             self.provider.counters.us_matches += 1
             if used_partial_number:
                 self.counters.partial_number_matches += 1
@@ -463,7 +491,7 @@ class PokeTraceIdentityResolver:
             if not identity.set and resolved.set:
                 self.counters.sets_recovered += 1
             self._cache[key] = result
-            self._cache[_identity_key(resolved)] = result
+            self._cache[self._resolution_key(resolved)] = result
             self._prime_market_snapshot(identity, resolved, card)
             self._progress(f"PokeTrace identity {self.counters.queries}: exact")
             return result
@@ -477,9 +505,9 @@ class PokeTraceIdentityResolver:
         return result
 
     def alias_cached_result(self, source: CardIdentity, target: CardIdentity) -> None:
-        source_result = self._cache.get(_identity_key(source))
+        source_result = self._cache.get(self._resolution_key(source))
         if source_result is not None and not source_result.matched:
-            self._cache[_identity_key(target)] = source_result
+            self._cache[self._resolution_key(target)] = source_result
             if source_result.ambiguous:
                 self._prime_unavailable(target)
             elif source_result.provider_status == POKETRACE_RATE_LIMITED:
@@ -719,11 +747,9 @@ class PokeTraceIdentityResolver:
                     ] += 1
 
     def _cache_snapshot(self, identity: CardIdentity, snapshot: PokeTraceSnapshot) -> None:
-        self.provider._prime_snapshot(_identity_key(identity), snapshot)
-        if isinstance(self.provider, FreeTierPokeTraceProvider):
-            self.provider._prime_snapshot(
-                ("free",) + _identity_key(identity), snapshot
-            )
+        self.provider._prime_snapshot(
+            self.provider._snapshot_key(identity), snapshot
+        )
 
     def _prime_market_snapshot(
         self,
@@ -819,6 +845,14 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
                 f"{counters.candidate_queries_without_exact_match}"
             ),
             f"exact matches: {counters.matches}",
+            (
+                "deterministic aliases used in identity searches: "
+                f"{counters.provider_alias_identity_searches}"
+            ),
+            (
+                "identity exacts attributable to deterministic aliases: "
+                f"{counters.alias_identity_matches}"
+            ),
             f"ambiguous: {counters.ambiguous}",
             f"no match: {counters.no_match}",
             f"cache hits: {counters.cache_hits}",

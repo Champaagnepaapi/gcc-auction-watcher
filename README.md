@@ -159,6 +159,28 @@ Audit Codex ciblé : aucun changement de code.
 - `market=US` reste donc volontairement appliqué au resolver Free.
 - Une future séparation identité globale / valorisation US nécessiterait des caches et IDs qualifiés par marché ; ne pas simplement retirer `market=US`.
 
+## Alias fournisseur multilingues déterministes
+
+Les noms localisés ne sont jamais traduits par fuzzy matching ni par table
+manuelle. Après une résolution TCGdex exacte dans une langue non anglaise, V5
+demande au catalogue TCGdex le même ID dans l’endpoint anglais. Un alias
+PokeTrace n’existe que si les deux réponses ont exactement le même `id`, le
+même `set.id` et le même `localId`, avec un nom et un set anglais présents.
+
+L’alias et sa provenance `TCGDEX_EXACT_ENGLISH_TWIN` restent séparés du
+`CardIdentity` réel. Le nom/set anglais servent uniquement à la requête et à la
+comparaison locale PokeTrace ; le nom, le set, la langue, le numéro et la
+variante affichés/économiques restent ceux de l’identité localisée. Le set et
+le numéro PokeTrace doivent correspondre strictement au jumeau exact, et les
+contraintes de variante restent inchangées. Sans jumeau anglais exact, aucun
+alias n’est inventé et aucune nouvelle langue n’est rendue fuzzy-éligible.
+
+Ce pont peut donc bénéficier, carte par carte, aux langues TCGdex documentées
+et déjà routées par V5 (`fr`, `de`, `es`, `it`, `ja`, `pt`, `pt-br`, `pt-pt`,
+`zh-tw`, `zh-cn`, `ko`, `nl`, `pl`, `ru`, `id`, `th`) uniquement lorsque cette
+preuve de coordonnées identiques existe. Cela ne garantit ni qu’un record
+PokeTrace US existe, ni qu’il contienne une valeur RAW.
+
 ---
 
 # V5 — validation offline la plus récente
@@ -169,9 +191,9 @@ Baseline du circuit-breaker PokeTrace :
 bdd1abc7b479ed980f4f4896b17e3b184b701ed5
 ```
 
-Validation offline de la phase RAW→RAW MVP :
+Validation offline de la phase RAW→RAW MVP et des alias multilingues :
 
-- V5 : **325/325** ;
+- V5 : **333/333** ;
 - V4 : **167/167** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
@@ -199,6 +221,12 @@ Le merge de synchronisation workflow-only `231b067517fc14126215532019d7f46f68d7b
 - rendement PokeTrace mesuré par stratégie ;
 - parser eBay enrichi uniquement avec aliases structurés déterministes ;
 - failures TCGdex et Pokémon TCG API séparées dans les diagnostics.
+- alias anglais PokeTrace autorisé uniquement par un jumeau TCGdex exact
+  `id + set.id + localId`, conservé en mémoire et isolé des caches par identité
+  complète/variante/provenance ;
+- diagnostics agrégés des identités localisées, alias trouvés/indisponibles,
+  alias utilisés en recherche identité/marché, matches attribuables et appels
+  identité évités grâce au hit TCGdex exact ;
 - les 429 sont classés uniquement via `Retry-After` : délai ≤30 s = un
   unique retry, délai long/absent/invalide = terminal ; un second 429 ouvre
   également le circuit ;

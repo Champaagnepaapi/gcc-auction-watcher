@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
@@ -15,7 +15,12 @@ try:
 except ModuleNotFoundError:  # Offline tests inject a session.
     requests = None  # type: ignore[assignment]
 
-from ..models import CardIdentity
+from ..models import (
+    POKETRACE_PROVIDER,
+    TCGDEX_EXACT_ENGLISH_TWIN,
+    CardIdentity,
+    ProviderSearchAlias,
+)
 from ..poketrace_matching import (
     _candidate_evidence,
     _normalize,
@@ -111,6 +116,8 @@ class PokeTraceCounters:
     cardmarket_snapshots: int = 0
     cardmarket_discount_signals: int = 0
     cardmarket_falling_market_guards: int = 0
+    provider_alias_market_searches: int = 0
+    alias_market_matches: int = 0
 
 
 @dataclass(frozen=True)
@@ -220,6 +227,7 @@ class PokeTraceProvider:
         self.counters = PokeTraceCounters()
         self._cache: dict[Tuple[str, ...], PokeTraceSnapshot] = {}
         self._identity_primed_keys: set[Tuple[str, ...]] = set()
+        self._search_aliases: dict[Tuple[str, ...], ProviderSearchAlias] = {}
         self._circuit_open = False
 
     @property
@@ -267,11 +275,70 @@ class PokeTraceProvider:
     def values_for(self, identity: CardIdentity) -> Optional[MarketValues]:
         return self.snapshot_for(identity).us_values
 
+    def register_search_alias(
+        self, identity: CardIdentity, alias: ProviderSearchAlias
+    ) -> bool:
+        """Register one exact, provider-only alias for this full identity key."""
+
+        if not (
+            alias.provider == POKETRACE_PROVIDER
+            and alias.provenance == TCGDEX_EXACT_ENGLISH_TWIN
+            and alias.search_card_name.strip()
+            and alias.search_set_name.strip()
+            and alias.catalog_card_id.strip()
+            and alias.catalog_set_id.strip()
+            and alias.catalog_local_id.strip()
+        ):
+            return False
+        key = _identity_key(identity)
+        previous = self._search_aliases.get(key)
+        if previous is not None and previous != alias:
+            return False
+        self._search_aliases[key] = alias
+        return True
+
+    def search_alias_for(
+        self, identity: CardIdentity
+    ) -> Optional[ProviderSearchAlias]:
+        return self._search_aliases.get(_identity_key(identity))
+
+    def has_search_alias(self, identity: CardIdentity) -> bool:
+        return self.search_alias_for(identity) is not None
+
+    def identity_for_search(
+        self, identity: CardIdentity
+    ) -> tuple[CardIdentity, Optional[ProviderSearchAlias]]:
+        alias = self.search_alias_for(identity)
+        if alias is None:
+            return identity, None
+        return replace(
+            identity,
+            card_name=alias.search_card_name,
+            set=alias.search_set_name,
+        ), alias
+
+    def _snapshot_key(self, identity: CardIdentity) -> Tuple[str, ...]:
+        alias = self.search_alias_for(identity)
+        suffix = (
+            (
+                "provider-alias",
+                _normalize_card_name(alias.search_card_name),
+                _normalize(alias.search_set_name),
+                _normalize(alias.provenance),
+                alias.catalog_card_id,
+                alias.catalog_set_id,
+                alias.catalog_local_id,
+            )
+            if alias is not None
+            else ("provider-alias", "none")
+        )
+        return _identity_key(identity) + suffix
+
     def snapshot_for(self, identity: CardIdentity) -> PokeTraceSnapshot:
         if not self.config.enabled or not self.config.api_key:
             return PokeTraceSnapshot(POKETRACE_DISABLED)
 
-        key = _identity_key(identity)
+        key = self._snapshot_key(identity)
         cached = self._cached_snapshot(key)
         if cached is not None:
             return cached
@@ -319,7 +386,10 @@ class PokeTraceProvider:
     def _search_exact(
         self, identity: CardIdentity, market: str
     ) -> Optional[Mapping[str, object]]:
-        payload = self._request_cards(identity, market)
+        search_identity, alias = self.identity_for_search(identity)
+        if alias is not None:
+            self.counters.provider_alias_market_searches += 1
+        payload = self._request_cards(search_identity, market)
         if payload is None:
             return None
         raw_data = payload.get("data")
@@ -327,7 +397,7 @@ class PokeTraceProvider:
             return None
         candidates = tuple(item for item in raw_data if isinstance(item, Mapping))
         matches = tuple(
-            item for item in candidates if _candidate_matches(identity, item)
+            item for item in candidates if _candidate_matches(search_identity, item)
         )
         if len(matches) > 1:
             self.counters.ambiguous += 1
@@ -338,6 +408,8 @@ class PokeTraceProvider:
             self.counters.us_matches += 1
         else:
             self.counters.eu_matches += 1
+        if alias is not None:
+            self.counters.alias_market_matches += 1
         return matches[0]
 
     def _request_cards(
@@ -671,6 +743,14 @@ def render_poketrace_counters(provider: PokeTraceProvider) -> str:
             f"cache hits: {counters.cache_hits}",
             f"US exact matches: {counters.us_matches}",
             f"EU exact matches: {counters.eu_matches}",
+            (
+                "deterministic aliases used in market searches: "
+                f"{counters.provider_alias_market_searches}"
+            ),
+            (
+                "market matches attributable to deterministic aliases: "
+                f"{counters.alias_market_matches}"
+            ),
             f"no match: {counters.no_match}",
             f"ambiguous: {counters.ambiguous}",
             f"request failures: {counters.request_failures}",
