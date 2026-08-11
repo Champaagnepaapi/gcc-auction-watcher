@@ -1,1 +1,0 @@
-Temporary staging marker; this file will be removed in the documentation PR.
