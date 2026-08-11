@@ -18,6 +18,7 @@ jobs:
       POKETRACE_ENABLED: "true"
       POKETRACE_PLAN: "free"
       POKETRACE_RESULT_LIMIT: "20"
+      # FreeTierPokeTraceProvider also enforces >=2.25s at runtime.
       POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "2.25"
       POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
       POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
