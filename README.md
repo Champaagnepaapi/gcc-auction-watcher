@@ -132,7 +132,7 @@ Les cas techniques réellement actionnables restent notifiables :
 5. **JustTCG = seconde opinion / benchmark expérimental**, pas principal.
 6. **Scrydex / Vision** = option réservée aux ambiguïtés persistantes après la chaîne gratuite.
 
-Les workflows V5 live et benchmark doivent revenir à **`workflow_dispatch` uniquement** après tout test ponctuel.
+Les workflows V5 live et benchmark doivent rester **`workflow_dispatch` uniquement** hors déclencheur ponctuel explicitement contrôlé.
 
 ## PokeTrace Free — référence live précédente
 
@@ -214,29 +214,30 @@ Améliorations déterministes :
 
 # Benchmark TCGdex ↔ JustTCG sur le même sample
 
-## Benchmark final
+## Benchmark final — source de vérité = run `31489148268`
 
 - run : **`31489148268`** ;
 - job : **`93771289624`** ;
-- fingerprint : **`7f440e8cb080097e`** ;
+- fingerprint : **`7ef358f50c335f7d`** ;
 - PokeTrace : **non injecté, non instancié, 0 appel** ;
 - eBay : 20/20 ; RAW : 20 ; core identity suffisante : 14.
 
 ### TCGdex
 
 - exact : **5/20** ;
-- ambiguous : 4 ;
-- unresolved : 11 ;
-- requests : 34 ;
+- ambiguous : **3** ;
+- unresolved : **12** ;
+- requests : **28** ;
 - failures : **0** ;
+- transport / HTTP / JSON / set-catalog / card-lookup failures : **0/0/0/0/0** ;
 - canonical changes name/set/number : 3/4/1 ;
 - denominator conflicts : 2 ;
 - set aliases unique/ambiguous : 8/1 ;
 - no-match set/card : 2/3 ;
-- localId alternate attempts/hits : 5/**3** ;
-- direct-card fallbacks/hits : 10/0 ;
-- variant-impossible : 1 ;
-- unsupported-language fallback : 2.
+- localId alternate attempts/hits : **4/2** ;
+- direct-card fallbacks/hits : **9/0** ;
+- variant-impossible : **0** ;
+- unsupported-language fallback : **1**.
 
 ### JustTCG set-aware
 
@@ -256,7 +257,7 @@ Résultat final :
 
 - set catalog queries : 2 ;
 - sets en cache : **655** ;
-- set mappings uniques/ambigus/no-match : 4/3/2 ;
+- set mappings uniques/ambigus/no-match : **4/2/3** ;
 - card queries : 9 ;
 - exact : **0/20** ;
 - ambiguous : 3 ;
@@ -281,24 +282,27 @@ Résultat final :
 
 ---
 
-# CI finale après tous les changements
+# CI finale / post-resync — source de vérité actuelle
 
-Validation GitHub Actions finale :
+Après le benchmark, le `main` courant a été synchronisé **dans V5 uniquement**. La validation post-resync exacte est :
 
-- run : **`31489502796`** ;
-- job : **`93772388887`** ;
+- run : **`31491040536`** ;
+- job : **`93777368722`** ;
 - V4 : **167/167** ;
 - V5 : **270/270** ;
 - `python -m compileall -q v5` : OK ;
-- YAML : **11/11** pendant le run, workflow de validation temporaire inclus puis supprimé ;
-- `git diff --check` : OK ;
+- YAML : **11/11** pendant le run, workflow temporaire de validation inclus puis supprimé ;
+- `git diff --check origin/main...HEAD` : OK ;
 - fichiers V4 vs `main` : **IDENTIQUES** ;
-- branche V5 behind `main` : 0 au moment du run ;
+- branche V5 behind `main` : **0** au moment de la validation ;
 - appels PokeTrace / JustTCG / eBay live depuis cette CI : **0/0/0** ;
-- secrets injectés dans la CI : 0 ;
-- achats/bids/checkout/CardGrader : 0.
+- secrets injectés dans cette CI : **0** ;
+- achats/bids/checkout/CardGrader : **0**.
 
-Les workflows de validation/patch temporaires sont à supprimer après usage. Les workflows permanents V5 live/benchmark restent manuels.
+Les workflows temporaires de validation/patch doivent être supprimés après usage. Les deux workflows permanents V5 concernés restent manuels :
+
+- `v5-live-raw-pipeline-diagnostic.yml` → `workflow_dispatch` ;
+- `v5-catalog-identity-benchmark.yml` → `workflow_dispatch`.
 
 ---
 
@@ -308,13 +312,14 @@ Les workflows de validation/patch temporaires sont à supprimer après usage. Le
 
 Ordre recommandé :
 
-1. audit offline indépendant du nouveau modèle variant, du retrieval contextuel PokeTrace, du TCGdex renforcé et du benchmark JustTCG ;
-2. ensuite seulement, **un unique prochain run PokeTrace Free de 20 listings** ;
-3. mesurer surtout : candidats `all three`, `all three + variant compatible`, exacts, reasons de rejet, champs récupérés, market exacts ;
-4. comparer au dernier live PokeTrace `31483091017` sans confondre des fingerprints différents ;
-5. conserver TCGdex principal ; JustTCG second avis ;
-6. utiliser Scrydex/Vision seulement si les ambiguïtés persistantes restent matérielles ;
-7. ne pas passer PokeTrace Pro/Cardmarket avant exacts/valeurs Free réellement exploitables.
+1. faire un **audit offline indépendant** du nouveau modèle variant, du retrieval contextuel PokeTrace, du TCGdex renforcé et du benchmark JustTCG ;
+2. chercher spécifiquement comment **augmenter fortement la proportion de candidats PokeTrace réellement compatibles parmi les candidats reçus**, par meilleure canonicalisation/retrieval, jamais en relâchant l'acceptation ;
+3. ensuite seulement, **un unique prochain run PokeTrace Free de 20 listings** ;
+4. mesurer surtout : candidats `all three`, `all three + variant compatible`, exacts, reasons de rejet, champs récupérés, market exacts ;
+5. comparer au dernier live PokeTrace `31483091017` sans confondre des fingerprints différents ;
+6. conserver TCGdex principal ; JustTCG second avis ;
+7. utiliser Scrydex/Vision seulement si les ambiguïtés persistantes restent matérielles ;
+8. ne pas passer PokeTrace Pro/Cardmarket avant exacts/valeurs Free réellement exploitables.
 
 ---
 
