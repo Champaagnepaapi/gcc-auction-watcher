@@ -4,7 +4,7 @@ La version de production recommandée est la **V4 cloud GitHub Actions** : aucun
 
 ## V4 — état de production
 
-Le watcher scanne **GCC Marketplace** toutes les 10 minutes et ne considère que les **cartes Pokémon individuelles**. Les boosters, packs, displays, boxes, ETB, coffrets, blisters, bundles, decks, tins et autres produits scellés/non-cartes sont exclus.
+Le watcher scanne **GCC Marketplace** toutes les 10 minutes via un déclencheur externe **Cron-job.org → `workflow_dispatch` GitHub Actions** et ne considère que les **cartes Pokémon individuelles**. Les boosters, packs, displays, boxes, ETB, coffrets, blisters, bundles, decks, tins et autres produits scellés/non-cartes sont exclus.
 
 ### Univers économique
 
@@ -64,7 +64,7 @@ Une opportunité déjà signalée n'est renotifiée que si le prix baisse d'au m
 
 Chaque run V4 est aussi journalisé dans l'**issue #1** avec notamment :
 
-- `trigger=schedule` ou `workflow_dispatch` ;
+- `trigger=workflow_dispatch` pour la cadence production externe Cron-job.org ;
 - statut/exit code/durée ;
 - nombre d'opportunités finales ;
 - mode de découverte auction ;
