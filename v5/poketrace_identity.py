@@ -25,20 +25,16 @@ from .poketrace_matching import (
     REJECT_VARIANT,
     CandidateMatchEvidence,
     _candidate_evidence,
-    _candidate_score_and_rejection,
-    _card_number_parts,
     _normalize,
     _normalize_card_name,
     _normalize_card_number,
-    _partial_card_number_equivalent,
-    _set_similarity,
-    _variant_family,
 )
 
 
 REQUEST_OK = "OK"
 REQUEST_ERROR = "ERROR"
 REQUEST_RATE_LIMITED = "RATE_LIMITED"
+
 
 @dataclass
 class PokeTraceIdentityCounters:
@@ -73,16 +69,28 @@ class PokeTraceIdentityCounters:
     candidates_name_number_matched: int = 0
     candidates_set_number_matched: int = 0
     candidates_all_three_matched: int = 0
+    candidates_all_three_variant_compatible: int = 0
+    candidates_all_three_variant_blocked: int = 0
     candidates_failing_only_one_field: int = 0
     candidates_failing_only_name: int = 0
     candidates_failing_only_set: int = 0
     candidates_failing_only_card_number: int = 0
+    contextual_searches: int = 0
     structured_searches: int = 0
     broad_name_searches: int = 0
     broad_number_searches: int = 0
     broad_set_searches: int = 0
     zero_candidate_queries: int = 0
     candidate_queries_without_exact_match: int = 0
+    variant_finish_matches: int = 0
+    variant_edition_matches: int = 0
+    variant_promo_matches: int = 0
+    variant_metadata_missing: int = 0
+    variant_finish_conflicts: int = 0
+    variant_edition_conflicts: int = 0
+    variant_promo_conflicts: int = 0
+    variant_special_finish_conflicts: int = 0
+    variant_other_conflicts: int = 0
 
 
 @dataclass(frozen=True)
@@ -93,7 +101,9 @@ class PokeTraceIdentityResolution:
     card_id: Optional[str] = None
 
 
-def _candidate_uses_partial_number(identity: CardIdentity, candidate: Mapping[str, object]) -> bool:
+def _candidate_uses_partial_number(
+    identity: CardIdentity, candidate: Mapping[str, object]
+) -> bool:
     return _candidate_evidence(identity, candidate).number_partial
 
 
@@ -131,30 +141,42 @@ def _candidate_key(candidate: Mapping[str, object]) -> Tuple[str, ...]:
 def _search_strategies(
     identity: CardIdentity,
 ) -> Tuple[tuple[str, str, bool], ...]:
+    """Return bounded retrieval strategies while keeping local acceptance strict.
+
+    A verified PokeTrace set slug is still unavailable, so no strategy sends a
+    display set name as the structured ``set=`` parameter. The contextual
+    search combines independent eBay/catalog clues in the free-text query to
+    improve precision server-side before broad recall fallbacks are attempted.
+    """
+
     name = str(identity.card_name or "").strip()
     number = str(identity.card_number or "").strip()
     set_name = str(identity.set or "").strip()
 
     strategies: list[tuple[str, str, bool]] = []
+    contextual_parts = tuple(value for value in (name, set_name, number) if value)
+    if len(contextual_parts) >= 2:
+        strategies.append(("contextual", " ".join(contextual_parts), False))
+
     primary_search = name or set_name or number
-    # CardIdentity does not carry a verified PokeTrace set slug. A display set
-    # name remains strict local evidence, never a structured server filter.
-    # Without a number the former structured request would be identical to the
-    # broad request, so do not spend quota on it twice.
     if primary_search and number:
+        # Card number is an official documented structured discriminator. Set
+        # stays local because we do not have a verified PokeTrace set slug.
         strategies.append(("structured", primary_search, True))
+
     if name:
         strategies.append(("broad_name", name, False))
-    elif number:
+    if number:
+        # Number-only recall is valuable when the marketplace name is noisy.
         strategies.append(("broad_number", number, False))
-    elif set_name:
+    if not name and set_name:
         strategies.append(("broad_set", set_name, False))
 
     return tuple(dict.fromkeys(strategies))
 
 
 class PokeTraceIdentityResolver:
-    """Structured-first retrieval with conservative local identity acceptance."""
+    """Contextual/structured retrieval with conservative local acceptance."""
 
     def __init__(self, provider: PokeTraceProvider) -> None:
         self.provider = provider
@@ -184,7 +206,7 @@ class PokeTraceIdentityResolver:
             if index > 0:
                 self.counters.fallback_searches += 1
                 self._progress(
-                    f"PokeTrace identity {self.counters.queries}: broad fallback"
+                    f"PokeTrace identity {self.counters.queries}: fallback {strategy}"
                 )
             payload, request_status = self._request(
                 identity,
@@ -222,10 +244,10 @@ class PokeTraceIdentityResolver:
                 self._count_match_evidence(evidence)
                 score, rejection = evidence.score, evidence.rejection
                 if rejection is not None:
-                    self._count_rejection(rejection)
+                    self._count_rejection(rejection, evidence)
                     continue
                 if score is not None:
-                    if _candidate_uses_partial_number(identity, candidate):
+                    if evidence.number_partial:
                         self.counters.partial_number_candidates += 1
                     scored.append((score, candidate))
 
@@ -330,8 +352,6 @@ class PokeTraceIdentityResolver:
             return response, status
 
         retry_after = self._retry_after_seconds(response)
-        # Burst 429s are seconds. A very long Retry-After indicates that a
-        # diagnostic should stop rather than sleep until a daily reset.
         if retry_after is None or retry_after > 30:
             return None, REQUEST_RATE_LIMITED
 
@@ -406,7 +426,11 @@ class PokeTraceIdentityResolver:
                 return None
         return None
 
-    def _count_rejection(self, reason: str) -> None:
+    def _count_rejection(
+        self,
+        reason: str,
+        evidence: Optional[CandidateMatchEvidence] = None,
+    ) -> None:
         if reason == REJECT_PRODUCT_TYPE:
             self.counters.rejected_product_type += 1
         elif reason == REJECT_CARD_NUMBER:
@@ -417,11 +441,32 @@ class PokeTraceIdentityResolver:
             self.counters.rejected_set += 1
         elif reason == REJECT_VARIANT:
             self.counters.rejected_variant += 1
+            variant_reason = evidence.variant_reason if evidence is not None else None
+            if variant_reason == "finish_conflict":
+                self.counters.variant_finish_conflicts += 1
+            elif variant_reason in {
+                "edition_conflict",
+                "candidate_edition_missing",
+                "listing_edition_missing",
+            }:
+                self.counters.variant_edition_conflicts += 1
+            elif variant_reason == "promo_conflict":
+                self.counters.variant_promo_conflicts += 1
+            elif variant_reason in {
+                "special_finish_conflict",
+                "listing_special_finish_missing",
+                "candidate_special_finish_missing",
+            }:
+                self.counters.variant_special_finish_conflicts += 1
+            else:
+                self.counters.variant_other_conflicts += 1
         else:
             self.counters.rejected_insufficient += 1
 
     def _count_query_strategy(self, strategy: str) -> None:
-        if strategy == "structured":
+        if strategy == "contextual":
+            self.counters.contextual_searches += 1
+        elif strategy == "structured":
             self.counters.structured_searches += 1
         elif strategy == "broad_name":
             self.counters.broad_name_searches += 1
@@ -446,11 +491,22 @@ class PokeTraceIdentityResolver:
         counters.candidates_set_number_matched += int(
             evidence.set_matched and evidence.card_number_matched
         )
-        counters.candidates_all_three_matched += int(
+        all_three = bool(
             evidence.name_matched
             and evidence.set_matched
             and evidence.card_number_matched
         )
+        counters.candidates_all_three_matched += int(all_three)
+        counters.candidates_all_three_variant_compatible += int(
+            all_three and evidence.variant_compatible
+        )
+        counters.candidates_all_three_variant_blocked += int(
+            all_three and not evidence.variant_compatible
+        )
+        counters.variant_finish_matches += int(evidence.variant_finish_match)
+        counters.variant_edition_matches += int(evidence.variant_edition_match)
+        counters.variant_promo_matches += int(evidence.variant_promo_match)
+        counters.variant_metadata_missing += int(evidence.variant_metadata_missing)
         if len(evidence.failed_core_fields) == 1:
             counters.candidates_failing_only_one_field += 1
             failed = evidence.failed_core_fields[0]
@@ -520,12 +576,13 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             "=== V5 POKETRACE IDENTITY ===",
             "role: fallback identity resolver after TCGdex, before Pokemon TCG API",
             (
-                "retrieval: structured filters then broad fallback; "
+                "retrieval: contextual + structured + bounded broad fallbacks; "
                 "acceptance: strict shared local identity match"
             ),
             f"identities queried: {counters.queries}",
             f"HTTP search attempts: {counters.search_attempts}",
-            f"broad fallback searches: {counters.fallback_searches}",
+            f"fallback searches: {counters.fallback_searches}",
+            f"query strategy contextual: {counters.contextual_searches}",
             f"query strategy structured: {counters.structured_searches}",
             f"query strategy broad-name: {counters.broad_name_searches}",
             f"query strategy broad-number: {counters.broad_number_searches}",
@@ -561,7 +618,15 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             ),
             f"candidates all three matched: {counters.candidates_all_three_matched}",
             (
-                "candidates failing only one field: "
+                "candidates all three + variant compatible: "
+                f"{counters.candidates_all_three_variant_compatible}"
+            ),
+            (
+                "candidates all three but variant blocked: "
+                f"{counters.candidates_all_three_variant_blocked}"
+            ),
+            (
+                "candidates failing only one core field: "
                 f"{counters.candidates_failing_only_one_field}"
             ),
             f"candidates failing only name: {counters.candidates_failing_only_name}",
@@ -570,6 +635,18 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
                 "candidates failing only card number: "
                 f"{counters.candidates_failing_only_card_number}"
             ),
+            f"variant finish matches: {counters.variant_finish_matches}",
+            f"variant edition matches: {counters.variant_edition_matches}",
+            f"variant promo matches: {counters.variant_promo_matches}",
+            f"variant metadata-missing blocks: {counters.variant_metadata_missing}",
+            f"variant finish conflicts: {counters.variant_finish_conflicts}",
+            f"variant edition conflicts: {counters.variant_edition_conflicts}",
+            f"variant promo conflicts: {counters.variant_promo_conflicts}",
+            (
+                "variant special-finish conflicts: "
+                f"{counters.variant_special_finish_conflicts}"
+            ),
+            f"variant other conflicts: {counters.variant_other_conflicts}",
             f"rejected product type: {counters.rejected_product_type}",
             f"rejected card number: {counters.rejected_card_number}",
             f"rejected card name: {counters.rejected_card_name}",
