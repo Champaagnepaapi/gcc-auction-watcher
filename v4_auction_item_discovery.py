@@ -1,22 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Optional
 
 import watcher
 
 
 AUCTION_INDEX_URL = f"{watcher.BASE}/filtres/auctions"
-PRIMARY_PROTOCOL = "GCC_AUCTION_INDEX_ENDING_FIRST_ITEM_LEVEL"
+AUCTION_API_URL = watcher.GCC_ON_SALE_ITEMS_API_URL
+PRIMARY_PROTOCOL = "GCC_PUBLIC_API_AUCTION_ENDING_SOON_ITEM_LEVEL"
 PRIMARY_SCOPE_STATUS = "COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS"
 FALLBACK_SCOPE_STATUS = "LEGACY_LIVE_SALES_FALLBACK"
-PRIMARY_END_REASON = "DISCOVERED_AUCTION_HORIZON_CROSSED"
-PRIMARY_MODE = "AUCTION_INDEX_ITEM_LEVEL"
+PRIMARY_END_REASON = "AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER"
+PRIMARY_EXHAUSTED_REASON = "AUCTION_API_EXHAUSTED"
+PRIMARY_MODE = "AUCTION_API_ITEM_LEVEL"
 FALLBACK_MODE = "LEGACY_LIVE_SALES"
-MAX_INDEX_SCROLLS = 24
-SCROLL_PIXELS = 2400
-SCROLL_WAIT_MS = 180
-ORDER_TOLERANCE_MINUTES = 1
+AUCTION_API_PAGE_SIZE = 24
+AUCTION_API_MAX_PAGES = 100
+END_TIME_ORDER_TOLERANCE_SECONDS = 2.0
 
 _ORIGINAL_COLLECT_LIVE_AUCTION_URLS = watcher.collect_live_auction_urls
 _ORIGINAL_COLLECT_LOTS_FROM_LISTING = watcher.collect_lots_from_listing
@@ -26,15 +29,14 @@ _INSTALLED = False
 
 
 @dataclass(frozen=True)
-class AuctionListingClassification:
-    lot: Optional[watcher.Lot]
-    terminal_status: Optional[str]
-    timer_minutes: Optional[int]
-    timer_text: str
+class ParsedAuctionEnd:
+    at: datetime
+    minutes: int
+    text: str
 
 
 @dataclass
-class AuctionIndexDiscoveryResult:
+class AuctionApiDiscoveryResult:
     lots: list[watcher.Lot]
     coverage: watcher.CoverageAudit
     complete: bool
@@ -44,306 +46,350 @@ class AuctionIndexDiscoveryResult:
     timerless_eligible: int
     order_verified: bool
     threshold_crossed: bool
+    api_total: Optional[int]
     reason: str = ""
 
 
-def timers_are_nondecreasing(
-    values: list[int], tolerance_minutes: int = ORDER_TOLERANCE_MINUTES
-) -> bool:
-    if len(values) < 2:
-        return False
-    tolerance = max(0, tolerance_minutes)
-    return all(
-        later + tolerance >= earlier
-        for earlier, later in zip(values, values[1:])
-    )
-
-
-def classify_auction_listing(
-    item_url: str,
-    anchor_text: str,
-    blob: str,
+def _parse_api_end_time(
+    raw: object,
     *,
-    max_minutes: int,
-) -> AuctionListingClassification:
-    minutes, end_text = watcher.parse_listing_countdown_minutes(blob)
-
-    if not watcher.listing_is_pokemon_card(blob):
-        return AuctionListingClassification(
-            None, watcher.ACCOUNT_EXCLUDED_BY_RULES, minutes, end_text
-        )
-
-    price = watcher.parse_money(blob)
-    if price is None:
-        return AuctionListingClassification(
-            None, watcher.ACCOUNT_PARSE_FAILURE, minutes, end_text
-        )
-    if price < watcher.MIN_PRICE or price > watcher.MAX_PRICE:
-        return AuctionListingClassification(
-            None, watcher.ACCOUNT_EXCLUDED_BY_RULES, minutes, end_text
-        )
-
-    title = watcher.extract_card_title(
-        existing_title="",
-        listing_text=f"{anchor_text}\n{blob}",
-    )
-    lot = watcher.Lot(
-        url=item_url,
-        title=title,
-        current_price=price,
-        source_type="auction",
-        sale_name="GCC auction index",
-        listing_text=blob,
-        minutes_to_end=minutes,
-        end_text=end_text,
-    )
-
-    if minutes is not None and minutes > max_minutes:
-        return AuctionListingClassification(
-            None, watcher.ACCOUNT_EXCLUDED_BY_RULES, minutes, end_text
-        )
-
-    # A timerless card in the economic window is retained. The unchanged V4
-    # main loop will inspect its item page as the existing conservative fallback.
-    return AuctionListingClassification(lot, None, minutes, end_text)
-
-
-def _canonical_item_url(href: str) -> str:
-    raw = (href or "").strip()
-    if not watcher.HREF_ITEM_RE.search(raw):
-        return ""
-    url = f"{watcher.BASE}{raw}" if raw.startswith("/") else raw
-    return url.split("?", 1)[0]
-
-
-def _auction_row_blob(anchor) -> tuple[str, str]:
+    now: Optional[datetime] = None,
+) -> Optional[ParsedAuctionEnd]:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
     try:
-        anchor_text = (anchor.inner_text(timeout=500) or "").strip()
-    except Exception:
-        anchor_text = ""
-
-    candidates = [anchor_text]
-    current = anchor
-    for _ in range(5):
-        try:
-            current = current.locator("xpath=..")
-            text = (current.inner_text(timeout=500) or "").strip()
-            if text:
-                candidates.append(text)
-        except Exception:
-            break
-
-    with_price = [value for value in candidates if "€" in value]
-    blob = min(with_price, key=len, default=max(candidates, key=len, default=""))
-    return anchor_text, blob
-
-
-def _try_select_ending_first(page) -> bool:
-    selectors = (
-        'text="Ventes se terminant en premier"',
-        'label:has-text("Ventes se terminant en premier")',
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    seconds = max(0.0, (parsed - current).total_seconds())
+    minutes = int(math.ceil(seconds / 60.0))
+    return ParsedAuctionEnd(
+        at=parsed,
+        minutes=minutes,
+        text=parsed.strftime("%d/%m %H:%M UTC"),
     )
-    for selector in selectors:
-        try:
-            locator = page.locator(selector)
-            if locator.count() <= 0:
-                continue
-            locator.first.click(timeout=1200)
-            page.wait_for_timeout(500)
-            return True
-        except Exception:
-            continue
-    return False
 
 
-def _parse_visible_rows(page) -> list[tuple[str, str, str, Optional[int]]]:
-    anchors = page.locator('a[href*="/item/"]')
-    count = anchors.count()
-    rows: list[tuple[str, str, str, Optional[int]]] = []
-    seen: set[str] = set()
-
-    for index in range(count):
-        anchor = anchors.nth(index)
-        try:
-            item_url = _canonical_item_url(anchor.get_attribute("href") or "")
-        except Exception:
-            item_url = ""
-        if not item_url or item_url in seen:
-            continue
-        seen.add(item_url)
-        anchor_text, blob = _auction_row_blob(anchor)
-        minutes, _ = watcher.parse_listing_countdown_minutes(blob)
-        rows.append((item_url, anchor_text, blob, minutes))
-    return rows
+def _api_order_is_valid(previous: Optional[datetime], current: datetime) -> bool:
+    if previous is None:
+        return True
+    return (
+        current - previous
+    ).total_seconds() >= -END_TIME_ORDER_TOLERANCE_SECONDS
 
 
-def discover_auction_index_lots(
-    page,
+def _auction_api_lot(
+    result: dict,
+    item_url: str,
+    coverage: watcher.CoverageAudit,
+    parsed_end: ParsedAuctionEnd,
+) -> Optional[watcher.Lot]:
+    # GCC uses the same structured item schema on this endpoint for fixed and
+    # auction rows. Reuse V4's existing parser so Pokemon/card/0-100 filtering
+    # is exactly the same as the already-audited fixed-price path.
+    lot = watcher._gcc_fixed_result_to_lot(
+        result,
+        item_url,
+        coverage,
+        min_price=watcher.MIN_PRICE,
+        max_price=watcher.MAX_PRICE,
+    )
+    if lot is None:
+        return None
+    return replace(
+        lot,
+        source_type="auction",
+        sale_name="GCC auctions / ending soon",
+        minutes_to_end=parsed_end.minutes,
+        end_text=parsed_end.text,
+    )
+
+
+def discover_auction_api_lots(
     *,
     max_minutes: Optional[int] = None,
-    max_scrolls: int = MAX_INDEX_SCROLLS,
-) -> AuctionIndexDiscoveryResult:
-    horizon = watcher.MAX_AUCTION_MINUTES if max_minutes is None else max(0, max_minutes)
+    http_get=None,
+    page_size: int = AUCTION_API_PAGE_SIZE,
+    max_pages: int = AUCTION_API_MAX_PAGES,
+    now: Optional[datetime] = None,
+) -> AuctionApiDiscoveryResult:
+    horizon = (
+        watcher.MAX_AUCTION_MINUTES
+        if max_minutes is None
+        else max(0, int(max_minutes))
+    )
     coverage = watcher.CoverageAudit("AUCTIONS", watcher.AUCTION_DISCOVERY_FILTERS)
     coverage.protocol = PRIMARY_PROTOCOL
+    getter = http_get or watcher.requests.get
+    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
-    if not watcher._goto_with_coverage_retries(page, AUCTION_INDEX_URL, coverage):
-        return AuctionIndexDiscoveryResult(
-            [], coverage, False, FALLBACK_SCOPE_STATUS, 0, 0, 0, False, False,
-            "auction index navigation failed",
+    if page_size <= 0 or max_pages <= 0:
+        coverage.record_malformed("invalid auction API pagination configuration")
+        return AuctionApiDiscoveryResult(
+            [], coverage, False, FALLBACK_SCOPE_STATUS, 0, 0, 0,
+            False, False, None, "invalid auction API pagination configuration"
         )
 
-    try:
-        page.wait_for_timeout(1000)
-    except Exception:
-        pass
-
-    clicked_sort = _try_select_ending_first(page)
-    watcher.log(
-        "Discovery auction item-level: /filtres/auctions | "
-        f"tri fin proche {'cliqué' if clicked_sort else 'validé par ordre des timers'}"
-    )
-
-    classifications: dict[str, AuctionListingClassification] = {}
-    ordered_timer_values: list[int] = []
-    ordered_timer_ids: set[str] = set()
-    all_row_ids: list[str] = []
-    all_row_id_set: set[str] = set()
-    pending_terminal: dict[str, str] = {}
-    last_height = None
-    stable_scrolls = 0
-    threshold_confirmations = 0
+    lots: dict[str, watcher.Lot] = {}
+    rows_seen = 0
+    timers_parsed = 0
+    timerless_eligible = 0
     threshold_crossed = False
-    order_verified = False
-    complete = False
-    reason = ""
+    api_total: Optional[int] = None
+    previous_end: Optional[datetime] = None
+    next_page = 1
 
-    for _ in range(max(1, max_scrolls)):
-        try:
-            rows = _parse_visible_rows(page)
-        except Exception as error:
-            reason = f"auction index rows unreadable: {type(error).__name__}"
-            break
-
-        new_ids = 0
-        for item_url, anchor_text, blob, minutes in rows:
-            if item_url not in all_row_id_set:
-                all_row_id_set.add(item_url)
-                all_row_ids.append(item_url)
-                new_ids += 1
-
-            if item_url not in ordered_timer_ids and minutes is not None:
-                ordered_timer_ids.add(item_url)
-                ordered_timer_values.append(minutes)
-
-            if item_url in classifications:
-                continue
-            classification = classify_auction_listing(
-                item_url,
-                anchor_text,
-                blob,
-                max_minutes=horizon,
-            )
-            classifications[item_url] = classification
-            if classification.terminal_status is not None:
-                pending_terminal[item_url] = classification.terminal_status
-
-        order_verified = timers_are_nondecreasing(ordered_timer_values)
-        threshold_crossed = any(value > horizon for value in ordered_timer_values)
-
-        if order_verified and threshold_crossed:
-            threshold_confirmations += 1
-            if threshold_confirmations >= 2:
-                complete = True
-                reason = PRIMARY_END_REASON
-                break
-        else:
-            threshold_confirmations = 0
-
-        try:
-            height = page.evaluate("document.body.scrollHeight")
-        except Exception as error:
-            reason = f"auction index scroll height unreadable: {type(error).__name__}"
-            break
-
-        if height == last_height and new_ids == 0:
-            stable_scrolls += 1
-        else:
-            stable_scrolls = 0
-            last_height = height
-
-        if stable_scrolls >= 2:
-            if ordered_timer_values and (
-                order_verified or len(ordered_timer_values) == 1
-            ):
-                complete = True
-                reason = watcher.END_SCROLL_STABLE
-            else:
-                reason = "auction index stable but timer order could not be verified"
-            break
-
-        try:
-            page.mouse.wheel(0, SCROLL_PIXELS)
-            page.wait_for_timeout(SCROLL_WAIT_MS)
-        except Exception as error:
-            reason = f"auction index scroll failed: {type(error).__name__}"
-            break
-
-    if not complete and not reason:
-        reason = f"auction index safety limit {max_scrolls} scrolls reached"
-
-    if not complete:
-        coverage.mark_incomplete(reason or "auction index discovery incomplete")
-        return AuctionIndexDiscoveryResult(
-            [],
-            coverage,
-            False,
-            FALLBACK_SCOPE_STATUS,
-            len(all_row_ids),
-            len(ordered_timer_values),
-            sum(
-                classification.lot is not None
-                and classification.timer_minutes is None
-                for classification in classifications.values()
-            ),
-            order_verified,
-            threshold_crossed,
-            reason,
+    for _ in range(max_pages):
+        page_number = next_page
+        page_label = (
+            f"{AUCTION_API_URL}?sellingTypeGroup=AUCTION&sortType=ENDING_SOON"
+            f"&status=ON_SALE&page={page_number}&limit={page_size}"
         )
+        coverage.begin_page(page_label)
+        params = {
+            "sellingTypeGroup": "AUCTION",
+            "sortType": "ENDING_SOON",
+            "status": "ON_SALE",
+            "includeCounts": "true" if page_number == 1 else "false",
+            "includeSavedSearchMatch": "true",
+            "page": page_number,
+            "limit": page_size,
+        }
 
-    coverage.record_page_success(
-        AUCTION_INDEX_URL,
-        all_row_ids,
-        page_size=len(all_row_ids),
+        response = None
+        payload = None
+        for attempt in range(watcher.GCC_PAGE_RETRIES + 1):
+            try:
+                response = getter(
+                    AUCTION_API_URL,
+                    params=params,
+                    headers={
+                        "Accept": "application/json",
+                        "x-device-platform": "web",
+                    },
+                    timeout=max(1.0, watcher.NAV_TIMEOUT / 1000),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except Exception as error:
+                if attempt < watcher.GCC_PAGE_RETRIES:
+                    coverage.record_retry()
+                    watcher.log(
+                        f"Retry GCC auction API {attempt + 1}/"
+                        f"{watcher.GCC_PAGE_RETRIES}: {type(error).__name__} "
+                        f"| page {page_number}"
+                    )
+                    continue
+                coverage.record_page_failure(
+                    f"auction API page {page_number} failed after "
+                    f"{watcher.GCC_PAGE_RETRIES} retries: {type(error).__name__}"
+                )
+                return AuctionApiDiscoveryResult(
+                    [], coverage, False, FALLBACK_SCOPE_STATUS,
+                    rows_seen, timers_parsed, timerless_eligible,
+                    False, threshold_crossed, api_total,
+                    f"auction API page {page_number} failed",
+                )
+
+        if page_number == 1 and response is not None:
+            watcher._log_gcc_numeric_rate_limits(response)
+        if not isinstance(payload, dict):
+            coverage.record_malformed(
+                f"auction API page {page_number}: payload is not an object"
+            )
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API payload malformed",
+            )
+
+        info = payload.get("info")
+        results = payload.get("results")
+        if not isinstance(info, dict) or not isinstance(results, list):
+            coverage.record_malformed(
+                f"auction API page {page_number}: missing info/results"
+            )
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API info/results missing",
+            )
+        if info.get("currentPage") != page_number:
+            coverage.record_malformed(
+                f"auction API did not advance: requested {page_number}, "
+                f"received {info.get('currentPage')}"
+            )
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API pagination did not advance",
+            )
+
+        if page_number == 1:
+            counts = info.get("counts")
+            if isinstance(counts, dict):
+                raw_total = counts.get("total")
+                if isinstance(raw_total, int) and not isinstance(raw_total, bool):
+                    api_total = max(0, raw_total)
+
+        row_ids: list[str] = []
+        keyed_results: list[tuple[str, dict]] = []
+        for result in results:
+            if not isinstance(result, dict):
+                coverage.record_unkeyed_row("auction API row is not an object")
+                continue
+            result_id = result.get("id")
+            if not isinstance(result_id, str) or not result_id.strip():
+                coverage.record_unkeyed_row(
+                    "auction API row has no stable GCC id"
+                )
+                continue
+            item_url = f"{watcher.BASE}/item/{result_id.strip()}"
+            row_ids.append(item_url)
+            keyed_results.append((item_url, result))
+
+        previous_unique = coverage.unique_listings
+        coverage.record_page_success(
+            page_label,
+            row_ids,
+            expected_total=api_total if page_number == 1 else None,
+            expected_total_scope=(
+                watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE
+                if api_total is not None and page_number == 1
+                else None
+            ),
+            page_size=page_size,
+            detect_repeated_page=True,
+        )
+        rows_seen += len(row_ids)
+        if coverage.pagination_end_reason == watcher.END_REPEATED_PAGE:
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API repeated page",
+            )
+        if row_ids and coverage.unique_listings == previous_unique:
+            coverage.mark_incomplete(
+                "auction API page produced no new stable ids",
+                watcher.END_NO_PROGRESS,
+            )
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API no progress",
+            )
+
+        page_has_missing_end = False
+        for item_url, result in keyed_results:
+            parsed_end = _parse_api_end_time(result.get("endTime"), now=current_time)
+            if parsed_end is None:
+                page_has_missing_end = True
+                continue
+            timers_parsed += 1
+            if not _api_order_is_valid(previous_end, parsed_end.at):
+                coverage.mark_incomplete(
+                    "auction API ENDING_SOON order is not monotonic",
+                    watcher.END_MALFORMED_RESPONSE,
+                )
+                return AuctionApiDiscoveryResult(
+                    [], coverage, False, FALLBACK_SCOPE_STATUS,
+                    rows_seen, timers_parsed, timerless_eligible,
+                    False, threshold_crossed, api_total,
+                    "auction API ending-soon order invalid",
+                )
+            previous_end = parsed_end.at
+
+            lot = _auction_api_lot(result, item_url, coverage, parsed_end)
+            if parsed_end.minutes > horizon:
+                threshold_crossed = True
+                if lot is not None:
+                    coverage.record_terminal(
+                        item_url, watcher.ACCOUNT_EXCLUDED_BY_RULES
+                    )
+                continue
+            if lot is not None:
+                lots.setdefault(item_url, lot)
+
+        if page_has_missing_end:
+            coverage.mark_incomplete(
+                "auction API row missing/invalid endTime",
+                watcher.END_MALFORMED_RESPONSE,
+            )
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API endTime missing",
+            )
+
+        if threshold_crossed:
+            coverage.pagination_end_reason = PRIMARY_END_REASON
+            setattr(coverage, "_auction_scope_complete", True)
+            setattr(coverage, "auction_scope_status", PRIMARY_SCOPE_STATUS)
+            return AuctionApiDiscoveryResult(
+                list(lots.values()), coverage, True, PRIMARY_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                True, True, api_total, PRIMARY_END_REASON,
+            )
+
+        raw_next = info.get("nextPage")
+        if raw_next in {None, False, "", 0}:
+            coverage.pagination_end_reason = PRIMARY_EXHAUSTED_REASON
+            setattr(coverage, "_auction_scope_complete", True)
+            setattr(coverage, "auction_scope_status", PRIMARY_SCOPE_STATUS)
+            return AuctionApiDiscoveryResult(
+                list(lots.values()), coverage, True, PRIMARY_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                True, False, api_total, PRIMARY_EXHAUSTED_REASON,
+            )
+        if not isinstance(raw_next, int) or isinstance(raw_next, bool):
+            coverage.record_malformed("auction API nextPage is invalid")
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API nextPage invalid",
+            )
+        if raw_next <= page_number:
+            coverage.mark_incomplete(
+                "auction API nextPage did not advance",
+                watcher.END_NO_PROGRESS,
+            )
+            return AuctionApiDiscoveryResult(
+                [], coverage, False, FALLBACK_SCOPE_STATUS,
+                rows_seen, timers_parsed, timerless_eligible,
+                False, threshold_crossed, api_total,
+                "auction API nextPage did not advance",
+            )
+        next_page = raw_next
+
+    coverage.mark_incomplete(
+        f"auction API safety limit {max_pages} pages reached",
+        watcher.END_MAX_PAGE_LIMIT,
     )
-    for item_url, status in pending_terminal.items():
-        coverage.record_terminal(item_url, status)
-    coverage.pagination_end_reason = reason
-    setattr(coverage, "_auction_scope_complete", True)
-    setattr(coverage, "auction_scope_status", PRIMARY_SCOPE_STATUS)
-
-    lots = [
-        classification.lot
-        for classification in classifications.values()
-        if classification.lot is not None
-    ]
-    return AuctionIndexDiscoveryResult(
-        lots,
-        coverage,
-        True,
-        PRIMARY_SCOPE_STATUS,
-        len(all_row_ids),
-        len(ordered_timer_values),
-        sum(lot.minutes_to_end is None for lot in lots),
-        order_verified or len(ordered_timer_values) == 1,
-        threshold_crossed,
-        reason,
+    return AuctionApiDiscoveryResult(
+        [], coverage, False, FALLBACK_SCOPE_STATUS,
+        rows_seen, timers_parsed, timerless_eligible,
+        False, threshold_crossed, api_total,
+        f"auction API safety limit {max_pages} pages reached",
     )
 
 
 def _attach_primary_result(
     run_diagnostics: Optional[watcher.RunDiagnostics],
-    result: AuctionIndexDiscoveryResult,
+    result: AuctionApiDiscoveryResult,
 ) -> None:
     if run_diagnostics is None:
         return
@@ -355,6 +401,7 @@ def _attach_primary_result(
     setattr(run_diagnostics, "auction_discovered_rows", result.rows_seen)
     setattr(run_diagnostics, "auction_timer_parsed", result.timers_parsed)
     setattr(run_diagnostics, "auction_timerless_eligible", result.timerless_eligible)
+    setattr(run_diagnostics, "auction_api_total", result.api_total)
     setattr(run_diagnostics, "auction_fallback_used", False)
 
 
@@ -362,7 +409,9 @@ def _legacy_fallback(
     page,
     run_diagnostics: Optional[watcher.RunDiagnostics],
 ) -> list[watcher.Lot]:
-    watcher.log("Discovery auction item-level non prouvée -> fallback legacy ventes live")
+    watcher.log(
+        "Discovery auction API item-level non prouvée -> fallback legacy ventes live"
+    )
     if run_diagnostics is not None:
         run_diagnostics.auction_coverage = watcher.CoverageAudit(
             "AUCTIONS", watcher.AUCTION_DISCOVERY_FILTERS
@@ -381,6 +430,7 @@ def _legacy_fallback(
         setattr(run_diagnostics, "auction_discovered_rows", 0)
         setattr(run_diagnostics, "auction_timer_parsed", 0)
         setattr(run_diagnostics, "auction_timerless_eligible", 0)
+        setattr(run_diagnostics, "auction_api_total", None)
         setattr(run_diagnostics, "auction_fallback_used", True)
 
     watcher.log(f"Fallback legacy: {len(sales)} vente(s) live détectée(s)")
@@ -405,9 +455,11 @@ def patched_collect_live_auction_urls(
     run_diagnostics: Optional[watcher.RunDiagnostics] = None,
 ) -> list[str]:
     watcher.log(
-        "Source auction primaire: /filtres/auctions, lots individuels, "
-        "tri fin la plus proche"
+        "Source auction primaire: API publique /on-sale-items "
+        "sellingTypeGroup=AUCTION + sortType=ENDING_SOON"
     )
+    # The unchanged V4 main loop expects a list of discovery sources. This one
+    # sentinel routes the auction phase through the API collector below.
     return [AUCTION_INDEX_URL]
 
 
@@ -423,18 +475,18 @@ def patched_collect_lots_from_listing(
             page, url, source_type, run_diagnostics, **kwargs
         )
 
-    result = discover_auction_index_lots(page)
+    result = discover_auction_api_lots()
     if result.complete:
         _attach_primary_result(run_diagnostics, result)
         watcher.log(
-            f"Auction item-level: {result.rows_seen} lot(s) observé(s), "
-            f"{result.timers_parsed} timer(s) lisible(s), "
-            f"{len(result.lots)} candidat(s) Pokémon/carte/prix dans l'horizon"
+            f"Auction API item-level: {result.rows_seen} lot(s) reçu(s), "
+            f"{result.timers_parsed} endTime lisible(s), "
+            f"{len(result.lots)} candidat(s) Pokémon/carte/0-100 € dans l'horizon"
         )
         watcher.log(f"Auction scope status: {PRIMARY_SCOPE_STATUS}")
         return result.lots
 
-    watcher.log(f"Auction item-level incomplet: {result.reason}")
+    watcher.log(f"Auction API item-level incomplet: {result.reason}")
     return _legacy_fallback(page, run_diagnostics)
 
 
@@ -456,6 +508,7 @@ def patched_log_scan_coverage(diagnostics: watcher.RunDiagnostics) -> None:
     rows = getattr(diagnostics, "auction_discovered_rows", 0)
     timer_parsed = getattr(diagnostics, "auction_timer_parsed", 0)
     timerless = getattr(diagnostics, "auction_timerless_eligible", 0)
+    api_total = getattr(diagnostics, "auction_api_total", None)
     fallback = bool(getattr(diagnostics, "auction_fallback_used", False))
 
     watcher.log(f"auction discovery mode: {mode}")
@@ -463,6 +516,10 @@ def patched_log_scan_coverage(diagnostics: watcher.RunDiagnostics) -> None:
     watcher.log(f"auction discovered rows: {rows}")
     watcher.log(f"auction timers parsed: {timer_parsed}")
     watcher.log(f"auction timerless eligible: {timerless}")
+    watcher.log(
+        f"auction API total (wider on-sale auction universe): "
+        f"{api_total if api_total is not None else 'UNKNOWN'}"
+    )
     watcher.log(f"auction legacy fallback used: {str(fallback).lower()}")
 
     watcher.write_github_output("auction_discovery_mode", mode)
