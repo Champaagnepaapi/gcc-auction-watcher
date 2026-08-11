@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 import watcher
+from v4_auction_item_discovery import install_v4_auction_item_discovery
 
 
 MIN_EXTERNAL_EXACT_GRADE_COMPS = 2
@@ -82,7 +83,9 @@ def install_grade_arbitrage_guard() -> None:
 
 
 if __name__ == "__main__":
-    # Keep V4 discovery/valuation intact; harden only the final validation gate
-    # used by the production workflow before ntfy notification.
+    # Keep V4 valuation and notification safeguards intact. Only the auction
+    # discovery source changes: item-level /filtres/auctions first, with the
+    # previous live-sale collector preserved as a conservative fallback.
     install_grade_arbitrage_guard()
+    install_v4_auction_item_discovery()
     raise SystemExit(watcher.main())
