@@ -1,0 +1,109 @@
+name: V5 Final Full Validation Temp
+
+on:
+  push:
+    branches:
+      - agent/v5-poketrace-cardmarket-market-data
+    paths:
+      - .github/workflows/v5-final-full-validation-temp.yml
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  validate-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install offline validation dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0 PyYAML==6.0.2
+
+      - name: Verify current main is contained and V4 files are identical
+        shell: bash
+        run: |
+          git fetch origin main
+          behind="$(git rev-list --count HEAD..origin/main)"
+          test "$behind" = "0"
+          bad="$(git diff --name-only origin/main...HEAD | grep -Ev '^(v5/|tests_v5/|\.github/workflows/v5-[^/]+\.ya?ml$)' || true)"
+          if [ -n "$bad" ]; then
+            echo "Unexpected non-V5 diff against main:"
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+          echo "V5 branch behind main: 0"
+          echo "V4/main files: identical"
+
+      - name: Run complete current V4 tests
+        run: |
+          output="$(python -m unittest discover -s tests -p 'test*.py' -v 2>&1)"
+          printf '%s\n' "$output"
+          count="$(printf '%s\n' "$output" | sed -n 's/^Ran \([0-9][0-9]*\) tests.*/\1/p' | tail -1)"
+          test -n "$count"
+          test "$count" -ge 167
+          echo "V4_TEST_COUNT=$count" >> "$GITHUB_ENV"
+
+      - name: Run complete current V5 tests
+        run: |
+          output="$(python -m unittest discover -s tests_v5 -p 'test*.py' -v 2>&1)"
+          printf '%s\n' "$output"
+          count="$(printf '%s\n' "$output" | sed -n 's/^Ran \([0-9][0-9]*\) tests.*/\1/p' | tail -1)"
+          test -n "$count"
+          test "$count" -ge 262
+          echo "V5_TEST_COUNT=$count" >> "$GITHUB_ENV"
+
+      - name: Compile V5
+        run: python -m compileall -q v5
+
+      - name: Validate all workflow YAML
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          paths = sorted(Path('.github/workflows').glob('*.y*ml'))
+          for path in paths:
+              with path.open('r', encoding='utf-8') as handle:
+                  yaml.safe_load(handle)
+              print(f'YAML OK: {path}')
+          print(f'YAML workflows valid: {len(paths)}')
+          PY
+
+      - name: Check whitespace
+        run: git diff --check origin/main...HEAD
+
+      - name: Safety assertion
+        run: |
+          echo 'PokeTrace live calls requested by this workflow: 0'
+          echo 'JustTCG live calls requested by this workflow: 0'
+          echo 'eBay live calls requested by this workflow: 0'
+          echo 'Secrets injected by this workflow: 0'
+          echo 'Purchases/bids/checkout/CardGrader: 0'
+
+      - name: Publish final validation status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              state,
+              context: 'v5-final-full-offline-validation',
+              description: `Final V4/V5 offline validation: ${state}`,
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
