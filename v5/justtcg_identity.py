@@ -20,12 +20,18 @@ from .variant_semantics import semantics_from_identity, variant_compatibility
 
 
 JUSTTCG_CARDS_URL = "https://api.justtcg.com/v1/cards"
+JUSTTCG_SETS_URL = "https://api.justtcg.com/v1/sets"
 JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS = 6.25
 
 
 @dataclass
 class JustTCGCounters:
     queries: int = 0
+    set_catalog_queries: int = 0
+    set_catalog_candidates: int = 0
+    set_catalog_resolved: int = 0
+    set_catalog_ambiguous: int = 0
+    set_catalog_no_match: int = 0
     matches: int = 0
     ambiguous: int = 0
     no_match: int = 0
@@ -161,14 +167,15 @@ def _resolved_identity(original: CardIdentity, card: Mapping[str, object]) -> Ca
 class JustTCGIdentityResolver:
     """Strict card-identity resolver intended for same-sample benchmarking.
 
-    It deliberately does not expose price data to V5 economics yet. One GET per
-    resolvable identity uses JustTCG's stable v1 search + card-number filter,
-    then every candidate is revalidated locally against name, set, number,
-    language and printing semantics.
+    It deliberately does not expose price data to V5 economics. JustTCG's set
+    catalogue is loaded once per game and cached in memory. A listing set is
+    mapped locally to one unique stable JustTCG set ID before `/cards` retrieval,
+    allowing `q + set + number` without guessing a slug. Every returned card is
+    still revalidated locally against name, set, number, language and printing.
 
-    Free currently allows 10 requests/minute, so this resolver spaces live
-    requests by at least 6.25 seconds. A transient minute-limit 429 may be
-    retried once after Retry-After; daily/monthly quota errors are never retried.
+    Free currently allows 10 requests/minute, so all live JustTCG requests are
+    spaced by at least 6.25 seconds. A transient minute-limit 429 may be retried
+    once after Retry-After; daily/monthly quota errors are never retried.
     """
 
     def __init__(
@@ -180,6 +187,7 @@ class JustTCGIdentityResolver:
         min_request_interval_seconds: float = JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        use_set_catalog: bool = True,
     ) -> None:
         self.api_key = api_key if api_key is not None else os.getenv("JUSTTCG_API_KEY", "").strip()
         self.session = session or requests.Session()
@@ -190,9 +198,12 @@ class JustTCGIdentityResolver:
         )
         self.clock = clock
         self.sleeper = sleeper
+        self.use_set_catalog = use_set_catalog
         self.counters = JustTCGCounters()
         self._cache: dict[Tuple[str, ...], JustTCGIdentityResolution] = {}
         self._last_request_at: Optional[float] = None
+        self._set_catalog_cache: dict[str, Optional[tuple[tuple[str, str], ...]]] = {}
+        self._resolved_set_cache: dict[tuple[str, str], tuple[Optional[str], bool]] = {}
 
     @staticmethod
     def _key(identity: CardIdentity) -> Tuple[str, ...]:
@@ -204,6 +215,14 @@ class JustTCGIdentityResolver:
             _normalize(identity.variant),
             _normalize(identity.finish),
             _normalize(identity.edition),
+        )
+
+    @staticmethod
+    def _game_id(identity: CardIdentity) -> str:
+        return (
+            "pokemon-japan"
+            if _normalize(identity.language) in {"japanese", "japonais", "ja", "jp"}
+            else "pokemon"
         )
 
     def _respect_rate_limit(self) -> None:
@@ -237,11 +256,13 @@ class JustTCGIdentityResolver:
                 return None
         return None
 
-    def _request_once(self, params: Mapping[str, str]) -> tuple[Optional[object], Optional[str]]:
+    def _request_once(
+        self, url: str, params: Mapping[str, str]
+    ) -> tuple[Optional[object], Optional[str]]:
         self._respect_rate_limit()
         try:
             response = self.session.get(
-                JUSTTCG_CARDS_URL,
+                url,
                 headers={"Accept": "application/json", "x-api-key": self.api_key},
                 params=dict(params),
                 timeout=self.timeout_seconds,
@@ -275,8 +296,8 @@ class JustTCGIdentityResolver:
             self.counters.other_http_failures += 1
         return response, f"HTTP_{status}"
 
-    def _request(self, params: Mapping[str, str]) -> Optional[object]:
-        response, error = self._request_once(params)
+    def _request(self, url: str, params: Mapping[str, str]) -> Optional[object]:
+        response, error = self._request_once(url, params)
         if error is None:
             return response
         if error in {"DAILY_LIMIT_EXCEEDED", "REQUEST_LIMIT_EXCEEDED"}:
@@ -286,15 +307,99 @@ class JustTCGIdentityResolver:
 
         wait_seconds = self._retry_after_seconds(response)
         if wait_seconds is None:
-            # Our own 6.25s cadence should make this rare. A small extra backoff
-            # is safer than an immediate retry when the provider omits the header.
             wait_seconds = self.min_request_interval_seconds
         if wait_seconds > 65:
             return None
         self.counters.retry_attempts += 1
         self.sleeper(max(wait_seconds, self.min_request_interval_seconds))
-        retried, retry_error = self._request_once(params)
+        retried, retry_error = self._request_once(url, params)
         return retried if retry_error is None else None
+
+    def _load_set_catalog(self, game: str) -> Optional[tuple[tuple[str, str], ...]]:
+        if game in self._set_catalog_cache:
+            return self._set_catalog_cache[game]
+        self.counters.set_catalog_queries += 1
+        response = self._request(JUSTTCG_SETS_URL, {"game": game})
+        if response is None:
+            self._set_catalog_cache[game] = None
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            self.counters.request_failures += 1
+            self.counters.json_failures += 1
+            self._set_catalog_cache[game] = None
+            return None
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        rows = []
+        if isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+            for item in data:
+                if not isinstance(item, Mapping):
+                    continue
+                set_id = str(item.get("id") or "").strip()
+                set_name = str(item.get("name") or "").strip()
+                if set_id and set_name:
+                    rows.append((set_id, set_name))
+        result = tuple(dict.fromkeys(rows))
+        self.counters.set_catalog_candidates += len(result)
+        self._set_catalog_cache[game] = result
+        return result
+
+    def _resolve_set_id(self, game: str, set_name: Optional[str]) -> tuple[Optional[str], bool]:
+        normalized = _normalize(set_name)
+        if not normalized or not self.use_set_catalog:
+            return None, False
+        cache_key = (game, normalized)
+        cached = self._resolved_set_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        catalog = self._load_set_catalog(game)
+        if catalog is None:
+            result = (None, False)
+            self._resolved_set_cache[cache_key] = result
+            return result
+
+        exact = [
+            (set_id, human_name)
+            for set_id, human_name in catalog
+            if _normalize(human_name) == normalized or _normalize(set_id) == normalized
+        ]
+        if len(exact) == 1:
+            self.counters.set_catalog_resolved += 1
+            result = (exact[0][0], False)
+            self._resolved_set_cache[cache_key] = result
+            return result
+        if len(exact) > 1:
+            self.counters.set_catalog_ambiguous += 1
+            result = (None, True)
+            self._resolved_set_cache[cache_key] = result
+            return result
+
+        scored = []
+        for set_id, human_name in catalog:
+            # Prefer the human-readable name. The slug is accepted only as a
+            # secondary exact/strong alias, never as proof against a conflicting name.
+            score = max(
+                _set_similarity(set_name, human_name, None),
+                _set_similarity(set_name, None, set_id),
+            )
+            if score >= 0.86:
+                scored.append((score, set_id))
+        if not scored:
+            self.counters.set_catalog_no_match += 1
+            result = (None, False)
+        else:
+            best_score = max(score for score, _set_id in scored)
+            best_ids = sorted({set_id for score, set_id in scored if score == best_score})
+            if len(best_ids) == 1:
+                self.counters.set_catalog_resolved += 1
+                result = (best_ids[0], False)
+            else:
+                self.counters.set_catalog_ambiguous += 1
+                result = (None, True)
+        self._resolved_set_cache[cache_key] = result
+        return result
 
     def resolve_identity(self, identity: CardIdentity) -> JustTCGIdentityResolution:
         if not self.api_key:
@@ -308,19 +413,29 @@ class JustTCGIdentityResolver:
         if key in self._cache:
             return self._cache[key]
 
+        game = self._game_id(identity)
+        set_id, set_ambiguous = self._resolve_set_id(game, identity.set)
+        if set_ambiguous:
+            self.counters.ambiguous += 1
+            result = JustTCGIdentityResolution(identity, ambiguous=True)
+            self._cache[key] = result
+            return result
+
         params = {
-            "game": "pokemon-japan" if _normalize(identity.language) in {"japanese", "japonais", "ja", "jp"} else "pokemon",
+            "game": game,
             "q": str(identity.card_name).strip(),
             "limit": "20",
             "include_null_prices": "true",
             "include_price_history": "false",
         }
+        if set_id:
+            params["set"] = set_id
         numerator, _denominator = _card_number_parts(identity.card_number)
         if numerator:
             params["number"] = numerator
 
         self.counters.queries += 1
-        response = self._request(params)
+        response = self._request(JUSTTCG_CARDS_URL, params)
         if response is None:
             result = JustTCGIdentityResolution(identity)
             self._cache[key] = result
@@ -404,7 +519,12 @@ def render_justtcg_counters(resolver: JustTCGIdentityResolver) -> str:
             "=== V5 JUSTTCG IDENTITY BENCHMARK ===",
             "role: same-sample second opinion only; no economic value accepted",
             f"enforced Free interval: >={resolver.min_request_interval_seconds:.2f}s",
-            f"queries: {c.queries}",
+            f"set catalog queries: {c.set_catalog_queries}",
+            f"set catalog candidates cached: {c.set_catalog_candidates}",
+            f"set catalog unique resolutions: {c.set_catalog_resolved}",
+            f"set catalog ambiguous resolutions: {c.set_catalog_ambiguous}",
+            f"set catalog no match: {c.set_catalog_no_match}",
+            f"card queries: {c.queries}",
             f"matches: {c.matches}",
             f"ambiguous: {c.ambiguous}",
             f"no match: {c.no_match}",
