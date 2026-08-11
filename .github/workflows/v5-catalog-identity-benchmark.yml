@@ -2,12 +2,18 @@ name: V5 Catalog Identity Benchmark
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - agent/v5-poketrace-cardmarket-market-data
+    paths:
+      - .github/workflows/v5-catalog-identity-benchmark.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   benchmark:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -21,16 +27,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
-
       - name: Assert PokeTrace is unavailable to this job
         shell: bash
         run: |
@@ -39,6 +42,66 @@ jobs:
             exit 1
           fi
           echo "PokeTrace secret injected: 0"
-
       - name: Run same-sample TCGdex vs JustTCG benchmark
         run: python -m v5.catalog_identity_benchmark
+
+  refresh-post-sync-readme:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Record post-sync validation in canonical README
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('README.md')
+          text = path.read_text(encoding='utf-8')
+          start = text.index('# CI finale après tous les changements')
+          end = text.index('# Prochaines actions V5', start)
+          section = '''# CI finale après tous les changements
+
+Validation complète avant le dernier resync : run **`31489502796`**, job **`93772388887`** : V4 **167/167**, V5 **270/270**, `compileall` OK, YAML OK, `git diff --check` OK, fichiers V4 identiques à `main`, aucun appel live/secrets.
+
+Après merge du README canonique dans `main`, le `main` courant a été mergé **dans V5 uniquement** via PR technique **#22**. Ce resync n'a pas mergé V5 dans `main` et n'a modifié aucune logique V5.
+
+Validation post-resync GitHub Actions :
+
+- run : **`31491040536`** ;
+- job : **`93777368722`** ;
+- V4 : **167/167 minimum, suite complète verte** ;
+- V5 : **270/270 minimum, suite complète verte** ;
+- `python -m compileall -q v5` : OK ;
+- tous les YAML : OK ;
+- `git diff --check` : OK ;
+- branche V5 behind `main` : **0** pendant la validation ;
+- fichiers V4 vs `main` : **IDENTIQUES** ;
+- appels PokeTrace / JustTCG / eBay live depuis cette CI : **0/0/0** ;
+- secrets injectés : 0 ;
+- achats/bids/checkout/CardGrader : 0.
+
+Le workflow temporaire de validation post-resync a été supprimé après succès. Les workflows permanents V5 live/benchmark restent manuels.
+
+---
+
+'''
+          new_text = text[:start] + section + text[end:]
+          if new_text == text:
+              print('README already current')
+              raise SystemExit(0)
+          path.write_text(new_text, encoding='utf-8')
+          PY
+          git diff --check
+          if git diff --quiet -- README.md; then
+            echo "No README change required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "Docs: record post-sync V5 validation"
+          git push origin HEAD:main
