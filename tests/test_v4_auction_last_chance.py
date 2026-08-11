@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
 import watcher
 import v4_auction_last_chance as last_chance
 
