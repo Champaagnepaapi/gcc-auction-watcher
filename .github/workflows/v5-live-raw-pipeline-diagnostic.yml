@@ -2,11 +2,6 @@ name: V5 Live Raw Pipeline Diagnostic
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - agent/v5-poketrace-cardmarket-market-data
-    paths:
-      - .github/workflows/v5-live-raw-pipeline-diagnostic.yml
 
 permissions:
   contents: read
