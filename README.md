@@ -137,7 +137,7 @@ Les anciens noms peuvent rester visibles dans l’historique/sidebar GitHub Acti
 - HEAD fonctionnel V5 validé pour l'extension eBay EU :
   `f920e647171df758adb91ad3b1bc8aca46730ff2`.
 - `main` réellement synchronisé dans V5 :
-  `90e7ed2abdc4d9757c3a5f4201ba6daf877ca485`.
+  `510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d`.
 - V5 = diagnostic **RAW eBay** séparé de la V4 graded GCC.
 - Aucun achat/bid/checkout/CardGrader.
 - Le plan PokeTrace Pro est désormais activé pour **un unique diagnostic manuel de 20 listings**, précédé d’un preflight `/auth/info` fail-closed. Aucun live n’est lancé depuis le développement local.
@@ -258,16 +258,16 @@ Validation offline après synchronisation de `main`, transition Free → Pro et
 extension eBay EU, incluant les régressions RAW→RAW et alias multilingues :
 
 - V5 : **365/365** ;
-- V4 : **167/167** ;
+- V4 : **169/169** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
 - YAML : **7/7** ;
 - `git diff --check` : OK ;
-- aucun appel PokeTrace/TCGdex/JustTCG/eBay/GCC live pendant cette phase ;
+- aucun appel PokeTrace/TCGdex/JustTCG/eBay/GCC live pendant le batch Codex ;
 - aucun secret consulté ;
 - aucun CardGrader, achat, bid ou checkout.
 
-Le merge de synchronisation workflow-only `231b067517fc14126215532019d7f46f68d7b5d0` ne modifie pas la logique V5.
+Le merge post-Codex `0e3660ed330d0fc5220dfa239911d934d700398c` resynchronise `main` `510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d` dans V5. Il ne modifie aucun fichier `v5/`; les deux fichiers V4 repris de `main` ont été validés à **169/169** par le workflow V4 de la PR #27.
 
 ## Durcissements déjà intégrés
 
