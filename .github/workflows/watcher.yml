@@ -99,6 +99,12 @@ jobs:
           SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
           SCAN_DURATION_SECONDS: ${{ steps.scan.outputs.duration_seconds }}
           FINAL_OPPORTUNITIES: ${{ steps.scan.outputs.final_opportunities }}
+          AUCTION_DISCOVERY_MODE: ${{ steps.scan.outputs.auction_discovery_mode }}
+          AUCTION_SCOPE_STATUS: ${{ steps.scan.outputs.auction_scope_status }}
+          AUCTION_DISCOVERED_ROWS: ${{ steps.scan.outputs.auction_discovered_rows }}
+          AUCTION_TIMER_PARSED: ${{ steps.scan.outputs.auction_timer_parsed }}
+          AUCTION_ENDING_SOON: ${{ steps.scan.outputs.auction_ending_soon }}
+          AUCTION_FALLBACK_USED: ${{ steps.scan.outputs.auction_fallback_used }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -108,11 +114,18 @@ jobs:
               `timestamp_utc=${new Date().toISOString()}`,
               `run_id=${context.runId}`,
               `run_attempt=${process.env.RUN_ATTEMPT}`,
+              `trigger=${context.eventName}`,
               `commit_sha=${context.sha}`,
               `scan_status=${process.env.SCAN_STATUS}`,
               `scan_exit_code=${process.env.SCAN_EXIT_CODE || "unavailable"}`,
               `duration_seconds=${duration}`,
               `final_opportunities=${finalOpportunities}`,
+              `auction_discovery_mode=${process.env.AUCTION_DISCOVERY_MODE || "unavailable"}`,
+              `auction_scope_status=${process.env.AUCTION_SCOPE_STATUS || "unavailable"}`,
+              `auction_discovered_rows=${process.env.AUCTION_DISCOVERED_ROWS || "unavailable"}`,
+              `auction_timer_parsed=${process.env.AUCTION_TIMER_PARSED || "unavailable"}`,
+              `auction_ending_soon=${process.env.AUCTION_ENDING_SOON || "unavailable"}`,
+              `auction_fallback_used=${process.env.AUCTION_FALLBACK_USED || "unavailable"}`,
             ].join("\n");
 
             await github.rest.issues.createComment({
