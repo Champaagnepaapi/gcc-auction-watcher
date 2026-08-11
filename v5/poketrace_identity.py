@@ -218,6 +218,18 @@ class PokeTraceIdentityCounters:
     eu_fallback_suppressed_us_error: int = 0
     eu_fallback_suppressed_us_rate_limit: int = 0
     eu_fallback_suppressed_us_blocking_conflict: int = 0
+    near_set_provider_name_exact_normalized: int = 0
+    near_set_listing_name_exact_normalized: int = 0
+    near_set_tcgdex_name_exact_normalized: int = 0
+    near_set_provider_slug_exact_normalized: int = 0
+    near_set_slug_available: int = 0
+    near_set_slug_missing: int = 0
+    near_set_deterministic_alias_bridge_available: int = 0
+    near_set_deterministic_alias_bridge_missing: int = 0
+    near_set_name_number_exact_set_unresolved: int = 0
+    candidate_set_id_slug_collisions: int = 0
+    near_set_tcgdex_exact_bridge_available: int = 0
+    near_set_tcgdex_exact_bridge_missing: int = 0
 
 
 @dataclass(frozen=True)
@@ -448,6 +460,8 @@ class PokeTraceIdentityResolver:
         market: str,
     ) -> _MarketIdentityOutcome:
         seen_candidates: set[Tuple[str, ...]] = set()
+        seen_set_keys: dict[str, str] = {}
+        counted_set_collisions: set[Tuple[str, str, str]] = set()
         for index, (strategy, search_text, structured) in enumerate(
             _search_strategies(search_identity)
         ):
@@ -508,10 +522,37 @@ class PokeTraceIdentityResolver:
                     strategy_counters.redundant_candidates += 1
                     continue
                 seen_candidates.add(candidate_key)
+                set_payload = candidate.get("set")
+                if isinstance(set_payload, Mapping):
+                    set_name = _normalize(set_payload.get("name"))
+                    raw_set_key = str(
+                        set_payload.get("id") or set_payload.get("slug") or ""
+                    ).strip().casefold()
+                    if raw_set_key and set_name:
+                        previous_name = seen_set_keys.get(raw_set_key)
+                        collision = (
+                            raw_set_key,
+                            previous_name or "",
+                            set_name,
+                        )
+                        if (
+                            previous_name
+                            and previous_name != set_name
+                            and collision not in counted_set_collisions
+                        ):
+                            self.counters.candidate_set_id_slug_collisions += 1
+                            counted_set_collisions.add(collision)
+                        seen_set_keys.setdefault(raw_set_key, set_name)
                 self.counters.candidates_received += 1
                 strategy_counters.unique_candidates_introduced += 1
                 evidence = _candidate_evidence(search_identity, candidate)
-                self._count_match_evidence(evidence)
+                self._count_match_evidence(
+                    evidence,
+                    search_identity=search_identity,
+                    listing_identity=identity,
+                    candidate=candidate,
+                    provider_alias=provider_alias,
+                )
                 strategy_counters.near_matches_introduced += int(
                     len(evidence.failed_core_fields) == 1
                 )
@@ -837,7 +878,15 @@ class PokeTraceIdentityResolver:
         elif strategy == "broad_set":
             self.counters.broad_set_searches += 1
 
-    def _count_match_evidence(self, evidence: CandidateMatchEvidence) -> None:
+    def _count_match_evidence(
+        self,
+        evidence: CandidateMatchEvidence,
+        *,
+        search_identity: Optional[CardIdentity] = None,
+        listing_identity: Optional[CardIdentity] = None,
+        candidate: Optional[Mapping[str, object]] = None,
+        provider_alias: Optional[ProviderSearchAlias] = None,
+    ) -> None:
         counters = self.counters
         counters.candidates_name_matched += int(evidence.name_matched)
         counters.candidates_set_matched += int(evidence.set_matched)
@@ -885,6 +934,58 @@ class PokeTraceIdentityResolver:
                 self.near_match_counters.set_differences[
                     evidence.set_difference
                 ] += 1
+                counters.near_set_name_number_exact_set_unresolved += int(
+                    evidence.name_matched and evidence.card_number_matched
+                )
+                set_payload = candidate.get("set") if candidate is not None else None
+                set_name = (
+                    set_payload.get("name")
+                    if isinstance(set_payload, Mapping)
+                    else None
+                )
+                set_slug = (
+                    set_payload.get("slug")
+                    if isinstance(set_payload, Mapping)
+                    else None
+                )
+                expected_set = search_identity.set if search_identity is not None else None
+                counters.near_set_provider_name_exact_normalized += int(
+                    bool(expected_set)
+                    and _normalize(expected_set) == _normalize(set_name)
+                )
+                counters.near_set_listing_name_exact_normalized += int(
+                    listing_identity is not None
+                    and bool(listing_identity.set)
+                    and _normalize(listing_identity.set) == _normalize(set_name)
+                )
+                counters.near_set_tcgdex_name_exact_normalized += int(
+                    provider_alias is not None
+                    and _normalize(provider_alias.search_set_name)
+                    == _normalize(set_name)
+                )
+                counters.near_set_provider_slug_exact_normalized += int(
+                    bool(expected_set)
+                    and bool(set_slug)
+                    and _normalize(expected_set) == _normalize(set_slug)
+                )
+                counters.near_set_slug_available += int(bool(str(set_slug or "").strip()))
+                counters.near_set_slug_missing += int(not str(set_slug or "").strip())
+                alias_available = provider_alias is not None
+                counters.near_set_deterministic_alias_bridge_available += int(
+                    alias_available
+                )
+                counters.near_set_deterministic_alias_bridge_missing += int(
+                    not alias_available
+                )
+                # In this resolver, a provider alias is emitted only by one
+                # exact TCGdex English twin, so it is the deterministic bridge
+                # signal.  Absence remains diagnostic and never an alias guess.
+                counters.near_set_tcgdex_exact_bridge_available += int(
+                    alias_available
+                )
+                counters.near_set_tcgdex_exact_bridge_missing += int(
+                    not alias_available
+                )
             elif failed == "card_number":
                 category = evidence.card_number_difference
                 self.near_match_counters.number_differences[category] += 1
@@ -1098,6 +1199,49 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
                 f"near-match SET {category}: "
                 f"{resolver.near_match_counters.set_differences[category]}"
                 for category in SET_DIFFERENCE_CATEGORIES
+            ),
+            "near-match SET deterministic bridge diagnostics (acceptance unchanged):",
+            (
+                "near-match SET provider name exact after safe normalization: "
+                f"{counters.near_set_provider_name_exact_normalized}"
+            ),
+            (
+                "near-match SET listing name vs provider exact normalized: "
+                f"{counters.near_set_listing_name_exact_normalized}"
+            ),
+            (
+                "near-match SET exact TCGdex twin name vs provider exact normalized: "
+                f"{counters.near_set_tcgdex_name_exact_normalized}"
+            ),
+            (
+                "near-match SET provider slug exact after safe normalization: "
+                f"{counters.near_set_provider_slug_exact_normalized}"
+            ),
+            f"near-match SET slug available: {counters.near_set_slug_available}",
+            f"near-match SET slug missing: {counters.near_set_slug_missing}",
+            (
+                "near-match SET deterministic alias/twin bridge available: "
+                f"{counters.near_set_deterministic_alias_bridge_available}"
+            ),
+            (
+                "near-match SET deterministic alias/twin bridge missing: "
+                f"{counters.near_set_deterministic_alias_bridge_missing}"
+            ),
+            (
+                "near-match SET exact name+number but set unresolved: "
+                f"{counters.near_set_name_number_exact_set_unresolved}"
+            ),
+            (
+                "candidate set ID/slug collisions across distinct names: "
+                f"{counters.candidate_set_id_slug_collisions}"
+            ),
+            (
+                "near-match SET exact TCGdex bridge available: "
+                f"{counters.near_set_tcgdex_exact_bridge_available}"
+            ),
+            (
+                "near-match SET exact TCGdex bridge missing: "
+                f"{counters.near_set_tcgdex_exact_bridge_missing}"
             ),
             "near-match CARD NUMBER difference classes:",
             (

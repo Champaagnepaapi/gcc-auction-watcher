@@ -14,6 +14,7 @@ from v5.live_raw_pipeline import (
     PipelineForensicAggregate,
     PipelineIdentityAggregate,
     PipelineImageAggregate,
+    PipelineMicrovariantAggregate,
 )
 from v5.live_raw_pipeline_catalog import CatalogAwareLiveRawPipelineDiagnostic
 from v5.market_values.models import MarketValues
@@ -25,6 +26,11 @@ from v5.market_values.poketrace import (
     PokeTraceSnapshot,
 )
 from v5.market_values.poketrace_free import FreeTierPokeTraceProvider
+from v5.microvariants import (
+    EDITION_UNKNOWN,
+    MICROVARIANT_APPLICABLE,
+    MicrovariantResolution,
+)
 from v5.visual_identity import VisualIdentityResolution
 
 
@@ -100,6 +106,33 @@ class StubVisualResolver:
             card_id="visual-fixture",
             score=0.93,
             margin=0.31,
+        )
+
+
+class BlockedVisualResolver(StubVisualResolver):
+    def resolve_identity(
+        self,
+        identity,
+        image_urls,
+        *,
+        marketplace_id=None,
+        microvariant_applicability=None,
+    ):
+        result = super().resolve_identity(
+            identity,
+            image_urls,
+            marketplace_id=marketplace_id,
+            microvariant_applicability=microvariant_applicability,
+        )
+        return replace(
+            result,
+            microvariant=MicrovariantResolution(
+                applicability=MICROVARIANT_APPLICABLE,
+                edition_status=EDITION_UNKNOWN,
+                blocks_economics=True,
+                visual_attempted=True,
+                blocker_dimension="edition",
+            ),
         )
 
 
@@ -259,6 +292,39 @@ class CatalogIdentityRescueTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         self.assertEqual(visual.calls, 0)
         self.assertEqual(identities.ok, 1)
+
+    def test_microvariant_unknown_stops_catalog_pipeline_before_market(self):
+        visual = BlockedVisualResolver()
+        diagnostic = CatalogAwareLiveRawPipelineDiagnostic(
+            "client",
+            "secret",
+            card_catalog_resolver=NoRescueResolver(),
+            poketrace_provider=disabled_poketrace(),
+            visual_identity_resolver=visual,
+        )
+        diagnostic.discovery._image_fetcher = lambda _url: None
+        forensic = PipelineForensicAggregate()
+        microvariants = PipelineMicrovariantAggregate()
+        candidate, raw = diagnostic._candidate_from_record(
+            _DiscoveryRecord(
+                marketplace_id="EBAY_US",
+                summary={},
+                item_id="blocked-before-market",
+                enriched=item_without_number(),
+                get_item_success=True,
+            ),
+            PipelineIdentityAggregate(),
+            PipelineImageAggregate(),
+            forensic,
+            microvariants,
+        )
+        self.assertTrue(raw)
+        self.assertIsNone(candidate)
+        self.assertEqual(microvariants.microvariant_gate_blocked_before_market, 1)
+        self.assertEqual(
+            forensic.for_state(RESCUED_FROM_INSUFFICIENT).economics_deferred,
+            1,
+        )
 
     def test_forensic_queue_prioritizes_rescuable_insufficient_before_clean(self):
         diagnostic = CatalogAwareLiveRawPipelineDiagnostic(

@@ -131,6 +131,10 @@ class CardCatalogCounters:
     deterministic_english_aliases_found: int = 0
     alias_unavailable_no_exact_english_twin: int = 0
     alias_identity_calls_avoided_by_tcgdex_exact: int = 0
+    post_macro_applicability_attempts: int = 0
+    post_macro_applicability_cache_hits: int = 0
+    post_macro_applicability_resolved: int = 0
+    post_macro_applicability_unknown: int = 0
 
 
 @dataclass(frozen=True)
@@ -316,6 +320,9 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         self._english_alias_cache: dict[
             Tuple[str, str, str], Optional[ProviderSearchAlias]
         ] = {}
+        self._microvariant_applicability_cache: dict[
+            Tuple[str, ...], MicrovariantApplicability
+        ] = {}
 
     @staticmethod
     def _identity_key(identity: CardIdentity) -> Tuple[str, ...]:
@@ -381,6 +388,44 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         self.counters.no_match += 1
         self._identity_cache[key] = result
         return result
+
+    def resolve_microvariant_applicability(
+        self, identity: CardIdentity
+    ) -> MicrovariantApplicability:
+        """Give a visually rescued macro identity one exact TCGdex-only chance.
+
+        This deliberately bypasses PokeTrace and Pokémon TCG fallbacks.  It may
+        reuse the ordinary identity cache or the bounded TCGdex set/card caches,
+        and it returns only applicability metadata; no provider market field is
+        copied into the listing identity.
+        """
+
+        self.counters.post_macro_applicability_attempts += 1
+        if not (identity.set and identity.card_number):
+            self.counters.post_macro_applicability_unknown += 1
+            return MicrovariantApplicability()
+        key = self._identity_key(identity)
+        cached = self._microvariant_applicability_cache.get(key)
+        if cached is not None:
+            self.counters.post_macro_applicability_cache_hits += 1
+            return cached
+
+        identity_cached = self._identity_cache.get(key)
+        if identity_cached is not None and identity_cached.matched:
+            applicability = identity_cached.microvariant_applicability
+        else:
+            exact = self._resolve_tcgdex(identity)
+            applicability = (
+                exact.microvariant_applicability
+                if exact.matched and not exact.ambiguous
+                else MicrovariantApplicability()
+            )
+        self._microvariant_applicability_cache[key] = applicability
+        if applicability.status == "MICROVARIANT_APPLICABILITY_UNKNOWN":
+            self.counters.post_macro_applicability_unknown += 1
+        else:
+            self.counters.post_macro_applicability_resolved += 1
+        return applicability
 
     def _get_json(
         self,
@@ -1128,6 +1173,22 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             (
                 "alias identity calls avoided by TCGdex exact: "
                 f"{counters.alias_identity_calls_avoided_by_tcgdex_exact}"
+            ),
+            (
+                "post-macro microvariant applicability attempts: "
+                f"{counters.post_macro_applicability_attempts}"
+            ),
+            (
+                "post-macro applicability cache hits: "
+                f"{counters.post_macro_applicability_cache_hits}"
+            ),
+            (
+                "post-macro applicability resolved: "
+                f"{counters.post_macro_applicability_resolved}"
+            ),
+            (
+                "post-macro applicability still unknown: "
+                f"{counters.post_macro_applicability_unknown}"
             ),
             "language preserved as a first-class identity discriminator: YES",
             "persisted eBay records: 0",

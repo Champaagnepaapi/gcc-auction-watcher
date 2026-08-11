@@ -73,6 +73,7 @@ from .microvariants import (
     MICROVARIANT_APPLICABLE,
     MICROVARIANT_NOT_APPLICABLE,
     UNLIMITED_CONFIRMED,
+    OTHER_VARIANT_CONFIRMED,
     MicrovariantResolution,
 )
 
@@ -283,6 +284,13 @@ class PipelineMicrovariantAggregate:
     edition_unlimited_confirmed: int = 0
     edition_unknown: int = 0
     edition_conflict: int = 0
+    other_variant_confirmed: int = 0
+    microvariant_gate_blocked_before_market: int = 0
+    blocker_edition: int = 0
+    blocker_finish: int = 0
+    blocker_promo: int = 0
+    blocker_special_finish: int = 0
+    blocker_multiple: int = 0
     premium_variant_candidate_not_inherited: int = 0
     microvariant_visual_attempts: int = 0
     microvariant_visual_confirmed: int = 0
@@ -308,6 +316,18 @@ class PipelineMicrovariantAggregate:
         self.edition_conflict += int(
             resolution.edition_status == EDITION_CONFLICT
         )
+        self.other_variant_confirmed += int(
+            resolution.edition_status == OTHER_VARIANT_CONFIRMED
+        )
+        self.microvariant_gate_blocked_before_market += int(
+            resolution.blocks_economics
+        )
+        blocker = resolution.blocker_dimension
+        self.blocker_edition += int(blocker == "edition")
+        self.blocker_finish += int(blocker == "finish")
+        self.blocker_promo += int(blocker == "promo")
+        self.blocker_special_finish += int(blocker == "special_finish")
+        self.blocker_multiple += int(blocker == "multiple")
         self.premium_variant_candidate_not_inherited += int(
             resolution.premium_candidate_not_inherited
         )
@@ -1053,6 +1073,22 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             f"edition_unknown: {summary.microvariants.edition_unknown}",
             f"edition_conflict: {summary.microvariants.edition_conflict}",
             (
+                "other_variant_confirmed: "
+                f"{summary.microvariants.other_variant_confirmed}"
+            ),
+            (
+                "microvariant_gate_blocked_before_market: "
+                f"{summary.microvariants.microvariant_gate_blocked_before_market}"
+            ),
+            f"microvariant blocker edition: {summary.microvariants.blocker_edition}",
+            f"microvariant blocker finish: {summary.microvariants.blocker_finish}",
+            f"microvariant blocker promo: {summary.microvariants.blocker_promo}",
+            (
+                "microvariant blocker special_finish: "
+                f"{summary.microvariants.blocker_special_finish}"
+            ),
+            f"microvariant blocker multiple: {summary.microvariants.blocker_multiple}",
+            (
                 "premium_variant_candidate_not_inherited: "
                 f"{summary.microvariants.premium_variant_candidate_not_inherited}"
             ),
@@ -1070,7 +1106,8 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             ),
             (
                 "economics_blocked_microvariant_unknown: "
-                f"{summary.microvariants.economics_blocked_microvariant_unknown}"
+                f"{summary.microvariants.economics_blocked_microvariant_unknown} "
+                "(market found, then economics blocked; not a pre-market counter)"
             ),
             "",
             "IMAGES:",

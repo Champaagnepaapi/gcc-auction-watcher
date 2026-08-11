@@ -359,9 +359,10 @@ bdd1abc7b479ed980f4f4896b17e3b184b701ed5
 ```
 
 Validation offline après synchronisation de `main`, transition Free → Pro,
-extension eBay EU et séparation macro/microvariante :
+extension eBay EU, séparation macro/microvariante et détecteur local par paire
+de références :
 
-- V5 : **394/394** ;
+- V5 : **429/429** ;
 - V4 : **169/169** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
@@ -392,6 +393,39 @@ Le merge post-Codex `0e3660ed330d0fc5220dfa239911d934d700398c` resynchronise `ma
 - rendement PokeTrace mesuré par stratégie ;
 - parser eBay enrichi uniquement avec aliases structurés déterministes ;
 - failures TCGdex et Pokémon TCG API séparées dans les diagnostics.
+- détecteur microvariante concret câblé par défaut après preuve macro :
+  localisation de la carte, orientation/normalisation, alignement de deux scans
+  canoniques exacts, construction locale des seules régions où ces scans
+  diffèrent, puis comparaison du vendeur avec seuil absolu, marge et qualité ;
+- références concurrentes limitées au même nom, set, numéro et langue
+  déterministes, même produit `single`, avec cache mémoire et borne stricte ;
+  aucune image, réponse fournisseur ou donnée listing-level n'est persistée ;
+- une identité sauvée visuellement reçoit une seconde chance TCGdex exacte et
+  cachée pour l'applicabilité microvariante, sans PokeTrace/Pokémon TCG fallback
+  et sans remplacement des champs commerciaux du listing ;
+- First Edition exige un aspect vendeur explicite ou une région positive sur
+  une paire exacte ; Unlimited exige une vraie référence Unlimited du même
+  layout et un meilleur match significatif — l'absence de stamp ne suffit
+  jamais ;
+- holo/reverse reste `UNKNOWN` sous éclairage vendeur arbitraire ; promo et
+  special/stamped ne peuvent être confirmés que par une différence statique
+  utilisable entre références exactes. Crop, glare, basse résolution,
+  alignement faible, références trop proches/absentes ou dimensions multiples
+  restent fail-closed ;
+- le snapshot US et l'unique enrichissement EU éventuel sont amorcés seulement
+  après `CONFIRMED` / `NOT_APPLICABLE` / absence de blocker. Les devises et IDs
+  fournisseur restent inchangés ;
+- diagnostics pré-marché dédiés : gate bloquée, snapshot non amorcé,
+  enrichissement EU non tenté, dimension du blocker, applicabilité avant/après
+  macro, paires présentes/absentes, normalisation, alignement, région
+  discriminante et issues First/Unlimited/autre/UNKNOWN/CONFLICT ;
+- l'ancien `economics_blocked_microvariant_unknown` reste présent mais signifie
+  uniquement « valeurs marché trouvées, puis économie bloquée » ; il ne mesure
+  pas les snapshots empêchés avant le marché ;
+- diagnostics set PokeTrace enrichis sans assouplissement : nom listing/jumeau
+  TCGdex vs nom PokeTrace après normalisation sûre, slug présent/absent, pont
+  alias/jumeau exact présent/absent, name+number exact mais set irrésolu,
+  collisions ID/slug entre sets distincts et disponibilité d'un pont TCGdex.
 - alias anglais PokeTrace autorisé uniquement par un jumeau TCGdex exact
   `id + set.id + localId`, conservé en mémoire et isolé des caches par identité
   complète/variante/provenance ;
@@ -457,6 +491,43 @@ Commit : `9ec5ebf66792802ef7f4a4f20aad56ea11034bc3`.
 - market values found = **0**.
 
 Ce run a motivé les nouveaux diagnostics détaillés et le rendement par stratégie.
+
+## Dernier live complet avant le détecteur — run `31533156545`
+
+La taxonomie **EBAY_FR a été prouvée live correcte** avec la catégorie sûre
+existante. Elle n'est ni modifiée ni relâchée par ce batch offline.
+
+- identité exploitable : **9** ; ambiguë : 1 ; insuffisante : 10 ;
+- cohortes forensiques : structured usable 6, rescued from insufficient 2,
+  still insufficient 10, still ambiguous 1 ;
+- visual attempted : **13** ; rescued : **2** ;
+- OCR attempted : 4 ; OCR rescued : 0 ;
+- les **2/2** sauvetages visuels ont atteint le gate microvariante : premium
+  candidate not inherited 2, visual attempts 2, confirmed 0, inconclusive 2 ;
+- snapshots marché amorcés : 0 ; enrichissements EU : 0 ;
+- TCGdex : 14 requêtes, 0 hit ;
+- PokeTrace : 13 identités, 129 recherches, 776 candidats, 0 exact ;
+- candidats name/number/set matched : 206/40/**1** ;
+- 24 candidats échouaient uniquement sur le set, dont 23 sans relation
+  déterministe.
+
+Ce baseline démontre deux blocages séparés : l'ancien provider d'évidence
+microvariante était absent (`None`) et les sets PokeTrace ne disposent presque
+jamais d'un pont sûr. Le premier est maintenant remplacé par le détecteur local
+générique décrit ci-dessus. Le second reçoit uniquement des diagnostics : le
+matcher set, ses seuils et ses rejets restent strictement identiques.
+
+Le détecteur suit deux phases explicites : listing → preuve macro → nouvelle
+applicabilité exacte si nécessaire → sélection de références concurrentes
+exactes → preuve locale de région → `CONFIRMED`, `NOT_APPLICABLE`, `UNKNOWN` ou
+`CONFLICT` → amorçage marché seulement si le gate est ouvert. Les métadonnées
+fournisseur ne servent qu'à sélectionner les références et ne constituent
+jamais la preuve visuelle du listing.
+
+Il n'y a **pas de prochain live autorisé par ce changement lui-même**. La revue
+offline doit d'abord confirmer l'architecture, les fixtures synthétiques et
+les diagnostics. Ensuite seulement, le propriétaire pourra déclencher
+manuellement le workflow existant ; Codex ne le déclenche pas.
 
 ## Dernier live — run `31504468613`, job `93822427440`
 

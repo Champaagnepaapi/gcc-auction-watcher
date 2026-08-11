@@ -191,6 +191,9 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             self.visual_identity = LocalVisualIdentityResolver(
                 card_catalog_resolver.poketrace_identity,
                 ebay_image_fetcher=self.discovery._image_fetcher,
+                post_macro_applicability_resolver=(
+                    card_catalog_resolver.resolve_microvariant_applicability
+                ),
             )
         else:
             self.visual_identity = None
@@ -355,6 +358,14 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             )
         if microvariant_counts is not None:
             microvariant_counts.record(microvariant)
+        if microvariant.blocks_economics:
+            if forensic_counts is not None:
+                forensic_counts.for_state(forensic_state).economics_deferred += 1
+            _progress(
+                f"identity record {self._identity_records_seen}: "
+                "microvariant gate blocked before market"
+            )
+            return None, True
 
         _progress(
             f"identity record {self._identity_records_seen}: usable via {source}"

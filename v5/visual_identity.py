@@ -18,6 +18,11 @@ from .microvariants import (
     MicrovariantApplicability,
     MicrovariantResolution,
 )
+from .microvariant_detector import (
+    CanonicalMicrovariantReference,
+    DeterministicLocalMicrovariantEvidenceProvider,
+    MicrovariantEvidenceRequest,
+)
 from .poketrace_identity import (
     REQUEST_OK,
     PokeTraceIdentityResolver,
@@ -68,6 +73,32 @@ class VisualIdentityCounters:
     microvariant_visual_attempts: int = 0
     microvariant_visual_confirmed: int = 0
     microvariant_visual_inconclusive: int = 0
+    microvariant_gate_blocked_before_market: int = 0
+    market_snapshot_not_primed_microvariant: int = 0
+    eu_enrichment_not_attempted_microvariant: int = 0
+    applicability_pre_macro_known: int = 0
+    applicability_pre_macro_unknown: int = 0
+    applicability_post_macro_attempts: int = 0
+    applicability_post_macro_resolved: int = 0
+    applicability_post_macro_unknown: int = 0
+    microvariant_reference_pairs_available: int = 0
+    microvariant_reference_pairs_missing: int = 0
+    microvariant_card_normalization_success: int = 0
+    microvariant_card_normalization_failure: int = 0
+    microvariant_alignment_success: int = 0
+    microvariant_alignment_failure: int = 0
+    microvariant_region_usable: int = 0
+    microvariant_region_unusable: int = 0
+    microvariant_first_confirmed: int = 0
+    microvariant_unlimited_confirmed: int = 0
+    microvariant_other_confirmed: int = 0
+    microvariant_unknown: int = 0
+    microvariant_conflict: int = 0
+    blocker_edition: int = 0
+    blocker_finish: int = 0
+    blocker_promo: int = 0
+    blocker_special_finish: int = 0
+    blocker_multiple: int = 0
 
 
 @dataclass(frozen=True)
@@ -128,10 +159,10 @@ class LocalVisualIdentityResolver:
         card_number_ocr: Optional[LocalCardNumberOCR] = None,
         microvariant_validator: Optional[LocalMicrovariantValidator] = None,
         microvariant_evidence_provider: Optional[
-            Callable[
-                [CardIdentity, Mapping[str, object], Sequence[bytes]],
-                Optional[EditionRegionEvidence],
-            ]
+            Callable[[MicrovariantEvidenceRequest], Optional[EditionRegionEvidence]]
+        ] = None,
+        post_macro_applicability_resolver: Optional[
+            Callable[[CardIdentity], MicrovariantApplicability]
         ] = None,
     ) -> None:
         self.poketrace_identity = poketrace_identity
@@ -196,9 +227,14 @@ class LocalVisualIdentityResolver:
         self.microvariant_validator = (
             microvariant_validator or LocalMicrovariantValidator()
         )
-        self.microvariant_evidence_provider = microvariant_evidence_provider
+        self.microvariant_evidence_provider = (
+            microvariant_evidence_provider
+            or DeterministicLocalMicrovariantEvidenceProvider()
+        )
+        self.post_macro_applicability_resolver = post_macro_applicability_resolver
         self.counters = VisualIdentityCounters()
         self._scan_signature_cache: dict[str, Tuple[_ImageSignature, ...]] = {}
+        self._scan_bytes_cache: dict[str, Optional[bytes]] = {}
 
     def resolve_identity(
         self,
@@ -294,6 +330,7 @@ class LocalVisualIdentityResolver:
                 ebay_signatures,
                 marketplace_id,
                 microvariant_applicability,
+                raw_candidates,
             )
             return ocr or VisualIdentityResolution(identity)
 
@@ -327,6 +364,7 @@ class LocalVisualIdentityResolver:
                 ebay_signatures,
                 marketplace_id,
                 microvariant_applicability,
+                raw_candidates,
             )
             if ocr is not None:
                 return ocr
@@ -340,6 +378,7 @@ class LocalVisualIdentityResolver:
                 ebay_signatures,
                 marketplace_id,
                 microvariant_applicability,
+                raw_candidates,
             )
             if ocr is not None:
                 return ocr
@@ -358,6 +397,7 @@ class LocalVisualIdentityResolver:
                 ebay_signatures,
                 marketplace_id,
                 microvariant_applicability,
+                raw_candidates,
             )
             if ocr is not None:
                 return ocr
@@ -373,19 +413,26 @@ class LocalVisualIdentityResolver:
             best.payload,
             ebay_image_bytes,
             microvariant_applicability,
+            raw_candidates,
         )
         if not microvariant.blocks_economics:
             self.poketrace_identity._prime_market_snapshot(
                 identity, resolved, best.payload, market="US"
             )
             self.counters.market_snapshots_primed += 1
+        else:
+            self.counters.microvariant_gate_blocked_before_market += 1
+            self.counters.market_snapshot_not_primed_microvariant += 1
         self.counters.rescued += 1
         if not microvariant.blocks_economics:
             self._enrich_eu_market(
                 resolved,
                 ebay_signatures,
                 marketplace_id,
+                microvariant,
             )
+        elif self._eu_enrichment_eligible(marketplace_id):
+            self.counters.eu_enrichment_not_attempted_microvariant += 1
         return VisualIdentityResolution(
             resolved,
             matched=True,
@@ -403,6 +450,7 @@ class LocalVisualIdentityResolver:
         ebay_signatures: Sequence[_ImageSignature],
         marketplace_id: Optional[str],
         microvariant_applicability: MicrovariantApplicability,
+        raw_candidates: Sequence[Mapping[str, object]],
     ) -> Optional[VisualIdentityResolution]:
         result = self.card_number_ocr.resolve(
             ebay_image_bytes,
@@ -436,6 +484,7 @@ class LocalVisualIdentityResolver:
             result.candidate,
             ebay_image_bytes,
             microvariant_applicability,
+            raw_candidates,
         )
         if not microvariant.blocks_economics:
             self.poketrace_identity._prime_market_snapshot(
@@ -446,7 +495,13 @@ class LocalVisualIdentityResolver:
                 resolved,
                 ebay_signatures,
                 marketplace_id,
+                microvariant,
             )
+        else:
+            self.counters.microvariant_gate_blocked_before_market += 1
+            self.counters.market_snapshot_not_primed_microvariant += 1
+            if self._eu_enrichment_eligible(marketplace_id):
+                self.counters.eu_enrichment_not_attempted_microvariant += 1
         self.counters.ocr_rescued += 1
         return VisualIdentityResolution(
             resolved,
@@ -461,7 +516,23 @@ class LocalVisualIdentityResolver:
         candidate: Mapping[str, object],
         ebay_image_bytes: Sequence[bytes],
         applicability: MicrovariantApplicability,
+        raw_candidates: Sequence[Mapping[str, object]],
     ) -> MicrovariantResolution:
+        if applicability.status == "MICROVARIANT_APPLICABILITY_UNKNOWN":
+            self.counters.applicability_pre_macro_unknown += 1
+            if self.post_macro_applicability_resolver is not None:
+                self.counters.applicability_post_macro_attempts += 1
+                try:
+                    post_macro = self.post_macro_applicability_resolver(identity)
+                except (OSError, TypeError, ValueError):
+                    post_macro = MicrovariantApplicability()
+                applicability = post_macro
+                if post_macro.status == "MICROVARIANT_APPLICABILITY_UNKNOWN":
+                    self.counters.applicability_post_macro_unknown += 1
+                else:
+                    self.counters.applicability_post_macro_resolved += 1
+        else:
+            self.counters.applicability_pre_macro_known += 1
         preliminary = self.microvariant_validator.resolve(
             identity,
             applicability,
@@ -469,13 +540,26 @@ class LocalVisualIdentityResolver:
         )
         attempted = bool(
             applicability.status == MICROVARIANT_APPLICABLE
-            or preliminary.premium_candidate_not_inherited
+            or (
+                applicability.status == "MICROVARIANT_APPLICABILITY_UNKNOWN"
+                and preliminary.premium_candidate_not_inherited
+            )
         )
         evidence = None
-        if attempted and self.microvariant_evidence_provider is not None:
+        if attempted:
+            winning_reference, competing_references = self._microvariant_references(
+                identity, candidate, raw_candidates
+            )
             try:
                 evidence = self.microvariant_evidence_provider(
-                    identity, candidate, ebay_image_bytes
+                    MicrovariantEvidenceRequest(
+                        identity,
+                        candidate,
+                        ebay_image_bytes,
+                        winning_reference,
+                        competing_references,
+                        applicability,
+                    )
                 )
             except (OSError, TypeError, ValueError):
                 evidence = None
@@ -498,13 +582,168 @@ class LocalVisualIdentityResolver:
         self.counters.microvariant_visual_inconclusive += int(
             resolution.visual_attempted and not resolution.visual_confirmed
         )
+        self._count_microvariant_resolution(resolution)
         return resolution
+
+    def _microvariant_references(
+        self,
+        identity: CardIdentity,
+        winning: Mapping[str, object],
+        raw_candidates: Sequence[Mapping[str, object]],
+    ) -> Tuple[
+        Optional[CanonicalMicrovariantReference],
+        Tuple[CanonicalMicrovariantReference, ...],
+    ]:
+        winning_url = str(winning.get("image") or "").strip()
+        winning_bytes = self._canonical_image_bytes(winning_url) if winning_url else None
+        winning_reference = (
+            CanonicalMicrovariantReference(winning, winning_bytes)
+            if winning_bytes is not None
+            else None
+        )
+        competing = []
+        for candidate in raw_candidates:
+            if candidate is winning or not self._same_exact_macro(identity, winning, candidate):
+                continue
+            if not self._different_microvariant(winning, candidate):
+                continue
+            image_url = str(candidate.get("image") or "").strip()
+            image_bytes = self._canonical_image_bytes(image_url) if image_url else None
+            if image_bytes is None:
+                continue
+            competing.append(CanonicalMicrovariantReference(candidate, image_bytes))
+            if len(competing) >= 4:
+                break
+        return winning_reference, tuple(competing)
+
+    @staticmethod
+    def _same_exact_macro(
+        identity: CardIdentity,
+        winning: Mapping[str, object],
+        candidate: Mapping[str, object],
+    ) -> bool:
+        if _normalize(candidate.get("productType")) not in {"", "single"}:
+            return False
+        if _normalize_card_name(candidate.get("name")) != _normalize_card_name(
+            winning.get("name")
+        ):
+            return False
+        if _normalize_card_number(candidate.get("cardNumber")) != _normalize_card_number(
+            winning.get("cardNumber")
+        ):
+            return False
+        winning_set = winning.get("set")
+        candidate_set = candidate.get("set")
+        if not isinstance(winning_set, Mapping) or not isinstance(candidate_set, Mapping):
+            return False
+        if _set_similarity(
+            winning_set.get("name"),
+            candidate_set.get("name"),
+            candidate_set.get("slug"),
+        ) != 1.0:
+            return False
+        expected_language = _normalize(identity.language)
+        winning_language = _normalize(winning.get("language"))
+        candidate_language = _normalize(candidate.get("language"))
+        if not expected_language or not winning_language or not candidate_language:
+            return False
+        safe_language_aliases = {
+            "en": "english",
+            "anglais": "english",
+            "fr": "french",
+            "francais": "french",
+            "de": "german",
+            "allemand": "german",
+            "es": "spanish",
+            "espagnol": "spanish",
+            "it": "italian",
+            "italien": "italian",
+            "ja": "japanese",
+            "jp": "japanese",
+            "japonais": "japanese",
+        }
+        expected_language = safe_language_aliases.get(expected_language, expected_language)
+        winning_language = safe_language_aliases.get(winning_language, winning_language)
+        candidate_language = safe_language_aliases.get(candidate_language, candidate_language)
+        if winning_language != candidate_language or expected_language != winning_language:
+            return False
+        return True
+
+    @staticmethod
+    def _different_microvariant(
+        winning: Mapping[str, object], candidate: Mapping[str, object]
+    ) -> bool:
+        from .variant_semantics import semantics_from_poketrace_candidate
+
+        left = semantics_from_poketrace_candidate(winning)
+        right = semantics_from_poketrace_candidate(candidate)
+        return any(
+            left_value != right_value and (left_value is not None or right_value is not None)
+            for left_value, right_value in (
+                (left.edition, right.edition),
+                (left.finish, right.finish),
+                (left.promo, right.promo),
+                (left.special_finish, right.special_finish),
+            )
+        )
+
+    def _count_microvariant_resolution(self, resolution: MicrovariantResolution) -> None:
+        if not resolution.visual_attempted:
+            return
+        self.counters.microvariant_reference_pairs_available += int(
+            resolution.reference_pair_available
+        )
+        self.counters.microvariant_reference_pairs_missing += int(
+            not resolution.reference_pair_available
+        )
+        self.counters.microvariant_card_normalization_success += int(
+            resolution.card_normalized
+        )
+        self.counters.microvariant_card_normalization_failure += int(
+            not resolution.card_normalized
+        )
+        self.counters.microvariant_alignment_success += int(
+            resolution.alignment_succeeded
+        )
+        self.counters.microvariant_alignment_failure += int(
+            not resolution.alignment_succeeded
+        )
+        self.counters.microvariant_region_usable += int(
+            resolution.discriminative_region_usable
+        )
+        self.counters.microvariant_region_unusable += int(
+            not resolution.discriminative_region_usable
+        )
+        status = resolution.edition_status
+        self.counters.microvariant_first_confirmed += int(status == "FIRST_EDITION_CONFIRMED")
+        self.counters.microvariant_unlimited_confirmed += int(status == "UNLIMITED_CONFIRMED")
+        self.counters.microvariant_other_confirmed += int(status == "OTHER_VARIANT_CONFIRMED")
+        self.counters.microvariant_unknown += int(status == "EDITION_UNKNOWN")
+        self.counters.microvariant_conflict += int(status == "EDITION_CONFLICT")
+        blocker_counter = {
+            "edition": "blocker_edition",
+            "finish": "blocker_finish",
+            "promo": "blocker_promo",
+            "special_finish": "blocker_special_finish",
+            "multiple": "blocker_multiple",
+        }.get(resolution.blocker_dimension)
+        if blocker_counter:
+            setattr(self.counters, blocker_counter, getattr(self.counters, blocker_counter) + 1)
+
+    def _eu_enrichment_eligible(self, marketplace_id: Optional[str]) -> bool:
+        return bool(
+            self.eu_enrichment_enabled
+            and marketplace_id
+            and marketplace_id != "EBAY_US"
+            and self.provider.supports_eu_market
+        )
 
     def _enrich_eu_market(
         self,
         resolved: CardIdentity,
         ebay_signatures: Sequence[_ImageSignature],
         marketplace_id: Optional[str],
+        microvariant: Optional[MicrovariantResolution] = None,
     ) -> None:
         """Prime one strict EU record after a non-US visual/OCR rescue.
 
@@ -569,7 +808,9 @@ class LocalVisualIdentityResolver:
                 self.counters.eu_enrichment_rejected_core += 1
                 continue
 
-            if not evidence.variant_compatible:
+            if not evidence.variant_compatible and not self._confirmed_microvariant_matches(
+                resolved, candidate, microvariant
+            ):
                 self.counters.eu_enrichment_rejected_variant += 1
                 continue
             metadata_proven.append(candidate)
@@ -598,6 +839,34 @@ class LocalVisualIdentityResolver:
             and isinstance(prices, Mapping)
         ):
             self.counters.cardmarket_snapshots_recovered += 1
+
+    @staticmethod
+    def _confirmed_microvariant_matches(
+        identity: CardIdentity,
+        candidate: Mapping[str, object],
+        resolution: Optional[MicrovariantResolution],
+    ) -> bool:
+        if resolution is None or not resolution.visual_confirmed:
+            return False
+        from .variant_semantics import variant_compatibility
+
+        if resolution.edition_status == "FIRST_EDITION_CONFIRMED":
+            proven = replace(identity, edition="1st Edition")
+        elif resolution.edition_status == "UNLIMITED_CONFIRMED":
+            proven = replace(identity, edition="Unlimited")
+        elif resolution.edition_status != "OTHER_VARIANT_CONFIRMED":
+            return False
+        elif resolution.blocker_dimension == "promo":
+            if resolution.confirmed_value != "promo":
+                return False
+            proven = replace(identity, rarity="Promo")
+        elif resolution.blocker_dimension == "finish":
+            proven = replace(identity, finish=resolution.confirmed_value)
+        elif resolution.blocker_dimension == "special_finish":
+            proven = replace(identity, variant=resolution.confirmed_value)
+        else:
+            return False
+        return variant_compatibility(proven, candidate).compatible
 
     @staticmethod
     def _visual_search_text(identity: CardIdentity) -> str:
@@ -686,9 +955,8 @@ class LocalVisualIdentityResolver:
         cached = self._scan_signature_cache.get(image_url)
         if cached is not None:
             return cached
-        image_bytes = self.candidate_image_fetcher(image_url)
+        image_bytes = self._canonical_image_bytes(image_url)
         if image_bytes is None:
-            self.counters.candidate_image_failures += 1
             self._scan_signature_cache[image_url] = ()
             return ()
         try:
@@ -700,6 +968,15 @@ class LocalVisualIdentityResolver:
             self.counters.candidate_images_downloaded += 1
         self._scan_signature_cache[image_url] = signatures
         return signatures
+
+    def _canonical_image_bytes(self, image_url: str) -> Optional[bytes]:
+        if image_url in self._scan_bytes_cache:
+            return self._scan_bytes_cache[image_url]
+        image_bytes = self.candidate_image_fetcher(image_url)
+        if image_bytes is None:
+            self.counters.candidate_image_failures += 1
+        self._scan_bytes_cache[image_url] = image_bytes
+        return image_bytes
 
     def _fetch_poketrace_image(self, image_url: str) -> Optional[bytes]:
         parsed = urlparse(image_url)
@@ -784,6 +1061,58 @@ def render_visual_identity_counters(resolver: LocalVisualIdentityResolver) -> st
                 "microvariant visual inconclusive: "
                 f"{counters.microvariant_visual_inconclusive}"
             ),
+            (
+                "microvariant gate blocked before market: "
+                f"{counters.microvariant_gate_blocked_before_market}"
+            ),
+            (
+                "market snapshot not primed - microvariant: "
+                f"{counters.market_snapshot_not_primed_microvariant}"
+            ),
+            (
+                "EU enrichment not attempted - microvariant: "
+                f"{counters.eu_enrichment_not_attempted_microvariant}"
+            ),
+            "--- microvariant applicability timing ---",
+            f"pre-macro known: {counters.applicability_pre_macro_known}",
+            f"pre-macro unknown: {counters.applicability_pre_macro_unknown}",
+            f"post-macro attempts: {counters.applicability_post_macro_attempts}",
+            f"post-macro resolved: {counters.applicability_post_macro_resolved}",
+            f"post-macro still unknown: {counters.applicability_post_macro_unknown}",
+            "--- exact reference-pair detector ---",
+            (
+                "reference pairs available: "
+                f"{counters.microvariant_reference_pairs_available}"
+            ),
+            (
+                "reference pairs missing: "
+                f"{counters.microvariant_reference_pairs_missing}"
+            ),
+            (
+                "card normalization success: "
+                f"{counters.microvariant_card_normalization_success}"
+            ),
+            (
+                "card normalization failure: "
+                f"{counters.microvariant_card_normalization_failure}"
+            ),
+            f"alignment success: {counters.microvariant_alignment_success}",
+            f"alignment failure: {counters.microvariant_alignment_failure}",
+            f"discriminative region usable: {counters.microvariant_region_usable}",
+            f"discriminative region unusable: {counters.microvariant_region_unusable}",
+            f"First confirmed: {counters.microvariant_first_confirmed}",
+            f"Unlimited confirmed: {counters.microvariant_unlimited_confirmed}",
+            f"other microvariant confirmed: {counters.microvariant_other_confirmed}",
+            f"microvariant UNKNOWN: {counters.microvariant_unknown}",
+            f"microvariant CONFLICT: {counters.microvariant_conflict}",
+            f"blocker dimension edition: {counters.blocker_edition}",
+            f"blocker dimension finish: {counters.blocker_finish}",
+            f"blocker dimension promo: {counters.blocker_promo}",
+            (
+                "blocker dimension special_finish: "
+                f"{counters.blocker_special_finish}"
+            ),
+            f"blocker dimension multiple: {counters.blocker_multiple}",
             "--- targeted local card-number OCR fallback ---",
             f"OCR enabled: {str(resolver.card_number_ocr.config.enabled).lower()}",
             f"OCR attempted: {ocr.attempted}",
