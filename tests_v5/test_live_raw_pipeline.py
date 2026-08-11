@@ -113,6 +113,30 @@ def complete_costs(listing):
 
 
 class LiveRawPipelineFlowTests(unittest.TestCase):
+    def test_unmapped_identity_like_aspects_are_aggregate_only(self):
+        item = complete_item()
+        item["localizedAspects"].extend(
+            [
+                {
+                    "name": "Trading Card Display Name",
+                    "value": "private-name-value",
+                },
+                {
+                    "name": "Printed Card Identifier Number",
+                    "value": "private-number-value",
+                },
+            ]
+        )
+
+        _, summary, rendered, _, _ = run_pipeline(item)
+
+        self.assertEqual(summary.identity.unmapped_name_like_aspect_labels, 1)
+        self.assertEqual(summary.identity.unmapped_number_like_aspect_labels, 1)
+        self.assertIn("unmapped card-name-like aspect labels: 1", rendered)
+        self.assertIn("unmapped card-number-like aspect labels: 1", rendered)
+        self.assertNotIn("private-name-value", rendered)
+        self.assertNotIn("private-number-value", rendered)
+
     def test_real_browse_fixture_shape_reaches_full_manual_validation_path(self):
         diagnostic, summary, rendered, session, runtime = run_pipeline()
         self.assertTrue(summary.successful)

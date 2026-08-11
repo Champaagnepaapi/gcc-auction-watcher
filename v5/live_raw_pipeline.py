@@ -17,6 +17,7 @@ from typing import Callable, Dict, Optional, Protocol, Sequence, Tuple
 from .ebay import (
     RAW_CONDITION_ID,
     SetNumberCardNameResolver,
+    identity_aspect_audit,
     parse_ebay_item,
     resolve_card_identity,
 )
@@ -167,6 +168,8 @@ class PipelineIdentityAggregate:
     card_name: int = 0
     set_name: int = 0
     card_number: int = 0
+    unmapped_name_like_aspect_labels: int = 0
+    unmapped_number_like_aspect_labels: int = 0
 
 
 @dataclass
@@ -443,6 +446,13 @@ class LiveRawPipelineDiagnostic:
             set_number_resolver=self.discovery._set_number_resolver,
         )
         identity = resolution.identity
+        aspect_audit = identity_aspect_audit(record.enriched)
+        identity_counts.unmapped_name_like_aspect_labels += int(
+            aspect_audit.unmapped_name_like_label
+        )
+        identity_counts.unmapped_number_like_aspect_labels += int(
+            aspect_audit.unmapped_number_like_label
+        )
         identity_counts.card_name += int(identity.card_name is not None)
         identity_counts.set_name += int(identity.set is not None)
         identity_counts.card_number += int(identity.card_number is not None)
@@ -714,6 +724,14 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             f"card_name coverage: {summary.identity.card_name}",
             f"set coverage: {summary.identity.set_name}",
             f"card_number coverage: {summary.identity.card_number}",
+            (
+                "unmapped card-name-like aspect labels: "
+                f"{summary.identity.unmapped_name_like_aspect_labels}"
+            ),
+            (
+                "unmapped card-number-like aspect labels: "
+                f"{summary.identity.unmapped_number_like_aspect_labels}"
+            ),
             "",
             "IMAGES:",
             f"front available: {summary.images.front_available}",

@@ -14,7 +14,12 @@ from .card_identity_catalog import (
     MultilingualPokemonCardResolver,
     render_card_catalog_counters,
 )
-from .ebay import RAW_CONDITION_ID, parse_ebay_item, resolve_card_identity
+from .ebay import (
+    RAW_CONDITION_ID,
+    identity_aspect_audit,
+    parse_ebay_item,
+    resolve_card_identity,
+)
 from .ebay_live_diagnostic import MarketplaceAggregate, OAuthAggregate
 from .gcc_live_adapter import V4GCCBrowserSession
 from .image_detection import (
@@ -189,6 +194,13 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             record.enriched,
         )
         identity = initial.identity
+        aspect_audit = identity_aspect_audit(record.enriched)
+        identity_counts.unmapped_name_like_aspect_labels += int(
+            aspect_audit.unmapped_name_like_label
+        )
+        identity_counts.unmapped_number_like_aspect_labels += int(
+            aspect_audit.unmapped_number_like_label
+        )
         source = "eBay structured identity"
 
         resolved = self.card_catalog_resolver.resolve_identity(identity)

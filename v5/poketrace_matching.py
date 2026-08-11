@@ -22,6 +22,33 @@ REJECT_SET = "set"
 REJECT_VARIANT = "variant"
 REJECT_INSUFFICIENT = "insufficient"
 
+SET_DIFF_EXACT_NORMALIZED = "exact_after_safe_normalization"
+SET_DIFF_POKEMON_TCG_WRAPPER = "pokemon_tcg_wrapper"
+SET_DIFF_PUNCTUATION_SPACING = "punctuation_or_spacing_only"
+SET_DIFF_LANGUAGE_LOCALIZATION = "language_or_localization"
+SET_DIFF_PARENT_SUBSET = "parent_set_vs_subset"
+SET_DIFF_DANGEROUS_CONTAINMENT = "dangerous_distinct_containment"
+SET_DIFF_SIGNIFICANT_EXTRA_TOKENS = "significant_extra_tokens"
+SET_DIFF_NO_RELATION = "no_deterministic_relation"
+
+NUMBER_DIFF_LEADING_ZERO = "leading_zero_only"
+NUMBER_DIFF_DENOMINATOR_MISSING = "same_numerator_denominator_missing"
+NUMBER_DIFF_CANDIDATE_NUMERATOR_ONLY = "candidate_numerator_only"
+NUMBER_DIFF_LISTING_NUMERATOR_ONLY = "listing_numerator_only"
+NUMBER_DIFF_DENOMINATOR_CONFLICT = "same_numerator_denominator_conflict"
+NUMBER_DIFF_PREFIX_FAMILY = "tg_gg_sv_or_other_prefix"
+NUMBER_DIFF_ALPHANUMERIC_CASE = "alphanumeric_case_only"
+NUMBER_DIFF_CONTRADICTORY_AFFIX = "contradictory_prefix_or_suffix"
+NUMBER_DIFF_OTHER = "other"
+
+NAME_DIFF_CASE = "case_only"
+NAME_DIFF_PUNCTUATION_ACCENTS = "punctuation_or_accents"
+NAME_DIFF_GENDER = "gender_symbol"
+NAME_DIFF_MECHANIC_SUFFIX = "ex_gx_v_vmax_vstar_or_other_suffix"
+NAME_DIFF_SIGNIFICANT_PREFIX = "dark_rocket_or_other_significant_prefix"
+NAME_DIFF_LOCALIZATION = "translation_or_localization"
+NAME_DIFF_SIGNIFICANT = "significant_difference"
+
 
 @dataclass(frozen=True)
 class CandidateMatchEvidence:
@@ -44,6 +71,9 @@ class CandidateMatchEvidence:
     variant_edition_match: bool = False
     variant_promo_match: bool = False
     variant_metadata_missing: bool = False
+    name_difference: str = NAME_DIFF_SIGNIFICANT
+    set_difference: str = SET_DIFF_NO_RELATION
+    card_number_difference: str = NUMBER_DIFF_OTHER
 
 
 def _normalize(value: object) -> str:
@@ -59,7 +89,12 @@ _MEANINGFUL_SUFFIX = re.compile(
 
 def _normalize_card_name(value: object) -> str:
     raw = unicodedata.normalize("NFKC", str(value or "")).strip()
-    normalized = _normalize(raw)
+    # Gender symbols are part of the printed Pokemon name. Treating both as
+    # punctuation would make Nidoran♀, Nidoran♂ and Nidoran indistinguishable.
+    gender_aware = raw.replace("♀", " gender female ").replace(
+        "♂", " gender male "
+    )
+    normalized = _normalize(gender_aware)
     if not normalized:
         return ""
     match = _MEANINGFUL_SUFFIX.search(raw)
@@ -72,15 +107,24 @@ def _normalize_card_name(value: object) -> str:
     return f"{normalized}|suffix:{semantic_suffix}"
 
 
+_CARD_NUMBER_LABEL_PREFIX = re.compile(
+    r"^(?:#\s*|no(?:\.|\s+)\s*|n[°º]\s*|number\s+)",
+    flags=re.IGNORECASE,
+)
+
+
 def _normalize_card_number(value: object) -> str:
-    compact = re.sub(r"\s+", "", str(value or "")).lstrip("#")
+    compact = unicodedata.normalize("NFKC", str(value or "")).strip()
+    compact = _CARD_NUMBER_LABEL_PREFIX.sub("", compact)
+    compact = re.sub(r"\s+", "", compact).lstrip("#")
     parts = compact.split("/", 1)
 
     def canonical(part: str) -> str:
-        match = re.fullmatch(r"0*(\d+)([A-Za-z]*)", part)
+        match = re.fullmatch(r"([A-Za-z]*)(0*\d+)([A-Za-z-]*)", part)
         if not match:
             return _normalize(part).replace(" ", "")
-        return f"{int(match.group(1))}{match.group(2).casefold()}"
+        prefix, digits, suffix = match.groups()
+        return f"{prefix.casefold()}{int(digits)}{suffix.casefold()}"
 
     return "/".join(canonical(part) for part in parts)
 
@@ -120,12 +164,266 @@ def _numeric_tokens(value: object) -> frozenset[str]:
     return frozenset(re.findall(r"\d+(?:\.\d+)?", _normalize(value)))
 
 
+def _surface(value: object) -> str:
+    return " ".join(
+        unicodedata.normalize("NFKC", str(value or "")).strip().split()
+    )
+
+
+def _number_surface(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    text = _CARD_NUMBER_LABEL_PREFIX.sub("", text)
+    return re.sub(r"\s+", "", text).lstrip("#")
+
+
+def _number_shape(value: object) -> tuple[tuple[str, int, str], ...]:
+    parts = _number_surface(value).split("/", 1)
+    result = []
+    for part in parts:
+        match = re.fullmatch(r"([A-Za-z]*)(\d+)([A-Za-z-]*)", part)
+        if match is None:
+            return ()
+        prefix, digits, suffix = match.groups()
+        result.append((prefix.casefold(), int(digits), suffix.casefold()))
+    return tuple(result)
+
+
+def _card_number_difference(expected: object, candidate: object) -> str:
+    expected_surface = _number_surface(expected)
+    candidate_surface = _number_surface(candidate)
+    expected_normalized = _normalize_card_number(expected)
+    candidate_normalized = _normalize_card_number(candidate)
+
+    if expected_normalized and expected_normalized == candidate_normalized:
+        expected_shape = _number_shape(expected)
+        candidate_shape = _number_shape(candidate)
+        if (
+            expected_shape
+            and expected_shape == candidate_shape
+            and expected_surface.casefold() != candidate_surface.casefold()
+        ):
+            return NUMBER_DIFF_LEADING_ZERO
+        if expected_surface != candidate_surface:
+            return NUMBER_DIFF_ALPHANUMERIC_CASE
+        return NUMBER_DIFF_OTHER
+
+    expected_numerator, expected_denominator = _card_number_parts(expected)
+    candidate_numerator, candidate_denominator = _card_number_parts(candidate)
+    if expected_numerator and expected_numerator == candidate_numerator:
+        if expected_denominator is None and candidate_denominator is not None:
+            return NUMBER_DIFF_LISTING_NUMERATOR_ONLY
+        if candidate_denominator is None and expected_denominator is not None:
+            return NUMBER_DIFF_CANDIDATE_NUMERATOR_ONLY
+        if (
+            expected_denominator
+            and candidate_denominator
+            and expected_denominator != candidate_denominator
+        ):
+            return NUMBER_DIFF_DENOMINATOR_CONFLICT
+
+    expected_shape = _number_shape(expected)
+    candidate_shape = _number_shape(candidate)
+    if expected_shape and candidate_shape:
+        expected_first = expected_shape[0]
+        candidate_first = candidate_shape[0]
+        if expected_first[1] == candidate_first[1]:
+            expected_has_prefix = bool(expected_first[0])
+            candidate_has_prefix = bool(candidate_first[0])
+            if expected_has_prefix or candidate_has_prefix:
+                return NUMBER_DIFF_PREFIX_FAMILY
+            if expected_first != candidate_first:
+                return NUMBER_DIFF_CONTRADICTORY_AFFIX
+    return NUMBER_DIFF_OTHER
+
+
 def _canonical_set_label(value: object) -> str:
     normalized = _normalize(value)
     for prefix in ("pokemon trading card game ", "pokemon tcg "):
         if normalized.startswith(prefix):
             return normalized[len(prefix):].strip()
     return normalized
+
+
+def _set_wrapper_removed(value: object) -> bool:
+    normalized = _normalize(value)
+    return any(
+        normalized.startswith(prefix)
+        for prefix in ("pokemon trading card game ", "pokemon tcg ")
+    )
+
+
+def _has_non_latin_script(value: object) -> bool:
+    return any(
+        ("\u3040" <= character <= "\u30ff")
+        or ("\u3400" <= character <= "\u9fff")
+        or ("\uac00" <= character <= "\ud7af")
+        or ("\u0400" <= character <= "\u04ff")
+        for character in str(value or "")
+    )
+
+
+_LANGUAGE_MARKERS = frozenset(
+    {
+        "english",
+        "french",
+        "francais",
+        "german",
+        "deutsch",
+        "italian",
+        "italiano",
+        "spanish",
+        "espanol",
+        "japanese",
+        "japonais",
+        "korean",
+        "chinese",
+    }
+)
+
+
+def _looks_localized(left: object, right: object) -> bool:
+    if _has_non_latin_script(left) != _has_non_latin_script(right):
+        return True
+    left_markers = set(_normalize(left).split()) & _LANGUAGE_MARKERS
+    right_markers = set(_normalize(right).split()) & _LANGUAGE_MARKERS
+    return left_markers != right_markers and bool(left_markers or right_markers)
+
+
+_SUBSET_MARKERS = frozenset(
+    {
+        "gallery",
+        "subset",
+        "vault",
+        "trainer",
+        "galarian",
+        "classic",
+    }
+)
+
+
+def _single_set_difference(expected: object, candidate: object) -> str:
+    if not str(expected or "").strip() or not str(candidate or "").strip():
+        return SET_DIFF_NO_RELATION
+    if _looks_localized(expected, candidate):
+        return SET_DIFF_LANGUAGE_LOCALIZATION
+    expected_norm = _canonical_set_label(expected)
+    candidate_norm = _canonical_set_label(candidate)
+    if not expected_norm or not candidate_norm:
+        return SET_DIFF_NO_RELATION
+    if expected_norm == candidate_norm:
+        if _set_wrapper_removed(expected) != _set_wrapper_removed(candidate):
+            return SET_DIFF_POKEMON_TCG_WRAPPER
+        expected_surface = _surface(expected).casefold()
+        candidate_surface = _surface(candidate).casefold()
+        if expected_surface == candidate_surface:
+            return SET_DIFF_EXACT_NORMALIZED
+        return SET_DIFF_PUNCTUATION_SPACING
+    expected_tokens = expected_norm.split()
+    candidate_tokens = candidate_norm.split()
+    short, long = (
+        (expected_norm, candidate_norm)
+        if len(expected_norm) <= len(candidate_norm)
+        else (candidate_norm, expected_norm)
+    )
+    if short and re.search(rf"(?:^| ){re.escape(short)}(?: |$)", long):
+        longer_raw = str(candidate if long == candidate_norm else expected)
+        extra_tokens = set(long.split()) - set(short.split())
+        if (
+            re.search(r"\s(?:[-:–—/]|\()\s*", longer_raw)
+            or extra_tokens & _SUBSET_MARKERS
+        ):
+            return SET_DIFF_PARENT_SUBSET
+        return SET_DIFF_DANGEROUS_CONTAINMENT
+    expected_token_set = set(expected_tokens)
+    candidate_token_set = set(candidate_tokens)
+    if (
+        expected_token_set <= candidate_token_set
+        or candidate_token_set <= expected_token_set
+        or len(expected_token_set & candidate_token_set) >= 2
+    ):
+        return SET_DIFF_SIGNIFICANT_EXTRA_TOKENS
+    return SET_DIFF_NO_RELATION
+
+
+def _set_difference(
+    expected: object, candidate_name: object, candidate_slug: object = None
+) -> str:
+    named_category = _single_set_difference(expected, candidate_name)
+    if named_category != SET_DIFF_NO_RELATION or not candidate_slug:
+        return named_category
+    return _single_set_difference(expected, candidate_slug)
+
+
+def _semantic_name_suffix(value: object) -> tuple[str, Optional[str]]:
+    raw = unicodedata.normalize("NFKC", str(value or "")).strip()
+    match = _MEANINGFUL_SUFFIX.search(raw)
+    if match is None:
+        return _normalize(raw), None
+    suffix = re.sub(r"[^A-Za-z0-9]+", "", match.group(0))
+    semantic_suffix = suffix if suffix in {"EX", "ex"} else suffix.upper()
+    return _normalize(raw[: match.start()]), semantic_suffix
+
+
+_SIGNIFICANT_NAME_PREFIXES = (
+    "team rocket s ",
+    "rocket s ",
+    "dark ",
+    "light ",
+    "shining ",
+    "radiant ",
+    "mega ",
+    "primal ",
+    "alolan ",
+    "galarian ",
+    "hisuian ",
+    "paldean ",
+)
+
+
+def _card_name_difference(
+    expected: object, candidate: object, language: object = None
+) -> str:
+    expected_raw = unicodedata.normalize("NFKC", str(expected or "")).strip()
+    candidate_raw = unicodedata.normalize("NFKC", str(candidate or "")).strip()
+    expected_gender = frozenset(re.findall(r"[♀♂]", expected_raw))
+    candidate_gender = frozenset(re.findall(r"[♀♂]", candidate_raw))
+    if expected_gender != candidate_gender and (expected_gender or candidate_gender):
+        return NAME_DIFF_GENDER
+
+    expected_base, expected_suffix = _semantic_name_suffix(expected_raw)
+    candidate_base, candidate_suffix = _semantic_name_suffix(candidate_raw)
+    if expected_base == candidate_base and expected_suffix != candidate_suffix:
+        return NAME_DIFF_MECHANIC_SUFFIX
+    if expected_raw.casefold() == candidate_raw.casefold():
+        return NAME_DIFF_CASE
+
+    expected_norm = _normalize_card_name(expected_raw)
+    candidate_norm = _normalize_card_name(candidate_raw)
+    if expected_norm and expected_norm == candidate_norm:
+        return NAME_DIFF_PUNCTUATION_ACCENTS
+
+    for prefix in _SIGNIFICANT_NAME_PREFIXES:
+        if (
+            expected_norm.startswith(prefix)
+            and expected_norm[len(prefix) :] == candidate_norm
+        ) or (
+            candidate_norm.startswith(prefix)
+            and candidate_norm[len(prefix) :] == expected_norm
+        ):
+            return NAME_DIFF_SIGNIFICANT_PREFIX
+
+    normalized_language = _normalize(language)
+    non_english_language = normalized_language not in {
+        "",
+        "en",
+        "english",
+        "anglais",
+    }
+    if _has_non_latin_script(expected_raw) != _has_non_latin_script(candidate_raw):
+        return NAME_DIFF_LOCALIZATION
+    if non_english_language and expected_norm and candidate_norm:
+        return NAME_DIFF_LOCALIZATION
+    return NAME_DIFF_SIGNIFICANT
 
 
 def _single_set_similarity(expected: object, candidate: object) -> float:
@@ -193,6 +491,11 @@ def _candidate_evidence(
     candidate_name = _normalize_card_name(candidate.get("name"))
     name_supplied = bool(expected_name)
     name_matched = bool(name_supplied and candidate_name == expected_name)
+    name_difference = _card_name_difference(
+        identity.card_name,
+        candidate.get("name"),
+        identity.language,
+    )
 
     set_payload = candidate.get("set")
     set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else None
@@ -200,11 +503,15 @@ def _candidate_evidence(
     set_supplied = bool(_normalize(identity.set))
     set_similarity = _set_similarity(identity.set, set_name, set_slug)
     set_matched = bool(set_supplied and set_similarity >= 0.66)
+    set_difference = _set_difference(identity.set, set_name, set_slug)
 
     expected_number = _normalize_card_number(identity.card_number)
     candidate_number = _normalize_card_number(candidate.get("cardNumber"))
     card_number_supplied = bool(expected_number)
     number_exact = bool(card_number_supplied and candidate_number == expected_number)
+    card_number_difference = _card_number_difference(
+        identity.card_number, candidate.get("cardNumber")
+    )
     number_partial = _partial_card_number_equivalent(
         identity.card_number,
         candidate.get("cardNumber"),
@@ -296,6 +603,9 @@ def _candidate_evidence(
         variant_edition_match=variant.edition_match,
         variant_promo_match=variant.promo_match,
         variant_metadata_missing=variant.metadata_missing,
+        name_difference=name_difference,
+        set_difference=set_difference,
+        card_number_difference=card_number_difference,
     )
 
 

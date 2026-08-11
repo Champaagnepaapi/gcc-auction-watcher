@@ -23,6 +23,7 @@ from v5.ebay import (
     CARD_NAME_SOURCE_SET_NUMBER,
     CARD_NAME_SOURCE_TITLE,
     CardNameLookupResult,
+    identity_aspect_audit,
     parse_ebay_item,
     resolve_card_identity,
 )
@@ -194,6 +195,60 @@ def run_successfully(item=None, session=None, **diagnostic_kwargs):
 
 
 class EbayEnrichmentParserTests(unittest.TestCase):
+    def test_additional_structured_label_spellings_are_mapped_verbatim(self):
+        payload = {
+            "title": "Pokemon structured fixture",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Pokémon Name", "value": "Pikachu"},
+                {"name": "Nom du set", "value": "Base Set"},
+                {"name": "Card No.", "value": "58/102"},
+                {"name": "Language", "value": "English"},
+            ],
+        }
+
+        resolution = resolve_card_identity(payload)
+
+        self.assertEqual(resolution.identity.card_name, "Pikachu")
+        self.assertEqual(resolution.identity.set, "Base Set")
+        self.assertEqual(resolution.identity.card_number, "58/102")
+        self.assertFalse(resolution.identity.ambiguities)
+
+    def test_bounded_title_number_fallback_accepts_prefixed_printed_numbers(self):
+        for number in ("GG25/GG70", "SV107/SV122", "173/SV-P"):
+            with self.subTest(number=number):
+                payload = {
+                    "title": f"Pokemon fixture {number}",
+                    "localizedAspects": [
+                        {"name": "Game", "value": "Pokémon TCG"},
+                        {"name": "Card Name", "value": "Fixturemon"},
+                        {"name": "Set", "value": "Fixture Set"},
+                        {"name": "Language", "value": "English"},
+                    ],
+                }
+                resolution = resolve_card_identity(payload)
+                self.assertEqual(resolution.identity.card_number, number)
+
+    def test_unknown_identity_like_aspect_labels_are_counted_not_trusted(self):
+        payload = {
+            "title": "Pokemon fixture",
+            "localizedAspects": [
+                {"name": "Trading Card Display Name", "value": "PrivateName"},
+                {
+                    "name": "Printed Card Identifier Number",
+                    "value": "PrivateNumber",
+                },
+            ],
+        }
+
+        resolution = resolve_card_identity(payload)
+        audit = identity_aspect_audit(payload)
+
+        self.assertIsNone(resolution.identity.card_name)
+        self.assertIsNone(resolution.identity.card_number)
+        self.assertTrue(audit.unmapped_name_like_label)
+        self.assertTrue(audit.unmapped_number_like_label)
+
     def test_card_name_label_fixtures_are_conservative_and_explainable(self):
         cases = load_fixture("ebay_identity_cases.json")
         for case in cases:

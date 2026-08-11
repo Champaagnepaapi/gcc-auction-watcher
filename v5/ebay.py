@@ -352,21 +352,36 @@ IDENTITY_ALIASES = {
     "game": ("Game", "Jeu", "Franchise", "Spiel", "Gioco"),
     "set": (
         "Set",
+        "Set Name",
         "Card Set",
         "Series",
         "Serie",
         "Série",
         "Extension",
+        "Nom du set",
+        "Nom de l'extension",
         "Erweiterung",
         "Kartenset",
         "Espansione",
+        "Nome del set",
+        "Conjunto",
+        "Colección",
+        "Expansion",
+        "Expansión",
     ),
     "card_number": (
         "Card Number",
+        "Card No.",
+        "Collector Number",
         "Numero de carte",
         "Numéro de carte",
+        "N° de carte",
+        "Nº de carte",
         "Kartennummer",
+        "Nummer der Karte",
         "Numero della carta",
+        "Numero carta",
+        "Número de carta",
     ),
     "year": (
         "Year Manufactured",
@@ -405,17 +420,25 @@ IDENTITY_ALIASES = {
 
 DIRECT_CARD_NAME_ALIASES = (
     "Card Name",
+    "Name of Card",
     "Nom de la carte",
+    "Nom de carte",
     "Pokémon",
     "Pokemon",
+    "Pokémon Name",
+    "Pokemon Name",
+    "Nom du Pokémon",
     "Kartenname",
     "Nome carta",
+    "Nome della carta",
+    "Nombre de la carta",
 )
 CHARACTER_CARD_NAME_ALIASES = (
     "Character",
     "Personnage",
     "Personaggio",
     "Charakter",
+    "Personaje",
 )
 CONTEXTUAL_CARD_NAME_ALIASES = (
     "Card",
@@ -478,6 +501,67 @@ class IdentityResolution:
     score: int
     score_components: Tuple[str, ...]
     card_name_source: Optional[str]
+
+
+@dataclass(frozen=True)
+class IdentityAspectAudit:
+    unmapped_name_like_label: bool = False
+    unmapped_number_like_label: bool = False
+
+
+def identity_aspect_audit(payload: Mapping[str, object]) -> IdentityAspectAudit:
+    """Count potentially useful labels without logging labels or values.
+
+    This is diagnostic-only. Unknown labels are never promoted to identity
+    fields, so a future taxonomy alias still needs an explicit offline test.
+    """
+
+    aspects = _aspects(payload)
+    recognized_name_labels = {
+        _normalize(value)
+        for value in (
+            *DIRECT_CARD_NAME_ALIASES,
+            *CHARACTER_CARD_NAME_ALIASES,
+            *CONTEXTUAL_CARD_NAME_ALIASES,
+        )
+    }
+    recognized_number_labels = {
+        _normalize(value) for value in IDENTITY_ALIASES["card_number"]
+    }
+    unmapped_name = False
+    unmapped_number = False
+    for label in aspects:
+        normalized = _normalize(label)
+        tokens = set(normalized.split())
+        if normalized not in recognized_name_labels and (
+            tokens
+            & {
+                "name",
+                "nom",
+                "nome",
+                "nombre",
+                "character",
+                "personnage",
+                "personaggio",
+                "personaje",
+                "charakter",
+                "pokemon",
+            }
+        ):
+            unmapped_name = True
+        if normalized not in recognized_number_labels and (
+            tokens
+            & {
+                "number",
+                "numero",
+                "nummer",
+                "collector",
+            }
+        ) and (
+            tokens & {"card", "carte", "carta", "karte", "collector"}
+        ):
+            unmapped_number = True
+    return IdentityAspectAudit(unmapped_name, unmapped_number)
 
 
 def _single_card_name(
@@ -619,7 +703,14 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
 
     if "card_number" not in values:
         number_match = re.search(
-            r"(?<![A-Za-z0-9])([A-Z]{0,4}\d{1,4}/\d{1,4})(?!\d)", title
+            (
+                r"(?<![A-Za-z0-9])"
+                r"([A-Z]{0,6}\d{1,4}[A-Z]?/"
+                r"(?:[A-Z]{0,6}\d{1,4}[A-Z]?|[A-Z]{1,6}(?:-[A-Z])?))"
+                r"(?![A-Za-z0-9])"
+            ),
+            title,
+            flags=re.IGNORECASE,
         )
         if number_match:
             values["card_number"] = number_match.group(1)

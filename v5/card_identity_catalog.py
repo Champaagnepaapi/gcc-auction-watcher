@@ -109,6 +109,9 @@ class CardCatalogCounters:
     tcgdex_json_failures: int = 0
     tcgdex_set_catalog_failures: int = 0
     tcgdex_card_lookup_failures: int = 0
+    pokemon_tcg_transport_failures: int = 0
+    pokemon_tcg_http_failures: int = 0
+    pokemon_tcg_json_failures: int = 0
     tcgdex_local_id_alternates_tried: int = 0
     tcgdex_local_id_alternate_hits: int = 0
     tcgdex_direct_card_fallbacks: int = 0
@@ -384,6 +387,8 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             if provider == "TCGDEX":
                 self.counters.tcgdex_transport_failures += 1
                 self._count_tcgdex_endpoint_failure(endpoint_kind)
+            else:
+                self.counters.pokemon_tcg_transport_failures += 1
             return None
         if response.status_code == 404:
             return None
@@ -392,6 +397,8 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             if provider == "TCGDEX":
                 self.counters.tcgdex_http_failures += 1
                 self._count_tcgdex_endpoint_failure(endpoint_kind)
+            else:
+                self.counters.pokemon_tcg_http_failures += 1
             return None
         try:
             return response.json()
@@ -400,6 +407,8 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             if provider == "TCGDEX":
                 self.counters.tcgdex_json_failures += 1
                 self._count_tcgdex_endpoint_failure(endpoint_kind)
+            else:
+                self.counters.pokemon_tcg_json_failures += 1
             return None
 
     def _count_tcgdex_endpoint_failure(self, endpoint_kind: str) -> None:
@@ -888,12 +897,27 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             f"Pokémon TCG API hits: {counters.pokemon_tcg_hits}",
             f"ambiguous catalog resolutions: {counters.ambiguous}",
             f"no catalog match: {counters.no_match}",
-            f"catalog request failures: {counters.failures}",
+            (
+                "all catalog-provider failures (TCGdex + Pokémon TCG API): "
+                f"{counters.failures}"
+            ),
             f"TCGdex transport failures: {counters.tcgdex_transport_failures}",
             f"TCGdex HTTP failures: {counters.tcgdex_http_failures}",
             f"TCGdex JSON failures: {counters.tcgdex_json_failures}",
             f"TCGdex set-catalog failures: {counters.tcgdex_set_catalog_failures}",
             f"TCGdex card-lookup failures: {counters.tcgdex_card_lookup_failures}",
+            (
+                "Pokémon TCG API transport failures: "
+                f"{counters.pokemon_tcg_transport_failures}"
+            ),
+            (
+                "Pokémon TCG API HTTP failures: "
+                f"{counters.pokemon_tcg_http_failures}"
+            ),
+            (
+                "Pokémon TCG API JSON failures: "
+                f"{counters.pokemon_tcg_json_failures}"
+            ),
             f"in-memory cache hits: {counters.cache_hits}",
             f"canonical identities changed by TCGdex - name: {counters.canonical_name_changes}",
             f"canonical identities changed by TCGdex - set: {counters.canonical_set_changes}",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Optional, Sequence, Tuple
 
 from .market_values.poketrace import (
@@ -24,6 +24,30 @@ from .poketrace_matching import (
     REJECT_PRODUCT_TYPE,
     REJECT_SET,
     REJECT_VARIANT,
+    NAME_DIFF_CASE,
+    NAME_DIFF_GENDER,
+    NAME_DIFF_LOCALIZATION,
+    NAME_DIFF_MECHANIC_SUFFIX,
+    NAME_DIFF_PUNCTUATION_ACCENTS,
+    NAME_DIFF_SIGNIFICANT,
+    NAME_DIFF_SIGNIFICANT_PREFIX,
+    NUMBER_DIFF_ALPHANUMERIC_CASE,
+    NUMBER_DIFF_CANDIDATE_NUMERATOR_ONLY,
+    NUMBER_DIFF_CONTRADICTORY_AFFIX,
+    NUMBER_DIFF_DENOMINATOR_CONFLICT,
+    NUMBER_DIFF_DENOMINATOR_MISSING,
+    NUMBER_DIFF_LEADING_ZERO,
+    NUMBER_DIFF_LISTING_NUMERATOR_ONLY,
+    NUMBER_DIFF_OTHER,
+    NUMBER_DIFF_PREFIX_FAMILY,
+    SET_DIFF_DANGEROUS_CONTAINMENT,
+    SET_DIFF_EXACT_NORMALIZED,
+    SET_DIFF_LANGUAGE_LOCALIZATION,
+    SET_DIFF_NO_RELATION,
+    SET_DIFF_PARENT_SUBSET,
+    SET_DIFF_POKEMON_TCG_WRAPPER,
+    SET_DIFF_PUNCTUATION_SPACING,
+    SET_DIFF_SIGNIFICANT_EXTRA_TOKENS,
     CandidateMatchEvidence,
     _candidate_evidence,
     _candidate_score_and_rejection,
@@ -40,6 +64,71 @@ from .poketrace_matching import (
 REQUEST_OK = "OK"
 REQUEST_ERROR = "ERROR"
 REQUEST_RATE_LIMITED = "RATE_LIMITED"
+
+POKETRACE_STRATEGIES = (
+    "contextual_canonical",
+    "contextual",
+    "structured",
+    "broad_name",
+    "broad_number",
+    "broad_set",
+)
+
+SET_DIFFERENCE_CATEGORIES = (
+    SET_DIFF_EXACT_NORMALIZED,
+    SET_DIFF_POKEMON_TCG_WRAPPER,
+    SET_DIFF_PUNCTUATION_SPACING,
+    SET_DIFF_LANGUAGE_LOCALIZATION,
+    SET_DIFF_PARENT_SUBSET,
+    SET_DIFF_DANGEROUS_CONTAINMENT,
+    SET_DIFF_SIGNIFICANT_EXTRA_TOKENS,
+    SET_DIFF_NO_RELATION,
+)
+NUMBER_DIFFERENCE_CATEGORIES = (
+    NUMBER_DIFF_LEADING_ZERO,
+    NUMBER_DIFF_DENOMINATOR_MISSING,
+    NUMBER_DIFF_CANDIDATE_NUMERATOR_ONLY,
+    NUMBER_DIFF_LISTING_NUMERATOR_ONLY,
+    NUMBER_DIFF_DENOMINATOR_CONFLICT,
+    NUMBER_DIFF_PREFIX_FAMILY,
+    NUMBER_DIFF_ALPHANUMERIC_CASE,
+    NUMBER_DIFF_CONTRADICTORY_AFFIX,
+    NUMBER_DIFF_OTHER,
+)
+NAME_DIFFERENCE_CATEGORIES = (
+    NAME_DIFF_CASE,
+    NAME_DIFF_PUNCTUATION_ACCENTS,
+    NAME_DIFF_GENDER,
+    NAME_DIFF_MECHANIC_SUFFIX,
+    NAME_DIFF_SIGNIFICANT_PREFIX,
+    NAME_DIFF_LOCALIZATION,
+    NAME_DIFF_SIGNIFICANT,
+)
+
+
+@dataclass
+class PokeTraceStrategyCounters:
+    requests: int = 0
+    unique_candidates_introduced: int = 0
+    near_matches_introduced: int = 0
+    all_three_introduced: int = 0
+    exacts_introduced: int = 0
+    redundant_candidates: int = 0
+
+
+@dataclass
+class PokeTraceNearMatchCounters:
+    set_differences: dict[str, int] = field(
+        default_factory=lambda: {value: 0 for value in SET_DIFFERENCE_CATEGORIES}
+    )
+    number_differences: dict[str, int] = field(
+        default_factory=lambda: {
+            value: 0 for value in NUMBER_DIFFERENCE_CATEGORIES
+        }
+    )
+    name_differences: dict[str, int] = field(
+        default_factory=lambda: {value: 0 for value in NAME_DIFFERENCE_CATEGORIES}
+    )
 
 
 @dataclass
@@ -214,6 +303,10 @@ class PokeTraceIdentityResolver:
     def __init__(self, provider: PokeTraceProvider) -> None:
         self.provider = provider
         self.counters = PokeTraceIdentityCounters()
+        self.strategy_counters = {
+            value: PokeTraceStrategyCounters() for value in POKETRACE_STRATEGIES
+        }
+        self.near_match_counters = PokeTraceNearMatchCounters()
         self._cache: dict[Tuple[str, ...], PokeTraceIdentityResolution] = {}
 
     def resolve_identity(self, identity: CardIdentity) -> PokeTraceIdentityResolution:
@@ -236,6 +329,7 @@ class PokeTraceIdentityResolver:
             _search_strategies(identity)
         ):
             self._count_query_strategy(strategy)
+            strategy_counters = self.strategy_counters[strategy]
             if index > 0:
                 self.counters.fallback_searches += 1
                 self._progress(
@@ -270,16 +364,28 @@ class PokeTraceIdentityResolver:
             for candidate in candidates:
                 candidate_key = _candidate_key(candidate)
                 if candidate_key in seen_candidates:
+                    strategy_counters.redundant_candidates += 1
                     continue
                 seen_candidates.add(candidate_key)
                 self.counters.candidates_received += 1
+                strategy_counters.unique_candidates_introduced += 1
                 evidence = _candidate_evidence(identity, candidate)
                 self._count_match_evidence(evidence)
+                strategy_counters.near_matches_introduced += int(
+                    len(evidence.failed_core_fields) == 1
+                )
+                all_three = bool(
+                    evidence.name_matched
+                    and evidence.set_matched
+                    and evidence.card_number_matched
+                )
+                strategy_counters.all_three_introduced += int(all_three)
                 score, rejection = evidence.score, evidence.rejection
                 if rejection is not None:
                     self._count_rejection(rejection, evidence)
                     continue
                 if score is not None:
+                    strategy_counters.exacts_introduced += 1
                     if evidence.number_partial:
                         self.counters.partial_number_candidates += 1
                     scored.append((score, candidate))
@@ -506,11 +612,11 @@ class PokeTraceIdentityResolver:
             self.counters.rejected_insufficient += 1
 
     def _count_query_strategy(self, strategy: str) -> None:
-        if strategy in {"contextual", "contextual_canonical"}:
+        self.strategy_counters[strategy].requests += 1
+        if strategy == "contextual":
             self.counters.contextual_searches += 1
-            self.counters.canonical_contextual_searches += int(
-                strategy == "contextual_canonical"
-            )
+        elif strategy == "contextual_canonical":
+            self.counters.canonical_contextual_searches += 1
         elif strategy == "structured":
             self.counters.structured_searches += 1
         elif strategy == "broad_name":
@@ -560,6 +666,24 @@ class PokeTraceIdentityResolver:
             counters.candidates_failing_only_card_number += int(
                 failed == "card_number"
             )
+            if failed == "name":
+                self.near_match_counters.name_differences[
+                    evidence.name_difference
+                ] += 1
+            elif failed == "set":
+                self.near_match_counters.set_differences[
+                    evidence.set_difference
+                ] += 1
+            elif failed == "card_number":
+                category = evidence.card_number_difference
+                self.near_match_counters.number_differences[category] += 1
+                if category in {
+                    NUMBER_DIFF_CANDIDATE_NUMERATOR_ONLY,
+                    NUMBER_DIFF_LISTING_NUMERATOR_ONLY,
+                }:
+                    self.near_match_counters.number_differences[
+                        NUMBER_DIFF_DENOMINATOR_MISSING
+                    ] += 1
 
     def _cache_snapshot(self, identity: CardIdentity, snapshot: PokeTraceSnapshot) -> None:
         self.provider._prime_snapshot(_identity_key(identity), snapshot)
@@ -636,6 +760,23 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             f"query strategy broad-name: {counters.broad_name_searches}",
             f"query strategy broad-number: {counters.broad_number_searches}",
             f"query strategy broad-set: {counters.broad_set_searches}",
+            "strategy yield (first-seen candidates per identity):",
+            *(
+                "strategy "
+                f"{strategy.replace('_', '-')}: "
+                f"requests={resolver.strategy_counters[strategy].requests}, "
+                "unique="
+                f"{resolver.strategy_counters[strategy].unique_candidates_introduced}, "
+                "near-match="
+                f"{resolver.strategy_counters[strategy].near_matches_introduced}, "
+                "all-three="
+                f"{resolver.strategy_counters[strategy].all_three_introduced}, "
+                "exact="
+                f"{resolver.strategy_counters[strategy].exacts_introduced}, "
+                "redundant="
+                f"{resolver.strategy_counters[strategy].redundant_candidates}"
+                for strategy in POKETRACE_STRATEGIES
+            ),
             f"queries returning zero candidates: {counters.zero_candidate_queries}",
             (
                 "queries returning candidates but no local exact match: "
@@ -683,6 +824,28 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             (
                 "candidates failing only card number: "
                 f"{counters.candidates_failing_only_card_number}"
+            ),
+            "near-match SET difference classes:",
+            *(
+                f"near-match SET {category}: "
+                f"{resolver.near_match_counters.set_differences[category]}"
+                for category in SET_DIFFERENCE_CATEGORIES
+            ),
+            "near-match CARD NUMBER difference classes:",
+            (
+                "near-match CARD NUMBER denominator-missing total overlaps "
+                "candidate/listing numerator-only rows"
+            ),
+            *(
+                f"near-match CARD NUMBER {category}: "
+                f"{resolver.near_match_counters.number_differences[category]}"
+                for category in NUMBER_DIFFERENCE_CATEGORIES
+            ),
+            "near-match CARD NAME difference classes:",
+            *(
+                f"near-match CARD NAME {category}: "
+                f"{resolver.near_match_counters.name_differences[category]}"
+                for category in NAME_DIFFERENCE_CATEGORIES
             ),
             f"variant finish matches: {counters.variant_finish_matches}",
             f"variant edition matches: {counters.variant_edition_matches}",

@@ -8,6 +8,7 @@ from v5.card_identity_catalog import (
     MultilingualPokemonCardResolver,
     _language_code,
     _local_card_number_candidates,
+    render_card_catalog_counters,
 )
 from v5.models import CardIdentity
 
@@ -64,6 +65,42 @@ def card(local_id="4", *, variants=None):
 
 
 class TCGdexResolutionRegressionTests(unittest.TestCase):
+    def test_catalog_failure_summary_attributes_pokemon_tcg_failures(self):
+        def handler(url):
+            if url.endswith("/transport"):
+                return requests.ConnectionError("offline fixture")
+            if url.endswith("/json"):
+                return Response(200, ValueError("offline fixture"))
+            return Response(500, {})
+
+        resolver = MultilingualPokemonCardResolver(session=Session(handler))
+        resolver._get_json(
+            "https://fixture.invalid/transport",
+            provider="POKEMON_TCG",
+        )
+        resolver._get_json(
+            "https://fixture.invalid/http",
+            provider="POKEMON_TCG",
+        )
+        resolver._get_json(
+            "https://fixture.invalid/json",
+            provider="POKEMON_TCG",
+        )
+
+        self.assertEqual(resolver.counters.failures, 3)
+        self.assertEqual(resolver.counters.tcgdex_transport_failures, 0)
+        self.assertEqual(resolver.counters.tcgdex_http_failures, 0)
+        self.assertEqual(resolver.counters.tcgdex_json_failures, 0)
+        self.assertEqual(resolver.counters.pokemon_tcg_transport_failures, 1)
+        self.assertEqual(resolver.counters.pokemon_tcg_http_failures, 1)
+        self.assertEqual(resolver.counters.pokemon_tcg_json_failures, 1)
+        rendered = render_card_catalog_counters(resolver)
+        self.assertIn(
+            "all catalog-provider failures (TCGdex + Pokémon TCG API): 3",
+            rendered,
+        )
+        self.assertNotIn("catalog request failures:", rendered)
+
     def test_numeric_local_id_gets_safe_unpadded_alternate(self):
         self.assertEqual(_local_card_number_candidates("004/102"), ("004", "4"))
         self.assertEqual(_local_card_number_candidates("4/102"), ("4",))
