@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 
@@ -5,139 +6,266 @@ import watcher
 import v4_auction_item_discovery as discovery
 
 
-CARD_34_MIN = """
-PSA 10 Pikachu
-Pokemon • Japanese • 2023 • SV-P Promos • Unlimited • #120/SV-P
-60€
-Private Auction
-17 enchères • Fin le 10/08 @ 18h37
-0 JOURS
-:
-0 HEURES
-:
-34 MINUTES
-:
-28 SEC
-"""
-
-CARD_65_MIN = """
-PSA 10 Pikachu
-Pokemon • Japanese • 2023 • SV-P Promos • Unlimited • #120/SV-P
-60€
-Private Auction
-0 JOURS
-:
-1 HEURES
-:
-5 MINUTES
-:
-0 SEC
-"""
-
-BOOSTER_20_MIN = """
-Booster EV1 Ecarlate et Violet
-Pokemon • French • 2023 • Ecarlate et Violet
-8€
-Private Auction
-0 JOURS
-:
-0 HEURES
-:
-20 MINUTES
-:
-0 SEC
-"""
-
-CARD_150_EUR = """
-PSA 10 Pikachu
-Pokemon • Japanese • 2023 • SV-P Promos • Unlimited • #120/SV-P
-150€
-Private Auction
-0 JOURS
-:
-0 HEURES
-:
-20 MINUTES
-:
-0 SEC
-"""
-
-CARD_TIMERLESS = """
-PSA 10 Pikachu
-Pokemon • Japanese • 2023 • SV-P Promos • Unlimited • #120/SV-P
-60€
-Private Auction
-"""
+NOW = datetime(2026, 8, 11, 8, 0, tzinfo=timezone.utc)
 
 
-class ItemLevelAuctionClassificationTests(unittest.TestCase):
-    def test_primary_url_is_global_auction_index(self):
+def api_row(
+    row_id: str,
+    *,
+    end_time: str,
+    price_cents: int = 6000,
+    title: str = "Pikachu",
+    category: str = "Pokemon",
+    item_type: str = "CARDS",
+) -> dict:
+    return {
+        "id": row_id,
+        "status": "ON_SALE",
+        "price": price_cents / 100,
+        "priceInCents": price_cents,
+        "sellingType": "AUCTION",
+        "endTime": end_time,
+        "bidsNumber": 3,
+        "item": {
+            "title": title,
+            "gradingCompany": "PSA",
+            "grade": "10",
+            "collectible": {
+                "category": category,
+                "language": "Japanese",
+                "yearOfDistribution": "2023",
+                "extension": "SV-P Promos",
+                "set": "SV-P Promos",
+                "reference": "120/SV-P",
+                "type": item_type,
+            },
+        },
+    }
+
+
+def api_payload(
+    page: int,
+    results: list[dict],
+    *,
+    next_page=None,
+    total: int | None = None,
+) -> dict:
+    info = {"currentPage": page, "nextPage": next_page}
+    if total is not None:
+        info["counts"] = {
+            "total": total,
+            "auctionCount": total,
+            "fixedPriceCount": 0,
+        }
+    return {"info": info, "results": results}
+
+
+class FakeResponse:
+    def __init__(self, payload: dict):
+        self._payload = payload
+        self.headers = {}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class FakeGet:
+    def __init__(self, payloads: list[dict]):
+        self.payloads = list(payloads)
+        self.calls = []
+
+    def __call__(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if not self.payloads:
+            raise AssertionError("unexpected extra API call")
+        return FakeResponse(self.payloads.pop(0))
+
+
+class AuctionApiDiscoveryTests(unittest.TestCase):
+    def test_primary_page_and_api_are_the_official_gcc_sources(self):
         self.assertEqual(
             discovery.AUCTION_INDEX_URL,
             "https://gradedcardcenter.com/filtres/auctions",
         )
+        self.assertEqual(discovery.AUCTION_API_URL, watcher.GCC_ON_SALE_ITEMS_API_URL)
 
-    def test_under_60_pokemon_card_in_budget_is_kept(self):
-        result = discovery.classify_auction_listing(
-            "https://gradedcardcenter.com/item/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "PSA 10 Pikachu",
-            CARD_34_MIN,
-            max_minutes=60,
+    def test_end_time_is_converted_to_minutes(self):
+        parsed = discovery._parse_api_end_time(
+            "2026-08-11T08:34:28Z",
+            now=NOW,
         )
-        self.assertIsNotNone(result.lot)
-        self.assertIsNone(result.terminal_status)
-        self.assertIsNotNone(result.timer_minutes)
-        self.assertLessEqual(result.timer_minutes, 60)
-        self.assertEqual(result.lot.source_type, "auction")
-        self.assertEqual(result.lot.current_price, 60.0)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.minutes, 35)
+        self.assertEqual(parsed.at.tzinfo, timezone.utc)
 
-    def test_over_60_card_is_excluded_before_economic_analysis(self):
-        result = discovery.classify_auction_listing(
-            "https://gradedcardcenter.com/item/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "PSA 10 Pikachu",
-            CARD_65_MIN,
-            max_minutes=60,
+    def test_item_level_api_keeps_only_pokemon_cards_in_budget_within_horizon(self):
+        getter = FakeGet(
+            [
+                api_payload(
+                    1,
+                    [
+                        api_row(
+                            "11111111-1111-1111-1111-111111111111",
+                            end_time="2026-08-11T08:30:00Z",
+                            price_cents=6000,
+                        ),
+                        api_row(
+                            "22222222-2222-2222-2222-222222222222",
+                            end_time="2026-08-11T08:40:00Z",
+                            price_cents=15000,
+                        ),
+                        api_row(
+                            "33333333-3333-3333-3333-333333333333",
+                            end_time="2026-08-11T08:50:00Z",
+                            title="Booster EV1",
+                            item_type="SEALED_PRODUCTS",
+                        ),
+                        api_row(
+                            "44444444-4444-4444-4444-444444444444",
+                            end_time="2026-08-11T09:05:00Z",
+                            price_cents=5000,
+                        ),
+                    ],
+                    next_page=2,
+                    total=4000,
+                )
+            ]
         )
-        self.assertIsNone(result.lot)
-        self.assertEqual(result.terminal_status, watcher.ACCOUNT_EXCLUDED_BY_RULES)
-        self.assertGreater(result.timer_minutes, 60)
-
-    def test_sealed_product_is_excluded(self):
-        result = discovery.classify_auction_listing(
-            "https://gradedcardcenter.com/item/cccccccc-cccc-cccc-cccc-cccccccccccc",
-            "Booster EV1",
-            BOOSTER_20_MIN,
+        result = discovery.discover_auction_api_lots(
             max_minutes=60,
+            http_get=getter,
+            now=NOW,
         )
-        self.assertIsNone(result.lot)
-        self.assertEqual(result.terminal_status, watcher.ACCOUNT_EXCLUDED_BY_RULES)
 
-    def test_over_100_eur_is_excluded(self):
-        result = discovery.classify_auction_listing(
-            "https://gradedcardcenter.com/item/dddddddd-dddd-dddd-dddd-dddddddddddd",
-            "PSA 10 Pikachu",
-            CARD_150_EUR,
+        self.assertTrue(result.complete)
+        self.assertEqual(result.scope_status, discovery.PRIMARY_SCOPE_STATUS)
+        self.assertTrue(result.threshold_crossed)
+        self.assertTrue(result.order_verified)
+        self.assertEqual(result.rows_seen, 4)
+        self.assertEqual(result.timers_parsed, 4)
+        self.assertEqual(result.api_total, 4000)
+        self.assertEqual(len(result.lots), 1)
+        self.assertEqual(result.lots[0].current_price, 60.0)
+        self.assertEqual(result.lots[0].source_type, "auction")
+        self.assertEqual(result.lots[0].minutes_to_end, 30)
+        self.assertEqual(len(getter.calls), 1)
+
+        params = getter.calls[0][1]["params"]
+        self.assertEqual(params["sellingTypeGroup"], "AUCTION")
+        self.assertEqual(params["sortType"], "ENDING_SOON")
+        self.assertEqual(params["status"], "ON_SALE")
+
+    def test_api_paginates_until_horizon_is_crossed(self):
+        getter = FakeGet(
+            [
+                api_payload(
+                    1,
+                    [
+                        api_row(
+                            "11111111-1111-1111-1111-111111111111",
+                            end_time="2026-08-11T08:20:00Z",
+                        )
+                    ],
+                    next_page=2,
+                    total=2,
+                ),
+                api_payload(
+                    2,
+                    [
+                        api_row(
+                            "22222222-2222-2222-2222-222222222222",
+                            end_time="2026-08-11T09:10:00Z",
+                        )
+                    ],
+                    next_page=None,
+                ),
+            ]
+        )
+        result = discovery.discover_auction_api_lots(
             max_minutes=60,
+            http_get=getter,
+            page_size=1,
+            now=NOW,
         )
-        self.assertIsNone(result.lot)
-        self.assertEqual(result.terminal_status, watcher.ACCOUNT_EXCLUDED_BY_RULES)
+        self.assertTrue(result.complete)
+        self.assertTrue(result.threshold_crossed)
+        self.assertEqual(result.coverage.pages_requested, 2)
+        self.assertEqual(len(result.lots), 1)
+        self.assertEqual(len(getter.calls), 2)
 
-    def test_timerless_eligible_card_is_kept_for_existing_item_fallback(self):
-        result = discovery.classify_auction_listing(
-            "https://gradedcardcenter.com/item/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
-            "PSA 10 Pikachu",
-            CARD_TIMERLESS,
+    def test_api_can_prove_complete_when_inventory_is_exhausted_inside_horizon(self):
+        getter = FakeGet(
+            [
+                api_payload(
+                    1,
+                    [
+                        api_row(
+                            "11111111-1111-1111-1111-111111111111",
+                            end_time="2026-08-11T08:20:00Z",
+                        )
+                    ],
+                    next_page=None,
+                    total=1,
+                )
+            ]
+        )
+        result = discovery.discover_auction_api_lots(
             max_minutes=60,
+            http_get=getter,
+            now=NOW,
         )
-        self.assertIsNotNone(result.lot)
-        self.assertIsNone(result.timer_minutes)
-        self.assertIsNone(result.terminal_status)
+        self.assertTrue(result.complete)
+        self.assertFalse(result.threshold_crossed)
+        self.assertEqual(result.reason, discovery.PRIMARY_EXHAUSTED_REASON)
+        self.assertEqual(len(result.lots), 1)
 
-    def test_timer_order_requires_near_monotonic_ending_first(self):
-        self.assertTrue(discovery.timers_are_nondecreasing([5, 6, 6, 7, 20, 61]))
-        self.assertTrue(discovery.timers_are_nondecreasing([5, 6, 5, 7, 20, 61]))
-        self.assertFalse(discovery.timers_are_nondecreasing([5, 20, 8, 61]))
-        self.assertFalse(discovery.timers_are_nondecreasing([5]))
+    def test_non_monotonic_ending_soon_response_never_claims_complete(self):
+        getter = FakeGet(
+            [
+                api_payload(
+                    1,
+                    [
+                        api_row(
+                            "11111111-1111-1111-1111-111111111111",
+                            end_time="2026-08-11T08:50:00Z",
+                        ),
+                        api_row(
+                            "22222222-2222-2222-2222-222222222222",
+                            end_time="2026-08-11T08:30:00Z",
+                        ),
+                    ],
+                    next_page=None,
+                    total=2,
+                )
+            ]
+        )
+        result = discovery.discover_auction_api_lots(
+            max_minutes=60,
+            http_get=getter,
+            now=NOW,
+        )
+        self.assertFalse(result.complete)
+        self.assertEqual(result.scope_status, discovery.FALLBACK_SCOPE_STATUS)
+        self.assertEqual(result.lots, [])
+
+    def test_missing_end_time_never_claims_sorted_horizon_complete(self):
+        row = api_row(
+            "11111111-1111-1111-1111-111111111111",
+            end_time="2026-08-11T08:30:00Z",
+        )
+        row["endTime"] = None
+        getter = FakeGet([api_payload(1, [row], next_page=None, total=1)])
+        result = discovery.discover_auction_api_lots(
+            max_minutes=60,
+            http_get=getter,
+            now=NOW,
+        )
+        self.assertFalse(result.complete)
+        self.assertEqual(result.lots, [])
+        self.assertIn("endTime", result.reason)
 
     def test_scoped_complete_status_maps_to_generic_complete_without_claiming_all_gcc(self):
         coverage = watcher.CoverageAudit("AUCTIONS", watcher.AUCTION_DISCOVERY_FILTERS)
