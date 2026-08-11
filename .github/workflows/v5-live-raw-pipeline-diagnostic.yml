@@ -3,14 +3,6 @@ name: V5 Live Raw Pipeline Diagnostic
 on:
   workflow_dispatch:
 
-  # Temporary same-repository PR trigger for one controlled Free-tier validation.
-  # Remove immediately after this run so PR commits cannot consume daily quota.
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/v5-live-raw-pipeline-diagnostic.yml"
-
 permissions:
   contents: read
 
