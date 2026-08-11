@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 import watcher
 from playwright.sync_api import sync_playwright
@@ -22,6 +24,105 @@ def write_output(name: str, value: object) -> None:
         return
     with Path(output_path).open("a", encoding="utf-8") as handle:
         handle.write(f"{name}={value}\n")
+
+
+def _gcc_public_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "gradedcardcenter.com" or host.endswith(".gradedcardcenter.com")
+
+
+def _json_shape(value, depth: int = 0):
+    if depth >= 3:
+        return type(value).__name__
+    if isinstance(value, dict):
+        return {
+            str(key): _json_shape(child, depth + 1)
+            for key, child in list(value.items())[:30]
+        }
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "length": len(value),
+            "sample": _json_shape(value[0], depth + 1) if value else None,
+        }
+    return type(value).__name__
+
+
+def attach_public_network_probe(page):
+    records: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+
+    def on_response(response) -> None:
+        url = response.url
+        if not _gcc_public_url(url):
+            return
+        try:
+            status = int(response.status)
+        except Exception:
+            status = 0
+        key = (url, status)
+        if key in seen:
+            return
+        seen.add(key)
+
+        try:
+            content_type = (response.headers.get("content-type") or "").lower()
+        except Exception:
+            content_type = ""
+        request = response.request
+        try:
+            method = request.method
+        except Exception:
+            method = "UNKNOWN"
+
+        record: dict[str, object] = {
+            "method": method,
+            "status": status,
+            "url": url,
+            "content_type": content_type,
+        }
+        if "json" in content_type:
+            try:
+                payload = response.json()
+                record["json_shape"] = _json_shape(payload)
+            except Exception as error:
+                record["json_error"] = type(error).__name__
+        records.append(record)
+
+    page.on("response", on_response)
+    return records
+
+
+def print_public_network_probe(records: list[dict[str, object]]) -> None:
+    print("--- PUBLIC GCC NETWORK PROBE ---", flush=True)
+    relevant = []
+    for record in records:
+        url = str(record.get("url", ""))
+        content_type = str(record.get("content_type", ""))
+        if (
+            "json" in content_type
+            or "auction" in url.lower()
+            or "sale" in url.lower()
+            or "/item" in url.lower()
+        ):
+            relevant.append(record)
+    print(f"gcc responses captured: {len(records)}", flush=True)
+    print(f"relevant responses: {len(relevant)}", flush=True)
+    for record in relevant[:80]:
+        safe = {
+            "method": record.get("method"),
+            "status": record.get("status"),
+            "url": record.get("url"),
+            "content_type": record.get("content_type"),
+        }
+        if "json_shape" in record:
+            safe["json_shape"] = record["json_shape"]
+        if "json_error" in record:
+            safe["json_error"] = record["json_error"]
+        print("NETWORK " + json.dumps(safe, ensure_ascii=False)[:8000], flush=True)
 
 
 def resolve_ending_soon_ids(
@@ -127,6 +228,7 @@ def main() -> int:
         primary_page = context.new_page()
         primary_page.set_default_timeout(watcher.TEXT_TIMEOUT)
         primary_page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
+        network_records = attach_public_network_probe(primary_page)
         legacy_page = context.new_page()
         legacy_page.set_default_timeout(watcher.TEXT_TIMEOUT)
         legacy_page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
@@ -135,6 +237,7 @@ def main() -> int:
             primary_page,
             max_minutes=horizon,
         )
+        print_public_network_probe(network_records)
         legacy_lots = collect_legacy(legacy_page, horizon)
 
         primary_ids, primary_unresolved = resolve_ending_soon_ids(
