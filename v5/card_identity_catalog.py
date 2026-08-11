@@ -12,12 +12,16 @@ from .ebay import CardNameLookupResult, SetNumberCardNameResolver
 from .models import CardIdentity
 from .poketrace_identity import PokeTraceIdentityResolver
 from .poketrace_matching import _card_number_parts
+from .variant_semantics import tcgdex_variant_supports_identity
 
 
 TCGDEX_BASE = "https://api.tcgdex.net/v2"
 POKEMON_TCG_BASE = "https://api.pokemontcg.io/v2"
 
 
+# Only languages currently exposed by the TCGdex API are used as direct
+# endpoints. Unsupported/ambiguous languages fall back to English catalogue
+# metadata while the original CardIdentity.language remains untouched.
 _LANGUAGE_CODES = {
     "english": "en",
     "anglais": "en",
@@ -39,18 +43,19 @@ _LANGUAGE_CODES = {
     "japonais": "ja",
     "ja": "ja",
     "jp": "ja",
-    "korean": "ko",
-    "coreen": "ko",
-    "coréen": "ko",
-    "ko": "ko",
-    "portuguese": "pt",
-    "portugais": "pt",
-    "pt": "pt",
-    "chinese": "zh-cn",
-    "chinois": "zh-cn",
-    "zh-cn": "zh-cn",
+    "portuguese": "pt-br",
+    "portugais": "pt-br",
+    "brazilian portuguese": "pt-br",
+    "pt": "pt-br",
+    "pt br": "pt-br",
     "traditional chinese": "zh-tw",
-    "zh-tw": "zh-tw",
+    "chinese traditional": "zh-tw",
+    "zh tw": "zh-tw",
+    "indonesian": "id",
+    "indonesien": "id",
+    "id": "id",
+    "thai": "th",
+    "th": "th",
 }
 
 
@@ -79,6 +84,17 @@ class CardCatalogCounters:
     tcgdex_no_match_number_conflict: int = 0
     tcgdex_no_match_missing_name: int = 0
     tcgdex_no_match_set_conflict: int = 0
+    tcgdex_transport_failures: int = 0
+    tcgdex_http_failures: int = 0
+    tcgdex_json_failures: int = 0
+    tcgdex_set_catalog_failures: int = 0
+    tcgdex_card_lookup_failures: int = 0
+    tcgdex_local_id_alternates_tried: int = 0
+    tcgdex_local_id_alternate_hits: int = 0
+    tcgdex_direct_card_fallbacks: int = 0
+    tcgdex_direct_card_hits: int = 0
+    tcgdex_variant_impossible: int = 0
+    tcgdex_unsupported_language_fallbacks: int = 0
 
 
 @dataclass(frozen=True)
@@ -105,6 +121,20 @@ def _language_code(value: Optional[str]) -> Optional[str]:
 def _local_card_number(value: str) -> str:
     compact = re.sub(r"\s+", "", value or "")
     return compact.split("/", 1)[0].lstrip("#")
+
+
+def _local_card_number_candidates(value: str) -> Tuple[str, ...]:
+    """Return only deterministic spelling alternatives for a TCGdex localId."""
+
+    local = _local_card_number(value)
+    if not local:
+        return ()
+    candidates = [local]
+    if re.fullmatch(r"0*\d+", local):
+        candidates.append(str(int(local)))
+    elif re.fullmatch(r"[A-Za-z]+\d+[A-Za-z]*", local):
+        candidates.append(local.upper())
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
 def _safe_year_from_release_date(value: object) -> Optional[int]:
@@ -210,11 +240,11 @@ def _canonical_value_changed(before: object, after: object) -> bool:
 class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
     """Resolve eBay identity through TCGdex, then Pokémon TCG API.
 
-    TCGdex is multilingual and remains the primary open catalogue. Instead of
-    issuing a remote `name=` set search for every listing, each language's set
-    catalogue is loaded once per run and matched locally. This avoids repeated
-    requests and lets conservative aliases such as "Scarlet Violet 151" ->
-    "151" resolve without guessing between multiple equally good sets.
+    TCGdex remains the multilingual primary catalogue. Set catalogues are loaded
+    once per language/run and matched locally. Card lookup then uses only
+    deterministic localId spelling alternatives and the two official TCGdex
+    lookup shapes (set/localId and direct card id), with the returned card
+    revalidated before acceptance.
     """
 
     def __init__(
@@ -234,7 +264,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         self._identity_cache: dict[Tuple[str, ...], CatalogIdentityResult] = {}
         self._set_cache: dict[Tuple[str, str], Tuple[Tuple[str, str], ...]] = {}
         self._all_sets_cache: dict[str, Tuple[Tuple[str, str], ...]] = {}
-        self._card_cache: dict[Tuple[str, str, str], Optional[Mapping[str, object]]] = {}
+        self._card_cache: dict[Tuple[str, str, str, str], Optional[Mapping[str, object]]] = {}
 
     @staticmethod
     def _identity_key(identity: CardIdentity) -> Tuple[str, ...]:
@@ -302,6 +332,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         params: Optional[Mapping[str, str]] = None,
         headers: Optional[Mapping[str, str]] = None,
         provider: str,
+        endpoint_kind: str = "other",
     ) -> object:
         if provider == "TCGDEX":
             self.counters.tcgdex_requests += 1
@@ -316,17 +347,32 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             )
         except requests.RequestException:
             self.counters.failures += 1
+            if provider == "TCGDEX":
+                self.counters.tcgdex_transport_failures += 1
+                self._count_tcgdex_endpoint_failure(endpoint_kind)
             return None
         if response.status_code == 404:
             return None
         if response.status_code != 200:
             self.counters.failures += 1
+            if provider == "TCGDEX":
+                self.counters.tcgdex_http_failures += 1
+                self._count_tcgdex_endpoint_failure(endpoint_kind)
             return None
         try:
             return response.json()
         except ValueError:
             self.counters.failures += 1
+            if provider == "TCGDEX":
+                self.counters.tcgdex_json_failures += 1
+                self._count_tcgdex_endpoint_failure(endpoint_kind)
             return None
+
+    def _count_tcgdex_endpoint_failure(self, endpoint_kind: str) -> None:
+        if endpoint_kind == "set_catalog":
+            self.counters.tcgdex_set_catalog_failures += 1
+        elif endpoint_kind in {"set_card", "direct_card"}:
+            self.counters.tcgdex_card_lookup_failures += 1
 
     def _tcgdex_all_sets(self, language: str) -> Tuple[Tuple[str, str], ...]:
         cached = self._all_sets_cache.get(language)
@@ -335,6 +381,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         payload = self._get_json(
             f"{TCGDEX_BASE}/{language}/sets",
             provider="TCGDEX",
+            endpoint_kind="set_catalog",
         )
         rows: list[Tuple[str, str]] = []
         if isinstance(payload, list):
@@ -368,7 +415,14 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             return exact
 
         scored = [
-            (_set_name_similarity(set_name, name), set_id, name)
+            (
+                max(
+                    _set_name_similarity(set_name, name),
+                    _set_name_similarity(set_name, set_id),
+                ),
+                set_id,
+                name,
+            )
             for set_id, name in rows
         ]
         scored = [value for value in scored if value[0] >= 0.66]
@@ -384,22 +438,62 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         self._set_cache[cache_key] = result
         return result
 
-    def _tcgdex_card(
-        self, language: str, set_id: str, local_number: str
+    def _tcgdex_card_route(
+        self,
+        language: str,
+        set_id: str,
+        local_number: str,
+        *,
+        route: str,
     ) -> Optional[Mapping[str, object]]:
-        cache_key = (language, set_id, local_number)
+        cache_key = (language, set_id, local_number, route)
         if cache_key in self._card_cache:
             return self._card_cache[cache_key]
+        if route == "set_card":
+            url = f"{TCGDEX_BASE}/{language}/sets/{set_id}/{local_number}"
+        else:
+            url = f"{TCGDEX_BASE}/{language}/cards/{set_id}-{local_number}"
         payload = self._get_json(
-            f"{TCGDEX_BASE}/{language}/sets/{set_id}/{local_number}",
+            url,
             provider="TCGDEX",
+            endpoint_kind=route,
         )
         card = payload if isinstance(payload, Mapping) else None
         self._card_cache[cache_key] = card
         return card
 
+    def _find_tcgdex_card(
+        self, language: str, set_id: str, card_number: str
+    ) -> Optional[Mapping[str, object]]:
+        candidates = _local_card_number_candidates(card_number)
+        for index, local_number in enumerate(candidates):
+            if index:
+                self.counters.tcgdex_local_id_alternates_tried += 1
+            card = self._tcgdex_card_route(
+                language, set_id, local_number, route="set_card"
+            )
+            if card is not None:
+                if index:
+                    self.counters.tcgdex_local_id_alternate_hits += 1
+                return card
+
+            self.counters.tcgdex_direct_card_fallbacks += 1
+            card = self._tcgdex_card_route(
+                language, set_id, local_number, route="direct_card"
+            )
+            if card is not None:
+                self.counters.tcgdex_direct_card_hits += 1
+                if index:
+                    self.counters.tcgdex_local_id_alternate_hits += 1
+                return card
+        return None
+
     def _resolve_tcgdex(self, identity: CardIdentity) -> CatalogIdentityResult:
-        target_language = _language_code(identity.language) or "en"
+        normalized_language = _normalize(identity.language)
+        language_code = _language_code(identity.language)
+        target_language = language_code or "en"
+        if identity.language and language_code is None:
+            self.counters.tcgdex_unsupported_language_fallbacks += 1
         lookup_languages = tuple(dict.fromkeys((target_language, "en", "fr")))
         normalized_set = _normalize(identity.set)
         exact_ids: dict[str, str] = {}
@@ -430,14 +524,14 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             or _normalize(set_id) == normalized_set
         ):
             self.counters.tcgdex_set_alias_unique_resolutions += 1
-        local_number = _local_card_number(identity.card_number or "")
-        if not local_number:
+        local_candidates = _local_card_number_candidates(identity.card_number or "")
+        if not local_candidates:
             self.counters.tcgdex_skipped_missing_fields += 1
             return CatalogIdentityResult(identity)
 
-        card = self._tcgdex_card(target_language, set_id, local_number)
+        card = self._find_tcgdex_card(target_language, set_id, identity.card_number or "")
         if card is None and target_language != "en":
-            card = self._tcgdex_card("en", set_id, local_number)
+            card = self._find_tcgdex_card("en", set_id, identity.card_number or "")
         if card is None:
             self.counters.tcgdex_no_match_card += 1
             return CatalogIdentityResult(identity)
@@ -445,7 +539,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         card_name = str(card.get("name") or "").strip() or None
         card_local_id = str(card.get("localId") or "").strip()
         card_local_numerator, _ = _card_number_parts(card_local_id)
-        lookup_numerator, _ = _card_number_parts(local_number)
+        lookup_numerator, _ = _card_number_parts(local_candidates[0])
         if card_local_id and card_local_numerator != lookup_numerator:
             self.counters.ambiguous += 1
             self.counters.tcgdex_no_match_number_conflict += 1
@@ -478,6 +572,16 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             self.counters.tcgdex_denominator_conflicts += 1
             self.counters.tcgdex_no_match_number_conflict += 1
             return CatalogIdentityResult(identity, "TCGDEX", False, True, True)
+
+        variant_supported = tcgdex_variant_supports_identity(identity, card)
+        if variant_supported is False:
+            # TCGdex variants are availability metadata. An explicit False is
+            # useful contradictory evidence, but PokeTrace may still resolve a
+            # catalogue-data issue; therefore this is ambiguous, not blocking.
+            self.counters.ambiguous += 1
+            self.counters.tcgdex_variant_impossible += 1
+            return CatalogIdentityResult(identity, "TCGDEX", False, True, False)
+
         resolved = _with_catalog_identity(
             identity,
             card_name=card_name,
@@ -599,13 +703,7 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
 
 
 class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
-    """TCGdex -> PokeTrace -> Pokemon TCG API identity chain.
-
-    PokeTrace is deliberately used as a fallback rather than replacing TCGdex:
-    the Free plan is US-only, while TCGdex remains the multilingual source. A
-    unique PokeTrace hit is accepted only after local number/name/set/variant
-    checks inside PokeTraceIdentityResolver.
-    """
+    """TCGdex -> PokeTrace -> Pokemon TCG API identity chain."""
 
     _POKETRACE_US_LANGUAGES = {
         "english",
@@ -684,9 +782,6 @@ class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
                 self._identity_cache[key] = result
                 return result
 
-        # An ambiguity in either catalogue is not overwritten by a looser
-        # fallback. A unique PokeTrace hit above is allowed to disambiguate a
-        # TCGdex alias collision because it passed exact card checks.
         if tcgdex.ambiguous or (poketrace is not None and poketrace.ambiguous):
             result = CatalogIdentityResult(identity, "MULTI_CATALOG", False, True)
             self._identity_cache[key] = result
@@ -728,6 +823,11 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             f"ambiguous catalog resolutions: {counters.ambiguous}",
             f"no catalog match: {counters.no_match}",
             f"catalog request failures: {counters.failures}",
+            f"TCGdex transport failures: {counters.tcgdex_transport_failures}",
+            f"TCGdex HTTP failures: {counters.tcgdex_http_failures}",
+            f"TCGdex JSON failures: {counters.tcgdex_json_failures}",
+            f"TCGdex set-catalog failures: {counters.tcgdex_set_catalog_failures}",
+            f"TCGdex card-lookup failures: {counters.tcgdex_card_lookup_failures}",
             f"in-memory cache hits: {counters.cache_hits}",
             f"canonical identities changed by TCGdex - name: {counters.canonical_name_changes}",
             f"canonical identities changed by TCGdex - set: {counters.canonical_set_changes}",
@@ -767,6 +867,24 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             (
                 "TCGdex no-match - returned set conflict: "
                 f"{counters.tcgdex_no_match_set_conflict}"
+            ),
+            (
+                "TCGdex deterministic localId alternates tried: "
+                f"{counters.tcgdex_local_id_alternates_tried}"
+            ),
+            (
+                "TCGdex deterministic localId alternate hits: "
+                f"{counters.tcgdex_local_id_alternate_hits}"
+            ),
+            (
+                "TCGdex direct-card fallbacks: "
+                f"{counters.tcgdex_direct_card_fallbacks}"
+            ),
+            f"TCGdex direct-card hits: {counters.tcgdex_direct_card_hits}",
+            f"TCGdex variant-impossible conflicts: {counters.tcgdex_variant_impossible}",
+            (
+                "TCGdex unsupported-language fallbacks to English metadata: "
+                f"{counters.tcgdex_unsupported_language_fallbacks}"
             ),
             "language preserved as a first-class identity discriminator: YES",
             "persisted eBay records: 0",
