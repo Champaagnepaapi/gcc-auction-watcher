@@ -1,0 +1,43 @@
+name: V5 PokeTrace Identity CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "v5/poketrace_identity.py"
+      - "v5/market_values/poketrace.py"
+      - "v5/market_values/poketrace_free.py"
+      - "tests_v5/test_poketrace_identity.py"
+      - "tests_v5/test_poketrace_number_compat.py"
+      - ".github/workflows/v5-poketrace-identity-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run complete V5 tests
+        run: python -m unittest discover -s tests_v5 -p "test*.py" -v
+
+      - name: Compile PokeTrace identity files
+        run: |
+          python -m py_compile v5/poketrace_identity.py
+          python -m py_compile v5/market_values/poketrace.py
+          python -m py_compile v5/market_values/poketrace_free.py
+
+      - name: Check diff whitespace
+        run: git diff --check
