@@ -1,5 +1,90 @@
 # GCC Auction Watcher
 
+> **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
+> Cette section doit être mise à jour à chaque changement important afin qu'une nouvelle conversation puisse reprendre le projet sans reconstruire l'historique complet.
+
+## Reprise du projet / état exact au 11 août 2026
+
+### Production V4 — `main`
+
+- La **V4 GCC** est la production canonique et ne doit pas être remplacée implicitement par V5.
+- Scheduler production : **Cron-job.org → `workflow_dispatch` GitHub Actions toutes les ~10 minutes**. Le `schedule:` GitHub historique `3,13,23,33,43,53` a été supprimé car il était irrégulier et créait ensuite un double scan avec Cron-job.org.
+- Univers : **cartes Pokémon individuelles uniquement**, découverte **0–100 €**, enchères **≤60 min**, décote plancher **30 %**.
+- Enchères : discovery primaire **lot par lot** via `/on-sale-items?sellingTypeGroup=AUCTION&sortType=ENDING_SOON&status=ON_SALE`, avec `endTime` individuel et statut `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS` lorsque l'horizon est prouvé. L'ancien collector reste fallback de sécurité.
+- Prix fixes : API GCC `/on-sale-items`, file `NEW → CHANGED → NEVER_EVALUATED → STALE`, TTL 24 h.
+- Valorisation : même grader/même grade prioritaire, médiane pondérée par récence, MAD/IQR, fourchette prudente, PSA APR en premier pour PSA exact lorsque possible, eBay public en fallback.
+- Grade arbitrage autorisé uniquement avec référence robuste d'un grade inférieur du **même grader**, sans inventer la valeur du grade supérieur et avec preuve externe exacte avant notification.
+- Anti-spam : renotification seulement si baisse de prix ≥10 %, amélioration de décote ≥5 points ou franchissement d'un seuil temporel ; une alerte haute priorité unique peut partir à ≤5 min si le prix reste sous le max prudent.
+- `state.json` est persistant via cache GitHub Actions.
+- Chaque run est journalisé dans l'**issue #1** avec `trigger`, exit code, durée, opportunités, mode/scope auction, lignes/timers et fallback.
+- **Aucun achat, bid ou checkout automatique.**
+
+### V4 — optimisation runtime Playwright en cours
+
+- PR **#13** : `ops/v4-playwright-cache`.
+- Objectif : éviter de retélécharger Chromium/Headless Shell/FFmpeg à chaque VM GitHub.
+- GitHub-hosted runners étant jetables, Chromium ne peut pas rester installé sur la même machine ; la stratégie est donc **cache Playwright + cache pip + probe de lancement**.
+- Sur cache hit : payload navigateur restauré, pas de redownload complet.
+- Si le probe Chromium échoue à cause des libs système du runner : fallback automatique `playwright install --with-deps chromium`.
+- Cette PR est une optimisation P3 uniquement : elle ne change pas discovery/valorisation/alertes.
+- Ne la considérer terminée qu'après CI verte puis observation d'au moins un premier run cache-miss et un run cache-hit en production.
+
+### V5 — expérimental, PR #8, NE PAS MERGER
+
+- PR **#8**, branche exacte : `agent/v5-poketrace-cardmarket-market-data`.
+- V5 reste un diagnostic **RAW eBay** séparé de la V4 graded GCC.
+- La branche V5 a été synchronisée avec le `main` actuel via merge **main → V5** au commit `09e512f3ac1aef381974de493fa39e45c70049c7`. Cela ne merge pas V5 dans `main`.
+- Dernier gros correctif Codex audité : `840c44f89ad6ba7aa4b9524161203c019b2eff47` (`Fix V5 canonical PokeTrace identity matching`).
+- Le workflow live V5 doit rester **manuel (`workflow_dispatch`)** pour protéger le quota PokeTrace Free.
+- PokeTrace Free : clé stockée dans GitHub Secret `POKETRACE_API_KEY`, **250 req/j**, US + RAW uniquement, cadence locale effective ≥2.25 s, pas de Cardmarket EU/graded en Free.
+
+#### Architecture resolver V5 retenue pour l'instant
+
+1. **TCGdex = resolver principal multilingue**.
+2. **PokeTrace Free = fallback identité + source market RAW US**.
+3. Pokémon TCG API = dernier fallback anglais/unknown.
+4. Matching visuel local + OCR ciblé = arbitres conservateurs seulement pour `AMBIGUOUS/INSUFFICIENT`.
+5. **JustTCG** : candidat futur comme fallback / seconde opinion, pas principal tant qu'un benchmark live n'a pas prouvé qu'il bat TCGdex.
+6. **Scrydex / Vision** : option sérieuse pour les cas durablement ambigus après épuisement de la chaîne gratuite ; ne pas introduire le coût avant d'avoir mesuré le pipeline gratuit corrigé.
+
+#### Dernière référence live PokeTrace avant le correctif Codex
+
+Échantillon d'environ 20 listings RAW :
+
+- usable identities : **9** ;
+- TCGdex hits : **4** ;
+- PokeTrace exact : **0** ;
+- rejets apparents nom/set/numéro : **112 / 41 / 2** sur 155 candidats ;
+- market values found : **0** ;
+- PokeTrace Free cache hits : **5** ;
+- achats/bids/checkout : **0/0/0**.
+
+Important : les anciens compteurs de rejet étaient trompeurs parce qu'ils ne comptaient que le premier champ bloquant. Le correctif Codex a ajouté des compteurs indépendants par champ.
+
+#### Correctifs bloquants identifiés après audit du commit Codex
+
+**Ne pas lancer le prochain Free live avant ces points + CI complète :**
+
+1. **P0 — filtre `set` PokeTrace** : ne pas envoyer le nom d'affichage (`Base Set`, etc.) comme `set=`. Le filtre structuré PokeTrace attend son slug. Tant qu'on ne possède pas un slug PokeTrace vérifié, omettre le filtre `set` côté serveur et garder la validation de set stricte **localement**.
+2. **P0 — numéro manquant** : `HybridPokemonCardResolver` doit pouvoir appeler PokeTrace avec un fort `name + set` même si `card_number` manque. TCGdex/Pokémon TCG peuvent rester dépendants du numéro ; PokeTrace doit pouvoir récupérer le troisième champ lorsqu'au moins 2 des 3 champs `{name,set,card_number}` sont présents.
+3. **P1 — conflit de dénominateur TCGdex** : un numéro eBay complet contradictoire ne doit jamais être silencieusement réécrit. Exemple `4/130` vs TCGdex `004/102` → `AMBIGUOUS/reject`, alors que `4` → `004/102` reste une canonicalisation valide.
+4. Refaire ensuite **toute la CI sur le repo synchronisé** : tous les tests V4, tous les tests V5, `compileall`, tous les YAML, `git diff --check`, sans appel PokeTrace live.
+5. Seulement après : **un unique nouveau run PokeTrace Free**, comparer aux métriques ci-dessus avant toute décision JustTCG/Scrydex/Pro.
+
+Ces blockers sont aussi documentés dans un commentaire de la PR #8 afin qu'un agent Codex puisse les reprendre directement depuis GitHub.
+
+### Règles de gouvernance du projet
+
+- **Ne jamais merger silencieusement la PR #8.** Discuter du live et des métriques avant merge.
+- Ne pas passer PokeTrace Pro / Cardmarket payant tant que Free n'est pas correctement exploité et mesuré.
+- Ne pas assouplir le matching juste pour atteindre artificiellement `15+/20` : `AMBIGUOUS` reste bloquant.
+- Une source externe ne peut pas inventer une valeur achetable ; exact same-card/same-grader/same-grade reste prioritaire.
+- Les données eBay listing-level (itemId, titre, URL, images, prix) restent mémoire-only dans le diagnostic V5 et ne doivent pas être persistées/loguées individuellement.
+- Scrydex doit rester dans le radar, particulièrement son modèle `number` / `printed_number` / expansion / language et Vision.
+- La cible `15+/20` est un objectif de couverture **si les preuves disponibles le permettent**, jamais une obligation qui justifie des faux positifs.
+
+---
+
 La version de production recommandée est la **V4 cloud GitHub Actions** : aucun Mac ne doit rester allumé. Voir [`README_CLOUD.md`](README_CLOUD.md) pour l'installation et le fonctionnement détaillé.
 
 ## V4 — état de production
