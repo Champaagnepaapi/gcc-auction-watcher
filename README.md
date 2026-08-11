@@ -163,21 +163,21 @@ Audit Codex ciblé : aucun changement de code.
 
 # V5 — validation offline la plus récente
 
-Commit de logique audité avant le dernier live :
+Baseline du circuit-breaker PokeTrace :
 
 ```text
-d4e445b3e450339a8ff576c36b66abd9f6da2f9d
+bdd1abc7b479ed980f4f4896b17e3b184b701ed5
 ```
 
-Validation Codex :
+Validation offline de la phase RAW→RAW MVP :
 
-- V5 : **303/303** ;
+- V5 : **325/325** ;
 - V4 : **167/167** ;
 - V4 identique à `origin/main` ;
 - `compileall v5` : OK ;
-- YAML : **10/10** avant le nettoyage des trois workflows redondants ;
+- YAML : **7/7** ;
 - `git diff --check` : OK ;
-- aucun appel PokeTrace/JustTCG/eBay live depuis cette validation ;
+- aucun appel PokeTrace/JustTCG/eBay live pendant cette phase ;
 - aucun secret consulté ;
 - aucun CardGrader, achat, bid ou checkout.
 
@@ -199,6 +199,43 @@ Le merge de synchronisation workflow-only `231b067517fc14126215532019d7f46f68d7b
 - rendement PokeTrace mesuré par stratégie ;
 - parser eBay enrichi uniquement avec aliases structurés déterministes ;
 - failures TCGdex et Pokémon TCG API séparées dans les diagnostics.
+- les 429 sont classés uniquement via `Retry-After` : délai ≤30 s = un
+  unique retry, délai long/absent/invalide = terminal ; un second 429 ouvre
+  également le circuit ;
+- le circuit-breaker partagé arrête les recherches PokeTrace suivantes du run,
+  évite aussi l'appel marché après identité, et compte les appels évités sans
+  transformer le rate-limit en `NO_MATCH`.
+
+## RAW→RAW MVP économique
+
+La revente RAW est maintenant une voie économique autonome et prioritaire.
+Elle exige une identité exacte/non ambiguë, une valeur RAW fiable et non
+conflictuelle, une devise cohérente et tous les coûts RAW matériels connus.
+L'absence de valeurs PSA ou de budget de grading ne rejette plus une
+opportunité RAW rentable.
+
+Formule conservatrice :
+
+```text
+valeur RAW prudente = borne basse des valeurs RAW agrégées fiables
+coûts RAW fixes = achat + frais acheteur + transports d'acquisition + autres coûts non-grading
+frais de vente = valeur prudente × (selling fee % + buffer FX %) + frais fixes de vente
+base totale RAW = coûts RAW fixes + frais de vente
+profit net RAW = valeur RAW prudente - base totale RAW
+ROI RAW = profit net RAW / base totale RAW × 100
+```
+
+`grading_fee`, `grading_shipping` et `vault_fee` sont explicitement exclus de
+la base RAW. Le grading n'est qu'une comparaison optionnelle : il faut les
+valeurs par grade suffisantes, des photos compatibles, une analyse visuelle
+autorisée dans le quota et une EV nette supportée. Le chemin recommandé est
+alors celui dont le profit net supporté est le plus élevé ; sans cette preuve,
+aucun avantage grading n'est inventé.
+
+Le prochain diagnostic live exposera seulement des compteurs agrégés : marché
+RAW suffisant, voie RAW évaluée, RAW rentable/rejetée, comparaison graded
+disponible, RAW bat grading, grading bat RAW, et graded absent mais RAW
+évaluable. Aucun contenu listing-level n'est ajouté aux logs.
 
 ---
 
@@ -323,13 +360,11 @@ Conclusion : **TCGdex reste clairement principal.** JustTCG reste second avis ex
 Ordre recommandé :
 
 1. ne lancer **aucun nouveau PokeTrace live tant que le quota Free n’a pas reset** ;
-2. ajouter/valider un diagnostic de 429 permettant de distinguer au minimum un `Retry-After` court d’une indisponibilité/quota long, sans logger de données sensibles ;
-3. idéalement activer un circuit-breaker de run : lorsqu’un 429 non-retryable/quota est détecté, arrêter les nouveaux appels PokeTrace du run au lieu d’accumuler des 429 inutiles ;
-4. après reset, faire **un seul** live propre de 20 listings sur le code actuel pour obtenir les diagnostics near-match + rendement par stratégie sans censure ;
-5. seulement après ce run propre, décider si `structured`, `broad-name`, `broad-set` ou d’autres fallbacks peuvent être réduits/supprimés ;
-6. continuer à chercher des équivalences uniquement déterministes ; ne jamais assouplir le matching pour atteindre `15+/20` ;
-7. si PokeTrace reste à 0 exact/0 market value après un run propre, réévaluer l’intérêt de PokeTrace Free avant de payer Pro ;
-8. Scrydex/Vision reste différé tant que l’identité structurée et les sources marché ne sont pas mieux comprises.
+2. après reset, faire **un seul** live propre de 20 listings sur le code actuel pour mesurer le circuit-breaker, les diagnostics near-match, le rendement par stratégie et les nouveaux compteurs RAW ;
+3. seulement après ce run propre, décider si `structured`, `broad-name`, `broad-set` ou d’autres fallbacks peuvent être réduits/supprimés ;
+4. continuer à chercher des équivalences uniquement déterministes ; ne jamais assouplir le matching pour atteindre `15+/20` ;
+5. si PokeTrace reste à 0 exact/0 market value après un run propre, réévaluer l’intérêt de PokeTrace Free avant de payer Pro ;
+6. Scrydex/Vision reste différé tant que l’identité structurée et les sources marché ne sont pas mieux comprises.
 
 ---
 

@@ -199,6 +199,14 @@ class PipelineMarketAggregate:
 @dataclass
 class PipelineEconomicAggregate:
     raw_arbitrage: int = 0
+    raw_market_sufficient: int = 0
+    raw_path_evaluated: int = 0
+    raw_profitable: int = 0
+    raw_rejected: int = 0
+    graded_comparison_available: int = 0
+    raw_beats_grading: int = 0
+    grading_beats_raw: int = 0
+    graded_absent_but_raw_evaluable: int = 0
     grade9_profitable: int = 0
     psa10_dependent: int = 0
     reject_even_psa10: int = 0
@@ -556,6 +564,21 @@ class LiveRawPipelineDiagnostic:
             economic_counts.cost_model_incomplete += 1
             return
 
+        economic_counts.raw_market_sufficient += int(
+            economic.raw_market_sufficient
+        )
+        economic_counts.raw_path_evaluated += int(economic.raw_path_evaluated)
+        economic_counts.raw_profitable += int(economic.raw_profitable)
+        economic_counts.raw_rejected += int(economic.raw_rejected)
+        economic_counts.graded_comparison_available += int(
+            economic.graded_comparison_available
+        )
+        economic_counts.raw_beats_grading += int(economic.raw_beats_grading)
+        economic_counts.grading_beats_raw += int(economic.grading_beats_raw)
+        economic_counts.graded_absent_but_raw_evaluable += int(
+            economic.graded_absent_but_raw_evaluable
+        )
+
         if MARKET_VALUES_MISSING in economic.signals:
             market_counts.values_missing += 1
             market_counts.manual_validation_required += 1
@@ -846,6 +869,20 @@ def render_live_raw_pipeline_summary(summary: LiveRawPipelineSummary) -> str:
             f"FX failures: {summary.providers.fx_failures}",
             "",
             "ECONOMIC:",
+            f"raw market sufficient: {summary.economic.raw_market_sufficient}",
+            f"raw path evaluated: {summary.economic.raw_path_evaluated}",
+            f"raw profitable: {summary.economic.raw_profitable}",
+            f"raw rejected: {summary.economic.raw_rejected}",
+            (
+                "graded comparison available: "
+                f"{summary.economic.graded_comparison_available}"
+            ),
+            f"raw beats grading: {summary.economic.raw_beats_grading}",
+            f"grading beats raw: {summary.economic.grading_beats_raw}",
+            (
+                "graded absent but raw evaluable: "
+                f"{summary.economic.graded_absent_but_raw_evaluable}"
+            ),
             f"raw arbitrage: {summary.economic.raw_arbitrage}",
             f"grade9 profitable: {summary.economic.grade9_profitable}",
             f"psa10 dependent: {summary.economic.psa10_dependent}",

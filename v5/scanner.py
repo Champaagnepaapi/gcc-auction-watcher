@@ -11,7 +11,10 @@ from .grading import (
     GradeProviderError,
 )
 from .models import (
+    GRADING_AFTER_VISUAL_ASSESSMENT,
+    NO_RECOMMENDED_PATH,
     PSA10_DEPENDENT,
+    RAW_RESALE,
     CostInputs,
     EbayListing,
     GradeAssessment,
@@ -20,6 +23,7 @@ from .models import (
     ImageQuality,
     MarketValue,
     MarketValues,
+    RawValuationResult,
     ScanDecision,
     ScanDiagnostic,
     StructuredGradingStatus,
@@ -29,6 +33,7 @@ from .valuation import (
     MarketDataProvider,
     MarketDataUnavailable,
     calculate_expected_value,
+    calculate_raw_resale_value,
     grade_profit_scenarios,
 )
 
@@ -52,6 +57,13 @@ NON_PROFITABLE_EV = "NON_PROFITABLE_EV"
 ROI_BELOW_THRESHOLD = "ROI_BELOW_THRESHOLD"
 CHEAP_FILTER_PASSED = "CHEAP_FILTER_PASSED"
 GRADING_VISUAL_CONFIDENCE_REDUCED = "GRADING_VISUAL_CONFIDENCE_REDUCED"
+RAW_MARKET_INSUFFICIENT = "RAW_MARKET_INSUFFICIENT"
+RAW_PATH_PROFITABLE = "RAW_PATH_PROFITABLE"
+RAW_PATH_NON_PROFITABLE = "RAW_PATH_NON_PROFITABLE"
+RAW_ROI_BELOW_THRESHOLD = "RAW_ROI_BELOW_THRESHOLD"
+RAW_BEATS_GRADING = "RAW_BEATS_GRADING"
+GRADING_BEATS_RAW = "GRADING_BEATS_RAW"
+GRADING_PATH_PROFITABLE = "GRADING_PATH_PROFITABLE"
 
 
 @dataclass(frozen=True)
@@ -63,6 +75,9 @@ class SafeguardConfig:
     minimum_max_plausible_roi_percent: Decimal = Decimal("0")
     maximum_paid_gradings_per_run: int = 0
     minimum_psa_samples: int = 2
+    minimum_raw_samples: int = 2
+    minimum_raw_profit_eur: Decimal = Decimal("0")
+    minimum_raw_roi_percent: Decimal = Decimal("0")
     minimum_roi_percent: Decimal = Decimal("0")
     maximum_psa10_ev_share: Decimal = Decimal("0.65")
     minimum_grade_confidence: Optional[float] = None
@@ -79,6 +94,8 @@ class SafeguardConfig:
             raise ValueError("RAW_MAX_PAID_GRADINGS_PER_RUN ne peut pas etre negatif")
         if self.minimum_psa_samples < 1:
             raise ValueError("V5_MIN_PSA_SAMPLES doit etre >= 1")
+        if self.minimum_raw_samples < 1:
+            raise ValueError("V5_MIN_RAW_SAMPLES doit etre >= 1")
 
     @classmethod
     def from_env(cls) -> "SafeguardConfig":
@@ -98,6 +115,13 @@ class SafeguardConfig:
                 os.getenv("RAW_MAX_PAID_GRADINGS_PER_RUN", "0")
             ),
             minimum_psa_samples=int(os.getenv("V5_MIN_PSA_SAMPLES", "2")),
+            minimum_raw_samples=int(os.getenv("V5_MIN_RAW_SAMPLES", "2")),
+            minimum_raw_profit_eur=Decimal(
+                os.getenv("RAW_MIN_PLAUSIBLE_PROFIT_EUR", "0")
+            ),
+            minimum_raw_roi_percent=Decimal(
+                os.getenv("RAW_MIN_PLAUSIBLE_ROI_PERCENT", "0")
+            ),
             minimum_roi_percent=Decimal(os.getenv("V5_MIN_ROI_PERCENT", "0")),
             maximum_psa10_ev_share=Decimal(
                 os.getenv("V5_MAX_PSA10_EV_SHARE", "0.65")
@@ -127,6 +151,10 @@ class CheapFilterResult:
     psa8_profit: Optional[Decimal] = None
     maximum_plausible_roi: Optional[Decimal] = None
     risk_flags: Tuple[str, ...] = ()
+    raw_valuation: Optional[RawValuationResult] = None
+    raw_evaluable: bool = False
+    raw_retained: bool = False
+    grading_reasons: Tuple[str, ...] = ()
 
     @property
     def priority(self) -> Tuple[Decimal, Decimal, Decimal]:
@@ -185,82 +213,95 @@ class RawCardScanner:
             return CheapFilterResult(
                 request, False, (MARKET_DATA_UNAVAILABLE, str(exc))
             )
+
+        raw_valuation, raw_reasons = _evaluate_raw_path(
+            market_values,
+            request.costs,
+            self.safeguards.minimum_raw_samples,
+        )
+        raw_evaluable = raw_valuation is not None
+        raw_retained = bool(
+            raw_valuation is not None
+            and raw_valuation.net_profit >= self.safeguards.minimum_raw_profit_eur
+            and raw_valuation.roi_percent >= self.safeguards.minimum_raw_roi_percent
+        )
+        if raw_valuation is not None and not raw_retained:
+            raw_reasons = (RAW_PATH_NON_PROFITABLE,)
+            if (
+                raw_valuation.roi_percent
+                < self.safeguards.minimum_raw_roi_percent
+            ):
+                raw_reasons += (RAW_ROI_BELOW_THRESHOLD,)
+
+        grading_reasons: Tuple[str, ...] = ()
         if request.costs.unknown_fields():
-            return CheapFilterResult(
-                request,
-                False,
-                (SIGNIFICANT_COSTS_UNKNOWN,) + request.costs.unknown_fields(),
-                market_values=market_values,
-            )
+            grading_reasons = (
+                SIGNIFICANT_COSTS_UNKNOWN,
+            ) + request.costs.unknown_fields()
         insufficient_psa = _insufficient_psa_evidence(
             market_values, self.safeguards.minimum_psa_samples
         )
-        if insufficient_psa:
-            return CheapFilterResult(
-                request,
-                False,
-                (INSUFFICIENT_PSA_DATA,) + insufficient_psa,
-                market_values=market_values,
-            )
+        if insufficient_psa and not grading_reasons:
+            grading_reasons = (INSUFFICIENT_PSA_DATA,) + insufficient_psa
 
-        try:
-            psa10_profit, psa9_profit, psa8_profit = grade_profit_scenarios(
-                market_values, request.costs
-            )
-            total_cost = request.costs.fixed_total()
-        except IncompleteValuation as exc:
-            reason = (
-                CURRENCY_MISMATCH
-                if "devise" in str(exc).casefold()
-                else MARKET_DATA_UNAVAILABLE
-            )
-            return CheapFilterResult(
-                request,
-                False,
-                (reason, str(exc)),
-                market_values=market_values,
-            )
-        maximum_roi = psa10_profit / total_cost * Decimal("100")
+        total_cost: Optional[Decimal] = None
+        psa10_profit: Optional[Decimal] = None
+        psa9_profit: Optional[Decimal] = None
+        psa8_profit: Optional[Decimal] = None
+        maximum_roi: Optional[Decimal] = None
+        if not grading_reasons:
+            try:
+                psa10_profit, psa9_profit, psa8_profit = grade_profit_scenarios(
+                    market_values, request.costs
+                )
+                total_cost = request.costs.fixed_total()
+                maximum_roi = psa10_profit / total_cost * Decimal("100")
+            except IncompleteValuation as exc:
+                reason = (
+                    CURRENCY_MISMATCH
+                    if "devise" in str(exc).casefold()
+                    else MARKET_DATA_UNAVAILABLE
+                )
+                grading_reasons = (reason, str(exc))
         if (
-            psa10_profit < self.safeguards.minimum_max_plausible_profit_eur
-            or maximum_roi < self.safeguards.minimum_max_plausible_roi_percent
-        ):
-            return CheapFilterResult(
-                request,
-                False,
-                (INSUFFICIENT_MAX_PLAUSIBLE_UPSIDE,),
-                market_values=market_values,
-                total_cost_if_graded=total_cost,
-                psa10_profit=psa10_profit,
-                psa9_profit=psa9_profit,
-                psa8_profit=psa8_profit,
-                maximum_plausible_roi=maximum_roi,
+            not grading_reasons
+            and psa10_profit is not None
+            and maximum_roi is not None
+            and (
+                psa10_profit < self.safeguards.minimum_max_plausible_profit_eur
+                or maximum_roi
+                < self.safeguards.minimum_max_plausible_roi_percent
             )
+        ):
+            grading_reasons = (INSUFFICIENT_MAX_PLAUSIBLE_UPSIDE,)
 
         # Un recto exploitable suffit a poursuivre la valorisation economique.
         # Le verso reste obligatoire uniquement au moment du grading visuel.
-        front_reasons = _front_rejection_reasons(request)
-        if front_reasons:
-            return CheapFilterResult(
-                request,
-                False,
-                front_reasons,
-                market_values=market_values,
-                total_cost_if_graded=total_cost,
-                psa10_profit=psa10_profit,
-                psa9_profit=psa9_profit,
-                psa8_profit=psa8_profit,
-                maximum_plausible_roi=maximum_roi,
-            )
+        if not grading_reasons:
+            grading_reasons = _front_rejection_reasons(request)
         visual_risk = (
             ()
             if request.image_pair.is_complete()
             else (GRADING_VISUAL_CONFIDENCE_REDUCED,)
         )
+        eligible = not grading_reasons
+        reasons = (
+            (RAW_PATH_PROFITABLE,)
+            if raw_retained
+            else (
+                (CHEAP_FILTER_PASSED,)
+                if eligible
+                else (
+                    raw_reasons
+                    if raw_evaluable
+                    else tuple(dict.fromkeys(raw_reasons + grading_reasons))
+                )
+            )
+        )
         return CheapFilterResult(
             request,
-            True,
-            (CHEAP_FILTER_PASSED,),
+            eligible,
+            reasons,
             market_values=market_values,
             total_cost_if_graded=total_cost,
             psa10_profit=psa10_profit,
@@ -268,6 +309,10 @@ class RawCardScanner:
             psa8_profit=psa8_profit,
             maximum_plausible_roi=maximum_roi,
             risk_flags=visual_risk,
+            raw_valuation=raw_valuation,
+            raw_evaluable=raw_evaluable,
+            raw_retained=raw_retained,
+            grading_reasons=grading_reasons,
         )
 
     def shortlist(self, requests: Iterable[ScanRequest]) -> List[CheapFilterResult]:
@@ -286,6 +331,8 @@ class RawCardScanner:
         if not cheap_result.eligible_for_visual_grading:
             return _diagnostic_from_cheap(cheap_result)
         if self.safeguards.maximum_paid_gradings_per_run < 1:
+            if cheap_result.raw_retained:
+                return _diagnostic_from_cheap(cheap_result)
             return _diagnostic_from_cheap(
                 cheap_result, reasons=(VISUAL_GRADING_QUOTA_REACHED,)
             )
@@ -376,9 +423,28 @@ class RawCardScanner:
             reasons.append(ROI_BELOW_THRESHOLD)
         if PSA10_DEPENDENT in risk_flags:
             reasons.append(PSA10_DEPENDENT)
-        decision = ScanDecision.REJECTED if reasons else ScanDecision.RETAINED
-        if not reasons:
-            reasons.append("EV_POSITIVE_WITH_SAFEGUARDS_PASSED")
+        grading_supported = not reasons
+        raw_valuation = cheap_result.raw_valuation
+        if grading_supported and raw_valuation is not None:
+            if raw_valuation.net_profit >= valuation.expected_profit:
+                recommended_path = RAW_RESALE
+                reasons = [RAW_BEATS_GRADING]
+            else:
+                recommended_path = GRADING_AFTER_VISUAL_ASSESSMENT
+                reasons = [GRADING_BEATS_RAW]
+        elif grading_supported:
+            recommended_path = GRADING_AFTER_VISUAL_ASSESSMENT
+            reasons = [GRADING_PATH_PROFITABLE]
+        elif cheap_result.raw_retained:
+            recommended_path = RAW_RESALE
+            reasons = [RAW_PATH_PROFITABLE]
+        else:
+            recommended_path = NO_RECOMMENDED_PATH
+        decision = (
+            ScanDecision.RETAINED
+            if grading_supported or cheap_result.raw_retained
+            else ScanDecision.REJECTED
+        )
 
         return ScanDiagnostic(
             listing=listing,
@@ -390,6 +456,10 @@ class RawCardScanner:
             probabilities=probabilities,
             market_values=market_values,
             valuation=valuation,
+            raw_valuation=raw_valuation,
+            recommended_path=recommended_path,
+            graded_comparison_available=True,
+            grading_reasons=(),
             costs=request.costs,
             total_cost_if_graded=valuation.total_cost_if_graded,
             psa10_profit=valuation.psa10_profit,
@@ -421,8 +491,12 @@ class RawCardScanner:
             self._expensive_visual_grading(result) for result in selected
         ]
         diagnostics.extend(
-            _diagnostic_from_cheap(
-                result, reasons=(VISUAL_GRADING_QUOTA_REACHED,)
+            (
+                _diagnostic_from_cheap(result)
+                if result.raw_retained
+                else _diagnostic_from_cheap(
+                    result, reasons=(VISUAL_GRADING_QUOTA_REACHED,)
+                )
             )
             for result in deferred
         )
@@ -430,12 +504,8 @@ class RawCardScanner:
             diagnostics,
             key=lambda diagnostic: (
                 diagnostic.retained,
-                diagnostic.valuation.expected_roi
-                if diagnostic.valuation is not None
-                else Decimal("-Infinity"),
-                diagnostic.psa9_profit
-                if diagnostic.psa9_profit is not None
-                else Decimal("-Infinity"),
+                _supported_profit(diagnostic),
+                _supported_roi(diagnostic),
             ),
             reverse=True,
         )
@@ -448,15 +518,22 @@ def _diagnostic_from_cheap(
     probabilities: Optional[GradeProbabilities] = None,
 ) -> ScanDiagnostic:
     request = result.request
+    retained = result.raw_retained
+    selected_reasons = tuple(reasons or result.reasons)
+    if retained and RAW_PATH_PROFITABLE not in selected_reasons:
+        selected_reasons = (RAW_PATH_PROFITABLE,) + selected_reasons
     return ScanDiagnostic(
         listing=request.listing,
         identity=request.listing.identity,
-        decision=ScanDecision.REJECTED,
-        reasons=tuple(reasons or result.reasons),
+        decision=ScanDecision.RETAINED if retained else ScanDecision.REJECTED,
+        reasons=selected_reasons,
         risk_flags=result.risk_flags,
         assessment=assessment,
         probabilities=probabilities,
         market_values=result.market_values,
+        raw_valuation=result.raw_valuation,
+        recommended_path=RAW_RESALE if retained else NO_RECOMMENDED_PATH,
+        grading_reasons=tuple(reasons) if reasons is not None else result.grading_reasons,
         costs=request.costs,
         total_cost_if_graded=result.total_cost_if_graded,
         psa10_profit=result.psa10_profit,
@@ -493,6 +570,66 @@ def _front_rejection_reasons(request: ScanRequest) -> Tuple[str, ...]:
     if front not in request.listing.image_urls:
         return (INSUFFICIENT_PHOTOS, "FRONT_IMAGE_NOT_IN_EBAY_LISTING")
     return ()
+
+
+def _evaluate_raw_path(
+    values: MarketValues,
+    costs: CostInputs,
+    minimum_samples: int,
+) -> Tuple[Optional[RawValuationResult], Tuple[str, ...]]:
+    raw = values.raw
+    if raw is None:
+        return None, (RAW_MARKET_INSUFFICIENT, "RAW_VALUE_MISSING")
+    evidence_reasons = []
+    if raw.amount <= 0:
+        evidence_reasons.append("RAW_VALUE_NOT_POSITIVE")
+    if raw.sample_size is None:
+        evidence_reasons.append("RAW_SAMPLE_SIZE_UNKNOWN")
+    elif raw.sample_size < minimum_samples:
+        evidence_reasons.append("RAW_INSUFFICIENT_SAMPLES")
+    confidence = (raw.confidence or "").casefold()
+    if confidence not in {
+        "medium",
+        "moyenne",
+        "high",
+        "elevee",
+        "élevée",
+    }:
+        evidence_reasons.append("RAW_CONFIDENCE_INSUFFICIENT")
+    if evidence_reasons:
+        return None, (RAW_MARKET_INSUFFICIENT,) + tuple(evidence_reasons)
+    try:
+        return calculate_raw_resale_value(raw, costs), ()
+    except IncompleteValuation as exc:
+        if "devise" in str(exc).casefold():
+            return None, (CURRENCY_MISMATCH, str(exc))
+        if costs.raw_unknown_fields():
+            return None, (
+                SIGNIFICANT_COSTS_UNKNOWN,
+            ) + costs.raw_unknown_fields()
+        return None, (MARKET_DATA_UNAVAILABLE, str(exc))
+
+
+def _supported_profit(diagnostic: ScanDiagnostic) -> Decimal:
+    if (
+        diagnostic.recommended_path == GRADING_AFTER_VISUAL_ASSESSMENT
+        and diagnostic.valuation is not None
+    ):
+        return diagnostic.valuation.expected_profit
+    if diagnostic.raw_valuation is not None:
+        return diagnostic.raw_valuation.net_profit
+    return Decimal("-Infinity")
+
+
+def _supported_roi(diagnostic: ScanDiagnostic) -> Decimal:
+    if (
+        diagnostic.recommended_path == GRADING_AFTER_VISUAL_ASSESSMENT
+        and diagnostic.valuation is not None
+    ):
+        return diagnostic.valuation.expected_roi
+    if diagnostic.raw_valuation is not None:
+        return diagnostic.raw_valuation.roi_percent
+    return Decimal("-Infinity")
 
 
 def _insufficient_psa_evidence(
@@ -591,6 +728,7 @@ def format_diagnostic(diagnostic: ScanDiagnostic) -> str:
     probabilities = diagnostic.probabilities
     values = diagnostic.market_values
     valuation = diagnostic.valuation
+    raw_valuation = diagnostic.raw_valuation
     try:
         pre_grading = (
             _money(costs.pre_grading_total(), costs.currency) if costs else "N/D"
@@ -615,6 +753,33 @@ def format_diagnostic(diagnostic: ScanDiagnostic) -> str:
         f"Source: {listing.source}",
         f"URL: {listing.url}",
         f"Prix: {_money(listing.price, listing.currency)}",
+        f"Chemin recommande: {diagnostic.recommended_path}",
+        (
+            "Valeur RAW prudente: "
+            + _money(
+                raw_valuation.prudent_market_value if raw_valuation else None,
+                listing.currency,
+            )
+        ),
+        (
+            "Cout total RAW: "
+            + _money(
+                raw_valuation.total_cost_basis if raw_valuation else None,
+                listing.currency,
+            )
+        ),
+        (
+            "Profit net RAW: "
+            + _money(
+                raw_valuation.net_profit if raw_valuation else None,
+                listing.currency,
+            )
+        ),
+        (
+            f"ROI RAW: {raw_valuation.roi_percent.quantize(Decimal('0.01'))}%"
+            if raw_valuation
+            else "ROI RAW: N/D"
+        ),
         f"Cout total pre-grading: {pre_grading}",
         f"Cout total si grading: {_money(diagnostic.total_cost_if_graded, listing.currency)}",
         "",

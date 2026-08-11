@@ -95,6 +95,20 @@ def complete_market_values(identity):
     )
 
 
+def raw_only_market_values(identity):
+    return MarketValues(
+        source="offline raw sold fixture",
+        currency="USD",
+        ungraded_value=Decimal("25"),
+        grade8_generic_value=None,
+        grade9_generic_value=None,
+        psa10_value=None,
+        matched_identity=identity,
+        match_confidence=Decimal("1"),
+        matched_product_id="offline-raw-only",
+    )
+
+
 def complete_costs(listing):
     return CostModel(
         raw_purchase_price=listing.price,
@@ -258,6 +272,23 @@ class LiveRawPipelineFlowTests(unittest.TestCase):
         self.assertEqual(observed, [Decimal("12.50")])
         self.assertEqual(summary.economic.grade9_profitable, 1)
         self.assertNotIn("12.50", rendered)
+
+    def test_live_raw_mvp_counters_are_aggregate_only(self):
+        source = FixtureMarketSource(raw_only_market_values)
+        _, summary, rendered, _, _ = run_pipeline(
+            offline_market_sources=(source,), cost_factory=complete_costs
+        )
+        self.assertEqual(summary.economic.raw_market_sufficient, 1)
+        self.assertEqual(summary.economic.raw_path_evaluated, 1)
+        self.assertEqual(summary.economic.raw_profitable, 1)
+        self.assertEqual(summary.economic.raw_rejected, 0)
+        self.assertEqual(summary.economic.graded_comparison_available, 0)
+        self.assertEqual(summary.economic.raw_beats_grading, 0)
+        self.assertEqual(summary.economic.grading_beats_raw, 0)
+        self.assertEqual(summary.economic.graded_absent_but_raw_evaluable, 1)
+        self.assertIn("raw market sufficient: 1", rendered)
+        self.assertIn("graded absent but raw evaluable: 1", rendered)
+        self.assertNotIn("offline-raw-only", rendered)
 
     def test_listing_price_overrides_configured_raw_purchase_price_only(self):
         env = {
