@@ -73,6 +73,13 @@ TEXT_TIMEOUT = 3000
 MAX_SCAN_SECONDS = 300
 MAX_AUCTION_CANDIDATES = 120
 MAX_FIXED_CANDIDATES = 120
+EXTERNAL_EVIDENCE_TTL_HOURS = max(
+    1, int(os.getenv("EXTERNAL_EVIDENCE_TTL_HOURS", "24"))
+)
+EXTERNAL_CACHE_SCHEMA_VERSION = 2
+EXTERNAL_CACHE_STATE_KEY = "external_market_cache"
+MARKET_AGREEMENT_MIN_CENTRAL_RATIO = 0.80
+MARKET_AGREEMENT_MAX_CENTRAL_RATIO = 1.25
 FIXED_REEVALUATION_TTL_HOURS = max(
     1, int(os.getenv("FIXED_REEVALUATION_TTL_HOURS", "24"))
 )
@@ -132,6 +139,7 @@ class Lot:
     year: Optional[int] = None
     variant: str = ""
     set_family: str = ""
+    commercial_dimensions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -147,6 +155,8 @@ class ComparableSale:
     exact_card: bool = True
     match_score: int = 100
     grade_qualifier: Optional[str] = None
+    proven_commercial_dimensions: tuple[str, ...] = ()
+    identity_provenance: str = ""
 
 
 # Alias conservé pour les intégrations qui importeraient encore l'ancien nom.
@@ -217,6 +227,8 @@ class Opportunity:
     psa_apr_population: Optional[int] = None
     psa_apr_pop_higher: Optional[int] = None
     psa_apr_most_recent_price: Optional[float] = None
+    valuation_path: str = "GCC_ONLY"
+    evidence_summary: str = ""
 
     @property
     def estimated_market(self) -> float:
@@ -257,6 +269,13 @@ class PsaAprData:
     matched_url: str = ""
     match_score: int = 0
     note: str = ""
+    provider_status: str = ""
+
+    def __post_init__(self) -> None:
+        # Conserve les constructions historiques de tests/intégrations tout en
+        # permettant au scraper de signaler explicitement une panne fournisseur.
+        if not self.provider_status:
+            self.provider_status = "MATCHED" if self.sales else "CLEAN_NO_MATCH"
 
 
 @dataclass
@@ -271,6 +290,161 @@ class ValidationBudgets:
     ebay_cards: int = 0
 
 
+EVIDENCE_STRONG = "STRONG"
+EVIDENCE_WEAK = "WEAK"
+EVIDENCE_UNAVAILABLE = "UNAVAILABLE"
+
+GCC_BRANCH_SUPPORTED = "SUPPORTED"
+GCC_BRANCH_REJECTED = "REJECTED"
+GCC_BRANCH_UNAVAILABLE = "UNAVAILABLE"
+
+EXTERNAL_MATCHED = "MATCHED"
+EXTERNAL_CLEAN_NO_MATCH = "CLEAN_NO_MATCH"
+EXTERNAL_CLEAN_INSUFFICIENT = "CLEAN_INSUFFICIENT"
+EXTERNAL_PROVIDER_ERROR = "PROVIDER_ERROR"
+EXTERNAL_TRANSIENT_UNAVAILABLE = "TRANSIENT_UNAVAILABLE"
+EXTERNAL_RATE_LIMITED = "RATE_LIMIT"
+EXTERNAL_PENDING = "PENDING_BUDGET"
+# Alias conservés pour les imports/tests V4 antérieurs à l'audit de la PR #29.
+EXTERNAL_INSUFFICIENT = EXTERNAL_CLEAN_INSUFFICIENT
+EXTERNAL_UNAVAILABLE = EXTERNAL_TRANSIENT_UNAVAILABLE
+EXTERNAL_CACHEABLE_STATUSES = frozenset(
+    {EXTERNAL_MATCHED, EXTERNAL_CLEAN_NO_MATCH, EXTERNAL_CLEAN_INSUFFICIENT}
+)
+EXTERNAL_RETRY_STATUSES = frozenset(
+    {EXTERNAL_PROVIDER_ERROR, EXTERNAL_TRANSIENT_UNAVAILABLE, EXTERNAL_RATE_LIMITED}
+)
+
+PATH_GCC_ONLY = "GCC_ONLY"
+PATH_GCC_EXTERNAL_CONFIRMED = "GCC_EXTERNAL_CONFIRMED"
+PATH_EXTERNAL_RESCUE = "EXTERNAL_RESCUE"
+PATH_EXTERNAL_PENDING = "EXTERNAL_PENDING"
+PATH_MARKET_CONFLICT_BLOCKED = "MARKET_CONFLICT_BLOCKED"
+
+
+@dataclass
+class GccMarketEvidence:
+    lot: Lot
+    sales: list[ComparableSale]
+    estimate: Optional[MarketEstimate]
+    opportunity: Optional[Opportunity]
+    branch: str
+    strength: str
+    rejection: str = ""
+    rejection_category: str = ""
+    terminal: bool = False
+    diagnostics: Optional[GccComparableDiagnostics] = None
+
+
+@dataclass
+class ValuationCandidate:
+    gcc: GccMarketEvidence
+    fixed_queue_category: str = ""
+
+    @property
+    def lot(self) -> Lot:
+        return self.gcc.lot
+
+
+@dataclass
+class ExternalMarketEvidence:
+    identity_key: str
+    status: str
+    strength: str = EVIDENCE_UNAVAILABLE
+    source: str = ""
+    estimate: Optional[MarketEstimate] = None
+    comparables: list[ComparableSale] = field(default_factory=list)
+    note: str = ""
+    fetched_at: Optional[datetime] = None
+    population: Optional[int] = None
+    pop_higher: Optional[int] = None
+    most_recent_price: Optional[float] = None
+    from_cache: bool = False
+
+
+@dataclass
+class ExternalScrapeResult:
+    sales: list[ComparableSale]
+    status: str
+    note: str = ""
+
+
+@dataclass
+class ArbitrationResult:
+    path: str
+    opportunity: Optional[Opportunity]
+    reason: str
+    gcc_decision: str
+    external_decision: str
+
+
+@dataclass
+class ExternalMarketDiagnostics:
+    gcc_strengths: dict[str, int] = field(default_factory=dict)
+    gcc_branches: dict[str, int] = field(default_factory=dict)
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_stale: int = 0
+    queue_candidates: int = 0
+    queue_identities: int = 0
+    queue_selected: int = 0
+    queue_deduplicated: int = 0
+    apr_attempted: int = 0
+    apr_sufficient: int = 0
+    apr_insufficient: int = 0
+    apr_unavailable: int = 0
+    apr_provider_errors: int = 0
+    apr_transient_unavailable: int = 0
+    apr_rate_limited: int = 0
+    ebay_attempted: int = 0
+    ebay_sufficient: int = 0
+    ebay_insufficient: int = 0
+    ebay_unavailable: int = 0
+    ebay_provider_errors: int = 0
+    ebay_transient_unavailable: int = 0
+    ebay_rate_limited: int = 0
+    clean_no_match: int = 0
+    clean_insufficient: int = 0
+    provider_errors: int = 0
+    transient_unavailable: int = 0
+    rate_limited: int = 0
+    cache_skipped_transient: int = 0
+    external_strengths: dict[str, int] = field(default_factory=dict)
+    final_paths: dict[str, int] = field(default_factory=dict)
+    rescues: int = 0
+    conflicts: int = 0
+    deferred: int = 0
+
+    def increment(self, mapping: dict[str, int], key: str) -> None:
+        mapping[key] = mapping.get(key, 0) + 1
+
+    def record_gcc(self, evidence: GccMarketEvidence) -> None:
+        self.increment(self.gcc_strengths, evidence.strength)
+        self.increment(self.gcc_branches, evidence.branch)
+
+    def record_external(self, evidence: ExternalMarketEvidence) -> None:
+        self.increment(self.external_strengths, evidence.strength)
+        if evidence.status == EXTERNAL_CLEAN_NO_MATCH:
+            self.clean_no_match += 1
+        elif evidence.status == EXTERNAL_CLEAN_INSUFFICIENT:
+            self.clean_insufficient += 1
+        elif evidence.status == EXTERNAL_PROVIDER_ERROR:
+            self.provider_errors += 1
+        elif evidence.status == EXTERNAL_TRANSIENT_UNAVAILABLE:
+            self.transient_unavailable += 1
+        elif evidence.status == EXTERNAL_RATE_LIMITED:
+            self.rate_limited += 1
+
+    def record_path(self, path: str) -> None:
+        self.increment(self.final_paths, path)
+        if path == PATH_EXTERNAL_RESCUE:
+            self.rescues += 1
+        elif path == PATH_MARKET_CONFLICT_BLOCKED:
+            self.conflicts += 1
+        elif path == PATH_EXTERNAL_PENDING:
+            self.deferred += 1
+
+
 REJECTION_GRADER_GRADE = "grader_grade_unreadable"
 REJECTION_SPECIAL_QUALIFIER = "special_qualifier_excluded"
 REJECTION_EMPTY_HISTORY = "empty_history"
@@ -279,6 +453,9 @@ REJECTION_INSUFFICIENT_IDENTITY = "insufficient_identity"
 REJECTION_INSUFFICIENT_DISCOUNT = "insufficient_discount"
 REJECTION_FIXED_ABOVE_MAX = "fixed_above_prudent_max"
 REJECTION_OTHER = "other"
+REJECTION_EXTERNAL_PENDING = "external_pending"
+REJECTION_EXTERNAL_RETRY = "external_retry"
+REJECTION_MARKET_CONFLICT = "market_conflict"
 
 COVERAGE_COMPLETE = "COMPLETE"
 COVERAGE_INCOMPLETE = "INCOMPLETE"
@@ -882,6 +1059,12 @@ class RunDiagnostics:
     gcc_history_parsing: HistoricalParsingDiagnostics = field(
         default_factory=HistoricalParsingDiagnostics
     )
+    external_market: ExternalMarketDiagnostics = field(
+        default_factory=ExternalMarketDiagnostics
+    )
+    gcc_market_branches: dict[str, GccMarketEvidence] = field(
+        default_factory=dict, repr=False
+    )
 
     def record_live_sales(self, urls: list[str]) -> None:
         self.live_auction_urls.update(urls)
@@ -931,6 +1114,17 @@ class RunDiagnostics:
 
     def record_external_rejection(self, lot: Lot) -> None:
         self.external_rejections.add(lot.url or f"{lot.source_type}:{lot.title}")
+
+    def record_gcc_market_branch(self, evidence: GccMarketEvidence) -> None:
+        lot = evidence.lot
+        key = lot.url or f"{lot.source_type}:{lot.title}"
+        if key in self.gcc_market_branches:
+            return
+        self.gcc_market_branches[key] = evidence
+        self.external_market.record_gcc(evidence)
+        self.coverage_for(lot.source_type).record_terminal(
+            key, ACCOUNT_ECONOMICALLY_EVALUATED
+        )
 
     def record_unreadable_grade(
         self, lot: Lot, diagnostic: GradeUnreadableDiagnostic
@@ -2897,6 +3091,17 @@ def parse_listing_countdown_minutes(text: str) -> tuple[Optional[int], str]:
     return None, ""
 
 
+def _current_item_detail_text(body: str) -> str:
+    """Exclut les ventes/autres articles de toute identité de l'item courant."""
+    return re.split(
+        r"Historique des ventes|Sales history|Articles? similaires?|"
+        r"Similar items?|Related items?",
+        body or "",
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+
+
 def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
     try:
         lot.inspection_error = ""
@@ -2905,6 +3110,19 @@ def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
 
         body = page.locator("body").inner_text(timeout=TEXT_TIMEOUT)
         lot.body = body
+        lot.commercial_dimensions = extract_current_item_commercial_dimensions(
+            body
+        )
+        detail_language = lot.commercial_dimensions.get("language", "")
+        if not lot.language and detail_language not in {"", "__conflict__"}:
+            lot.language = {
+                "french": "French",
+                "japanese": "Japanese",
+                "english": "English",
+                "german": "German",
+                "spanish": "Spanish",
+                "italian": "Italian",
+            }.get(detail_language, "")
 
         page_heading = ""
         try:
@@ -2920,12 +3138,7 @@ def inspect_item(page, lot: Lot, *, log_listing_errors: bool = True) -> Lot:
             body=body,
         )
 
-        current_section = re.split(
-            r"Historique des ventes|Sales history",
-            body,
-            maxsplit=1,
-            flags=re.I,
-        )[0]
+        current_section = _current_item_detail_text(body)
         page_price = parse_money(current_section)
         if page_price is not None:
             lot.current_price = page_price
@@ -3203,7 +3416,7 @@ def extract_card_identity(lot: Lot) -> dict:
     nom, référence, année, langue et série/set.
     """
     title = lot.title or ""
-    body = lot.body or ""
+    body = _current_item_detail_text(lot.body)
 
     core = title
     if lot.grader and lot.grade:
@@ -3251,11 +3464,29 @@ def extract_card_identity(lot: Lot) -> dict:
         "Spanish": ("Spanish", "Espagnol"),
         "Italian": ("Italian", "Italien"),
     }
-    for canonical, variants in language_map.items():
-        identity_text = f"{title}\n{lot.listing_text}\n{body}"
-        if any(re.search(rf"\b{re.escape(v)}\b", identity_text, re.I) for v in variants):
-            language = canonical
-            break
+    detail_language = (
+        lot.commercial_dimensions.get("language")
+        or extract_current_item_commercial_dimensions(body).get("language")
+        or ""
+    )
+    canonical_detail_languages = {
+        "french": "French",
+        "japanese": "Japanese",
+        "english": "English",
+        "german": "German",
+        "spanish": "Spanish",
+        "italian": "Italian",
+    }
+    language = str(lot.language or canonical_detail_languages.get(detail_language, ""))
+    if not language:
+        identity_text = f"{title}\n{lot.listing_text}"
+        for canonical, variants in language_map.items():
+            if any(
+                re.search(rf"\b{re.escape(value)}\b", identity_text, re.I)
+                for value in variants
+            ):
+                language = canonical
+                break
 
     # Série/set: plusieurs libellés possibles selon la fiche GCC.
     series = ""
@@ -3284,6 +3515,336 @@ def extract_card_identity(lot: Lot) -> dict:
         "language": language,
         "series": series,
     }
+
+
+def _normalized_identity_value(value: object) -> str:
+    plain = unicodedata.normalize("NFKD", str(value or ""))
+    plain = "".join(char for char in plain if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", " ", plain.lower()).strip()
+
+
+def commercial_identity_payload(lot: Lot) -> dict[str, object]:
+    """Identité commerciale stricte utilisée pour le cache et la déduplication."""
+    identity = extract_card_identity(lot)
+    return {
+        "grader": (lot.grader or "").upper(),
+        "grade": _target_grade(lot),
+        "core": _normalized_identity_value(identity.get("core")),
+        "reference": _normalized_identity_value(
+            lot.card_number or identity.get("ref")
+        ),
+        "year": lot.year or identity.get("year") or "",
+        "series": _normalized_identity_value(lot.card_set or identity.get("series")),
+        "set_family": _normalized_identity_value(lot.set_family),
+        "language": _normalized_identity_value(lot.language or identity.get("language")),
+        "variant": _normalized_identity_value(lot.variant),
+        "commercial_dimensions": dict(
+            sorted(expected_commercial_dimensions(lot).items())
+        ),
+    }
+
+
+def commercial_identity_is_sufficient(lot: Lot) -> bool:
+    """Fail closed lorsqu'une recherche externe exacte ne peut pas être formulée."""
+    payload = commercial_identity_payload(lot)
+    if not payload["grader"] or payload["grade"] is None or not payload["core"]:
+        return False
+    if payload["reference"]:
+        return True
+    return bool(payload["year"] and payload["series"] and payload["language"])
+
+
+def external_commercial_identity_key(lot: Lot) -> str:
+    canonical = json.dumps(
+        commercial_identity_payload(lot),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+COMMERCIAL_DIMENSION_PATTERNS = {
+    "language": {
+        "french": r"\b(?:french|francais)\b",
+        "japanese": r"\b(?:japanese|japonais)\b",
+        "english": r"\b(?:english|anglais)\b",
+        "german": r"\b(?:german|allemand)\b",
+        "spanish": r"\b(?:spanish|espagnol)\b",
+        "italian": r"\b(?:italian|italien)\b",
+    },
+    "edition": {
+        "first_edition": r"\b(?:1st edition|first edition|premiere edition)\b",
+        "unlimited": r"\b(?:unlimited|illimitee)\b",
+    },
+    "shadow": {"shadowless": r"\bshadowless\b"},
+    "finish": {
+        "reverse": r"\b(?:reverse|reverse holo|holo reverse)\b",
+        "non_holo": r"\b(?:non holo|non holographic|non holographique)\b",
+        "holo": r"\b(?:holo|holographic|holographique)\b",
+    },
+    "printing": {
+        "stamped": r"\b(?:stamped|stamp|estampillee?)\b",
+        "promo": r"\bpromo(?:tional)?\b",
+    },
+    "special_finish": {
+        "cosmos": r"\bcosmos(?: holo)?\b",
+        "galaxy": r"\bgalaxy(?: holo)?\b",
+        "cracked_ice": r"\bcracked ice\b",
+        "poke_ball": r"\bpoke ball\b",
+        "master_ball": r"\bmaster ball\b",
+    },
+}
+SENSITIVE_COMMERCIAL_DIMENSIONS = frozenset(
+    {"edition", "shadow", "finish", "printing", "special_finish", "variant"}
+)
+
+
+def _commercial_dimension_candidates(text: str) -> dict[str, set[str]]:
+    plain = _normalized_identity_value(text)
+    found: dict[str, set[str]] = {}
+    for dimension, values in COMMERCIAL_DIMENSION_PATTERNS.items():
+        for value, pattern in values.items():
+            if re.search(pattern, plain):
+                found.setdefault(dimension, set()).add(value)
+    # "reverse holo" et "non-holo" contiennent lexicalement "holo".
+    finish = found.get("finish", set())
+    if "reverse" in finish or "non_holo" in finish:
+        finish.discard("holo")
+    return found
+
+
+def _commercial_dimension_tokens(text: str) -> tuple[str, ...]:
+    found = _commercial_dimension_candidates(text)
+    return tuple(
+        f"{dimension}:{value}"
+        for dimension in sorted(found)
+        for value in sorted(found[dimension])
+        if len(found[dimension]) == 1
+    )
+
+
+CURRENT_ITEM_METADATA_LABEL_DIMENSIONS = {
+    "edition": frozenset({"edition"}),
+    "variant": frozenset(
+        {"edition", "shadow", "finish", "printing", "special_finish"}
+    ),
+    "variante": frozenset(
+        {"edition", "shadow", "finish", "printing", "special_finish"}
+    ),
+    "finish": frozenset({"finish", "printing", "special_finish"}),
+    "finition": frozenset({"finish", "printing", "special_finish"}),
+    "language": frozenset({"language"}),
+    "langue": frozenset({"language"}),
+    "printing": frozenset({"printing", "special_finish"}),
+    "print": frozenset({"printing", "special_finish"}),
+    "stamp": frozenset({"printing", "special_finish"}),
+}
+
+
+def _record_current_item_dimension(
+    dimensions: dict[str, str], dimension: str, value: str
+) -> None:
+    existing = dimensions.get(dimension)
+    if existing is None:
+        dimensions[dimension] = value
+    elif existing != value:
+        dimensions[dimension] = "__conflict__"
+
+
+def extract_current_item_commercial_dimensions(body: str) -> dict[str, str]:
+    """Lit seulement les labels explicites du bloc courant, jamais l'historique."""
+    current = _current_item_detail_text(body)
+    lines = [line.strip() for line in current.splitlines() if line.strip()]
+    dimensions: dict[str, str] = {}
+    navigation_mode = False
+
+    for index, line in enumerate(lines):
+        normalized_line = _normalized_identity_value(line)
+        if re.fullmatch(
+            r"(?:navigation|menu|filters?|filtres?|browse|shop by)(?:\s+.*)?",
+            normalized_line,
+        ):
+            navigation_mode = True
+            continue
+        if re.match(
+            r"^(?:categorie|category|reference|description|grader|grade|note|"
+            r"article(?: gradation)?(?: details)?)\b",
+            normalized_line,
+        ) or re.search(
+            rf"\b(?:{'|'.join(re.escape(value.lower()) for value in GRADERS)})"
+            r"\s*(?:10|[1-9](?:[.,]5)?)\b",
+            line,
+            re.I,
+        ):
+            navigation_mode = False
+
+        label = ""
+        value = ""
+        inline = re.fullmatch(r"([^:：]{1,32})\s*[:：]\s*(.+)", line)
+        if inline:
+            label = _normalized_identity_value(inline.group(1))
+            value = inline.group(2).strip()
+        else:
+            normalized_line = _normalized_identity_value(line)
+            if normalized_line not in CURRENT_ITEM_METADATA_LABEL_DIMENSIONS:
+                continue
+            label = normalized_line
+            if index + 1 >= len(lines):
+                continue
+            next_line = lines[index + 1]
+            if (
+                _normalized_identity_value(next_line)
+                in CURRENT_ITEM_METADATA_LABEL_DIMENSIONS
+            ):
+                continue
+            value = next_line
+
+        allowed = CURRENT_ITEM_METADATA_LABEL_DIMENSIONS.get(label)
+        if navigation_mode or not allowed or not value:
+            continue
+        candidates = _commercial_dimension_candidates(value)
+        for dimension in allowed:
+            values = candidates.get(dimension, set())
+            if len(values) == 1:
+                _record_current_item_dimension(
+                    dimensions, dimension, next(iter(values))
+                )
+            elif len(values) > 1:
+                _record_current_item_dimension(
+                    dimensions, dimension, "__conflict__"
+                )
+
+        if label in {"variant", "variante"} and not any(
+            candidates.get(dimension) for dimension in allowed
+        ):
+            literal = _normalized_identity_value(value)
+            if literal:
+                _record_current_item_dimension(dimensions, "variant", literal)
+    return dimensions
+
+
+def expected_commercial_dimensions(lot: Lot) -> dict[str, str]:
+    """Dimensions matérielles connues du lot; aucune absence n'est inventée."""
+    identity = extract_card_identity(lot)
+    observed = _commercial_dimension_candidates(
+        " ".join(str(value or "") for value in (lot.title, lot.listing_text))
+    )
+    explicit_variant = _commercial_dimension_candidates(lot.variant)
+    for dimension, values in explicit_variant.items():
+        observed.setdefault(dimension, set()).update(values)
+
+    for detail_dimensions in (
+        extract_current_item_commercial_dimensions(lot.body),
+        lot.commercial_dimensions,
+    ):
+        for dimension, value in detail_dimensions.items():
+            observed.setdefault(dimension, set()).add(value)
+
+    expected = {
+        dimension: (
+            next(iter(values)) if len(values) == 1 else "__conflict__"
+        )
+        for dimension, values in observed.items()
+        if values
+    }
+    language_text = str(lot.language or identity.get("language") or "")
+    language_candidates = _commercial_dimension_candidates(language_text).get(
+        "language", set()
+    )
+    if len(language_candidates) == 1:
+        language_value = next(iter(language_candidates))
+        existing_language = expected.get("language")
+        if existing_language and existing_language != language_value:
+            expected["language"] = "__conflict__"
+        else:
+            expected["language"] = language_value
+
+    normalized_variant = _normalized_identity_value(lot.variant)
+    recognized_values = {
+        value for values in explicit_variant.values() for value in values
+    }
+    if normalized_variant and not recognized_values:
+        existing_variant = expected.get("variant")
+        if existing_variant and existing_variant != normalized_variant:
+            expected["variant"] = "__conflict__"
+        else:
+            expected["variant"] = normalized_variant
+    return expected
+
+
+def _explicit_material_terms(text: str) -> set[str]:
+    return {
+        value
+        for dimension, values in _commercial_dimension_candidates(text).items()
+        if dimension != "language"
+        for value in values
+    }
+
+
+def _sale_commercial_dimension_candidates(
+    sale: ComparableSale,
+) -> dict[str, set[str]]:
+    observed = _commercial_dimension_candidates(sale.context)
+    for token in sale.proven_commercial_dimensions:
+        dimension, separator, value = str(token).partition(":")
+        if separator and dimension and value:
+            observed.setdefault(dimension, set()).add(value)
+    return observed
+
+
+def external_comparable_is_exact(lot: Lot, sale: ComparableSale) -> bool:
+    """Même carte, même grader et même grade; aucun rapprochement économique."""
+    target_grade = _target_grade(lot)
+    if (
+        not sale.exact_card
+        or target_grade is None
+        or sale.grade != target_grade
+        or not sale.grader
+        or sale.grader.upper() != (lot.grader or "").upper()
+        or sale.grade_qualifier
+    ):
+        return False
+
+    context = sale.context or ""
+    identity = extract_card_identity(lot)
+    target_reference = lot.card_number or identity.get("ref") or ""
+    candidate_references = re.findall(
+        r"\b[A-Z0-9-]{1,10}/[A-Z0-9-]{1,10}\b", context, re.I
+    )
+    if target_reference and candidate_references:
+        if not any(
+            card_references_match(target_reference, candidate)
+            for candidate in candidate_references
+        ):
+            return False
+    elif target_reference:
+        # APR rows inherit their exact Spec identity from the selected page;
+        # an injected/API comparable may also carry a strict upstream score.
+        if sale.identity_provenance != "psa_spec_exact" and sale.match_score < 90:
+            return False
+
+    expected_dimensions = expected_commercial_dimensions(lot)
+    observed_dimensions = _sale_commercial_dimension_candidates(sale)
+    expected_free_variant = expected_dimensions.get("variant")
+    if expected_free_variant and re.search(
+        rf"\b{re.escape(expected_free_variant)}\b",
+        _normalized_identity_value(context),
+    ):
+        observed_dimensions.setdefault("variant", set()).add(expected_free_variant)
+    for dimension, expected_value in expected_dimensions.items():
+        if observed_dimensions.get(dimension, set()) != {expected_value}:
+            return False
+    for dimension in SENSITIVE_COMMERCIAL_DIMENSIONS:
+        if dimension in observed_dimensions and dimension not in expected_dimensions:
+            return False
+    return True
+
+
+def exact_external_comparables(
+    lot: Lot, sales: list[ComparableSale]
+) -> list[ComparableSale]:
+    return [sale for sale in sales if external_comparable_is_exact(lot, sale)]
 
 
 def extract_psa_apr_identity(text: str) -> dict:
@@ -3627,12 +4188,73 @@ def parse_psa_apr_page(
     population, pop_higher, most_recent = parse_psa_apr_grade_metadata(
         rows, target_grade, usd_per_eur
     )
+    sales = parse_psa_apr_sales(rows, usd_per_eur, now)
     return PsaAprData(
-        sales=parse_psa_apr_sales(rows, usd_per_eur, now),
+        sales=sales,
         population=population,
         pop_higher=pop_higher,
         most_recent_price=most_recent,
+        provider_status=EXTERNAL_MATCHED if sales else EXTERNAL_CLEAN_NO_MATCH,
     )
+
+
+def _psa_spec_identity_proof_text(detail_body: str, lot: Optional[Lot]) -> str:
+    """Isole l'identité Spec et exclut navigation/historique des preuves."""
+    identity_section = re.split(
+        r"\b(?:Auction Results|Sales History|Sales of Similar Items)\b",
+        detail_body or "",
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    identity = extract_card_identity(lot) if lot is not None else {}
+    target_reference = _normalized_identity_value(
+        (lot.card_number if lot is not None else "")
+        or identity.get("ref", "")
+    )
+    core_tokens = _identity_tokens(str(identity.get("core") or ""))
+    proof_lines = []
+    for raw_line in identity_section.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        normalized = _normalized_identity_value(line)
+        if not normalized:
+            continue
+        explicitly_labeled = bool(
+            re.match(
+                r"^(?:language|langue|edition|finish|finition|variety|"
+                r"variante|pedigree|brand title|title|subject|description|"
+                r"item|card)\b",
+                normalized,
+            )
+        )
+        has_card_reference = bool(
+            re.search(r"\b[A-Z0-9-]{1,10}/[A-Z0-9-]{1,10}\b", line, re.I)
+        )
+        reference_matches = bool(
+            target_reference and target_reference in normalized
+        )
+        core_matches = bool(
+            core_tokens and all(token in normalized for token in core_tokens[:3])
+        )
+        if explicitly_labeled or has_card_reference or reference_matches or core_matches:
+            proof_lines.append(line)
+    return "\n".join(proof_lines)
+
+
+def attach_psa_spec_provenance(
+    data: PsaAprData, detail_body: str, lot: Optional[Lot] = None
+) -> PsaAprData:
+    """Transporte seulement les dimensions prouvées par l'identité de la Spec."""
+    proof_text = _psa_spec_identity_proof_text(detail_body, lot)
+    proven_dimensions = _commercial_dimension_tokens(proof_text)
+    data.sales = [
+        replace(
+            sale,
+            identity_provenance="psa_spec_exact",
+            proven_commercial_dimensions=proven_dimensions,
+        )
+        for sale in data.sales
+    ]
+    return data
 
 
 def scrape_psa_apr(
@@ -3648,11 +4270,16 @@ def scrape_psa_apr(
         or _target_grade(lot) is None
         or not psa_apr_identity_is_sufficient(lot)
     ):
-        return PsaAprData([], note="APR non applicable")
+        return PsaAprData(
+            [], note="APR non applicable", provider_status=EXTERNAL_CLEAN_NO_MATCH
+        )
 
     rate = usd_per_eur if usd_per_eur is not None else get_psa_apr_usd_per_eur()
     if rate is None:
-        return PsaAprData([], note="conversion USD/EUR indisponible")
+        return PsaAprData(
+            [], note="conversion USD/EUR indisponible",
+            provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+        )
 
     query = psa_apr_search_query(lot)
     log(f"APR recherche: {query}")
@@ -3666,20 +4293,29 @@ def scrape_psa_apr(
             'input[name="q"], input[placeholder*="Search PSA-Graded Items"]'
         ).first
         if search.count() == 0:
-            return PsaAprData([], note="formulaire APR indisponible")
+            return PsaAprData(
+                [], note="formulaire APR indisponible",
+                provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+            )
         search.fill(query, timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
         submit = page.locator(
             '[role="search"] button[aria-label="Search"], '
             'button:has-text("Search")'
         ).first
         if submit.count() == 0:
-            return PsaAprData([], note="recherche APR indisponible")
+            return PsaAprData(
+                [], note="recherche APR indisponible",
+                provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+            )
         submit.click(timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
         page.wait_for_timeout(700)
         body = page.locator("body").inner_text(timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
     except Exception as error:
         log(f"APR: {type(error).__name__} -> abandon APR pour cette carte")
-        return PsaAprData([], note=f"APR indisponible ({type(error).__name__})")
+        return PsaAprData(
+            [], note=f"APR indisponible ({type(error).__name__})",
+            provider_status=EXTERNAL_PROVIDER_ERROR,
+        )
 
     lower_body = body.lower()
     if any(
@@ -3690,7 +4326,14 @@ def scrape_psa_apr(
         )
     ):
         log("APR: refus/anti-bot détecté -> abandon APR pour cette carte")
-        return PsaAprData([], note="APR refusé ou anti-bot")
+        status = (
+            EXTERNAL_RATE_LIMITED
+            if "too many requests" in lower_body
+            else EXTERNAL_TRANSIENT_UNAVAILABLE
+        )
+        return PsaAprData(
+            [], note="APR refusé ou anti-bot", provider_status=status
+        )
 
     current_url = page.url
     detail_candidate = None
@@ -3721,7 +4364,9 @@ def scrape_psa_apr(
 
     if detail_candidate is None:
         log(f"APR correspondance: rejetée ({detail_reason})")
-        return PsaAprData([], note=detail_reason)
+        return PsaAprData(
+            [], note=detail_reason, provider_status=EXTERNAL_CLEAN_NO_MATCH
+        )
 
     log(
         f"APR correspondance: score {detail_score} ({detail_reason}) | "
@@ -3740,7 +4385,10 @@ def scrape_psa_apr(
         verified_score, verified_reason = psa_apr_match_score(lot, detail_body)
         if verified_score < PSA_APR_MATCH_MIN_SCORE:
             log(f"APR correspondance: fiche rejetée ({verified_reason})")
-            return PsaAprData([], note="fiche APR non confirmée")
+            return PsaAprData(
+                [], note="fiche APR non confirmée",
+                provider_status=EXTERNAL_CLEAN_NO_MATCH,
+            )
         table_rows = page.locator("tr")
         rows = [
             table_rows.nth(index).inner_text(timeout=500)
@@ -3748,10 +4396,14 @@ def scrape_psa_apr(
         ]
     except Exception as error:
         log(f"APR: {type(error).__name__} sur la fiche -> abandon APR")
-        return PsaAprData([], note=f"fiche APR indisponible ({type(error).__name__})")
+        return PsaAprData(
+            [], note=f"fiche APR indisponible ({type(error).__name__})",
+            provider_status=EXTERNAL_PROVIDER_ERROR,
+        )
 
     target_grade = _target_grade(lot)
     data = parse_psa_apr_page(rows, target_grade, rate, now)
+    data = attach_psa_spec_provenance(data, detail_body, lot)
     data.matched_url = detail_candidate.url
     data.match_score = verified_score
     exact_count = sum(sale.grade == target_grade for sale in data.sales)
@@ -3972,7 +4624,9 @@ def robust_median_prices(prices: list[float]) -> list[float]:
     return sorted(sale.price for sale in kept)
 
 
-def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
+def scrape_ebay_sold(
+    page, lot: Lot, *, with_status: bool = False
+) -> list[HistoricalSale] | ExternalScrapeResult:
     """
     Recherche publique eBay Sold/Completed sans API Developer.
 
@@ -3984,8 +4638,14 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
     - abandon immédiat après timeout/anti-bot;
     - ne ralentit plus le scan GCC de plusieurs minutes.
     """
+    def result(
+        sales: list[ComparableSale], status: str, note: str = ""
+    ) -> list[ComparableSale] | ExternalScrapeResult:
+        payload = ExternalScrapeResult(sales, status, note)
+        return payload if with_status else sales
+
     if not EBAY_ENABLED:
-        return []
+        return result([], EXTERNAL_CLEAN_NO_MATCH, "eBay désactivé")
 
     collected: list[HistoricalSale] = []
     seen = set()
@@ -4008,7 +4668,10 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             body = page.locator("body").inner_text(timeout=min(TEXT_TIMEOUT, 2500))
         except Exception as e:
             log(f"eBay q{q_index}: {type(e).__name__} -> abandon eBay pour cette carte")
-            return []
+            return result(
+                [], EXTERNAL_PROVIDER_ERROR,
+                f"eBay navigation {type(e).__name__}",
+            )
 
         lower_body = body.lower()
         if (
@@ -4016,9 +4679,15 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
             or "vérifiez votre identité" in lower_body
             or "verify your identity" in lower_body
             or "captcha" in lower_body
+            or "too many requests" in lower_body
         ):
             log("eBay: anti-bot/captcha détecté -> abandon eBay pour cette carte")
-            return []
+            status = (
+                EXTERNAL_RATE_LIMITED
+                if "too many requests" in lower_body
+                else EXTERNAL_TRANSIENT_UNAVAILABLE
+            )
+            return result([], status, "eBay refusé ou anti-bot")
 
         cards = page.locator("li.s-item")
         raw_count = min(cards.count(), 120)
@@ -4026,7 +4695,7 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
         # Si eBay ne fournit même aucun item structuré, inutile d'insister.
         if raw_count == 0:
             log(f"eBay q{q_index}: 0 résultat visible -> abandon eBay pour cette carte")
-            return []
+            return result([], EXTERNAL_CLEAN_NO_MATCH, "eBay 0 résultat visible")
 
         matched_this_query = 0
 
@@ -4114,7 +4783,12 @@ def scrape_ebay_sold(page, lot: Lot) -> list[HistoricalSale]:
         # Si la première requête a des résultats mais zéro comparable, on tente une seule requête plus large.
         # Après la deuxième, on s'arrête quoi qu'il arrive.
 
-    return collected[:EBAY_MAX_RESULTS]
+    final_sales = collected[:EBAY_MAX_RESULTS]
+    return result(
+        final_sales,
+        EXTERNAL_MATCHED if final_sales else EXTERNAL_CLEAN_NO_MATCH,
+        f"eBay {len(final_sales)} comparable(s) candidat(s)",
+    )
 
 
 def _target_grade(lot: Lot) -> Optional[float]:
@@ -5069,6 +5743,900 @@ def estimate_with_grade(
     return op
 
 
+def classify_gcc_evidence_strength(
+    estimate: Optional[MarketEstimate],
+) -> str:
+    if estimate is None:
+        return EVIDENCE_UNAVAILABLE
+    if (
+        not estimate.grade_arbitrage
+        and len(estimate.kept_comparables) >= 3
+        and estimate.exact_grade_count >= 3
+        and estimate.same_grader_count >= 3
+        and estimate.confidence in {"moyenne", "élevée"}
+        and estimate.dispersion != "élevée"
+        and estimate.source_consistent is not False
+    ):
+        return EVIDENCE_STRONG
+    return EVIDENCE_WEAK
+
+
+def classify_external_evidence_strength(
+    estimate: Optional[MarketEstimate], minimum_comparables: int = 2
+) -> str:
+    if estimate is None:
+        return EVIDENCE_UNAVAILABLE
+    if (
+        len(estimate.kept_comparables) >= minimum_comparables
+        and estimate.exact_grade_count >= minimum_comparables
+        and estimate.same_grader_count >= minimum_comparables
+        and estimate.dispersion != "élevée"
+        and estimate.source_consistent is not False
+        and not estimate.grade_arbitrage
+    ):
+        return EVIDENCE_STRONG
+    return EVIDENCE_WEAK
+
+
+def build_gcc_market_evidence(
+    lot: Lot,
+    sales: list[ComparableSale],
+    now: Optional[datetime] = None,
+    grader_ratios: Optional[list[EmpiricalGraderRatio]] = None,
+    *,
+    require_external_identity: bool = True,
+) -> GccMarketEvidence:
+    """Construit la branche GCC sans transformer son rejet en décision finale."""
+    diagnostics = diagnose_gcc_comparables(
+        lot, sales, now=now, grader_ratios=grader_ratios
+    )
+    if not lot.grader or _target_grade(lot) is None:
+        grade_diagnostic = diagnose_unreadable_grade(lot)
+        category = (
+            REJECTION_SPECIAL_QUALIFIER
+            if grade_diagnostic.reason == GRADE_SPECIAL_QUALIFIER
+            else REJECTION_GRADER_GRADE
+        )
+        return GccMarketEvidence(
+            lot, sales, None, None, GCC_BRANCH_UNAVAILABLE,
+            EVIDENCE_UNAVAILABLE, grade_diagnostic.reason, category, True,
+            diagnostics,
+        )
+    if require_external_identity and not commercial_identity_is_sufficient(lot):
+        return GccMarketEvidence(
+            lot, sales, None, None, GCC_BRANCH_UNAVAILABLE,
+            EVIDENCE_UNAVAILABLE, "identité commerciale externe insuffisante",
+            REJECTION_INSUFFICIENT_IDENTITY, True, diagnostics,
+        )
+    if (
+        lot.current_price is None
+        or lot.current_price < MIN_PRICE
+        or lot.current_price > MAX_PRICE
+    ):
+        return GccMarketEvidence(
+            lot, sales, None, None, GCC_BRANCH_UNAVAILABLE,
+            EVIDENCE_UNAVAILABLE, "prix hors périmètre", REJECTION_OTHER, True,
+            diagnostics,
+        )
+
+    estimate = build_market_estimate(lot, sales, now, grader_ratios)
+    diagnostics = diagnose_gcc_comparables(
+        lot, sales, estimate, now, grader_ratios
+    )
+    if estimate is None or estimate.central <= 0:
+        reason, category = _estimate_failure_diagnostic(diagnostics)
+        return GccMarketEvidence(
+            lot, sales, None, None, GCC_BRANCH_UNAVAILABLE,
+            EVIDENCE_UNAVAILABLE, reason, category, False, diagnostics,
+        )
+
+    opportunity = _opportunity_from_estimate(lot, estimate, sales)
+    rejection = opportunity_rejection_reason(opportunity)
+    strength = classify_gcc_evidence_strength(estimate)
+    if rejection:
+        return GccMarketEvidence(
+            lot, sales, estimate, opportunity, GCC_BRANCH_REJECTED, strength,
+            rejection, _opportunity_rejection_category(opportunity, rejection),
+            False, diagnostics,
+        )
+    return GccMarketEvidence(
+        lot, sales, estimate, opportunity, GCC_BRANCH_SUPPORTED, strength,
+        diagnostics=diagnostics,
+    )
+
+
+def build_external_market_evidence(
+    lot: Lot,
+    sales: list[ComparableSale],
+    source: str,
+    now: Optional[datetime] = None,
+    *,
+    note: str = "",
+    population: Optional[int] = None,
+    pop_higher: Optional[int] = None,
+    most_recent_price: Optional[float] = None,
+    minimum_comparables: int = 2,
+    provider_status: str = EXTERNAL_MATCHED,
+) -> ExternalMarketEvidence:
+    key = external_commercial_identity_key(lot)
+    if provider_status in EXTERNAL_RETRY_STATUSES or provider_status == EXTERNAL_PENDING:
+        return ExternalMarketEvidence(
+            key,
+            provider_status,
+            EVIDENCE_UNAVAILABLE,
+            source,
+            note=note or provider_status,
+            fetched_at=now or datetime.now(timezone.utc),
+        )
+    exact_sales = exact_external_comparables(lot, sales)
+    if len(exact_sales) < minimum_comparables:
+        clean_status = (
+            EXTERNAL_CLEAN_INSUFFICIENT
+            if exact_sales else EXTERNAL_CLEAN_NO_MATCH
+        )
+        return ExternalMarketEvidence(
+            key, clean_status,
+            EVIDENCE_WEAK if exact_sales else EVIDENCE_UNAVAILABLE,
+            source, comparables=exact_sales,
+            note=note or f"{len(exact_sales)} comparable(s) exact(s)",
+            fetched_at=now or datetime.now(timezone.utc),
+            population=population, pop_higher=pop_higher,
+            most_recent_price=most_recent_price,
+        )
+    estimate = build_market_estimate(lot, exact_sales, now)
+    strength = classify_external_evidence_strength(
+        estimate, minimum_comparables
+    )
+    return ExternalMarketEvidence(
+        key,
+        EXTERNAL_MATCHED if estimate is not None else EXTERNAL_CLEAN_INSUFFICIENT,
+        strength,
+        source,
+        estimate,
+        exact_sales,
+        note,
+        now or datetime.now(timezone.utc),
+        population,
+        pop_higher,
+        most_recent_price,
+    )
+
+
+def _serialize_external_evidence(evidence: ExternalMarketEvidence) -> dict:
+    estimate = evidence.estimate
+    return {
+        "schema_version": EXTERNAL_CACHE_SCHEMA_VERSION,
+        "identity_key": evidence.identity_key,
+        "status": evidence.status,
+        "strength": evidence.strength,
+        "source": evidence.source,
+        "note": evidence.note,
+        "fetched_at": evidence.fetched_at.isoformat() if evidence.fetched_at else "",
+        "population": evidence.population,
+        "pop_higher": evidence.pop_higher,
+        "most_recent_price": evidence.most_recent_price,
+        "comparables": [
+            {
+                "price": sale.price,
+                "source": sale.source,
+                "grader": sale.grader,
+                "grade": sale.grade,
+                "sold_at": sale.sold_at.isoformat() if sale.sold_at else "",
+                "exact_card": sale.exact_card,
+                "match_score": sale.match_score,
+                "proven_commercial_dimensions": list(
+                    sale.proven_commercial_dimensions
+                ),
+                "identity_provenance": sale.identity_provenance,
+            }
+            for sale in evidence.comparables[:20]
+        ],
+        "estimate": None if estimate is None else {
+            "low": estimate.low,
+            "central": estimate.central,
+            "high": estimate.high,
+            "recent_90_count": estimate.recent_90_count,
+            "dated_count": estimate.dated_count,
+            "liquidity": estimate.liquidity,
+            "dispersion": estimate.dispersion,
+            "confidence": estimate.confidence,
+            "adaptive_discount_pct": estimate.adaptive_discount_pct,
+            "rationale": estimate.rationale,
+            "source_counts": estimate.source_counts,
+            "exact_grade_count": estimate.exact_grade_count,
+            "same_grader_count": estimate.same_grader_count,
+            "source_consistent": estimate.source_consistent,
+        },
+    }
+
+
+def _deserialize_external_evidence(
+    payload: object, identity_key: str
+) -> Optional[ExternalMarketEvidence]:
+    if not isinstance(payload, dict):
+        return None
+    if (
+        payload.get("schema_version") != EXTERNAL_CACHE_SCHEMA_VERSION
+        or payload.get("identity_key") != identity_key
+    ):
+        return None
+    fetched_at = _parse_state_datetime(payload.get("fetched_at"))
+    if fetched_at is None:
+        return None
+    comparables = []
+    for raw in payload.get("comparables", []):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            comparables.append(
+                ComparableSale(
+                    price=float(raw["price"]),
+                    source=str(raw.get("source") or ""),
+                    grader=str(raw.get("grader") or ""),
+                    grade=(
+                        float(raw["grade"])
+                        if raw.get("grade") is not None else None
+                    ),
+                    sold_at=_parse_state_datetime(raw.get("sold_at")),
+                    context="cache externe strict",
+                    exact_card=bool(raw.get("exact_card", True)),
+                    match_score=int(raw.get("match_score", 100)),
+                    proven_commercial_dimensions=tuple(
+                        str(value)
+                        for value in raw.get(
+                            "proven_commercial_dimensions", []
+                        )
+                    ),
+                    identity_provenance=str(
+                        raw.get("identity_provenance") or ""
+                    ),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+    raw_estimate = payload.get("estimate")
+    estimate = None
+    if isinstance(raw_estimate, dict):
+        try:
+            estimate = MarketEstimate(
+                low=float(raw_estimate["low"]),
+                central=float(raw_estimate["central"]),
+                high=float(raw_estimate["high"]),
+                kept_comparables=comparables,
+                rejected_outliers=[],
+                recent_90_count=int(raw_estimate.get("recent_90_count", 0)),
+                dated_count=int(raw_estimate.get("dated_count", 0)),
+                liquidity=str(raw_estimate.get("liquidity") or "faible"),
+                dispersion=str(raw_estimate.get("dispersion") or "non mesurable"),
+                confidence=str(raw_estimate.get("confidence") or "faible"),
+                adaptive_discount_pct=float(
+                    raw_estimate.get("adaptive_discount_pct", 40.0)
+                ),
+                rationale=str(raw_estimate.get("rationale") or "cache externe"),
+                source_counts=dict(raw_estimate.get("source_counts") or {}),
+                exact_grade_count=int(raw_estimate.get("exact_grade_count", 0)),
+                same_grader_count=int(raw_estimate.get("same_grader_count", 0)),
+                source_consistent=raw_estimate.get("source_consistent"),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+    return ExternalMarketEvidence(
+        identity_key,
+        str(payload.get("status") or EXTERNAL_UNAVAILABLE),
+        str(payload.get("strength") or EVIDENCE_UNAVAILABLE),
+        str(payload.get("source") or ""),
+        estimate,
+        comparables,
+        str(payload.get("note") or ""),
+        fetched_at,
+        payload.get("population"),
+        payload.get("pop_higher"),
+        payload.get("most_recent_price"),
+        True,
+    )
+
+
+def cached_external_evidence(
+    state: dict,
+    identity_key: str,
+    now: datetime,
+    ttl_hours: int = EXTERNAL_EVIDENCE_TTL_HOURS,
+) -> tuple[Optional[ExternalMarketEvidence], str]:
+    cache = state.get(EXTERNAL_CACHE_STATE_KEY)
+    if not isinstance(cache, dict):
+        return None, "MISS"
+    if cache.get("schema_version") != EXTERNAL_CACHE_SCHEMA_VERSION:
+        return None, "MISS"
+    entries = cache.get("entries")
+    if not isinstance(entries, dict) or identity_key not in entries:
+        return None, "MISS"
+    evidence = _deserialize_external_evidence(entries[identity_key], identity_key)
+    if evidence is None:
+        return None, "MISS"
+    if now - evidence.fetched_at >= timedelta(hours=max(1, ttl_hours)):
+        return evidence, "STALE"
+    return evidence, "HIT"
+
+
+def store_external_evidence(
+    state: dict, evidence: ExternalMarketEvidence
+) -> bool:
+    if evidence.status not in EXTERNAL_CACHEABLE_STATUSES:
+        return False
+    cache = state.get(EXTERNAL_CACHE_STATE_KEY)
+    if not isinstance(cache, dict) or cache.get("schema_version") != EXTERNAL_CACHE_SCHEMA_VERSION:
+        cache = {"schema_version": EXTERNAL_CACHE_SCHEMA_VERSION, "entries": {}}
+        state[EXTERNAL_CACHE_STATE_KEY] = cache
+    entries = cache.setdefault("entries", {})
+    if isinstance(entries, dict):
+        entries[evidence.identity_key] = _serialize_external_evidence(evidence)
+        return True
+    return False
+
+
+def _with_valuation_path(
+    opportunity: Opportunity, path: str, summary: str
+) -> Opportunity:
+    opportunity.valuation_path = path
+    opportunity.evidence_summary = summary
+    opportunity.estimate.rationale = (
+        f"{opportunity.estimate.rationale}; {summary}"
+    ).strip("; ")
+    return opportunity
+
+
+def _external_opportunity(
+    gcc: GccMarketEvidence, external: ExternalMarketEvidence
+) -> Optional[Opportunity]:
+    if external.estimate is None:
+        return None
+    kwargs = {}
+    if external.source == "psa":
+        kwargs = {
+            "psa_apr_sales": external.comparables,
+            "psa_apr_estimate": external.estimate,
+            "psa_apr_note": external.note,
+            "psa_apr_population": external.population,
+            "psa_apr_pop_higher": external.pop_higher,
+            "psa_apr_most_recent_price": external.most_recent_price,
+        }
+    elif external.source == "ebay":
+        kwargs = {
+            "ebay_sales": external.comparables,
+            "ebay_note": external.note,
+        }
+    return _opportunity_from_estimate(
+        gcc.lot, external.estimate, gcc.sales, **kwargs
+    )
+
+
+def markets_materially_agree(
+    first: MarketEstimate, second: MarketEstimate
+) -> bool:
+    if first.central <= 0 or second.central <= 0:
+        return False
+    intervals_overlap = max(first.low, second.low) <= min(
+        first.high, second.high
+    )
+    central_ratio = second.central / first.central
+    return (
+        intervals_overlap
+        and MARKET_AGREEMENT_MIN_CENTRAL_RATIO
+        <= central_ratio
+        <= MARKET_AGREEMENT_MAX_CENTRAL_RATIO
+    )
+
+
+def arbitrate_market_evidence(
+    gcc: GccMarketEvidence, external: ExternalMarketEvidence
+) -> ArbitrationResult:
+    gcc_yes = gcc.branch == GCC_BRANCH_SUPPORTED and gcc.opportunity is not None
+    external_pending = external.status == EXTERNAL_PENDING
+    external_strong = (
+        external.status == EXTERNAL_MATCHED
+        and external.strength == EVIDENCE_STRONG
+        and external.estimate is not None
+    )
+
+    if external_pending:
+        if gcc_yes and not (
+            gcc.estimate is not None and gcc.estimate.grade_arbitrage
+        ):
+            op = _with_valuation_path(
+                gcc.opportunity, PATH_EXTERNAL_PENDING,
+                "preuve externe différée par budget; décision GCC préservée",
+            )
+            return ArbitrationResult(
+                PATH_EXTERNAL_PENDING, op, external.note,
+                "YES", "PENDING",
+            )
+        return ArbitrationResult(
+            PATH_EXTERNAL_PENDING, None, external.note,
+            "NO", "PENDING",
+        )
+
+    if not external_strong:
+        grade_arbitrage_requires_external = bool(
+            gcc.estimate is not None and gcc.estimate.grade_arbitrage
+        )
+        if gcc_yes and not grade_arbitrage_requires_external:
+            op = _with_valuation_path(
+                gcc.opportunity, PATH_GCC_ONLY,
+                "preuve GCC retenue; preuve externe faible ou indisponible",
+            )
+            return ArbitrationResult(
+                PATH_GCC_ONLY, op, external.note,
+                "YES", "UNAVAILABLE",
+            )
+        return ArbitrationResult(
+            PATH_GCC_ONLY, None,
+            (
+                "arbitrage grade sans preuve externe exacte forte"
+                if grade_arbitrage_requires_external
+                else gcc.rejection or external.note or "aucune preuve achetable"
+            ),
+            "NO", "UNAVAILABLE",
+        )
+
+    external_op = _external_opportunity(gcc, external)
+    external_yes = (
+        external_op is not None
+        and not opportunity_rejection_reason(external_op)
+    )
+
+    if gcc.strength == EVIDENCE_STRONG and gcc.estimate is not None:
+        agree = markets_materially_agree(gcc.estimate, external.estimate)
+        if not agree or gcc_yes != external_yes:
+            return ArbitrationResult(
+                PATH_MARKET_CONFLICT_BLOCKED,
+                None,
+                (
+                    f"marchés forts contradictoires: GCC {gcc.estimate.central:.2f} € "
+                    f"vs {external.source} {external.estimate.central:.2f} €"
+                ),
+                "YES" if gcc_yes else "NO",
+                "YES" if external_yes else "NO",
+            )
+        if gcc_yes and external_yes and external_op is not None:
+            combined, note = _conservative_source_validation_estimate(
+                gcc.estimate, external.estimate, external.source.upper()
+            )
+            kwargs = {}
+            if external.source == "psa":
+                kwargs = {
+                    "psa_apr_sales": external.comparables,
+                    "psa_apr_estimate": external.estimate,
+                    "psa_apr_note": note,
+                    "psa_apr_population": external.population,
+                    "psa_apr_pop_higher": external.pop_higher,
+                    "psa_apr_most_recent_price": external.most_recent_price,
+                }
+            elif external.source == "ebay":
+                kwargs = {
+                    "ebay_sales": external.comparables,
+                    "ebay_note": note,
+                }
+            confirmed = _opportunity_from_estimate(
+                gcc.lot, combined, gcc.sales, **kwargs
+            )
+            if opportunity_rejection_reason(confirmed):
+                return ArbitrationResult(
+                    PATH_MARKET_CONFLICT_BLOCKED, None,
+                    "confirmation externe rend la borne prudente non achetable",
+                    "YES", "NO",
+                )
+            confirmed = _with_valuation_path(
+                confirmed, PATH_GCC_EXTERNAL_CONFIRMED,
+                f"preuves fortes GCC et {external.source} concordantes",
+            )
+            return ArbitrationResult(
+                PATH_GCC_EXTERNAL_CONFIRMED, confirmed, note, "YES", "YES"
+            )
+        return ArbitrationResult(
+            PATH_MARKET_CONFLICT_BLOCKED, None,
+            gcc.rejection or "deux marchés forts non achetables", "NO", "NO"
+        )
+
+    if external_yes and external_op is not None:
+        rescued = _with_valuation_path(
+            external_op, PATH_EXTERNAL_RESCUE,
+            (
+                f"preuve externe forte {external.source}; preuve GCC "
+                f"{gcc.strength.lower()} sans plafond dur"
+            ),
+        )
+        return ArbitrationResult(
+            PATH_EXTERNAL_RESCUE, rescued,
+            gcc.rejection or "branche GCC faible", "NO", "YES"
+        )
+
+    if gcc_yes:
+        return ArbitrationResult(
+            PATH_MARKET_CONFLICT_BLOCKED, None,
+            f"preuve externe forte {external.source} contradictoire",
+            "YES", "NO",
+        )
+    return ArbitrationResult(
+        PATH_GCC_ONLY, None,
+        gcc.rejection or "preuve externe non achetable", "NO", "NO"
+    )
+
+
+def _record_provider_evidence_diagnostic(
+    diagnostics: ExternalMarketDiagnostics,
+    source: str,
+    evidence: ExternalMarketEvidence,
+) -> None:
+    prefix = "apr" if source == "psa" else "ebay"
+    if evidence.strength == EVIDENCE_STRONG:
+        counter = f"{prefix}_sufficient"
+    elif evidence.status in {
+        EXTERNAL_CLEAN_NO_MATCH, EXTERNAL_CLEAN_INSUFFICIENT
+    }:
+        counter = f"{prefix}_insufficient"
+    else:
+        counter = f"{prefix}_unavailable"
+    setattr(diagnostics, counter, getattr(diagnostics, counter) + 1)
+
+    if evidence.status == EXTERNAL_PROVIDER_ERROR:
+        counter = f"{prefix}_provider_errors"
+    elif evidence.status == EXTERNAL_TRANSIENT_UNAVAILABLE:
+        counter = f"{prefix}_transient_unavailable"
+    elif evidence.status == EXTERNAL_RATE_LIMITED:
+        counter = f"{prefix}_rate_limited"
+    else:
+        return
+    setattr(diagnostics, counter, getattr(diagnostics, counter) + 1)
+
+
+def fetch_external_market_evidence(
+    page,
+    candidate: ValuationCandidate,
+    budgets: ValidationBudgets,
+    diagnostics: ExternalMarketDiagnostics,
+    now: datetime,
+) -> ExternalMarketEvidence:
+    """APR exact pour PSA, puis eBay exact; jamais de source inter-grader."""
+    lot = candidate.lot
+    key = external_commercial_identity_key(lot)
+    grader = (lot.grader or "").upper()
+    apr_result: Optional[ExternalMarketEvidence] = None
+
+    apr_applicable = (
+        PSA_APR_ENABLED
+        and grader == "PSA"
+        and psa_apr_identity_is_sufficient(lot)
+    )
+    if apr_applicable:
+        if budgets.psa_apr_cards < max(0, PSA_APR_MAX_CARDS_PER_RUN):
+            budgets.psa_apr_cards += 1
+            diagnostics.apr_attempted += 1
+            try:
+                data = scrape_psa_apr(page, lot, now=now)
+                apr_result = build_external_market_evidence(
+                    lot,
+                    data.sales,
+                    "psa",
+                    now,
+                    note=data.note,
+                    population=data.population,
+                    pop_higher=data.pop_higher,
+                    most_recent_price=data.most_recent_price,
+                    minimum_comparables=PSA_APR_MIN_COMPS,
+                    provider_status=data.provider_status,
+                )
+            except Exception as error:
+                apr_result = ExternalMarketEvidence(
+                    key, EXTERNAL_PROVIDER_ERROR,
+                    note=f"APR {type(error).__name__}",
+                    fetched_at=now,
+                )
+            _record_provider_evidence_diagnostic(
+                diagnostics, "psa", apr_result
+            )
+            if apr_result.strength == EVIDENCE_STRONG:
+                return apr_result
+        else:
+            apr_result = ExternalMarketEvidence(
+                key, EXTERNAL_PENDING, note="budget PSA APR épuisé"
+            )
+            if not EBAY_ENABLED:
+                return apr_result
+
+    if EBAY_ENABLED:
+        if budgets.ebay_cards >= max(0, EBAY_MAX_CARDS_PER_RUN):
+            return ExternalMarketEvidence(
+                key,
+                EXTERNAL_PENDING,
+                note=(
+                    "budget eBay épuisé après APR insuffisant"
+                    if apr_result is not None
+                    else "budget eBay épuisé"
+                ),
+            )
+        budgets.ebay_cards += 1
+        diagnostics.ebay_attempted += 1
+        try:
+            scraped = scrape_ebay_sold(page, lot, with_status=True)
+            if isinstance(scraped, ExternalScrapeResult):
+                scrape_result = scraped
+            else:
+                scrape_result = ExternalScrapeResult(
+                    list(scraped), EXTERNAL_MATCHED,
+                    f"eBay: {len(scraped)} résultat(s) brut(s)",
+                )
+            evidence = build_external_market_evidence(
+                lot,
+                scrape_result.sales,
+                "ebay",
+                now,
+                note=scrape_result.note,
+                minimum_comparables=EBAY_MIN_COMPS,
+                provider_status=scrape_result.status,
+            )
+        except Exception as error:
+            evidence = ExternalMarketEvidence(
+                key, EXTERNAL_PROVIDER_ERROR,
+                note=f"eBay {type(error).__name__}",
+                fetched_at=now,
+            )
+        _record_provider_evidence_diagnostic(diagnostics, "ebay", evidence)
+        if (
+            evidence.strength != EVIDENCE_STRONG
+            and apr_result is not None
+            and (
+                apr_result.status in EXTERNAL_RETRY_STATUSES
+                or apr_result.status == EXTERNAL_PENDING
+            )
+        ):
+            return replace(
+                apr_result,
+                note=(
+                    f"{apr_result.note}; fallback eBay {evidence.status}: "
+                    f"{evidence.note}"
+                ).strip("; "),
+            )
+        return evidence
+
+    if apr_result is not None:
+        return apr_result
+    diagnostics.apr_unavailable += int(grader == "PSA")
+    diagnostics.ebay_unavailable += 1
+    return ExternalMarketEvidence(
+        key, EXTERNAL_TRANSIENT_UNAVAILABLE,
+        note="sources externes désactivées", fetched_at=now,
+    )
+
+
+def _external_queue_sort_key(
+    candidate: ValuationCandidate, cache_status: str
+) -> tuple:
+    lot = candidate.lot
+    if lot.source_type == "auction":
+        return (
+            0,
+            lot.minutes_to_end if lot.minutes_to_end is not None else 999999,
+            lot.url,
+        )
+    category_rank = {
+        QUEUE_P0_NEW: 1,
+        QUEUE_P1_CHANGED: 2,
+        QUEUE_P2_NEVER_EVALUATED: 3,
+        QUEUE_P3_STALE: 5,
+    }
+    local_rejection_rank = 3 if candidate.gcc.branch != GCC_BRANCH_SUPPORTED else 4
+    return (
+        category_rank.get(candidate.fixed_queue_category, local_rejection_rank),
+        5 if cache_status == "STALE" else local_rejection_rank,
+        lot.url,
+    )
+
+
+def _record_fixed_external_status(
+    state: dict, lot: Lot, status: str
+) -> None:
+    if lot.source_type != "fixed":
+        return
+    queue = state.get(FIXED_QUEUE_STATE_KEY)
+    entries = queue.get("items") if isinstance(queue, dict) else None
+    item_id = fixed_listing_id(lot)
+    if isinstance(entries, dict) and isinstance(entries.get(item_id), dict):
+        entries[item_id]["last_evaluation_status"] = status
+
+
+def process_external_market_candidates(
+    page,
+    candidates: list[ValuationCandidate],
+    state: dict,
+    budgets: ValidationBudgets,
+    run_diagnostics: RunDiagnostics,
+    now: datetime,
+    *,
+    provider=None,
+    ttl_hours: int = EXTERNAL_EVIDENCE_TTL_HOURS,
+) -> list[Opportunity]:
+    """Déduplique, met en cache, arbitre et produit les opportunités finales."""
+    groups: dict[str, list[ValuationCandidate]] = {}
+    for candidate in candidates:
+        groups.setdefault(
+            external_commercial_identity_key(candidate.lot), []
+        ).append(candidate)
+
+    external_diagnostics = run_diagnostics.external_market
+    external_diagnostics.queue_candidates = len(candidates)
+    external_diagnostics.queue_identities = len(groups)
+    external_diagnostics.queue_deduplicated = len(candidates) - len(groups)
+    evidence_by_key: dict[str, ExternalMarketEvidence] = {}
+    queued: list[tuple[ValuationCandidate, str]] = []
+
+    for key, grouped in groups.items():
+        cached, cache_status = cached_external_evidence(
+            state, key, now, ttl_hours
+        )
+        if cache_status == "HIT" and cached is not None:
+            external_diagnostics.cache_hits += 1
+            evidence_by_key[key] = cached
+            continue
+        if cache_status == "STALE":
+            external_diagnostics.cache_stale += 1
+        else:
+            external_diagnostics.cache_misses += 1
+        representative = min(
+            grouped,
+            key=lambda item: _external_queue_sort_key(item, cache_status),
+        )
+        queued.append((representative, cache_status))
+
+    queued.sort(key=lambda item: _external_queue_sort_key(item[0], item[1]))
+    fetch = provider
+    for candidate, _cache_status in queued:
+        key = external_commercial_identity_key(candidate.lot)
+        before = (budgets.psa_apr_cards, budgets.ebay_cards)
+        if fetch is None:
+            evidence = fetch_external_market_evidence(
+                page, candidate, budgets, external_diagnostics, now
+            )
+        else:
+            evidence = fetch(candidate, budgets, now)
+        if evidence.identity_key != key:
+            evidence = replace(evidence, identity_key=key)
+        after = (budgets.psa_apr_cards, budgets.ebay_cards)
+        if after != before or evidence.status != EXTERNAL_PENDING:
+            external_diagnostics.queue_selected += 1
+        evidence_by_key[key] = evidence
+        if evidence.status in EXTERNAL_CACHEABLE_STATUSES:
+            store_external_evidence(state, evidence)
+        elif evidence.status in EXTERNAL_RETRY_STATUSES:
+            external_diagnostics.cache_skipped_transient += 1
+
+    final_opportunities = []
+    for candidate in candidates:
+        key = external_commercial_identity_key(candidate.lot)
+        evidence = evidence_by_key.get(key) or ExternalMarketEvidence(
+            key, EXTERNAL_PENDING, note="identité externe différée"
+        )
+        external_diagnostics.record_external(evidence)
+        result = arbitrate_market_evidence(candidate.gcc, evidence)
+        external_diagnostics.record_path(result.path)
+        _record_fixed_external_status(
+            state,
+            candidate.lot,
+            (
+                REJECTION_EXTERNAL_PENDING
+                if result.path == PATH_EXTERNAL_PENDING
+                else (
+                    REJECTION_EXTERNAL_RETRY
+                    if evidence.status in EXTERNAL_RETRY_STATUSES
+                    else result.path
+                )
+            ),
+        )
+        if result.opportunity is not None:
+            run_diagnostics.record_valuation(candidate.lot)
+            final_opportunities.append(result.opportunity)
+            continue
+        if result.path == PATH_MARKET_CONFLICT_BLOCKED:
+            rejection = REJECTION_MARKET_CONFLICT
+            run_diagnostics.record_external_rejection(candidate.lot)
+        elif result.path == PATH_EXTERNAL_PENDING:
+            rejection = REJECTION_EXTERNAL_PENDING
+        elif evidence.status in EXTERNAL_RETRY_STATUSES:
+            rejection = REJECTION_EXTERNAL_RETRY
+        else:
+            rejection = candidate.gcc.rejection_category or REJECTION_OTHER
+        run_diagnostics.record_valuation(candidate.lot, rejection)
+        log(
+            f"Arbitrage {result.path}: {candidate.lot.title} | {result.reason}"
+        )
+    return final_opportunities
+
+
+def evaluate_gcc_candidate_for_arbitration(
+    page,
+    lot: Lot,
+    position: int,
+    state: dict,
+    seen_at: str,
+    run_now: datetime,
+    run_diagnostics: RunDiagnostics,
+) -> Optional[ValuationCandidate]:
+    """Inspection V4 identique, mais conserve les rejets GCC récupérables."""
+    try:
+        if lot.source_type == "fixed" or not lot.body:
+            lot = inspect_item(page, lot)
+        if lot.inspection_error:
+            run_diagnostics.record_valuation(
+                lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
+            )
+            return None
+        if not is_valid_pokemon_card(lot, run_diagnostics):
+            return None
+        if lot.current_price is None:
+            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
+            return None
+        if lot.current_price < MIN_PRICE or lot.current_price > MAX_PRICE:
+            run_diagnostics.record_valuation(lot, REJECTION_OTHER)
+            return None
+        if lot.source_type == "auction" and (
+            lot.minutes_to_end is None
+            or lot.minutes_to_end > MAX_AUCTION_MINUTES
+        ):
+            run_diagnostics.record_valuation(
+                lot, REJECTION_OTHER, ACCOUNT_EXCLUDED_BY_RULES
+            )
+            return None
+
+        history = extract_historical_sales(
+            lot, run_diagnostics.gcc_history_parsing
+        )
+        label = "fixe" if lot.source_type == "fixed" else "enchère"
+        log(
+            f"[{label} {position}] {lot.current_price:.2f} € | "
+            f"{format_grade_label(lot.grader, lot.grade) or 'grade inconnu'} | "
+            f"historique: {len(history)} ventes"
+        )
+        state["seen"][lot.url] = {
+            "price": lot.current_price,
+            "seen_at": seen_at,
+            "title": lot.title,
+            "source_type": lot.source_type,
+            "grade": format_grade_label(lot.grader, lot.grade),
+            "minutes_to_end": lot.minutes_to_end,
+        }
+        run_diagnostics.economic_coverage_for(lot.source_type).record_valued(lot)
+        evidence = build_gcc_market_evidence(lot, history, run_now)
+        if evidence.diagnostics is not None:
+            log_gcc_comparable_diagnostics(lot, evidence.diagnostics)
+        if evidence.terminal:
+            if evidence.rejection_category in {
+                REJECTION_GRADER_GRADE, REJECTION_SPECIAL_QUALIFIER
+            }:
+                grade_diagnostic = diagnose_unreadable_grade(lot)
+                log_unreadable_grade_diagnostic(grade_diagnostic)
+                if evidence.rejection_category == REJECTION_SPECIAL_QUALIFIER:
+                    run_diagnostics.record_special_qualifier(lot, grade_diagnostic)
+                else:
+                    run_diagnostics.record_unreadable_grade(lot, grade_diagnostic)
+            run_diagnostics.record_valuation(
+                lot, evidence.rejection_category or REJECTION_OTHER
+            )
+            return None
+        if evidence.opportunity is not None:
+            _log_estimate("Branche GCC", evidence.opportunity)
+        log(
+            f"Branche GCC: {evidence.branch}/{evidence.strength} | "
+            f"{evidence.rejection or 'éligible'}"
+        )
+        run_diagnostics.record_gcc_market_branch(evidence)
+        return ValuationCandidate(evidence)
+    except Exception as error:
+        run_diagnostics.record_valuation(
+            lot, REJECTION_OTHER, ACCOUNT_INTERNAL_ERROR
+        )
+        log(f"Erreur interne lot {type(error).__name__}: {lot.url or lot.title}")
+        return None
+
+
 def notification_decision(
     op: Opportunity, previous: Optional[dict]
 ) -> NotificationDecision:
@@ -5135,6 +6703,7 @@ def updated_notification_state(
         "max_recommended": op.max_recommended,
         "adaptive_discount_pct": op.estimate.adaptive_discount_pct,
         "grade_arbitrage": op.estimate.grade_arbitrage,
+        "valuation_path": op.valuation_path,
         "alert_15m_sent": bool(old.get("alert_15m_sent"))
         or bool(op.lot.source_type == "auction" and minutes is not None and minutes <= 15),
         "final_alert_sent": bool(old.get("final_alert_sent")) or decision.final_alert,
@@ -5164,6 +6733,10 @@ def _exact_count(lot: Lot, sales: list[ComparableSale]) -> int:
 def notify(op: Opportunity, decision: NotificationDecision) -> None:
     if decision.final_alert:
         title = "GCC AUCTION — DERNIÈRES 5 MIN — SOUS PRIX MAX"
+    elif op.valuation_path == PATH_EXTERNAL_RESCUE and op.lot.source_type == "auction":
+        title = "GCC AUCTION — EXTERNAL RESCUE"
+    elif op.valuation_path == PATH_EXTERNAL_RESCUE:
+        title = "GCC PRIX FIXE — EXTERNAL RESCUE"
     elif op.estimate.grade_arbitrage and op.lot.source_type == "auction":
         title = "GCC AUCTION — ARBITRAGE GRADE"
     elif op.estimate.grade_arbitrage:
@@ -5291,6 +6864,8 @@ def notify(op: Opportunity, decision: NotificationDecision) -> None:
         f"Liquidité : {estimate.liquidity}\n"
         f"Dispersion : {estimate.dispersion}\n"
         f"Confiance : {estimate.confidence}\n"
+        f"Chemin de valorisation : {op.valuation_path}\n"
+        f"Preuves : {op.evidence_summary or 'GCC'}\n"
         f"Méthode : {estimate.rationale}\n"
         f"Raison alerte : {reason_line}\n\n"
         f"{timing_lines}"
@@ -5416,6 +6991,10 @@ def _fixed_queue_category(
     last_evaluated = _parse_state_datetime(record.get("last_evaluated_at"))
     evaluated_fingerprint = record.get("evaluated_fingerprint")
     evaluation_version = record.get("evaluation_version")
+    if record.get("last_evaluation_status") in {
+        REJECTION_EXTERNAL_PENDING, REJECTION_EXTERNAL_RETRY
+    }:
+        return QUEUE_P1_CHANGED
     if (
         last_evaluated is None
         or not isinstance(evaluated_fingerprint, str)
@@ -5570,6 +7149,9 @@ def _fixed_evaluation_completed(
     terminal = diagnostics.fixed_coverage.terminal_statuses.get(key)
     if terminal == ACCOUNT_INTERNAL_ERROR:
         return False, ACCOUNT_INTERNAL_ERROR
+    if key in diagnostics.gcc_market_branches:
+        evidence = diagnostics.gcc_market_branches[key]
+        return True, evidence.rejection_category or evidence.branch.lower()
     if key not in diagnostics.valuation_outcomes:
         return False, ACCOUNT_INTERNAL_ERROR
     rejection = diagnostics.valuation_outcomes[key]
@@ -5586,7 +7168,7 @@ def evaluate_fixed_candidates(
     *,
     valuation_cap: int = MAX_FIXED_CANDIDATES,
     evaluator=None,
-) -> list[Opportunity]:
+) -> list[Opportunity | ValuationCandidate]:
     """Consomme le budget fixed selon NEW, CHANGED, NEVER_EVALUATED, STALE."""
     economic = run_diagnostics.fixed_economic_coverage
     economic.incremental_queue = True
@@ -5626,7 +7208,7 @@ def evaluate_fixed_candidates(
 
     run_diagnostics.fixed_candidates = len(selected)
     evaluate = evaluator or evaluate_gcc_candidate
-    opportunities: list[Opportunity] = []
+    opportunities: list[Opportunity | ValuationCandidate] = []
     for position, lot in enumerate(selected, start=1):
         economic.record_attempt(lot)
         heavy_started = time.monotonic()
@@ -5655,6 +7237,8 @@ def evaluate_fixed_candidates(
             economic.record_failure(lot)
             run_diagnostics.fixed_queue.record_failed(item_id)
         if opportunity is not None:
+            if isinstance(opportunity, ValuationCandidate):
+                opportunity.fixed_queue_category = category_by_id[item_id]
             opportunities.append(opportunity)
     economic.finalize()
     return opportunities
@@ -5748,6 +7332,18 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
             "- prix fixe > prix max prudent: "
             f"{diagnostics.rejection_count(REJECTION_FIXED_ABOVE_MAX)}"
         ),
+        (
+            "- marché externe différé: "
+            f"{diagnostics.rejection_count(REJECTION_EXTERNAL_PENDING)}"
+        ),
+        (
+            "- marché externe à retenter après erreur provider: "
+            f"{diagnostics.rejection_count(REJECTION_EXTERNAL_RETRY)}"
+        ),
+        (
+            "- conflit de marchés forts: "
+            f"{diagnostics.rejection_count(REJECTION_MARKET_CONFLICT)}"
+        ),
         f"- autres motifs: {diagnostics.rejection_count(REJECTION_OTHER)}",
         "",
         f"Opportunités GCC: {diagnostics.gcc_opportunities}",
@@ -5809,6 +7405,94 @@ def format_run_diagnostics(diagnostics: RunDiagnostics) -> str:
         (
             "",
             format_fixed_economic_queue(diagnostics.fixed_queue),
+            "",
+            "=== EXTERNAL MARKET ARBITRATION ===",
+            (
+                "GCC evidence: "
+                + " | ".join(
+                    f"{key} {value}"
+                    for key, value in sorted(
+                        diagnostics.external_market.gcc_strengths.items()
+                    )
+                )
+            ),
+            (
+                "GCC branches: "
+                + " | ".join(
+                    f"{key} {value}"
+                    for key, value in sorted(
+                        diagnostics.external_market.gcc_branches.items()
+                    )
+                )
+            ),
+            (
+                "External cache: "
+                f"hit {diagnostics.external_market.cache_hits} | "
+                f"miss {diagnostics.external_market.cache_misses} | "
+                f"stale {diagnostics.external_market.cache_stale} | "
+                "transient not cached "
+                f"{diagnostics.external_market.cache_skipped_transient}"
+            ),
+            (
+                "External queue: "
+                f"candidates {diagnostics.external_market.queue_candidates} | "
+                f"identities {diagnostics.external_market.queue_identities} | "
+                f"deduplicated {diagnostics.external_market.queue_deduplicated} | "
+                f"selected {diagnostics.external_market.queue_selected}"
+            ),
+            (
+                "PSA APR: "
+                f"attempted {diagnostics.external_market.apr_attempted} | "
+                f"sufficient {diagnostics.external_market.apr_sufficient} | "
+                f"insufficient {diagnostics.external_market.apr_insufficient} | "
+                f"unavailable {diagnostics.external_market.apr_unavailable} | "
+                f"errors {diagnostics.external_market.apr_provider_errors} | "
+                "transient "
+                f"{diagnostics.external_market.apr_transient_unavailable} | "
+                f"rate-limit {diagnostics.external_market.apr_rate_limited}"
+            ),
+            (
+                "eBay: "
+                f"attempted {diagnostics.external_market.ebay_attempted} | "
+                f"sufficient {diagnostics.external_market.ebay_sufficient} | "
+                f"insufficient {diagnostics.external_market.ebay_insufficient} | "
+                f"unavailable {diagnostics.external_market.ebay_unavailable} | "
+                f"errors {diagnostics.external_market.ebay_provider_errors} | "
+                "transient "
+                f"{diagnostics.external_market.ebay_transient_unavailable} | "
+                f"rate-limit {diagnostics.external_market.ebay_rate_limited}"
+            ),
+            (
+                "External outcomes: "
+                f"clean no-match {diagnostics.external_market.clean_no_match} | "
+                "clean insufficient "
+                f"{diagnostics.external_market.clean_insufficient} | "
+                f"provider errors {diagnostics.external_market.provider_errors} | "
+                "transient unavailable "
+                f"{diagnostics.external_market.transient_unavailable} | "
+                f"rate-limited {diagnostics.external_market.rate_limited}"
+            ),
+            (
+                "External evidence: "
+                + " | ".join(
+                    f"{key} {value}"
+                    for key, value in sorted(
+                        diagnostics.external_market.external_strengths.items()
+                    )
+                )
+            ),
+            (
+                "Final paths: "
+                + " | ".join(
+                    f"{key} {value}"
+                    for key, value in sorted(
+                        diagnostics.external_market.final_paths.items()
+                    )
+                )
+            ),
+            f"External rescues: {diagnostics.external_market.rescues}",
+            f"Market conflicts blocked: {diagnostics.external_market.conflicts}",
+            f"External deferred: {diagnostics.external_market.deferred}",
             "",
             f"discovery_seconds: {diagnostics.discovery_seconds:.2f}",
             f"heavy_analysis_seconds: {diagnostics.heavy_analysis_seconds:.2f}",
@@ -6202,7 +7886,7 @@ def main() -> int:
         page.set_default_timeout(TEXT_TIMEOUT)
         page.set_default_navigation_timeout(NAV_TIMEOUT)
 
-        opportunities: list[Opportunity] = []
+        valuation_candidates: list[ValuationCandidate] = []
 
         try:
             # ============================================================
@@ -6230,8 +7914,9 @@ def main() -> int:
                 now,
                 run_now,
                 run_diagnostics,
+                evaluator=evaluate_gcc_candidate_for_arbitration,
             )
-            opportunities.extend(fixed_opportunities)
+            valuation_candidates.extend(fixed_opportunities)
             fixed_economic = run_diagnostics.fixed_economic_coverage
             log(
                 f"Couverture économique fixed: {fixed_economic.attempted}/"
@@ -6404,7 +8089,7 @@ def main() -> int:
             for auction_inspected, lot in enumerate(auction_list, start=1):
                 auction_economic.record_attempt(lot)
                 auction_heavy_started = time.monotonic()
-                op = evaluate_gcc_candidate(
+                candidate = evaluate_gcc_candidate_for_arbitration(
                     page,
                     lot,
                     auction_inspected,
@@ -6416,31 +8101,36 @@ def main() -> int:
                 run_diagnostics.heavy_analysis_seconds += (
                     time.monotonic() - auction_heavy_started
                 )
-                if op:
-                    opportunities.append(op)
+                if candidate:
+                    valuation_candidates.append(candidate)
             auction_economic.finalize()
 
             # ============================================================
             # D) VALIDATION PSA APR, FALLBACK eBay SOLD + NOTIFICATIONS
             # ============================================================
-            log(f"Opportunités GCC avant validations: {len(opportunities)}")
+            gcc_supported = sum(
+                candidate.gcc.branch == GCC_BRANCH_SUPPORTED
+                for candidate in valuation_candidates
+            )
+            log(
+                "Branches GCC avant marché externe: "
+                f"{len(valuation_candidates)} | éligibles GCC {gcc_supported} | "
+                f"récupérables {len(valuation_candidates) - gcc_supported}"
+            )
 
             validation_page = context.new_page()
             validation_page.set_default_timeout(TEXT_TIMEOUT)
             validation_page.set_default_navigation_timeout(NAV_TIMEOUT)
 
-            final_opportunities: list[Opportunity] = []
             validation_budgets = ValidationBudgets()
-
-            for op in sorted(opportunities, key=lambda x: x.discount_pct, reverse=True):
-                validated = validate_secondary_sources(
-                    validation_page, op, validation_budgets
-                )
-
-                if validated is not None:
-                    final_opportunities.append(validated)
-                else:
-                    run_diagnostics.record_external_rejection(op.lot)
+            final_opportunities = process_external_market_candidates(
+                validation_page,
+                valuation_candidates,
+                state,
+                validation_budgets,
+                run_diagnostics,
+                run_now,
+            )
 
             try:
                 validation_page.close()
