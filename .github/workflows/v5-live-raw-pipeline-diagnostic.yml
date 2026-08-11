@@ -3,15 +3,6 @@ name: V5 Live Raw Pipeline Diagnostic
 on:
   workflow_dispatch:
 
-  # Temporary same-repository PR trigger used only to validate the newly added
-  # POKETRACE_API_KEY. The path restriction prevents unrelated PR commits from
-  # consuming the PokeTrace Free daily quota. Remove after this validation run.
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/v5-live-raw-pipeline-diagnostic.yml"
-
 permissions:
   contents: read
 
