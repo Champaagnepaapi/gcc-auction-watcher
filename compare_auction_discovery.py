@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+from math import ceil
 from pathlib import Path
+from time import monotonic
 
 import watcher
 from playwright.sync_api import sync_playwright
@@ -73,6 +75,7 @@ def main() -> int:
     print("economic/notification actions: 0", flush=True)
 
     primary_result = discover_auction_api_lots(max_minutes=horizon)
+    primary_snapshot_finished = monotonic()
     primary_ids = {
         lot.url
         for lot in primary_result.lots
@@ -86,8 +89,19 @@ def main() -> int:
         legacy_page.set_default_timeout(watcher.TEXT_TIMEOUT)
         legacy_page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
         legacy_lots = collect_legacy(legacy_page, horizon)
+
+        # The API snapshot is taken first, while the legacy collector needs tens
+        # of seconds to open all sale pages. Comparing both at the same numeric
+        # horizon therefore creates a deterministic boundary race: a lot can be
+        # >H at the API snapshot and become <=H before legacy reads it. Restrict
+        # the later legacy sample to a horizon that was certainly already inside
+        # H at the earlier API snapshot. One full minute is always reserved to
+        # account for integer countdown rounding.
+        elapsed_seconds = max(0.0, monotonic() - primary_snapshot_finished)
+        boundary_margin_minutes = max(1, ceil(elapsed_seconds / 60.0))
+        legacy_comparable_horizon = max(0, horizon - boundary_margin_minutes)
         legacy_ids, legacy_unresolved = resolve_legacy_ids(
-            legacy_page, legacy_lots, horizon
+            legacy_page, legacy_lots, legacy_comparable_horizon
         )
         browser.close()
 
@@ -102,8 +116,17 @@ def main() -> int:
     print(f"primary rows seen: {primary_result.rows_seen}", flush=True)
     print(f"primary timers parsed: {primary_result.timers_parsed}", flush=True)
     print(f"primary threshold crossed: {str(primary_result.threshold_crossed).lower()}", flush=True)
-    print(f"primary candidates <= horizon: {len(primary_ids)}", flush=True)
-    print(f"legacy candidates <= horizon: {len(legacy_ids)}", flush=True)
+    print(f"primary candidates <= {horizon} min: {len(primary_ids)}", flush=True)
+    print(
+        "legacy comparison horizon: "
+        f"{legacy_comparable_horizon} min "
+        f"(elapsed={elapsed_seconds:.1f}s, margin={boundary_margin_minutes}m)",
+        flush=True,
+    )
+    print(
+        f"legacy candidates <= {legacy_comparable_horizon} min: {len(legacy_ids)}",
+        flush=True,
+    )
     print(f"primary only: {len(primary_only)}", flush=True)
     print(f"legacy only: {len(legacy_only)}", flush=True)
     print(f"legacy unresolved timers: {len(legacy_unresolved)}", flush=True)
@@ -129,10 +152,10 @@ def main() -> int:
         print("FAIL: unexpected primary scope status", flush=True)
         return 1
     if legacy_only:
-        print("FAIL: API discovery missed candidate(s) seen by legacy", flush=True)
+        print("FAIL: API discovery missed candidate(s) already inside the common-time legacy horizon", flush=True)
         return 1
 
-    print("PASS: API item-level discovery is a superset of legacy for this run", flush=True)
+    print("PASS: API item-level discovery is a superset of legacy at a common-time horizon", flush=True)
     return 0
 
 
