@@ -128,29 +128,29 @@ Le watcher sépare désormais clairement :
 1. **discovery coverage** : avons-nous correctement parcouru l'univers de découverte configuré ?
 2. **economic coverage** : avons-nous correctement comptabilisé/évalué les candidats économiques ?
 
-Le log affiche notamment pour fixed et auctions :
+Le log affiche notamment pour fixed et auctions : protocole utilisé, pages demandées/réussies/échouées, retries, lignes reçues, listings uniques, doublons, raison de fin de pagination, listings comptabilisés/non comptabilisés, rejets par règles existantes, échecs de parsing et statut de couverture final.
 
-- protocole utilisé ;
-- pages demandées/réussies/échouées ;
-- retries ;
-- lignes reçues ;
-- listings uniques ;
-- doublons ;
-- raison de fin de pagination ;
-- listings comptabilisés/non comptabilisés ;
-- rejets par règles existantes ;
-- échecs de parsing ;
-- statut de couverture final.
-
-Pour les auctions, on suit également :
-
-- nombre de lots découverts ;
-- nombre de `endTime` parsés ;
-- nombre de candidats dans l'horizon ≤60 min ;
-- nombre de lots sans timer exploitable ;
-- utilisation ou non du fallback legacy.
+Pour les auctions, on suit également le nombre de lots découverts, les `endTime` parsés, les candidats dans l'horizon ≤60 min, les lots sans timer exploitable et l'utilisation du fallback legacy.
 
 Un résultat `0 opportunities` n'est présenté comme fiable que si les invariants de couverture sont cohérents.
+
+## Notifications techniques ntfy
+
+Les alertes d'opportunité économique et les alertes techniques sont deux choses différentes.
+
+Une petite dérive du total fixed déclaré pendant que la pagination est en cours peut produire un diagnostic du type `2953/2954 | INCOMPLETE` alors que toutes les pages ont répondu et qu'aucun candidat urgent n'a été omis. Ce cas reste loggé, mais ne doit pas déclencher une notification téléphone lorsque :
+
+- aucune page n'a échoué ;
+- aucune erreur interne ou de parsing n'est présente ;
+- aucun listing n'est non comptabilisé ;
+- la file économique est cohérente et n'a aucun `NEW`/`CHANGED` urgent sauté ;
+- l'état persistant est sain ;
+- la couverture auction reste saine ;
+- l'écart fixed reste dans la petite tolérance de dérive dynamique.
+
+Les alertes techniques ntfy restent actives pour les problèmes susceptibles de créer un faux négatif réel : page API échouée, pagination/réponse structurellement incohérente, écart fixed matériel, couverture auction/économique incomplète, backlog urgent, échec d'évaluation, état/cache incompatible ou invariant comptable cassé.
+
+La classification `INCOMPLETE` peut donc rester visible dans les logs même lorsqu'aucune notification téléphone n'est envoyée : le diagnostic de couverture reste strict, seule la politique de notification est moins bruyante.
 
 ## Journal issue #1
 
@@ -184,11 +184,7 @@ GitHub Actions utilise des machines éphémères. Le workflow sauvegarde donc `s
 
 La file économique fixed stocke uniquement les informations minimales nécessaires à son fonctionnement : identifiant GCC, dates de première/dernière observation et d'évaluation, dernier prix, empreintes de métadonnées cheap, version d'évaluation, dernier statut et indicateur actif. Aucun HTML, historique complet de ventes ou image n'est persisté dans cet état.
 
-Une opportunité déjà signalée n'est renotifiée que si :
-
-- son prix baisse d'au moins **10 %** ;
-- sa décote gagne au moins **5 points** ; ou
-- une enchère franchit un seuil temporel important.
+Une opportunité déjà signalée n'est renotifiée que si son prix baisse d'au moins **10 %**, si sa décote gagne au moins **5 points**, ou si une enchère franchit un seuil temporel important.
 
 Une alerte haute priorité unique peut être envoyée à **≤5 minutes** si le prix reste inférieur ou égal au prix maximal conseillé.
 
@@ -219,12 +215,7 @@ Le signal principal est toujours une vente de la **même société de grading et
 
 En l'absence de marché suffisamment exploitable au grade cible, un grade inférieur de la même société peut produire une voie distincte **ARBITRAGE GRADE** lorsque son marché robuste justifie le prix actuel.
 
-Cette logique ne transforme jamais artificiellement la valeur du grade inférieur en valeur du grade supérieur :
-
-- la valeur exacte du grade supérieur reste inconnue ;
-- le prix max reste prudent ;
-- la confiance est réduite ;
-- une preuve externe exacte suffisante est exigée avant notification.
+Cette logique ne transforme jamais artificiellement la valeur du grade inférieur en valeur du grade supérieur : la valeur exacte du grade supérieur reste inconnue, le prix max reste prudent, la confiance est réduite et une preuve externe exacte suffisante est exigée avant notification.
 
 Les ventes d'autres graders restent secondaires. Elles ne peuvent créer seules une estimation achetable sans ratio empirique suffisamment documenté et fondé sur assez d'observations.
 
@@ -253,11 +244,7 @@ Le code doit être présent dans un repository GitHub avec Actions activé.
 
 ### 2. Secrets
 
-Dans :
-
-**Repository → Settings → Secrets and variables → Actions**
-
-les secrets utilisés par la V4 incluent notamment :
+Dans **Repository → Settings → Secrets and variables → Actions**, les secrets utilisés par la V4 incluent notamment :
 
 ```text
 NTFY_TOPIC
@@ -274,11 +261,9 @@ Le workflow GitHub lui-même ne contient pas de `schedule:` de production.
 
 ### 4. Lancer un test manuel
 
-Dans l'onglet **Actions** :
+Dans l'onglet **Actions** : **GCC Auction Watcher → Run workflow**.
 
-**GCC Auction Watcher → Run workflow**
-
-Puis vérifier notamment les sections :
+Puis vérifier notamment :
 
 ```text
 === DISCOVERY COVERAGE ===
@@ -320,17 +305,20 @@ Son diagnostic RAW eBay travaille sur l'identité canonique et les données de m
 
 Aucun passage à une dépendance payante ou à PokeTrace Pro n'est considéré comme nécessaire avant d'avoir prouvé le chemin d'identité de façon fiable.
 
-## Optimisation future — Playwright/Chromium
+## Optimisation Playwright/Chromium — déployée et validée
 
-Le workflow V4 exécute encore :
+Un runner GitHub-hosted est une VM jetable : Python, les paquets pip et Chromium ne restent pas installés physiquement entre deux runs. La production utilise donc :
 
-```text
-playwright install --with-deps chromium
-```
+- cache pip via `actions/setup-python` ;
+- cache `~/.cache/ms-playwright` via `actions/cache` ;
+- probe de lancement Chromium ;
+- fallback `playwright install --with-deps chromium` uniquement si le probe démontre qu'une future image runner manque réellement de dépendances système.
 
-à chaque run. Le téléchargement/installation de Chromium représente une part importante du temps de préparation GitHub Actions, même si le scan V4 lui-même est désormais rapide grâce à l'API item-level.
+Premier run post-déploiement `31479526838` : cache miss attendu et sauvegarde initiale du payload Playwright.
 
-Cette optimisation est volontairement classée **P3** : elle pourra être traitée plus tard via cache/image/installation conditionnelle après stabilisation fonctionnelle. Elle ne doit pas modifier la logique de découverte ou de valorisation.
+Run suivant `31480316615` : **cache pip hit + cache Playwright hit**, aucun téléchargement Chromium/FFmpeg/Headless Shell, aucun `--with-deps`, V4 saine. Le cache restauré depuis GitHub est de l'ordre de 266 MB ; il remplace le redownload CDN/apt complet sans prétendre conserver une VM permanente.
+
+Les workflows de validation PR peuvent encore installer leur propre Chromium : ce coût n'est pas payé par le watcher production toutes les 10 minutes.
 
 ## Sécurité
 

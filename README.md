@@ -14,20 +14,21 @@
 - Prix fixes : API GCC `/on-sale-items`, file `NEW → CHANGED → NEVER_EVALUATED → STALE`, TTL 24 h.
 - Valorisation : même grader/même grade prioritaire, médiane pondérée par récence, MAD/IQR, fourchette prudente, PSA APR en premier pour PSA exact lorsque possible, eBay public en fallback.
 - Grade arbitrage autorisé uniquement avec référence robuste d'un grade inférieur du **même grader**, sans inventer la valeur du grade supérieur et avec preuve externe exacte avant notification.
-- Anti-spam : renotification seulement si baisse de prix ≥10 %, amélioration de décote ≥5 points ou franchissement d'un seuil temporel ; une alerte haute priorité unique peut partir à ≤5 min si le prix reste sous le max prudent.
+- Anti-spam économique : renotification seulement si baisse de prix ≥10 %, amélioration de décote ≥5 points ou franchissement d'un seuil temporel ; une alerte haute priorité unique peut partir à ≤5 min si le prix reste sous le max prudent.
+- Alertes techniques ntfy : une petite dérive du total fixed déclaré pendant une pagination saine (ex. `2953/2954`, aucune page échouée, aucun backlog/erreur) reste **dans les logs mais ne doit plus générer de notification téléphone**. Les pannes structurelles, écarts matériels, erreurs d'état/comptabilité, backlog urgent NEW/CHANGED et couverture auction incomplète restent notifiables.
 - `state.json` est persistant via cache GitHub Actions.
 - Chaque run est journalisé dans l'**issue #1** avec `trigger`, exit code, durée, opportunités, mode/scope auction, lignes/timers et fallback.
 - **Aucun achat, bid ou checkout automatique.**
 
-### V4 — optimisation runtime Playwright déployée
+### V4 — optimisation runtime Playwright validée
 
 - PR **#13** mergée dans `main` au commit `19942ce7cb26b2ba05bd51de8744d212933299bb`.
-- Objectif : éviter de retélécharger Chromium/Headless Shell/FFmpeg à chaque VM GitHub.
-- GitHub-hosted runners étant jetables, Chromium ne peut pas rester installé sur la même machine ; la stratégie est donc **cache Playwright + cache pip + probe de lancement**.
-- Premier run production post-merge : `31479526838`, **cache miss attendu**, téléchargement initial puis sauvegarde d'environ 279 MB de cache Playwright ; le probe Chromium a réussi sans fallback `playwright install --with-deps chromium` ; scan V4 sain en **15 s**.
-- Le prochain run production doit confirmer le **cache hit** : payload navigateur restauré, aucun redownload Chromium/FFmpeg/Headless Shell. Tant que ce deuxième run n'est pas audité, considérer P3 comme déployé mais validation cache-hit encore en attente.
-- Si le probe Chromium échoue à cause des libs système d'un runner futur, fallback automatique `playwright install --with-deps chromium`.
-- Cette optimisation ne change pas discovery/valorisation/alertes.
+- GitHub-hosted runners sont des VM jetables : Python/paquets/Chromium ne peuvent pas rester installés sur la machine d'un run au suivant. La stratégie production est donc **cache pip + cache Playwright + probe de lancement**.
+- Premier run post-merge `31479526838` : **cache miss attendu**, téléchargement initial puis sauvegarde d'environ 279 MB de cache Playwright ; probe Chromium OK sans fallback `--with-deps` ; scan V4 sain en ~15 s.
+- Run suivant `31480316615` : **cache pip hit + cache Playwright hit**, log `Playwright browser cache hit: Chromium payload restored`, aucun téléchargement Chromium/FFmpeg/Headless Shell et aucun `playwright install --with-deps chromium`; scan V4 sain en ~14 s.
+- Le cache Playwright est restauré depuis GitHub Actions (~266 MB) sur une VM neuve : ce n'est pas une installation persistante locale, mais cela supprime les téléchargements CDN/apt complets à chaque scan production.
+- Si le probe Chromium échoue sur une future image runner, fallback automatique `playwright install --with-deps chromium` puis nouveau probe.
+- Les workflows de validation PR peuvent encore installer Chromium séparément ; cela n'affecte pas le watcher production toutes les 10 minutes.
 
 ### V5 — expérimental, PR #8, NE PAS MERGER
 
@@ -147,6 +148,20 @@ Une carte de grade supérieur proposée autour du marché robuste d'un grade inf
 `state.json` est restauré/sauvegardé via le cache GitHub Actions. La file fixed priorise `NEW → CHANGED → NEVER_EVALUATED → STALE`, avec une réévaluation à 24 h par défaut.
 
 Une opportunité déjà signalée n'est renotifiée que si le prix baisse d'au moins 10 %, si la décote gagne au moins 5 points, ou si une enchère franchit un seuil temporel important. Une alerte haute priorité unique peut être envoyée à cinq minutes ou moins si le prix reste sous le prix maximal conseillé.
+
+### Notifications techniques ntfy
+
+Les notifications techniques sont séparées des alertes d'opportunité. Une couverture marquée `INCOMPLETE` dans les logs ne signifie pas automatiquement qu'une carte intéressante a été trouvée ou ratée.
+
+Un **petit drift dynamique du total fixed déclaré** pendant une pagination par ailleurs saine — par exemple `2953/2954` avec 30/30 pages réussies, 0 page échouée, 0 erreur de parsing/interne, 0 listing non comptabilisé, 0 backlog urgent et état cohérent — reste visible dans les diagnostics mais est **silencieux sur ntfy**.
+
+La notification technique reste active pour les cas actionnables, notamment :
+
+- page API réellement échouée ou réponse/pagination structurellement incohérente ;
+- écart fixed matériel au-delà de la petite tolérance de dérive ;
+- couverture auction ou économique incomplète ;
+- `NEW`/`CHANGED` urgent non traité à cause du budget ;
+- échec d'évaluation, état/cache incompatible ou invariant comptable cassé.
 
 Chaque run V4 est aussi journalisé dans l'**issue #1** avec notamment :
 
