@@ -119,7 +119,7 @@ class PokeTraceIdentityRegressionTests(unittest.TestCase):
         self.assertEqual(rejection, REJECT_CARD_NAME)
         self.assertFalse(_candidate_matches(identity, candidate))
 
-    def test_structured_retrieval_replaces_concatenated_primary_search(self):
+    def test_contextual_retrieval_combines_clues_without_unverified_set_filter(self):
         session = _Session([{"data": [_candidate()]}])
         resolver = PokeTraceIdentityResolver(_provider(session))
 
@@ -127,10 +127,10 @@ class PokeTraceIdentityRegressionTests(unittest.TestCase):
 
         self.assertTrue(result.matched)
         params = session.calls[0][1]["params"]
-        self.assertEqual(params["search"], "Charizard")
+        self.assertEqual(params["search"], "Charizard Pokemon TCG Base Set 4/102")
         self.assertEqual(params["card_number"], "4/102")
         self.assertNotIn("set", params)
-        self.assertEqual(resolver.counters.structured_searches, 1)
+        self.assertEqual(resolver.counters.contextual_searches, 1)
 
     def test_candidate_field_counters_are_independent_of_rejection_order(self):
         wrong_name = _candidate(card_name="Blastoise")
