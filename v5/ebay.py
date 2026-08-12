@@ -710,6 +710,17 @@ _BUNDLE_OR_MULTI_CARD_TITLE_PATTERNS = (
     # Explicit bulk lots / card lots
     re.compile(r"\b(?:bulk\s+lot|card\s+lot|cartes\s+en\s+lot|kartensammlung|kartenlot)\b", re.IGNORECASE),
 
+    # Live multi-card forms where the quantity is separated from the card noun
+    # by an explicit Pokemon descriptor, plus explicit duo/trio card wording.
+    re.compile(
+        r"\b(?:[2-9]|\d{2,})\s+pok[eé]mon\s+(?:cards|cartes|karten|carte|cartas)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:duo|trio)\s+(?:de\s+)?(?:cards|cartes|karten|carte|cartas)\b",
+        re.IGNORECASE,
+    ),
+
     # Sealed multi-pack booster boxes / displays / ETBs
     re.compile(r"\b(?:booster\s*box|display\s*box|booster\s*display|elite\s*trainer\s*box|etb\s*sealed|display\s*\d+\s*boosters?)\b", re.IGNORECASE),
 )
@@ -809,6 +820,17 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
     if set_code_match:
         values.setdefault("set", set_code_match.group(1).lower())
         values.setdefault("card_number", set_code_match.group(2))
+
+    # Reversed collector-number + set-code form seen on eBay
+    # (e.g. 169/165 SV2a). This is still exact token evidence, not fuzzy set inference.
+    reversed_set_code_match = re.search(
+        r"\b(\d{1,4}(?:/\d{1,4})?)\s+(SV\d+[a-z]|S\d+[a-z]|SM\d+[a-z]|XY\d+[a-z])\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if reversed_set_code_match:
+        values.setdefault("set", reversed_set_code_match.group(2).lower())
+        values.setdefault("card_number", reversed_set_code_match.group(1))
 
     # Asian/Chinese set code + number (e.g. CS4.1C-014, CS4aC-014, CS4.1C 014)
     chinese_match = re.search(
@@ -1003,6 +1025,27 @@ def resolve_card_identity(
         "edition": structured.edition,
         "illustrator": structured.illustrator,
     }
+    fallback_set = str(fallback.get("set") or "").strip()
+    structured_set_normalized = _normalize(fields["set"] or "")
+    if (
+        fallback_set
+        and structured_set_normalized
+        in {
+            "scarlet & violet",
+            "scarlet violet",
+            "ecarlate & violet",
+            "ecarlate et violet",
+            "karmesin & purpur",
+            "karmesin purpur",
+            "scarlatto & violetto",
+            "scarlatto e violetto",
+            "escarlata & purpura",
+            "escarlata y purpura",
+        }
+        and re.fullmatch(r"SV\d+[A-Za-z]", fallback_set, flags=re.IGNORECASE)
+    ):
+        fields["set"] = fallback_set
+
     for name, value in fallback.items():
         if name in fields and name != "card_name" and fields[name] is None:
             fields[name] = value

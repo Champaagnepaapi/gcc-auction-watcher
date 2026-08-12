@@ -60,6 +60,8 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
             "Pokemon Cards Binder Collection with 200 cards",
             "Pokemon Elite Trainer Box sealed ETB",
             "Display 36 Boosters Pokemon Francais Neuf Scelle",
+            "100 Pokémon Karten Deutsch | 1 EX garantiert | Reverse & Holo",
+            "Cartes Pokémon Trio Cartes Grenousse Feunnec Marisson",
         ]
         for title in bundle_titles:
             with self.subTest(title=title):
@@ -96,6 +98,7 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
             "Charizard aus meiner Sammlung",
             "Charizard Collection de Pikachu",
             "Charizard Collection of Pikachu",
+            "Charizard 100 HP Pokemon Card Base Set",
         ]
         for title in single_titles:
             with self.subTest(title=title):
@@ -120,6 +123,32 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         self.assertEqual(identity.set, "sv2a")
         self.assertEqual(identity.card_number, "025/165")
         self.assertEqual(identity.language, "Japanese")
+
+    def test_live_reversed_sv2a_overrides_only_generic_scarlet_violet_family(self):
+        payload = {
+            "title": "Charmeleon/Reptincel AR 169/165 SV2a Pokemon 151 - Pokemon Card Japanese NM",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Set", "value": "Scarlet & Violet"},
+                {"name": "Card Number", "value": "169/165"},
+                {"name": "Language", "value": "Japanese"},
+            ],
+        }
+        identity = resolve_card_identity(payload).identity
+        self.assertEqual(identity.set, "sv2a")
+        self.assertEqual(identity.card_number, "169/165")
+
+    def test_explicit_sv_code_does_not_override_a_specific_structured_set(self):
+        payload = {
+            "title": "Charmeleon 169/165 SV2a Pokemon Card Japanese",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Set", "value": "Some Specific Set"},
+                {"name": "Card Number", "value": "169/165"},
+            ],
+        }
+        identity = resolve_card_identity(payload).identity
+        self.assertEqual(identity.set, "Some Specific Set")
 
     def test_extract_svp_promo_code_and_number(self):
         """SVP promo prefix and number extraction."""
