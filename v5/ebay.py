@@ -683,6 +683,68 @@ def card_identity_from_aspects(
     )
 
 
+_BUNDLE_OR_MULTI_CARD_TITLE_PATTERNS = (
+    # Choose-one / selection phrases
+    re.compile(r"\b(?:choose|pick|select)\s+(?:your|from|a|1|one|any)\b", re.IGNORECASE),
+    re.compile(r"\byou\s+(?:choose|pick|select)\b", re.IGNORECASE),
+    re.compile(r"\bchoisissez\s+votre\b", re.IGNORECASE),
+    re.compile(r"\bw[aä]hle(?:\s+deine|\s+aus)?\b", re.IGNORECASE),
+    re.compile(r"\bw[aä]hlen\s+sie\b", re.IGNORECASE),
+    re.compile(r"\bscegli\s+(?:la\s+tua|le\s+tue|il\s+tuo)\b", re.IGNORECASE),
+    re.compile(r"\belige\s+(?:tu|tus)?\b", re.IGNORECASE),
+
+    # Playsets / full sets / master sets
+    re.compile(r"\b(?:playset|play\s*set|master\s*set|complete\s*set|full\s*set|set\s*completo|set\s*complet)\b", re.IGNORECASE),
+
+    # Collection/Sammlung with of/de/di/von + quantity/cards or directly followed by quantity
+    re.compile(r"\b(?:collection|sammlung|collezione|coleccion)\s+(?:(?:of|de|di|von)\s+)?\d+\s+(?:[A-Za-z]+\s+)*(?:cards|cartes|karten|carte|cartas)\b", re.IGNORECASE),
+
+    # Lot of / lot de + quantity or cards
+    re.compile(r"\b(?:lot|bundle|lotto|lote)\s+(?:of|de|di|von|\d+)\s*(?:\d+|cards|cartes|karten|carte|cartas)?\b", re.IGNORECASE),
+
+    # Multi-card quantity forms: e.g. 4x Pikachu, Pikachu x4, 50 cards
+    re.compile(r"\b\d+\s*x\s+[A-Za-z]", re.IGNORECASE),
+    re.compile(r"\b[A-Za-z0-9]+\s+x\s*(?:[2-9]|\d{2,})\b", re.IGNORECASE),
+    re.compile(r"\b(?:[2-9]|\d{2,})\s*(?:cards|cartes|karten|carte|cartas|pcs|pieces|stuck|stueck|stk)\b", re.IGNORECASE),
+
+    # Explicit bulk lots / card lots
+    re.compile(r"\b(?:bulk\s+lot|card\s+lot|cartes\s+en\s+lot|kartensammlung|kartenlot)\b", re.IGNORECASE),
+
+    # Sealed multi-pack booster boxes / displays / ETBs
+    re.compile(r"\b(?:booster\s*box|display\s*box|booster\s*display|elite\s*trainer\s*box|etb\s*sealed|display\s*\d+\s*boosters?)\b", re.IGNORECASE),
+)
+
+
+def is_bundle_or_multi_card_listing(
+    payload: Mapping[str, object],
+    aspects: Optional[Mapping[str, Sequence[str]]] = None,
+) -> bool:
+    """Detect obvious multi-card / lot / choose-one listings before identity resolution."""
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        return False
+    for pat in _BUNDLE_OR_MULTI_CARD_TITLE_PATTERNS:
+        if pat.search(title):
+            return True
+    asp = aspects if aspects is not None else _aspects(payload)
+    for name, values in asp.items():
+        norm_name = _normalize(name)
+        if norm_name in {"lot", "lot size", "bundle", "custom bundle"}:
+            for val in values:
+                if _normalize(val) in {"yes", "oui", "ja", "si", "true", "1"}:
+                    return True
+        if norm_name in {
+            "number of cards",
+            "card quantity",
+            "total cards",
+        }:
+            for val in values:
+                cleaned = re.sub(r"[^\d]", "", str(val))
+                if cleaned.isdigit() and int(cleaned) > 1:
+                    return True
+    return False
+
+
 _TITLE_LABELS = {
     "set": ("set", "series", "serie", "série", "extension", "erweiterung"),
     "card_number": (
@@ -695,6 +757,10 @@ _TITLE_LABELS = {
     "language": ("language", "langue", "sprache", "lingua"),
     "variant": ("variant", "variante", "parallel/variety"),
 }
+
+_CANONICAL_SET_NAMES = (
+    "Journey Together",
+)
 
 
 def _labelled_title_value(title: str, labels: Sequence[str]) -> Optional[str]:
@@ -719,6 +785,42 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
         if value:
             values[field_name] = value
 
+    # Promo code extraction (e.g. SVP 027, SVP-027, SWSH027, SM027, etc.)
+    promo_match = re.search(
+        r"\b(SVP|SWSH|SM|XY|BW|DP|HGSS)\s*(?:EN\s*)?[-_]?\s*0*(\d{1,4})\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if promo_match:
+        promo_prefix = promo_match.group(1).upper()
+        promo_num = promo_match.group(2).zfill(3)
+        values.setdefault("set", promo_prefix)
+        values.setdefault(
+            "card_number",
+            promo_num if promo_prefix == "SVP" else f"{promo_prefix}{promo_num}",
+        )
+
+    # Set-code + number extraction (e.g. sv2a 025/165, sv2a 025, sv2a-025, s10b 025)
+    set_code_match = re.search(
+        r"\b(SV\d+[a-z]|S\d+[a-z]|SM\d+[a-z]|XY\d+[a-z])(?:\s+[-_]?|\s*[-_]\s*)\s*(\d{1,4}(?:/\d{1,4})?)\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if set_code_match:
+        values.setdefault("set", set_code_match.group(1).lower())
+        values.setdefault("card_number", set_code_match.group(2))
+
+    # Asian/Chinese set code + number (e.g. CS4.1C-014, CS4aC-014, CS4.1C 014)
+    chinese_match = re.search(
+        r"\b(CS\d+(?:\.\d+)?[A-Za-z]{0,3})\s*[-_]\s*(\d{1,4}(?:/\d{1,4})?)\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if chinese_match:
+        values.setdefault("set", chinese_match.group(1))
+        values.setdefault("card_number", chinese_match.group(2))
+
+    # Fractional collector number
     if "card_number" not in values:
         number_match = re.search(
             (
@@ -732,6 +834,16 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
         )
         if number_match:
             values["card_number"] = number_match.group(1)
+
+    # Known canonical set name extraction from title
+    if "set" not in values:
+        matched_sets = []
+        for set_name in _CANONICAL_SET_NAMES:
+            if re.search(rf"\b{re.escape(set_name)}\b", title, flags=re.IGNORECASE):
+                matched_sets.append(set_name)
+        if len(matched_sets) == 1:
+            values["set"] = matched_sets[0]
+
     year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)
     if year_match:
         values["year"] = int(year_match.group(1))

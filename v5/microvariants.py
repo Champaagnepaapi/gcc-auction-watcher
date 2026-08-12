@@ -16,6 +16,9 @@ from .variant_semantics import (
     EDITION_FIRST,
     EDITION_SHADOWLESS,
     EDITION_UNLIMITED,
+    FINISH_HOLO,
+    FINISH_REVERSE,
+    FINISH_STANDARD,
     semantics_from_identity,
     semantics_from_poketrace_candidate,
 )
@@ -39,6 +42,11 @@ class MicrovariantApplicability:
 
     status: str = MICROVARIANT_APPLICABILITY_UNKNOWN
     source: str = "UNAVAILABLE"
+    single_finish: Optional[str] = None
+    finish_proven_single: bool = False
+    finish_multiple_variants: bool = False
+    edition_proven_single: bool = False
+    edition_multiple_variants: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,12 +101,41 @@ def tcgdex_microvariant_applicability(
         return MicrovariantApplicability()
     first_edition = variants.get("firstEdition")
     if first_edition is True:
-        return MicrovariantApplicability(MICROVARIANT_APPLICABLE, "TCGDEX_EXACT")
-    if first_edition is False:
-        return MicrovariantApplicability(
-            MICROVARIANT_NOT_APPLICABLE, "TCGDEX_EXACT"
-        )
-    return MicrovariantApplicability()
+        edition_status = MICROVARIANT_APPLICABLE
+        edition_proven_single = False
+        edition_multiple = True
+    elif first_edition is False:
+        edition_status = MICROVARIANT_NOT_APPLICABLE
+        edition_proven_single = True
+        edition_multiple = False
+    else:
+        edition_status = MICROVARIANT_APPLICABILITY_UNKNOWN
+        edition_proven_single = False
+        edition_multiple = False
+
+    finish_map = {
+        "normal": FINISH_STANDARD,
+        "holo": FINISH_HOLO,
+        "reverse": FINISH_REVERSE,
+    }
+    true_finishes = [
+        finish_map[name]
+        for name in ("normal", "reverse", "holo")
+        if variants.get(name) is True
+    ]
+    finish_proven_single = (len(true_finishes) == 1)
+    finish_multiple = (len(true_finishes) >= 2)
+    single_finish = true_finishes[0] if finish_proven_single else None
+
+    return MicrovariantApplicability(
+        status=edition_status,
+        source="TCGDEX_EXACT",
+        single_finish=single_finish,
+        finish_proven_single=finish_proven_single,
+        finish_multiple_variants=finish_multiple,
+        edition_proven_single=edition_proven_single,
+        edition_multiple_variants=edition_multiple,
+    )
 
 
 def _candidate_adds_material_microvariant(
@@ -217,12 +254,9 @@ class LocalMicrovariantValidator:
                 **evidence_fields,
             )
 
+        # Explicit conflict between listing/provider and catalog applicability
         if applicability.status == MICROVARIANT_NOT_APPLICABLE:
-            if premium_not_inherited or listing.edition in {
-                EDITION_FIRST,
-                EDITION_UNLIMITED,
-                EDITION_SHADOWLESS,
-            }:
+            if listing.edition in {EDITION_FIRST, EDITION_SHADOWLESS}:
                 return MicrovariantResolution(
                     applicability.status,
                     EDITION_CONFLICT,
@@ -231,12 +265,25 @@ class LocalMicrovariantValidator:
                     premium_candidate_not_inherited=premium_not_inherited,
                     **evidence_fields,
                 )
-            return MicrovariantResolution(
-                applicability.status,
-                MICROVARIANT_NOT_REQUIRED,
-                premium_candidate_not_inherited=premium_not_inherited,
-                **evidence_fields,
-            )
+            if provider is not None and provider.edition in {EDITION_FIRST, EDITION_SHADOWLESS}:
+                return MicrovariantResolution(
+                    applicability.status,
+                    EDITION_CONFLICT,
+                    blocks_economics=True,
+                    visual_attempted=visual_attempted,
+                    premium_candidate_not_inherited=premium_not_inherited,
+                    **evidence_fields,
+                )
+        if applicability.finish_proven_single and listing.finish is not None:
+            if applicability.single_finish and listing.finish != applicability.single_finish:
+                return MicrovariantResolution(
+                    applicability.status,
+                    EDITION_CONFLICT,
+                    blocks_economics=True,
+                    visual_attempted=visual_attempted,
+                    premium_candidate_not_inherited=premium_not_inherited,
+                    **evidence_fields,
+                )
 
         if evidence is not None and (
             evidence.other_variant_confirmed or evidence.confirmed_value
@@ -319,13 +366,54 @@ class LocalMicrovariantValidator:
                 **evidence_fields,
             )
 
-        material_unknown = bool(
-            applicability.status == MICROVARIANT_APPLICABLE
-            or premium_not_inherited
+        # Microvariant is UNKNOWN on listing - evaluate whether catalog proves single compatible variant
+        # UNKNOWN / missing / malformed catalog applicability MUST remain blocks_economics=True.
+        has_catalog_proof = (
+            applicability.source == "TCGDEX_EXACT"
+            and applicability.status in {MICROVARIANT_APPLICABLE, MICROVARIANT_NOT_APPLICABLE}
+        )
+
+        # Dimension: edition
+        # Unknown edition is non-blocking ONLY when exact catalog evidence explicitly proves
+        # MICROVARIANT_NOT_APPLICABLE or edition_proven_single.
+        edition_blocks = False
+        if listing.edition is None:
+            if has_catalog_proof and (
+                applicability.edition_proven_single
+                or applicability.status == MICROVARIANT_NOT_APPLICABLE
+            ):
+                edition_blocks = False
+            else:
+                edition_blocks = True
+
+        # Dimension: finish
+        # Unknown finish is non-blocking ONLY when exact catalog evidence explicitly proves
+        # a single compatible commercial finish (finish_proven_single).
+        finish_blocks = False
+        if listing.finish is None:
+            if has_catalog_proof and applicability.finish_proven_single:
+                finish_blocks = False
+            else:
+                finish_blocks = True
+
+        # Dimension: special finish / promo
+        # If candidate has premium special finish or promo, and listing lacks proof, fail-closed.
+        other_blocks = False
+        if provider is not None:
+            if provider.special_finish and not listing.special_finish:
+                other_blocks = True
+            if provider.promo is True and listing.promo is not True:
+                other_blocks = True
+
+        material_unknown = bool(not has_catalog_proof or edition_blocks or finish_blocks or other_blocks)
+        edition_status = (
+            MICROVARIANT_NOT_REQUIRED
+            if not material_unknown and applicability.status == MICROVARIANT_NOT_APPLICABLE
+            else EDITION_UNKNOWN
         )
         return MicrovariantResolution(
             applicability.status,
-            EDITION_UNKNOWN,
+            edition_status,
             blocks_economics=material_unknown,
             visual_attempted=visual_attempted,
             premium_candidate_not_inherited=premium_not_inherited,
