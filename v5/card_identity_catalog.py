@@ -137,6 +137,10 @@ class CardCatalogCounters:
     post_macro_applicability_resolved: int = 0
     post_macro_applicability_unknown: int = 0
     post_macro_retry_ineligible: int = 0
+    post_macro_exact_set_attempts: int = 0
+    post_macro_exact_set_hits: int = 0
+    post_macro_exact_set_no_match: int = 0
+    post_macro_exact_set_conflict: int = 0
     post_macro_unique_no_match: int = 0
     post_macro_unique_ambiguous: int = 0
     post_macro_unique_blocking: int = 0
@@ -1239,6 +1243,10 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
                 f"{counters.post_macro_applicability_unknown}"
             ),
             f"post-macro retry ineligible: {counters.post_macro_retry_ineligible}",
+            f"post-macro exact-set attempts: {counters.post_macro_exact_set_attempts}",
+            f"post-macro exact-set hits: {counters.post_macro_exact_set_hits}",
+            f"post-macro exact-set no-match: {counters.post_macro_exact_set_no_match}",
+            f"post-macro exact-set conflict: {counters.post_macro_exact_set_conflict}",
             f"post-macro unique lookup no-match: {counters.post_macro_unique_no_match}",
             f"post-macro unique lookup ambiguous: {counters.post_macro_unique_ambiguous}",
             f"post-macro unique lookup blocking: {counters.post_macro_unique_blocking}",

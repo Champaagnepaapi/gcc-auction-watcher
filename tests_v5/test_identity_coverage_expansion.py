@@ -9,6 +9,7 @@ from v5.card_identity_catalog import (
 )
 from v5.ebay import (
     CardIdentity,
+    canonicalize_chinese_card_number,
     card_identity_from_ebay_payload,
     is_bundle_or_multi_card_listing,
     resolve_card_identity,
@@ -599,6 +600,74 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         res = resolve_card_identity(payload)
         self.assertEqual(res.identity.set, "Journey Together")
         self.assertEqual(res.identity.card_number, "167/159")
+
+    def test_chinese_card_number_canonicalization_rules(self):
+        # CSV9.5C + CSV9.5C-233/208 -> 233/208
+        self.assertEqual(
+            canonicalize_chinese_card_number("CSV9.5C", "CSV9.5C-233/208"),
+            "233/208",
+        )
+        # CSV10C + CSV10C-268/222 -> 268/222
+        self.assertEqual(
+            canonicalize_chinese_card_number("CSV10C", "CSV10C-268/222"),
+            "268/222",
+        )
+        # Underscore separator
+        self.assertEqual(
+            canonicalize_chinese_card_number("CSV9.5C", "CSV9.5C_014"),
+            "014",
+        )
+        # CS4.1C + CS4.1C-014 -> 014
+        self.assertEqual(
+            canonicalize_chinese_card_number("CS4.1C", "CS4.1C-014"),
+            "014",
+        )
+        # Mismatched set prefix -> untouched
+        self.assertEqual(
+            canonicalize_chinese_card_number("CSV9C", "CSV9.5C-233/208"),
+            "CSV9.5C-233/208",
+        )
+        # Non-Chinese set code -> untouched
+        self.assertEqual(
+            canonicalize_chinese_card_number("SVP", "SVP-027"),
+            "SVP-027",
+        )
+        self.assertEqual(
+            canonicalize_chinese_card_number("Base Set", "Base-004"),
+            "Base-004",
+        )
+        # Non-bounded / invalid collector suffix -> untouched
+        self.assertEqual(
+            canonicalize_chinese_card_number("CSV9.5C", "CSV9.5C-INVALID"),
+            "CSV9.5C-INVALID",
+        )
+
+    def test_chinese_prefixed_card_number_in_ebay_aspects(self):
+        payload = {
+            "title": "Pokemon Chinese Booster Fresh Card",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Set", "value": "CSV9.5C"},
+                {"name": "Card Number", "value": "CSV9.5C-233/208"},
+                {"name": "Language", "value": "Chinese"},
+            ],
+        }
+        res = resolve_card_identity(payload)
+        self.assertEqual(res.identity.set, "CSV9.5C")
+        self.assertEqual(res.identity.card_number, "233/208")
+
+        payload2 = {
+            "title": "Pokemon Chinese Card",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Set", "value": "CSV10C"},
+                {"name": "Card Number", "value": "CSV10C-268/222"},
+                {"name": "Language", "value": "Chinese"},
+            ],
+        }
+        res2 = resolve_card_identity(payload2)
+        self.assertEqual(res2.identity.set, "CSV10C")
+        self.assertEqual(res2.identity.card_number, "268/222")
 
 
 if __name__ == "__main__":

@@ -854,6 +854,40 @@ def _labelled_title_value(title: str, labels: Sequence[str]) -> Optional[str]:
     return match.group(1).strip() if match else None
 
 
+_CHINESE_SET_CODE_PATTERN = re.compile(
+    r"^CSV?\d+(?:\.\d+)?[A-Za-z]{0,3}$", re.IGNORECASE
+)
+
+
+def canonicalize_chinese_card_number(
+    set_name: Optional[str], card_number: Optional[str]
+) -> Optional[str]:
+    """Strictly canonicalize Chinese collector numbers prefixed with their set code.
+
+    Applied only when:
+    * set_name matches explicitly recognized Chinese set codes (CS... / CSV...);
+    * the card_number prefix matches the exact set_name with separator - or _;
+    * the suffix is a valid bounded collector number (e.g. 233/208 or 014).
+    """
+    if not set_name or not card_number:
+        return card_number
+    raw_set = str(set_name).strip()
+    raw_num = str(card_number).strip()
+    if not _CHINESE_SET_CODE_PATTERN.fullmatch(raw_set):
+        return card_number
+    prefix_match = re.match(
+        rf"^{re.escape(raw_set)}[-_](.+)$",
+        raw_num,
+        flags=re.IGNORECASE,
+    )
+    if not prefix_match:
+        return card_number
+    suffix = prefix_match.group(1).strip()
+    if re.fullmatch(r"\d{1,4}(?:/\d{1,4})?", suffix):
+        return suffix
+    return card_number
+
+
 def _title_fallbacks(title: str) -> Dict[str, object]:
     """Extrait seulement des signaux explicites ou des motifs tres bornes."""
 
@@ -1121,6 +1155,11 @@ def resolve_card_identity(
     for name, value in fallback.items():
         if name in fields and name != "card_name" and fields[name] is None:
             fields[name] = value
+
+    fields["card_number"] = canonicalize_chinese_card_number(
+        str(fields["set"]) if fields.get("set") is not None else None,
+        str(fields["card_number"]) if fields.get("card_number") is not None else None,
+    )
 
     card_name_source = (
         CARD_NAME_SOURCE_LOCALIZED if structured.card_name is not None else None
