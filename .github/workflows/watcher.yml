@@ -83,6 +83,14 @@ jobs:
           restore-keys: |
             gcc-state-
 
+      - name: Restore final alerts deduplication state (read-only context)
+        uses: actions/cache/restore@v4
+        with:
+          path: final_alerts.json
+          key: gcc-final-alerts-${{ github.run_id }}
+          restore-keys: |
+            gcc-final-alerts-
+
       - name: Scan GCC auctions
         id: scan
         env:
