@@ -11,6 +11,100 @@ MIN_EXTERNAL_EXACT_GRADE_COMPS = 2
 FIXED_DISCOVERY_ALERT_TOLERANCE_RATIO = 0.002
 FIXED_DISCOVERY_ALERT_TOLERANCE_MIN_ROWS = 3
 _ORIGINAL_VALIDATE_SECONDARY_SOURCES = watcher.validate_secondary_sources
+_ORIGINAL_SCRAPE_PSA_APR = watcher.scrape_psa_apr
+
+PSA_APR_SEARCH_SELECTOR = (
+    'input[name="q"], '
+    'input[placeholder*="Search PSA-Graded Items"]'
+)
+PSA_APR_SUBMIT_SELECTOR = (
+    '[role="search"] button[aria-label="Search"], '
+    'button:has-text("Search")'
+)
+PSA_APR_SEARCH_HYDRATION_WAIT_MS = 1800
+PSA_APR_SUBMIT_HYDRATION_WAIT_MS = 700
+
+
+class AprHydrationPageProxy:
+    """Wait briefly for PSA APR's client-rendered search controls.
+
+    The public APR page can return `domcontentloaded` before the search form is
+    hydrated. The underlying V4 scraper intentionally fast-fails when the form
+    is absent, so a very small production-only wait here prevents a false
+    transient-unavailable classification without broadening matching or
+    scraping more pages.
+    """
+
+    def __init__(self, page):
+        self._page = page
+
+    def __getattr__(self, name):
+        return getattr(self._page, name)
+
+    @property
+    def url(self):
+        return self._page.url
+
+    def _wait_for_apr_search_controls(self) -> None:
+        nav_budget_ms = max(1, int(watcher.PSA_APR_NAV_TIMEOUT))
+        waits = (
+            (
+                PSA_APR_SEARCH_SELECTOR,
+                min(PSA_APR_SEARCH_HYDRATION_WAIT_MS, nav_budget_ms),
+            ),
+            (
+                PSA_APR_SUBMIT_SELECTOR,
+                min(PSA_APR_SUBMIT_HYDRATION_WAIT_MS, nav_budget_ms),
+            ),
+        )
+        for selector, timeout_ms in waits:
+            try:
+                self._page.locator(selector).first.wait_for(
+                    state="visible", timeout=max(1, timeout_ms)
+                )
+            except Exception:
+                # Keep the original scraper authoritative: after this bounded
+                # wait it will either see the control or fail closed exactly as
+                # before. No synthetic success is created here.
+                continue
+
+    def goto(self, url, *args, **kwargs):
+        result = self._page.goto(url, *args, **kwargs)
+        if str(url).rstrip("/") == watcher.PSA_APR_SEARCH_URL.rstrip("/"):
+            self._wait_for_apr_search_controls()
+        return result
+
+
+def resilient_scrape_psa_apr(
+    page,
+    lot: watcher.Lot,
+    usd_per_eur: Optional[float] = None,
+    now=None,
+) -> watcher.PsaAprData:
+    """Run the existing strict APR scraper after a bounded hydration wait."""
+
+    data = _ORIGINAL_SCRAPE_PSA_APR(
+        AprHydrationPageProxy(page),
+        lot,
+        usd_per_eur=usd_per_eur,
+        now=now,
+    )
+    if data.provider_status in {
+        watcher.EXTERNAL_TRANSIENT_UNAVAILABLE,
+        watcher.EXTERNAL_PROVIDER_ERROR,
+        watcher.EXTERNAL_RATE_LIMITED,
+    }:
+        watcher.log(
+            "APR disponibilité: "
+            f"{data.note or data.provider_status}"
+        )
+    return data
+
+
+def install_psa_apr_hydration_guard() -> None:
+    """Patch only the production entrypoint; matching semantics stay intact."""
+
+    watcher.scrape_psa_apr = resilient_scrape_psa_apr
 
 
 def external_exact_target_grade_count(op: watcher.Opportunity) -> int:
@@ -222,6 +316,7 @@ if __name__ == "__main__":
     # item-level through GCC's official /on-sale-items API, ordered ENDING_SOON
     # and filtered by each lot's individual endTime. The previous live-sale
     # collector is preserved strictly as a conservative fallback.
+    install_psa_apr_hydration_guard()
     install_grade_arbitrage_guard()
     install_technical_alert_guard()
     install_fixed_queue_backlog_diagnostics()
