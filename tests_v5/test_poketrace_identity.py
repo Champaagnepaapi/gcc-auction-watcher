@@ -51,10 +51,10 @@ class CatalogSession:
         raise AssertionError(f"Pokemon TCG fallback must not be reached: {url}")
 
 
-def card_payload(two=False, *, card_number="004/102", set_name="Base Set"):
+def card_payload(two=False, *, name="Charizard", card_number="004/102", set_name="Base Set"):
     card = {
-        "id": "pt-charizard-base-4",
-        "name": "Charizard",
+        "id": f"pt-{name.lower()}-base-4",
+        "name": name,
         "cardNumber": card_number,
         "set": {"name": set_name, "slug": "base-set"},
         "variant": "Holofoil",
@@ -295,6 +295,57 @@ class PokeTraceIdentityResolverTests(unittest.TestCase):
         set_calls = [url for url, _params, _headers in catalog_session.calls if url.endswith("/sets")]
         self.assertEqual(set_calls.count("https://api.tcgdex.net/v2/en/sets"), 1)
         self.assertEqual(set_calls.count("https://api.tcgdex.net/v2/fr/sets"), 1)
+
+    def test_adaptive_broad_number_suppressed_when_name_already_matched(self):
+        candidate_same_name = card_payload(name="Stufful", set_name="Other Set", card_number="10/100")["data"][0]
+        session = PokeTraceSession([
+            Response(200, {"data": [candidate_same_name]}),
+            Response(200, {"data": []}),
+            Response(200, {"data": []}),
+        ])
+        resolver = PokeTraceIdentityResolver(provider(session))
+
+        resolved = resolver.resolve_identity(
+            identity(card_name="Stufful", set_name="Mega Evolution", card_number="154/132")
+        )
+
+        self.assertFalse(resolved.matched)
+        self.assertEqual(resolver.counters.broad_number_searches, 0)
+        self.assertEqual(resolver.counters.broad_number_suppressed_after_name_match, 1)
+
+    def test_adaptive_broad_number_called_when_no_name_matched(self):
+        candidate_diff_name = card_payload(name="Unrelated Card", set_name="Other Set", card_number="10/100")["data"][0]
+        session = PokeTraceSession([
+            Response(200, {"data": [candidate_diff_name]}),
+            Response(200, {"data": []}),
+            Response(200, {"data": []}),
+            Response(200, {"data": []}),
+        ])
+        resolver = PokeTraceIdentityResolver(provider(session))
+
+        resolved = resolver.resolve_identity(
+            identity(card_name="Stufful", set_name="Mega Evolution", card_number="154/132")
+        )
+
+        self.assertFalse(resolved.matched)
+        self.assertEqual(resolver.counters.broad_number_searches, 1)
+        self.assertEqual(resolver.counters.broad_number_suppressed_after_name_match, 0)
+
+    def test_adaptive_broad_number_called_when_card_name_absent(self):
+        session = PokeTraceSession([
+            Response(200, {"data": []}),
+            Response(200, {"data": []}),
+            Response(200, {"data": []}),
+        ])
+        resolver = PokeTraceIdentityResolver(provider(session))
+
+        resolved = resolver.resolve_identity(
+            identity(card_name=None, set_name="Base Set", card_number="4/102")
+        )
+
+        self.assertFalse(resolved.matched)
+        self.assertEqual(resolver.counters.broad_number_searches, 1)
+        self.assertEqual(resolver.counters.broad_number_suppressed_after_name_match, 0)
 
 
 if __name__ == "__main__":

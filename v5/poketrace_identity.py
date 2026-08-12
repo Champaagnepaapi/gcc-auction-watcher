@@ -199,6 +199,7 @@ class PokeTraceIdentityCounters:
     structured_searches: int = 0
     broad_name_searches: int = 0
     broad_number_searches: int = 0
+    broad_number_suppressed_after_name_match: int = 0
     broad_set_searches: int = 0
     zero_candidate_queries: int = 0
     candidate_queries_without_exact_match: int = 0
@@ -477,9 +478,14 @@ class PokeTraceIdentityResolver:
         seen_candidates: set[Tuple[str, ...]] = set()
         seen_set_keys: dict[str, str] = {}
         counted_set_collisions: set[Tuple[str, str, str]] = set()
+        seen_exact_name_candidate = False
         for index, (strategy, search_text, structured) in enumerate(
             _search_strategies(search_identity)
         ):
+            if strategy == "broad_number":
+                if search_identity.card_name and seen_exact_name_candidate:
+                    self.counters.broad_number_suppressed_after_name_match += 1
+                    continue
             self._count_query_strategy(strategy)
             strategy_counters = self.strategy_counters[strategy]
             if index > 0 or market == "EU":
@@ -563,6 +569,8 @@ class PokeTraceIdentityResolver:
                 self.counters.candidates_received += 1
                 strategy_counters.unique_candidates_introduced += 1
                 evidence = _candidate_evidence(search_identity, candidate)
+                if evidence.name_matched:
+                    seen_exact_name_candidate = True
                 set_payload = candidate.get("set")
                 provider_collision = bool(
                     isinstance(set_payload, Mapping)
@@ -1129,6 +1137,10 @@ def render_poketrace_identity_counters(resolver: PokeTraceIdentityResolver) -> s
             f"query strategy structured: {counters.structured_searches}",
             f"query strategy broad-name: {counters.broad_name_searches}",
             f"query strategy broad-number: {counters.broad_number_searches}",
+            (
+                "query strategy broad-number suppressed after name match: "
+                f"{counters.broad_number_suppressed_after_name_match}"
+            ),
             f"query strategy broad-set: {counters.broad_set_searches}",
             "strategy yield (first-seen candidates per identity):",
             *(

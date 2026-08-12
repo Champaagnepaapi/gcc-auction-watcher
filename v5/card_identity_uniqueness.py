@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Mapping, Optional, Tuple
 
@@ -17,7 +18,12 @@ from .card_identity_catalog import (
     _with_catalog_identity,
 )
 from .models import CardIdentity
-from .microvariants import MICROVARIANT_APPLICABILITY_UNKNOWN
+from .microvariants import (
+    MICROVARIANT_APPLICABILITY_UNKNOWN,
+    MicrovariantApplicability,
+    tcgdex_microvariant_applicability,
+)
+from .poketrace_matching import _normalize_card_name, _normalize_card_number
 from .poketrace_set_bridge import OfficialSetName, TCGdexSetProvenance
 from .variant_semantics import tcgdex_variant_supports_identity
 
@@ -126,6 +132,127 @@ class DeterministicUniquenessHybridPokemonCardResolver(HybridPokemonCardResolver
         # clean uniqueness no-match. They retain their pre-existing strict gates.
         return super().resolve_identity(identity)
 
+    def _tcgdex_official_set_count(
+        self, language: str, set_id: str, card: Mapping[str, object]
+    ) -> Optional[str]:
+        set_payload = card.get("set")
+        card_count = (
+            set_payload.get("cardCount")
+            if isinstance(set_payload, Mapping)
+            else None
+        )
+        official = (
+            card_count.get("official")
+            if isinstance(card_count, Mapping)
+            else None
+        )
+        official_text = str(official or "").strip()
+        if re.fullmatch(r"[1-9]\d*", official_text):
+            return official_text
+        cached = self._set_official_counts.get((language, set_id))
+        if cached:
+            return str(cached).strip()
+        target_casefold = set_id.strip().casefold()
+        for (lang, sid), count in self._set_official_counts.items():
+            if lang == language and str(sid).strip().casefold() == target_casefold:
+                return str(count).strip()
+        return None
+
+    def _resolve_post_macro_exact_set(
+        self, identity: CardIdentity
+    ) -> Tuple[Optional[MicrovariantApplicability], bool]:
+        if not identity.set or ":" not in str(identity.set):
+            return None, False
+        raw_set = str(identity.set).strip()
+        set_code, set_name = [part.strip() for part in raw_set.split(":", 1)]
+        if not set_code or not set_name:
+            return None, False
+
+        self.counters.post_macro_exact_set_attempts += 1
+        language = self._target_language(identity)
+        rows = self._tcgdex_all_sets(language)
+        target_code = set_code.strip().casefold()
+        matching_sets = [
+            (sid, sname)
+            for sid, sname in rows
+            if str(sid).strip().casefold() == target_code
+        ]
+        if not matching_sets:
+            self.counters.post_macro_exact_set_no_match += 1
+            return None, False
+
+        matching_by_name = [
+            (sid, sname)
+            for sid, sname in matching_sets
+            if _normalize(sname) == _normalize(set_name)
+        ]
+        if not matching_by_name:
+            self.counters.post_macro_exact_set_conflict += 1
+            return None, True
+
+        if len(matching_by_name) > 1:
+            self.counters.post_macro_exact_set_conflict += 1
+            return None, True
+
+        target_set_id, _target_set_name = matching_by_name[0]
+        card = self._find_tcgdex_card(
+            language, target_set_id, str(identity.card_number or "").strip()
+        )
+        if card is None or not isinstance(card, Mapping):
+            self.counters.post_macro_exact_set_no_match += 1
+            return None, False
+
+        set_payload = card.get("set")
+        card_set_id = (
+            str(set_payload.get("id") or "").strip().casefold()
+            if isinstance(set_payload, Mapping)
+            else ""
+        )
+        if card_set_id != target_code:
+            self.counters.post_macro_exact_set_conflict += 1
+            return None, True
+
+        if _normalize_card_name(card.get("name")) != _normalize_card_name(
+            identity.card_name
+        ):
+            self.counters.post_macro_exact_set_conflict += 1
+            return None, True
+
+        listing_num, listing_denom = _card_number_parts(identity.card_number)
+        local_id = str(card.get("localId") or "").strip()
+        local_num, local_denom = _card_number_parts(local_id)
+
+        if listing_num != local_num:
+            self.counters.post_macro_exact_set_conflict += 1
+            return None, True
+
+        official_count = self._tcgdex_official_set_count(
+            language, target_set_id, card
+        )
+        catalog_denom = local_denom or (
+            _normalize_card_number(official_count) if official_count else None
+        )
+
+        if listing_denom is not None:
+            if catalog_denom is None or listing_denom != catalog_denom:
+                self.counters.post_macro_exact_set_conflict += 1
+                return None, True
+
+        supported = tcgdex_variant_supports_identity(identity, card)
+        if supported is False:
+            self.counters.post_macro_exact_set_conflict += 1
+            return None, True
+
+        if identity.year is not None and isinstance(set_payload, Mapping):
+            release_year = _safe_year_from_release_date(set_payload.get("releaseDate"))
+            if release_year is not None and int(identity.year) != release_year:
+                self.counters.post_macro_exact_set_conflict += 1
+                return None, True
+
+        self.counters.post_macro_exact_set_hits += 1
+        exact_applicability = tcgdex_microvariant_applicability(card)
+        return exact_applicability, False
+
     def resolve_microvariant_applicability(self, identity: CardIdentity):
         applicability = super().resolve_microvariant_applicability(identity)
         if applicability.status != MICROVARIANT_APPLICABILITY_UNKNOWN:
@@ -140,6 +267,30 @@ class DeterministicUniquenessHybridPokemonCardResolver(HybridPokemonCardResolver
         ):
             self.counters.post_macro_retry_ineligible += 1
             return applicability
+
+        exact_applicability, is_conflict = self._resolve_post_macro_exact_set(identity)
+        if is_conflict:
+            return applicability
+
+        if exact_applicability is not None:
+            if exact_applicability.source != "TCGDEX_EXACT":
+                self.counters.post_macro_non_exact_source += 1
+                return applicability
+
+            if exact_applicability.finish_proven_single:
+                self.counters.post_macro_exact_finish_single += 1
+            elif exact_applicability.finish_multiple_variants:
+                self.counters.post_macro_exact_finish_multiple += 1
+            else:
+                self.counters.post_macro_exact_finish_unknown += 1
+
+            original_key = self._identity_key(identity)
+            self._microvariant_applicability_cache[original_key] = exact_applicability
+            if exact_applicability.status != MICROVARIANT_APPLICABILITY_UNKNOWN:
+                if self.counters.post_macro_applicability_unknown > 0:
+                    self.counters.post_macro_applicability_unknown -= 1
+                self.counters.post_macro_applicability_resolved += 1
+            return exact_applicability
 
         probe = replace(identity, set=None)
         exact = self._resolve_unique_name_number(probe)
