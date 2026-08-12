@@ -185,6 +185,17 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         self.assertEqual(identity.set, "CSV9.5C")
         self.assertEqual(identity.card_number, "239/208")
 
+    def test_extract_csv_chinese_set_code_and_number_with_space(self):
+        payload = {
+            "title": "Pokémon TCG S-Chinesische Feelinara Sylveon ex CSV9.5C 233/208 SAR Holo NM",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+            ],
+        }
+        identity = resolve_card_identity(payload).identity
+        self.assertEqual(identity.set, "CSV9.5C")
+        self.assertEqual(identity.card_number, "233/208")
+
     def test_extract_journey_together_canonical_set_and_fractional_number(self):
         """Journey Together 167/159 set name and fractional collector number extraction."""
         payload = {
@@ -252,6 +263,44 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         # Proven single-compatible: economics is NOT blocked!
         self.assertFalse(resolution.blocks_economics)
         self.assertEqual(resolution.edition_status, MICROVARIANT_NOT_REQUIRED)
+
+    def test_exact_single_detailed_tcgdex_variant_can_prove_stufful_holo_finish(self):
+        applicability = tcgdex_microvariant_applicability(
+            {
+                "id": "me01-154",
+                "variants_detailed": [
+                    {"type": "holo", "size": "standard"},
+                ],
+            }
+        )
+        self.assertEqual(applicability.source, "TCGDEX_EXACT")
+        self.assertEqual(applicability.status, MICROVARIANT_NOT_APPLICABLE)
+        self.assertTrue(applicability.finish_proven_single)
+        self.assertEqual(applicability.single_finish, "holofoil")
+        self.assertTrue(applicability.edition_proven_single)
+
+    def test_detailed_tcgdex_variant_fallback_stays_closed_when_not_simple_and_unique(self):
+        ambiguous = tcgdex_microvariant_applicability(
+            {
+                "id": "fixture",
+                "variants_detailed": [
+                    {"type": "normal"},
+                    {"type": "holo"},
+                ],
+            }
+        )
+        stamped = tcgdex_microvariant_applicability(
+            {
+                "id": "fixture",
+                "variants_detailed": [
+                    {"type": "holo", "stamp": ["pokemon-center"]},
+                ],
+            }
+        )
+        self.assertEqual(ambiguous.source, "UNAVAILABLE")
+        self.assertFalse(ambiguous.finish_proven_single)
+        self.assertEqual(stamped.source, "UNAVAILABLE")
+        self.assertFalse(stamped.finish_proven_single)
 
     def test_multiple_catalog_finishes_remain_fail_closed_when_listing_finish_is_unknown(self):
         """When catalog proves multiple finishes (normal + reverse), unknown listing finish blocks economics."""

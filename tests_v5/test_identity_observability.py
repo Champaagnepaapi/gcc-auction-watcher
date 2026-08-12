@@ -19,6 +19,7 @@ from v5.identity_observability import (
     DENOMINATOR_CONFLICT,
     MISSING_NAME,
     MISSING_SET,
+    MISSING_LANGUAGE,
     MULTIPLE_CANONICAL_CANDIDATES,
     NUMBER_UNPROVEN,
     LISTING_FIELD_CONFLICT,
@@ -120,6 +121,7 @@ class IdentityObservabilityTests(unittest.TestCase):
             set="SVP",
             card_number="027",
             language="French",
+            ambiguities=("catalog_identity_ambiguous",),
         )
         coords = analyze_coordinates(identity)
         reason, explanation = determine_reason_code(
@@ -130,6 +132,24 @@ class IdentityObservabilityTests(unittest.TestCase):
         )
         self.assertEqual(reason, MULTIPLE_CANONICAL_CANDIDATES)
         self.assertIn("TCGdex", explanation)
+
+    def test_missing_language_is_not_misreported_as_number_unproven(self):
+        identity = CardIdentity(
+            game="Pokémon TCG",
+            card_name="Poliwrath",
+            set="Base Set",
+            card_number="13/102",
+            language=None,
+        )
+        coords = analyze_coordinates(identity)
+        reason, explanation = determine_reason_code(
+            "INSUFFICIENT",
+            identity,
+            coords,
+            tcgdex_status="matched=True, ambiguous=False, source=TCGDEX",
+        )
+        self.assertEqual(reason, MISSING_LANGUAGE)
+        self.assertIn("language", explanation.lower())
 
     def test_poketrace_near_matches_distinguishable(self):
         target = CardIdentity(

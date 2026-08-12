@@ -158,8 +158,8 @@ class DeterministicCatalogUniquenessTests(unittest.TestCase):
                         132,
                         variants={
                             "firstEdition": False,
-                            "normal": True,
-                            "holo": False,
+                            "normal": False,
+                            "holo": True,
                             "reverse": False,
                         },
                     ),
@@ -178,8 +178,11 @@ class DeterministicCatalogUniquenessTests(unittest.TestCase):
         )
         self.assertEqual(applicability.source, "TCGDEX_EXACT")
         self.assertTrue(applicability.finish_proven_single)
-        self.assertEqual(applicability.single_finish, "standard")
+        self.assertEqual(applicability.single_finish, "holofoil")
         self.assertTrue(applicability.edition_proven_single)
+        self.assertEqual(resolver.counters.post_macro_exact_finish_single, 1)
+        self.assertEqual(resolver.counters.post_macro_applicability_resolved, 1)
+        self.assertEqual(resolver.counters.post_macro_applicability_unknown, 0)
         self.assertEqual(poketrace.resolve_calls, 0)
 
     def test_post_macro_applicability_rejects_unique_card_from_unrelated_set(self):
