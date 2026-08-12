@@ -217,7 +217,7 @@ class GCCIdentityMatchingTests(unittest.TestCase):
             variant="stamped regional print",
         )
         result = match_identity(target, candidate)
-        self.assertEqual(result.match_class, MatchClass.STRONG_MATCH)
+        self.assertEqual(result.match_class, MatchClass.AMBIGUOUS)
         self.assertIn("target_variant", result.missing_fields)
 
     def test_variant_and_edition_are_normalized_as_separate_discriminators(self):

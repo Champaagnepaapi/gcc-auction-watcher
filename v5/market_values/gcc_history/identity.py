@@ -218,8 +218,8 @@ def match_identity(
     if required_matched == {"card_name", "set_name", "card_number"}:
         if candidate_only_discriminators:
             return IdentityMatch(
-                match_class=MatchClass.STRONG_MATCH,
-                score=min(94, score),
+                match_class=MatchClass.AMBIGUOUS,
+                score=min(79, score),
                 matched_fields=tuple(matched),
                 missing_fields=tuple(missing),
                 conflicts=(),
@@ -243,7 +243,7 @@ def match_identity(
         {"card_name", "set_name"}.issubset(required_matched)
         and bool(discriminator_matches)
     )
-    if name_and_number or name_and_set_supported:
+    if (name_and_number or name_and_set_supported) and not candidate_only_discriminators:
         return IdentityMatch(
             match_class=MatchClass.STRONG_MATCH,
             score=min(94, score),
