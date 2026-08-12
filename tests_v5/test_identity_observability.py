@@ -20,6 +20,7 @@ from v5.identity_observability import (
     MISSING_NAME,
     MISSING_SET,
     NUMBER_UNPROVEN,
+    LISTING_FIELD_CONFLICT,
     POKETRACE_NAME_MISMATCH,
     POKETRACE_NUMBER_MISMATCH,
     POKETRACE_SET_MISMATCH,
@@ -32,6 +33,7 @@ from v5.identity_observability import (
     VARIANT_UNKNOWN_FIELD_ONLY,
     VISUAL_MARGIN_TOO_SMALL,
     VISUAL_NO_CANDIDATE,
+    ambiguity_fields,
     analyze_coordinates,
     analyze_variant_blocking,
     determine_reason_code,
@@ -89,6 +91,26 @@ class IdentityObservabilityTests(unittest.TestCase):
         reason, expl = determine_reason_code("INSUFFICIENT", id_denom, coords)
         self.assertEqual(reason, DENOMINATOR_CONFLICT)
         self.assertIn("denominator", expl.lower())
+
+    def test_all_known_coordinates_report_actual_ambiguity_field(self):
+        identity = CardIdentity(
+            game="Pokémon TCG",
+            card_name="Dark Blastoise",
+            set="Team Rocket",
+            card_number="3/82",
+            language="English",
+            ambiguities=("variant: valeurs contradictoires",),
+        )
+        coords = analyze_coordinates(identity)
+        self.assertEqual(ambiguity_fields(identity), ("variant",))
+        reason, explanation = determine_reason_code(
+            "AMBIGUOUS",
+            identity,
+            coords,
+            tcgdex_status="matched=True, ambiguous=False, source=TCGDEX",
+        )
+        self.assertEqual(reason, LISTING_FIELD_CONFLICT)
+        self.assertIn("variant", explanation)
 
     def test_poketrace_near_matches_distinguishable(self):
         target = CardIdentity(

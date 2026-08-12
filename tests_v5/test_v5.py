@@ -206,6 +206,22 @@ class EbayOfficialConnectorTests(unittest.TestCase):
         self.assertFalse(identity.is_unambiguous_pokemon())
         self.assertIn("card_name", identity.ambiguities[0])
 
+    def test_additive_features_do_not_create_false_variant_ambiguity(self):
+        identity = card_identity_from_aspects(
+            {
+                "Game": ("Pokemon TCG",),
+                "Card Name": ("Dark Blastoise",),
+                "Set": ("Team Rocket",),
+                "Card Number": ("3/82",),
+                "Language": ("English",),
+                "Features": ("Holo", "1st Edition"),
+            }
+        )
+        self.assertEqual(identity.finish, "holofoil")
+        self.assertEqual(identity.edition, "first_edition")
+        self.assertEqual(identity.ambiguities, ())
+        self.assertTrue(identity.is_unambiguous_pokemon())
+
     def test_browse_search_uses_official_raw_aspect_filter(self):
         session = FakeEbaySession(self.payload)
         config = EbayBrowseConfig(

@@ -204,6 +204,47 @@ class MultilingualPokemonCardResolverTests(unittest.TestCase):
         self.assertEqual(result.identity.language, "English")
         self.assertEqual(resolver.counters.pokemon_tcg_hits, 1)
 
+    def test_exact_tcgdex_clears_only_card_name_ambiguity(self):
+        def handler(url, _params, _headers):
+            if url.endswith("/en/sets"):
+                return _Response(200, [{"id": "base1", "name": "Base Set"}])
+            if url.endswith("/fr/sets"):
+                return _Response(200, [])
+            if url.endswith("/en/sets/base1/4"):
+                return _Response(
+                    200,
+                    {
+                        "id": "base1-4",
+                        "name": "Charizard",
+                        "localId": "4",
+                        "set": {
+                            "id": "base1",
+                            "name": "Base Set",
+                            "cardCount": {"official": 102},
+                        },
+                    },
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        resolver = MultilingualPokemonCardResolver(session=_Session(handler))
+        result = resolver.resolve_identity(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name=None,
+                set="Base Set",
+                card_number="4/102",
+                language="English",
+                ambiguities=(
+                    "card_name: plusieurs noms directs",
+                    "variant: conflit vendeur",
+                ),
+            )
+        )
+        self.assertTrue(result.matched)
+        self.assertEqual(result.identity.card_name, "Charizard")
+        self.assertNotIn("card_name: plusieurs noms directs", result.identity.ambiguities)
+        self.assertIn("variant: conflit vendeur", result.identity.ambiguities)
+
     def test_multiple_tcgdex_set_candidates_are_rejected_as_ambiguous(self):
         def handler(url, _params, _headers):
             if url.endswith("/en/sets"):

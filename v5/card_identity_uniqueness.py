@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping, Optional, Tuple
 
 from .card_identity_catalog import (
@@ -17,6 +17,7 @@ from .card_identity_catalog import (
     _with_catalog_identity,
 )
 from .models import CardIdentity
+from .microvariants import MICROVARIANT_APPLICABILITY_UNKNOWN
 from .poketrace_set_bridge import OfficialSetName, TCGdexSetProvenance
 from .variant_semantics import tcgdex_variant_supports_identity
 
@@ -124,6 +125,37 @@ class DeterministicUniquenessHybridPokemonCardResolver(HybridPokemonCardResolver
         # Existing PokeTrace / Pokémon TCG fallbacks remain available after a
         # clean uniqueness no-match. They retain their pre-existing strict gates.
         return super().resolve_identity(identity)
+
+    def resolve_microvariant_applicability(self, identity: CardIdentity):
+        applicability = super().resolve_microvariant_applicability(identity)
+        if applicability.status != MICROVARIANT_APPLICABILITY_UNKNOWN:
+            return applicability
+        # Language is a first-class identity discriminator. Do not use an
+        # English/default catalogue retry to prove variant applicability for an
+        # unknown or unsupported listing language.
+        if not (
+            _language_code(identity.language)
+            and identity.card_name
+            and self._complete_printed_number(identity.card_number)
+        ):
+            return applicability
+
+        probe = replace(identity, set=None)
+        exact = self._resolve_unique_name_number(probe)
+        if not (exact.matched and not exact.ambiguous and not exact.blocking):
+            return applicability
+
+        exact_applicability = exact.microvariant_applicability
+        if exact_applicability.source != "TCGDEX_EXACT":
+            return applicability
+
+        original_key = self._identity_key(identity)
+        self._microvariant_applicability_cache[original_key] = exact_applicability
+        if exact_applicability.status != MICROVARIANT_APPLICABILITY_UNKNOWN:
+            if self.counters.post_macro_applicability_unknown > 0:
+                self.counters.post_macro_applicability_unknown -= 1
+            self.counters.post_macro_applicability_resolved += 1
+        return exact_applicability
 
     def _target_language(self, identity: CardIdentity) -> str:
         return _language_code(identity.language) or "en"

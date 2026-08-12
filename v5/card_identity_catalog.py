@@ -826,6 +826,15 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
             card_number=canonical_card_number,
             year=release_year,
         )
+        if resolved.card_name and resolved.ambiguities:
+            resolved = replace(
+                resolved,
+                ambiguities=tuple(
+                    ambiguity
+                    for ambiguity in resolved.ambiguities
+                    if not str(ambiguity).strip().casefold().startswith("card_name:")
+                ),
+            )
         original_numerator, original_denominator = _card_number_parts(
             identity.card_number
         )
