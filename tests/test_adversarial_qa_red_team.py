@@ -108,20 +108,18 @@ class AdversarialQARedTest(unittest.TestCase):
         target = lot(series="Unknown GCC Set")
         a = tcgdex_card(card_id="base1-4", set_id="base1", set_name="Base Set")
         b = tcgdex_card(card_id="base2-4", set_id="base2", set_name="Base Set 2")
-        responses = [
-            (
-                200,
-                [
+        def mock_get(url, params=None, timeout=None):
+            if "/cards/base1-4" in url:
+                return 200, a, {}
+            if "/cards/base2-4" in url:
+                return 200, b, {}
+            if params and params.get("localId") == "eq:4":
+                return 200, [
                     {"id": "base1-4", "name": "Charizard", "localId": "4"},
                     {"id": "base2-4", "name": "Charizard", "localId": "4"},
-                ],
-                {},
-            ),
-            (200, a, {}),
-            (200, b, {}),
-            (200, [], {}),  # set search returns no exact match for 'Unknown GCC Set'
-        ]
-        with patch.object(mm, "_json_get", side_effect=responses):
+                ], {}
+            return 200, [], {}
+        with patch.object(mm, "_json_get", side_effect=mock_get):
             result = mm.resolve_tcgdex_card(target)
         self.assertEqual(result.status, "AMBIGUOUS")
         self.assertEqual(mm._DIAGNOSTICS.tcgdex_ambiguous, 1)
@@ -134,12 +132,13 @@ class AdversarialQARedTest(unittest.TestCase):
         """Red Team Test 2: #004/102 matches localId 4 when name, set and denominator agree."""
         target = lot(reference="#004/102")
         detail = tcgdex_card(local_id="4", official=102, total=102)
-        responses = [
-            (200, [], {}),  # localId=004 returns empty
-            (200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}),  # unpadded localId=4 match
-            (200, detail, {}),
-        ]
-        with patch.object(mm, "_json_get", side_effect=responses):
+        def mock_get(url, params=None, timeout=None):
+            if "/cards/" in url:
+                return 200, detail, {}
+            if params and params.get("localId") == "eq:4":
+                return 200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}
+            return 200, [], {}
+        with patch.object(mm, "_json_get", side_effect=mock_get):
             result = mm.resolve_tcgdex_card(target)
         self.assertEqual(result.status, "EXACT")
         self.assertEqual(result.card_id, "base1-4")

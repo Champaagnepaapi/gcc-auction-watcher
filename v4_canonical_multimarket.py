@@ -388,12 +388,12 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
             if padded not in num_queries:
                 num_queries.append(padded)
 
+    briefs_by_id: dict[str, Mapping[str, Any]] = {}
     had_transient_error = False
     error_reason = ""
 
     try:
-        # Primary proof: strict exact localized card name + localId.
-        briefs: list[Mapping[str, Any]] = []
+        # Primary proof: query ALL equivalent numeric representations
         for q_num in num_queries:
             status, payload, _ = _json_get(
                 f"{TCGDEX_BASE_URL}/{language_code}/cards",
@@ -402,40 +402,61 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
             )
             if status == 200:
                 found = _extract_list_payload(payload)
-                if found:
-                    briefs = found
-                    break
-            elif status in {429, 500, 502, 503, 504} or status == 0:
+                for item in found:
+                    if isinstance(item, Mapping):
+                        b_id = str(item.get("id") or "").strip()
+                        if b_id:
+                            briefs_by_id[b_id] = item
+                        else:
+                            had_transient_error = True
+                            error_reason = "malformed brief without id"
+            else:
                 had_transient_error = True
-                error_reason = f"HTTP {status}"
+                error_reason = f"HTTP {status} on /cards (localId={q_num})"
 
-        if briefs:
+        if had_transient_error:
+            _DIAGNOSTICS.tcgdex_error += 1
+            return CanonicalCard("ERROR", reason=f"TCGdex {error_reason}")
+
+        unique_briefs = list(briefs_by_id.values())
+        if unique_briefs:
+            if len(unique_briefs) > 10:
+                _DIAGNOSTICS.tcgdex_ambiguous += 1
+                amb_res = CanonicalCard(
+                    "AMBIGUOUS",
+                    reason="plusieurs cartes TCGdex exactes pour nom + localId",
+                )
+                _TCGDEX_MEMORY_CACHE[cache_key] = amb_res
+                return amb_res
+
             details: list[Mapping[str, Any]] = []
-            for brief in briefs[:5]:
+            detail_error = False
+            for brief in unique_briefs:
                 card_id = str(brief.get("id") or "").strip()
                 if not card_id:
-                    continue
+                    detail_error = True
+                    had_transient_error = True
+                    error_reason = "malformed brief id"
+                    break
                 det_status, detail = _fetch_tcgdex_card_detail(language_code, card_id)
                 if det_status == 200 and detail is not None:
-                    candidate = _validate_tcgdex_card(
-                        lot,
-                        detail,
-                        language_code=language_code,
-                        unique_name_number=len(briefs) == 1,
-                        reason="TCGDEX_EXACT_NAME_LOCALID",
-                    )
-                    if candidate is not None:
-                        details.append(detail)
-                elif det_status in {429, 500, 502, 503, 504} or det_status == 0:
+                    details.append(detail)
+                else:
+                    detail_error = True
                     had_transient_error = True
                     error_reason = f"HTTP {det_status} on detail {card_id}"
+                    break
+
+            if detail_error:
+                _DIAGNOSTICS.tcgdex_error += 1
+                return CanonicalCard("ERROR", reason=f"TCGdex {error_reason}")
 
             valid = [
                 _validate_tcgdex_card(
                     lot,
                     detail,
                     language_code=language_code,
-                    unique_name_number=len(briefs) == 1,
+                    unique_name_number=len(unique_briefs) == 1,
                     reason="TCGDEX_EXACT_NAME_LOCALID",
                 )
                 for detail in details
@@ -448,7 +469,8 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
                 _TCGDEX_MEMORY_CACHE[cache_key] = result
                 return result
             if len(by_id) > 1:
-                # Exact listing set can safely disambiguate without fuzzy matching.
+                # Exact listing set can safely disambiguate without fuzzy matching
+                # since all candidate briefs were fully resolved.
                 if listing_set:
                     matching = [
                         item
@@ -476,7 +498,7 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
 
         # Secondary proof: exact localized set name + set/localId endpoint.
         raw_listing_set = str(lot.card_set or identity.get("series") or "").strip()
-        if raw_listing_set and not briefs:
+        if raw_listing_set and not unique_briefs and not had_transient_error:
             set_status, set_payload, _ = _json_get(
                 f"{TCGDEX_BASE_URL}/{language_code}/sets",
                 params={"name": f"eq:{raw_listing_set}"},
@@ -508,7 +530,9 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
                                         _TCGDEX_MEMORY_CACHE[cache_key] = result
                                         return result
                                     break
-                            elif card_status in {429, 500, 502, 503, 504} or card_status == 0:
+                            elif card_status == 404:
+                                continue
+                            else:
                                 had_transient_error = True
                                 error_reason = f"HTTP {card_status}"
                 elif len(sets) > 1:
@@ -518,9 +542,9 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
                     )
                     _TCGDEX_MEMORY_CACHE[cache_key] = amb_res
                     return amb_res
-            elif set_status in {429, 500, 502, 503, 504} or set_status == 0:
+            else:
                 had_transient_error = True
-                error_reason = f"HTTP {set_status}"
+                error_reason = f"HTTP {set_status} on /sets"
     except Exception as error:
         _DIAGNOSTICS.tcgdex_error += 1
         return CanonicalCard(
