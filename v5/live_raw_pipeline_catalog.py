@@ -14,6 +14,15 @@ from .card_identity_catalog import (
     MultilingualPokemonCardResolver,
     render_card_catalog_counters,
 )
+from .identity_observability import (
+    CoordinateState,
+    UnresolvedIdentityDiagnostic,
+    VariantDiagnostic,
+    analyze_coordinates,
+    analyze_variant_blocking,
+    determine_reason_code,
+    extract_near_matches,
+)
 from .ebay import (
     RAW_CONDITION_ID,
     identity_aspect_audit,
@@ -177,6 +186,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             ),
         )
         self._visual_identity_attempts = 0
+        self.unresolved_diagnostics: list[UnresolvedIdentityDiagnostic] = []
         super().__init__(
             client_id,
             client_secret,
@@ -304,6 +314,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             and status_before_visual != IDENTITY_OK
             and self.visual_identity is not None
         )
+        visual = None
         if visual_eligible and hasattr(self.visual_identity, "counters"):
             self.visual_identity.counters.forensic_eligible += 1
         if visual_eligible and (
@@ -349,6 +360,46 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             if forensic_counts is not None:
                 forensic.market_missing += 1
                 forensic.economics_deferred += 1
+
+            coords = analyze_coordinates(identity)
+            visual_detail = (
+                f"attempted=True, matched={visual.matched}, score={visual.score:.3f}, margin={visual.margin:.3f}"
+                if visual is not None
+                else ("skipped_run_limit" if visual_eligible else "not_attempted")
+            )
+            tcgdex_detail = f"matched={resolved.matched}, ambiguous={resolved.ambiguous}, source={resolved.source}"
+            poketrace_detail = "NO_QUERY"
+            f_status = (
+                "AMBIGUOUS"
+                if status == IDENTITY_AMBIGUOUS
+                else ("MISSING_FRONT_IMAGE" if status == IDENTITY_OK else "INSUFFICIENT")
+            )
+            reason_code, explanation = determine_reason_code(
+                f_status,
+                identity,
+                coords,
+                tcgdex_status=tcgdex_detail,
+                poketrace_status=poketrace_detail,
+                visual_status=visual_detail,
+            )
+            diag = UnresolvedIdentityDiagnostic(
+                record=self._identity_records_seen,
+                item_id=record.item_id or listing.item_id,
+                title=listing.title if listing else record.title,
+                card_name=identity.card_name,
+                set_name=identity.set,
+                card_number=identity.card_number,
+                language=identity.language,
+                final_status=f_status,
+                coordinates=coords,
+                tcgdex_detail=tcgdex_detail,
+                poketrace_detail=poketrace_detail,
+                visual_detail=visual_detail,
+                reason_code=reason_code,
+                explanation=explanation,
+            )
+            self.unresolved_diagnostics.append(diag)
+            print(diag.format_block())
             return None, True
 
         if microvariant is None:
@@ -365,6 +416,47 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
                 f"identity record {self._identity_records_seen}: "
                 "microvariant gate blocked before market"
             )
+            coords = analyze_coordinates(identity)
+            visual_detail = (
+                f"attempted=True, matched={visual.matched}, score={visual.score:.3f}, margin={visual.margin:.3f}"
+                if visual is not None
+                else ("skipped_run_limit" if visual_eligible else "not_attempted")
+            )
+            tcgdex_detail = f"matched={resolved.matched}, ambiguous={resolved.ambiguous}, source={resolved.source}"
+            var_diag = analyze_variant_blocking(
+                record=self._identity_records_seen,
+                item_id=record.item_id or listing.item_id,
+                identity=identity,
+                microvariant_applicability=microvariant_applicability,
+                microvariant_resolution=microvariant,
+            )
+            reason_code, explanation = determine_reason_code(
+                "BLOCKED_VARIANT",
+                identity,
+                coords,
+                tcgdex_status=tcgdex_detail,
+                visual_status=visual_detail,
+                microvariant_res=microvariant,
+            )
+            diag = UnresolvedIdentityDiagnostic(
+                record=self._identity_records_seen,
+                item_id=record.item_id or listing.item_id,
+                title=listing.title if listing else record.title,
+                card_name=identity.card_name,
+                set_name=identity.set,
+                card_number=identity.card_number,
+                language=identity.language,
+                final_status="BLOCKED_VARIANT",
+                coordinates=coords,
+                tcgdex_detail=tcgdex_detail,
+                poketrace_detail="MACRO_RESOLVED",
+                visual_detail=visual_detail,
+                reason_code=reason_code,
+                explanation=explanation,
+                variant_diag=var_diag,
+            )
+            self.unresolved_diagnostics.append(diag)
+            print(diag.format_block())
             return None, True
 
         _progress(

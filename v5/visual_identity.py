@@ -111,6 +111,10 @@ class VisualIdentityResolution:
     microvariant: MicrovariantResolution = field(
         default_factory=MicrovariantResolution
     )
+    failure_reason: str = ""
+    candidates_before_filter: int = 0
+    candidates_after_filter: int = 0
+    top_candidates: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
