@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 from v5.card_number_ocr import CardNumberOCRConfig, LocalCardNumberOCR
 from v5.market_values.poketrace import PokeTraceConfig, PokeTraceProvider
 from v5.market_values.poketrace_free import FreeTierPokeTraceProvider
+from v5.microvariants import MICROVARIANT_NOT_APPLICABLE, MicrovariantApplicability
 from v5.models import CardIdentity
 from v5.poketrace_identity import PokeTraceIdentityResolver
 from v5.visual_identity import LocalVisualIdentityResolver, render_visual_identity_counters
@@ -144,6 +145,16 @@ class LocalVisualIdentityTests(unittest.TestCase):
         session = PokeTraceSession(payload)
         market = provider(session, pro=kwargs.pop("pro", False))
         identity_resolver = PokeTraceIdentityResolver(market)
+        post_macro = kwargs.pop(
+            "post_macro_applicability_resolver",
+            lambda _id: MicrovariantApplicability(
+                MICROVARIANT_NOT_APPLICABLE,
+                "TCGDEX_EXACT",
+                finish_proven_single=True,
+                single_finish="holofoil",
+                edition_proven_single=True,
+            ),
+        )
         visual = LocalVisualIdentityResolver(
             identity_resolver,
             ebay_image_fetcher=lambda url: ebay_images.get(url),
@@ -157,6 +168,7 @@ class LocalVisualIdentityTests(unittest.TestCase):
             override_number_minimum_margin=kwargs.pop(
                 "override_number_minimum_margin", 0.06
             ),
+            post_macro_applicability_resolver=post_macro,
             **kwargs,
         )
         return session, market, visual

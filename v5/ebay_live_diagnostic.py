@@ -1006,13 +1006,24 @@ def _is_safe_individual_category(marketplace_id: str, value: object) -> bool:
 
 
 def _is_individual_card_summary(payload: Mapping[str, object]) -> bool:
-    title = f" {_normalized_marker(payload.get('title'))} "
+    raw_title = str(payload.get("title") or "")
+    title = f" {_normalized_marker(raw_title)} "
     if not title.strip():
         return False
-    return not any(
+    if any(
         f" {_normalized_marker(term)} " in title
         for term in _SEALED_OR_MULTI_PRODUCT_TERMS
-    )
+    ):
+        return False
+    if bool(
+        re.search(
+            r"\b\d+\s*x\s+[A-Za-z]|\b[A-Za-z0-9]+\s+x\s*\d+\b|\b(?:[2-9]|\d{2,})\s*(?:cards|cartes|karten|carte|cartas|pcs|pieces|stuck|stueck|stk)\b|\blot\s+de\s+\d+\b|\blotto\s+di\s+\d+\b|\blote\s+de\s+\d+\b",
+            raw_title,
+            re.IGNORECASE,
+        )
+    ):
+        return False
+    return True
 
 
 def _safe_currency_code(value: object) -> str:

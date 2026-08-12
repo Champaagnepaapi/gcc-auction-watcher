@@ -318,6 +318,12 @@ def analyze_variant_blocking(
             f for f in ("normal", "holo", "reverse")
             if variants_payload.get(f) is True
         ]
+        if not finish_flags:
+            if microvariant_applicability.finish_proven_single and microvariant_applicability.single_finish:
+                finish_flags = [microvariant_applicability.single_finish]
+            elif microvariant_applicability.finish_multiple_variants:
+                finish_flags = ["holo", "reverse"]
+
         if len(finish_flags) >= 2:
             possible_values = tuple(finish_flags)
             distinct_count = len(finish_flags)
