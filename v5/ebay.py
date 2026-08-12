@@ -648,10 +648,11 @@ def _card_name_from_aspects(
 
 def _feature_semantic_fields(
     aspects: Mapping[str, Tuple[str, ...]]
-) -> Tuple[Dict[str, str], Tuple[str, ...]]:
+) -> Tuple[Dict[str, str], Tuple[str, ...], bool]:
     values = _matching_values(aspects, FEATURE_ASPECT_ALIASES)
     finishes = []
     editions = []
+    promo_seen = False
     for raw in values:
         semantic = semantics_from_text(raw)
         finish_value = semantic.special_finish or semantic.finish
@@ -659,6 +660,7 @@ def _feature_semantic_fields(
             finishes.append(finish_value)
         if semantic.edition:
             editions.append(semantic.edition)
+        promo_seen = promo_seen or semantic.promo is True
 
     finish_values = tuple(dict.fromkeys(finishes))
     edition_values = tuple(dict.fromkeys(editions))
@@ -672,7 +674,7 @@ def _feature_semantic_fields(
         fields["edition"] = edition_values[0]
     elif len(edition_values) > 1:
         ambiguities.append("edition: valeurs contradictoires dans Features")
-    return fields, tuple(ambiguities)
+    return fields, tuple(ambiguities), promo_seen
 
 
 def card_identity_from_aspects(
@@ -687,7 +689,7 @@ def card_identity_from_aspects(
             ambiguities.append(f"{field_name}: valeurs contradictoires ({', '.join(distinct)})")
         extracted[field_name] = distinct[0] if len(distinct) == 1 else None
 
-    feature_fields, feature_ambiguities = _feature_semantic_fields(aspects)
+    feature_fields, feature_ambiguities, feature_promo = _feature_semantic_fields(aspects)
     ambiguities.extend(feature_ambiguities)
     for field_name, feature_value in feature_fields.items():
         existing = extracted.get(field_name)
@@ -704,6 +706,21 @@ def card_identity_from_aspects(
             ambiguities.append(
                 f"{field_name}: conflit entre aspect dédié et Features"
             )
+
+    if feature_promo:
+        existing_variant = extracted.get("variant")
+        existing_variant_semantics = semantics_from_text(existing_variant)
+        set_promo = semantics_from_text(extracted.get("set")).promo is True
+        rarity_promo = semantics_from_text(extracted.get("rarity")).promo is True
+        if existing_variant_semantics.promo is not True and not (set_promo or rarity_promo):
+            if not existing_variant or _normalize(existing_variant) in {"normal", "standard"}:
+                # "Standard" is only absence of a named parallel on eBay; it does
+                # not negate an explicit Promo feature.
+                extracted["variant"] = "promo"
+            else:
+                ambiguities.append(
+                    "promo: explicit Features promo conflicts with unresolved variant semantics"
+                )
 
     year = None
     if extracted["year"]:

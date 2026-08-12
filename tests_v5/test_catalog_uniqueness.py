@@ -182,6 +182,52 @@ class DeterministicCatalogUniquenessTests(unittest.TestCase):
         self.assertTrue(applicability.edition_proven_single)
         self.assertEqual(poketrace.resolve_calls, 0)
 
+    def test_post_macro_applicability_rejects_unique_card_from_unrelated_set(self):
+        def handler(url, params):
+            if url.endswith("/en/sets"):
+                return _Response(200, [])
+            if url.endswith("/fr/sets"):
+                return _Response(200, [])
+            if url.endswith("/en/cards"):
+                return _Response(
+                    200,
+                    [{"id": "me01-154", "localId": "154", "name": "Stufful"}],
+                )
+            if url.endswith("/en/cards/me01-154"):
+                return _Response(
+                    200,
+                    full_card(
+                        "me01-154",
+                        "Stufful",
+                        "154",
+                        "me01",
+                        "Mega Evolution",
+                        132,
+                        variants={
+                            "firstEdition": False,
+                            "normal": True,
+                            "holo": False,
+                            "reverse": False,
+                        },
+                    ),
+                )
+            raise AssertionError(f"unexpected request {url} {params}")
+
+        resolver, _poketrace = self.resolver(handler)
+        applicability = resolver.resolve_microvariant_applicability(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name="Stufful",
+                set="Completely Unrelated Set",
+                card_number="154/132",
+                language="English",
+            )
+        )
+        self.assertEqual(
+            applicability.status,
+            "MICROVARIANT_APPLICABILITY_UNKNOWN",
+        )
+
     def test_post_macro_applicability_stays_unknown_if_name_number_not_unique(self):
         def handler(url, params):
             if url.endswith("/en/sets") or url.endswith("/fr/sets"):

@@ -144,6 +144,8 @@ class DeterministicUniquenessHybridPokemonCardResolver(HybridPokemonCardResolver
         exact = self._resolve_unique_name_number(probe)
         if not (exact.matched and not exact.ambiguous and not exact.blocking):
             return applicability
+        if not self._post_macro_set_consistent(identity.set, exact):
+            return applicability
 
         exact_applicability = exact.microvariant_applicability
         if exact_applicability.source != "TCGDEX_EXACT":
@@ -156,6 +158,32 @@ class DeterministicUniquenessHybridPokemonCardResolver(HybridPokemonCardResolver
                 self.counters.post_macro_applicability_unknown -= 1
             self.counters.post_macro_applicability_resolved += 1
         return exact_applicability
+
+    @staticmethod
+    def _post_macro_set_consistent(
+        listing_set: Optional[str],
+        exact: CatalogIdentityResult,
+    ) -> bool:
+        if not listing_set or exact.set_provenance is None:
+            return False
+        provenance = exact.set_provenance
+        exact_names = {
+            _normalize(provenance.set_name),
+            *(_normalize(value.name) for value in provenance.official_names),
+        }
+        exact_names.discard("")
+        listing_normalized = _normalize(listing_set)
+        if listing_normalized in exact_names:
+            return True
+
+        # Accept only an exact "CODE: Official Set Name" wrapper by comparing
+        # the suffix byte-semantically after the same safe normalization.
+        raw_listing = str(listing_set).strip()
+        if ":" in raw_listing:
+            suffix = _normalize(raw_listing.split(":", 1)[1])
+            if suffix and suffix in exact_names:
+                return True
+        return False
 
     def _target_language(self, identity: CardIdentity) -> str:
         return _language_code(identity.language) or "en"

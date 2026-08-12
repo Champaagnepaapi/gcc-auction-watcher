@@ -19,6 +19,7 @@ from v5.identity_observability import (
     DENOMINATOR_CONFLICT,
     MISSING_NAME,
     MISSING_SET,
+    MULTIPLE_CANONICAL_CANDIDATES,
     NUMBER_UNPROVEN,
     LISTING_FIELD_CONFLICT,
     POKETRACE_NAME_MISMATCH,
@@ -111,6 +112,24 @@ class IdentityObservabilityTests(unittest.TestCase):
         )
         self.assertEqual(reason, LISTING_FIELD_CONFLICT)
         self.assertIn("variant", explanation)
+
+    def test_tcgdex_multi_catalog_is_not_misreported_as_number_unproven(self):
+        identity = CardIdentity(
+            game="Pokémon TCG",
+            card_name="Pikachu",
+            set="SVP",
+            card_number="027",
+            language="French",
+        )
+        coords = analyze_coordinates(identity)
+        reason, explanation = determine_reason_code(
+            "AMBIGUOUS",
+            identity,
+            coords,
+            tcgdex_status="matched=False, ambiguous=True, source=MULTI_CATALOG",
+        )
+        self.assertEqual(reason, MULTIPLE_CANONICAL_CANDIDATES)
+        self.assertIn("TCGdex", explanation)
 
     def test_poketrace_near_matches_distinguishable(self):
         target = CardIdentity(
