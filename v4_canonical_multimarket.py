@@ -179,6 +179,27 @@ def _number_parts(value: object) -> tuple[str, str]:
     return left, right
 
 
+def _canonical_number_parts(value: object) -> tuple[str, str]:
+    left, right = _number_parts(value)
+
+    def normalize_part(part: str) -> str:
+        if part.isdigit():
+            return str(int(part))
+        return part
+
+    return normalize_part(left), normalize_part(right)
+
+
+def _same_card_number(first: object, second: object) -> bool:
+    first_left, first_right = _canonical_number_parts(first)
+    second_left, second_right = _canonical_number_parts(second)
+    if not first_left or not second_left or first_left != second_left:
+        return False
+    if first_right and second_right:
+        return first_right == second_right
+    return True
+
+
 def _language_code(lot: watcher.Lot) -> str:
     identity = watcher.extract_card_identity(lot)
     value = _normalize(lot.language or identity.get("language") or "")
@@ -246,7 +267,11 @@ def _denominator_matches(card: Mapping[str, Any], denominator: str) -> bool:
         for value in (counts.get("official"), counts.get("total"))
         if value is not None
     }
-    return denominator in observed
+    den_norm = str(int(denominator)) if denominator.isdigit() else denominator
+    observed_norm = {
+        str(int(val)) if val.isdigit() else val for val in observed
+    }
+    return denominator in observed or den_norm in observed_norm
 
 
 def _validate_tcgdex_card(
@@ -264,10 +289,11 @@ def _validate_tcgdex_card(
         return None
 
     reference = lot.card_number or identity.get("ref") or ""
-    numerator, denominator = _number_parts(reference)
-    local_id = _normalize_number(card.get("localId"))
-    if not numerator or local_id != numerator:
+    candidate_local_id = str(card.get("localId") or "").strip()
+    if not _same_card_number(reference, candidate_local_id):
         return None
+
+    _, denominator = _canonical_number_parts(reference)
     if denominator and not _denominator_matches(card, denominator):
         return None
 
@@ -277,6 +303,7 @@ def _validate_tcgdex_card(
     set_id = str(set_payload.get("id") or "").strip()
     set_name = str(set_payload.get("name") or "").strip()
     card_id = str(card.get("id") or "").strip()
+    local_id = _normalize_number(card.get("localId"))
     if not all((card_id, set_id, set_name, local_id)):
         return None
 
@@ -303,14 +330,21 @@ def _validate_tcgdex_card(
     )
 
 
-def _fetch_tcgdex_card_detail(language_code: str, card_id: str) -> Optional[Mapping[str, Any]]:
+def _fetch_tcgdex_card_detail(language_code: str, card_id: str) -> tuple[int, Optional[Mapping[str, Any]]]:
     status, payload, _ = _json_get(
         f"{TCGDEX_BASE_URL}/{language_code}/cards/{quote(card_id, safe='')}",
         timeout=TCGDEX_TIMEOUT_SECONDS,
     )
     if status != 200:
-        return None
-    return _extract_single_payload(payload)
+        return status, None
+    return status, _extract_single_payload(payload)
+
+
+_TCGDEX_MEMORY_CACHE: dict[tuple[str, str, str, str], CanonicalCard] = {}
+
+
+def clear_tcgdex_cache() -> None:
+    _TCGDEX_MEMORY_CACHE.clear()
 
 
 def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
@@ -320,7 +354,7 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
     identity = watcher.extract_card_identity(lot)
     name = str(identity.get("core") or "").strip()
     reference = str(lot.card_number or identity.get("ref") or "").strip()
-    numerator, denominator = _number_parts(reference)
+    numerator, _ = _number_parts(reference)
     language_code = _language_code(lot)
     if not (name and numerator and language_code):
         return CanonicalCard(
@@ -328,23 +362,61 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
             reason="nom + numéro + langue insuffisants pour TCGdex exact",
         )
 
+    norm_left, norm_right = _canonical_number_parts(reference)
+    norm_num = f"{norm_left}/{norm_right}" if norm_right else norm_left
+    listing_set = _normalize(lot.card_set or identity.get("series") or "")
+    cache_key = (language_code, _normalize(name), norm_num, listing_set)
+    if cache_key in _TCGDEX_MEMORY_CACHE:
+        cached = _TCGDEX_MEMORY_CACHE[cache_key]
+        if cached.status == "EXACT":
+            _DIAGNOSTICS.tcgdex_exact += 1
+        elif cached.status == "AMBIGUOUS":
+            _DIAGNOSTICS.tcgdex_ambiguous += 1
+        elif cached.status == "NO_MATCH":
+            _DIAGNOSTICS.tcgdex_no_match += 1
+        return cached
+
     _DIAGNOSTICS.tcgdex_attempted += 1
+
+    num_queries = [numerator]
+    if numerator.isdigit():
+        unpadded = str(int(numerator))
+        if unpadded != numerator and unpadded not in num_queries:
+            num_queries.append(unpadded)
+        for pad_len in (3, 2):
+            padded = f"{int(numerator):0{pad_len}d}"
+            if padded not in num_queries:
+                num_queries.append(padded)
+
+    had_transient_error = False
+    error_reason = ""
+
     try:
         # Primary proof: strict exact localized card name + localId.
-        status, payload, _ = _json_get(
-            f"{TCGDEX_BASE_URL}/{language_code}/cards",
-            params={"name": f"eq:{name}", "localId": f"eq:{numerator}"},
-            timeout=TCGDEX_TIMEOUT_SECONDS,
-        )
-        if status == 200:
-            briefs = _extract_list_payload(payload)
+        briefs: list[Mapping[str, Any]] = []
+        for q_num in num_queries:
+            status, payload, _ = _json_get(
+                f"{TCGDEX_BASE_URL}/{language_code}/cards",
+                params={"name": f"eq:{name}", "localId": f"eq:{q_num}"},
+                timeout=TCGDEX_TIMEOUT_SECONDS,
+            )
+            if status == 200:
+                found = _extract_list_payload(payload)
+                if found:
+                    briefs = found
+                    break
+            elif status in {429, 500, 502, 503, 504} or status == 0:
+                had_transient_error = True
+                error_reason = f"HTTP {status}"
+
+        if briefs:
             details: list[Mapping[str, Any]] = []
             for brief in briefs[:5]:
                 card_id = str(brief.get("id") or "").strip()
                 if not card_id:
                     continue
-                detail = _fetch_tcgdex_card_detail(language_code, card_id)
-                if detail is not None:
+                det_status, detail = _fetch_tcgdex_card_detail(language_code, card_id)
+                if det_status == 200 and detail is not None:
                     candidate = _validate_tcgdex_card(
                         lot,
                         detail,
@@ -354,6 +426,10 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
                     )
                     if candidate is not None:
                         details.append(detail)
+                elif det_status in {429, 500, 502, 503, 504} or det_status == 0:
+                    had_transient_error = True
+                    error_reason = f"HTTP {det_status} on detail {card_id}"
+
             valid = [
                 _validate_tcgdex_card(
                     lot,
@@ -369,10 +445,10 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
             if len(by_id) == 1:
                 result = next(iter(by_id.values()))
                 _DIAGNOSTICS.tcgdex_exact += 1
+                _TCGDEX_MEMORY_CACHE[cache_key] = result
                 return result
             if len(by_id) > 1:
                 # Exact listing set can safely disambiguate without fuzzy matching.
-                listing_set = _normalize(lot.card_set or identity.get("series") or "")
                 if listing_set:
                     matching = [
                         item
@@ -381,25 +457,29 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
                     ]
                     if len(matching) == 1:
                         _DIAGNOSTICS.tcgdex_exact += 1
-                        return CanonicalCard(
+                        res = CanonicalCard(
                             **{
                                 **matching[0].__dict__,
                                 "reason": "TCGDEX_EXACT_NAME_LOCALID_SET",
                                 "unique_name_number": False,
                             }
                         )
+                        _TCGDEX_MEMORY_CACHE[cache_key] = res
+                        return res
                 _DIAGNOSTICS.tcgdex_ambiguous += 1
-                return CanonicalCard(
+                amb_res = CanonicalCard(
                     "AMBIGUOUS",
                     reason="plusieurs cartes TCGdex exactes pour nom + localId",
                 )
+                _TCGDEX_MEMORY_CACHE[cache_key] = amb_res
+                return amb_res
 
         # Secondary proof: exact localized set name + set/localId endpoint.
-        listing_set = str(lot.card_set or identity.get("series") or "").strip()
-        if listing_set:
+        raw_listing_set = str(lot.card_set or identity.get("series") or "").strip()
+        if raw_listing_set and not briefs:
             set_status, set_payload, _ = _json_get(
                 f"{TCGDEX_BASE_URL}/{language_code}/sets",
-                params={"name": f"eq:{listing_set}"},
+                params={"name": f"eq:{raw_listing_set}"},
                 timeout=TCGDEX_TIMEOUT_SECONDS,
             )
             if set_status == 200:
@@ -407,40 +487,60 @@ def resolve_tcgdex_card(lot: watcher.Lot) -> CanonicalCard:
                 if len(sets) == 1:
                     set_id = str(sets[0].get("id") or "").strip()
                     if set_id:
-                        card_status, card_payload, _ = _json_get(
-                            f"{TCGDEX_BASE_URL}/{language_code}/sets/"
-                            f"{quote(set_id, safe='')}/{quote(numerator, safe='')}",
-                            timeout=TCGDEX_TIMEOUT_SECONDS,
-                        )
-                        if card_status == 200:
-                            detail = _extract_single_payload(card_payload)
-                            if detail is not None:
-                                result = _validate_tcgdex_card(
-                                    lot,
-                                    detail,
-                                    language_code=language_code,
-                                    unique_name_number=False,
-                                    reason="TCGDEX_EXACT_SET_LOCALID",
-                                )
-                                if result is not None:
-                                    _DIAGNOSTICS.tcgdex_exact += 1
-                                    return result
+                        for q_num in num_queries:
+                            card_status, card_payload, _ = _json_get(
+                                f"{TCGDEX_BASE_URL}/{language_code}/sets/"
+                                f"{quote(set_id, safe='')}/{quote(q_num, safe='')}",
+                                timeout=TCGDEX_TIMEOUT_SECONDS,
+                            )
+                            if card_status == 200:
+                                detail = _extract_single_payload(card_payload)
+                                if detail is not None:
+                                    result = _validate_tcgdex_card(
+                                        lot,
+                                        detail,
+                                        language_code=language_code,
+                                        unique_name_number=False,
+                                        reason="TCGDEX_EXACT_SET_LOCALID",
+                                    )
+                                    if result is not None:
+                                        _DIAGNOSTICS.tcgdex_exact += 1
+                                        _TCGDEX_MEMORY_CACHE[cache_key] = result
+                                        return result
+                                    break
+                            elif card_status in {429, 500, 502, 503, 504} or card_status == 0:
+                                had_transient_error = True
+                                error_reason = f"HTTP {card_status}"
                 elif len(sets) > 1:
                     _DIAGNOSTICS.tcgdex_ambiguous += 1
-                    return CanonicalCard(
+                    amb_res = CanonicalCard(
                         "AMBIGUOUS", reason="set TCGdex exact non unique"
                     )
+                    _TCGDEX_MEMORY_CACHE[cache_key] = amb_res
+                    return amb_res
+            elif set_status in {429, 500, 502, 503, 504} or set_status == 0:
+                had_transient_error = True
+                error_reason = f"HTTP {set_status}"
     except Exception as error:
         _DIAGNOSTICS.tcgdex_error += 1
         return CanonicalCard(
             "ERROR", reason=f"TCGdex {type(error).__name__}"
         )
 
+    if had_transient_error:
+        _DIAGNOSTICS.tcgdex_error += 1
+        return CanonicalCard("ERROR", reason=f"TCGdex {error_reason}")
+
     _DIAGNOSTICS.tcgdex_no_match += 1
-    return CanonicalCard("NO_MATCH", reason="aucune identité TCGdex exacte")
+    no_match_res = CanonicalCard("NO_MATCH", reason="aucune identité TCGdex exacte")
+    _TCGDEX_MEMORY_CACHE[cache_key] = no_match_res
+    return no_match_res
 
 
 def _attach_canonical_to_lot(lot: watcher.Lot, canonical: CanonicalCard) -> None:
+    setattr(lot, "_canonical_card", canonical)
+    setattr(lot, "tcgdex_status", canonical.status)
+    setattr(lot, "tcgdex_resolution_reason", canonical.reason)
     if canonical.status != "EXACT":
         return
     # Keep rendered/listing identity untouched; enrich dedicated structured fields.
@@ -511,6 +611,15 @@ def scoped_is_valid_pokemon_card(
 
 
 def _canonical_from_lot(lot: watcher.Lot) -> CanonicalCard:
+    cached = getattr(lot, "_canonical_card", None)
+    if isinstance(cached, CanonicalCard):
+        return cached
+    status = str(getattr(lot, "tcgdex_status", "") or "")
+    if status and status != "EXACT":
+        return CanonicalCard(
+            status=status,
+            reason=str(getattr(lot, "tcgdex_resolution_reason", "") or ""),
+        )
     card_id = str(getattr(lot, "tcgdex_card_id", "") or "")
     set_id = str(getattr(lot, "tcgdex_set_id", "") or "")
     if not card_id or not set_id:
@@ -523,7 +632,7 @@ def _canonical_from_lot(lot: watcher.Lot) -> CanonicalCard:
         card_id=card_id,
         set_id=set_id,
         set_name=lot.card_set,
-        local_id=_number_parts(lot.card_number or identity.get("ref"))[0],
+        local_id=_canonical_number_parts(lot.card_number or identity.get("ref"))[0],
         full_number=str(lot.card_number or identity.get("ref") or ""),
         name=str(identity.get("core") or lot.title),
         language_code=str(getattr(lot, "tcgdex_language", "") or ""),
@@ -680,32 +789,39 @@ def raw_market_signal(
 
         tcgplayer = pricing.get("tcgplayer")
         if isinstance(tcgplayer, Mapping):
-            keys = {
+            key_patterns = {
                 "normal": ("normal",),
                 "holo": ("holo", "holofoil"),
-                "reverse": ("reverse", "reverse-holofoil"),
-                "1st-edition": ("1st-edition", "first-edition"),
+                "reverse": ("reverse", "reverseholofoil", "reverseholo"),
+                "1st-edition": ("1stedition", "firstedition", "1steditionnormal"),
                 "1st-edition-holofoil": (
-                    "1st-edition-holofoil",
-                    "first-edition-holofoil",
+                    "1steditionholofoil",
+                    "firsteditionholofoil",
+                    "1steditionholo",
                 ),
-                "unlimited": ("unlimited",),
-                "unlimited-holofoil": ("unlimited-holofoil",),
+                "unlimited": ("unlimited", "unlimitednormal"),
+                "unlimited-holofoil": ("unlimitedholofoil", "unlimitedholo"),
             }.get(variant, ())
-            for key in keys:
-                tier = tcgplayer.get(key)
-                if not isinstance(tier, Mapping):
-                    continue
-                value = (
-                    _finite_positive(tier.get("marketPrice"))
-                    or _finite_positive(tier.get("midPrice"))
-                )
-                if value is not None:
-                    unit = str(tcgplayer.get("unit") or "USD")
-                    converted = _to_eur(value, unit)
-                    if converted is not None:
-                        centers.append(("TCGplayer", converted))
-                        break
+
+            norm_tcgplayer = {
+                re.sub(r"[^a-z0-9]", "", str(k).lower()): (k, v)
+                for k, v in tcgplayer.items()
+                if isinstance(v, Mapping)
+            }
+            for pat in key_patterns:
+                matched = norm_tcgplayer.get(pat)
+                if matched is not None:
+                    _, tier = matched
+                    value = (
+                        _finite_positive(tier.get("marketPrice"))
+                        or _finite_positive(tier.get("midPrice"))
+                    )
+                    if value is not None:
+                        unit = str(tcgplayer.get("unit") or "USD")
+                        converted = _to_eur(value, unit)
+                        if converted is not None:
+                            centers.append(("TCGplayer", converted))
+                            break
     else:
         # Variant uncertainty must never become an automatic graded valuation.
         # For manual-review only, use the minimum across every exposed RAW
@@ -852,11 +968,12 @@ def _candidate_exact_for_canonical(
         return False
     if _normalize(candidate.get("name")) != _normalize(canonical.name):
         return False
-    candidate_num = _normalize_number(candidate.get("cardNumber"))
-    canonical_num = _normalize_number(canonical.full_number)
-    canonical_local, canonical_den = _number_parts(canonical_num)
-    cand_local, cand_den = _number_parts(candidate_num)
-    if not candidate_num or cand_local != canonical_local:
+    if not _same_card_number(candidate.get("cardNumber"), canonical.full_number):
+        return False
+
+    cand_local, cand_den = _canonical_number_parts(candidate.get("cardNumber"))
+    canonical_local, canonical_den = _canonical_number_parts(canonical.full_number)
+    if not cand_local or cand_local != canonical_local:
         return False
     if canonical_den and cand_den and cand_den != canonical_den:
         return False
@@ -1043,6 +1160,15 @@ def _poketrace_evidence(
     ebay_prices = prices.get("ebay") if isinstance(prices, Mapping) else None
     tier_name = _poketrace_grade_tier(lot)
     tier = ebay_prices.get(tier_name) if isinstance(ebay_prices, Mapping) else None
+    if not isinstance(tier, Mapping) and isinstance(ebay_prices, Mapping):
+        norm_tier_target = re.sub(r"[^a-zA-Z0-9]", "", tier_name).upper()
+        for k, v in ebay_prices.items():
+            if (
+                isinstance(v, Mapping)
+                and re.sub(r"[^a-zA-Z0-9]", "", str(k)).upper() == norm_tier_target
+            ):
+                tier = v
+                break
     if not isinstance(tier, Mapping):
         _DIAGNOSTICS.poketrace_weak += 1
         return watcher.ExternalMarketEvidence(
@@ -1264,6 +1390,39 @@ def _fallback_external(
     )
 
 
+def _combine_retry_with_fallback(
+    primary: watcher.ExternalMarketEvidence,
+    fallback: watcher.ExternalMarketEvidence,
+) -> watcher.ExternalMarketEvidence:
+    if (
+        fallback.status == watcher.EXTERNAL_MATCHED
+        and fallback.strength == watcher.EVIDENCE_STRONG
+        and fallback.estimate is not None
+    ):
+        return fallback
+    if fallback.status in watcher.EXTERNAL_RETRY_STATUSES:
+        return fallback
+    if fallback.status == watcher.EXTERNAL_PENDING:
+        return fallback
+    if primary.status in watcher.EXTERNAL_RETRY_STATUSES:
+        return watcher.replace(
+            primary,
+            note=(
+                f"{primary.note}; fallback {fallback.source or 'external'} "
+                f"{fallback.status}: {fallback.note}"
+            ).strip("; "),
+        )
+    if primary.status == watcher.EXTERNAL_PENDING:
+        return watcher.replace(
+            primary,
+            note=(
+                f"{primary.note}; fallback {fallback.source or 'external'} "
+                f"{fallback.status}: {fallback.note}"
+            ).strip("; "),
+        )
+    return fallback
+
+
 def multimarket_process_external_market_candidates(
     page,
     candidates: list[watcher.ValuationCandidate],
@@ -1277,6 +1436,7 @@ def multimarket_process_external_market_candidates(
 ) -> list[watcher.Opportunity]:
     global _DIAGNOSTICS
     _DIAGNOSTICS = MultiMarketDiagnostics()
+    clear_tcgdex_cache()
 
     # Invalidate only the old V4 external-cache schema once. The strict identity
     # key remains unchanged; new entries may contain PokeTrace evidence.
@@ -1320,8 +1480,9 @@ def multimarket_process_external_market_candidates(
             run_diagnostics.external_market,
             fetch_now,
         )
+        combined = _combine_retry_with_fallback(poketrace, fallback)
         should_review, gap = _should_manual_review(candidate.lot, raw)
-        if should_review and raw is not None and fallback.strength != watcher.EVIDENCE_STRONG:
+        if should_review and raw is not None and combined.strength != watcher.EVIDENCE_STRONG:
             leads[_manual_review_key(candidate.lot)] = ManualReviewLead(
                 _manual_review_key(candidate.lot),
                 candidate.lot,
@@ -1334,7 +1495,7 @@ def multimarket_process_external_market_candidates(
                     if value
                 ),
             )
-        return fallback
+        return combined
 
     opportunities = _ORIGINAL_PROCESS_EXTERNAL(
         page,

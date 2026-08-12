@@ -116,6 +116,7 @@ class PsaProductionScopeTests(unittest.TestCase):
 class TCGdexCanonicalIdentityTests(unittest.TestCase):
     def setUp(self):
         mm._DIAGNOSTICS = mm.MultiMarketDiagnostics()
+        mm.clear_tcgdex_cache()
 
     def test_exact_name_and_full_number_resolve_unique_card(self):
         target = lot()
@@ -183,6 +184,144 @@ class TCGdexCanonicalIdentityTests(unittest.TestCase):
         self.assertEqual(target.card_set, "Base Set")
         self.assertEqual(target.set_family, "base1")
 
+    def test_padded_card_number_matches_unpadded_tcgdex_card(self):
+        target = lot(reference="#004/102")
+        detail = tcgdex_card(local_id="4", official=102, total=102)
+        responses = [
+            (200, [], {}),  # localId=004 returns empty
+            (200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}),  # localId=4 returns match
+            (200, detail, {}),
+        ]
+        with patch.object(mm, "_json_get", side_effect=responses):
+            result = mm.resolve_tcgdex_card(target)
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.local_id, "4")
+        self.assertEqual(result.full_number, "4/102")
+
+    def test_canonical_from_lot_memory_cache_and_no_duplicate_network_calls(self):
+        target = lot(reference="4/102")
+        detail = tcgdex_card(local_id="4", official=102, total=102)
+        responses = [
+            (200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}),
+            (200, detail, {}),
+        ]
+        with patch.object(mm, "_json_get", side_effect=responses) as mock_get:
+            canonical1 = mm.resolve_tcgdex_card(target)
+            mm._attach_canonical_to_lot(target, canonical1)
+            canonical2 = mm._canonical_from_lot(target)
+            self.assertEqual(canonical1.status, "EXACT")
+            self.assertEqual(canonical2.status, "EXACT")
+            # Only 2 calls made for first resolution, second call reused cached _canonical_card
+            self.assertEqual(mock_get.call_count, 2)
+
+        # Test non-match lot caching
+        target_nomatch = lot(reference="999/102", name="NonExistentCard")
+        with patch.object(mm, "_json_get", return_value=(200, [], {})) as mock_get_nomatch:
+            res1 = mm.resolve_tcgdex_card(target_nomatch)
+            mm._attach_canonical_to_lot(target_nomatch, res1)
+            res2 = mm._canonical_from_lot(target_nomatch)
+            self.assertEqual(res1.status, "NO_MATCH")
+            self.assertEqual(res2.status, "NO_MATCH")
+            # Should not call network again for _canonical_from_lot
+            self.assertEqual(mock_get_nomatch.call_count, 2)
+
+    def test_cache_key_denominator_partitioning(self):
+        # 1. Cache EXACT 004/102
+        target1 = lot(reference="#004/102")
+        detail = tcgdex_card(local_id="4", official=102, total=102)
+        responses1 = [
+            (200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}),
+            (200, detail, {}),
+        ]
+        with patch.object(mm, "_json_get", side_effect=responses1):
+            res1 = mm.resolve_tcgdex_card(target1)
+        self.assertEqual(res1.status, "EXACT")
+
+        # 2. Query 4/102 -> safe cache reuse (0 network calls)
+        target2 = lot(reference="4/102")
+        with patch.object(mm, "_json_get", side_effect=AssertionError("Should use cache")):
+            res2 = mm.resolve_tcgdex_card(target2)
+        self.assertEqual(res2.status, "EXACT")
+        self.assertEqual(res2.card_id, "base1-4")
+
+        # 3. Query 4/130 -> MUST NOT reuse cache, must make network call and fail on denominator
+        target3 = lot(reference="4/130")
+        responses3 = [
+            (200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}),
+            (200, detail, {}),
+            (200, [{"id": "base1", "name": "Base Set"}], {}),
+            (200, detail, {}),
+        ]
+        with patch.object(mm, "_json_get", side_effect=responses3) as mock_get3:
+            res3 = mm.resolve_tcgdex_card(target3)
+        self.assertEqual(res3.status, "NO_MATCH")
+        self.assertTrue(mock_get3.called)
+
+        # 4. Query 4/999 -> MUST NOT reuse cache, must make network call
+        target4 = lot(reference="4/999")
+        with patch.object(mm, "_json_get", return_value=(200, [], {})) as mock_get4:
+            res4 = mm.resolve_tcgdex_card(target4)
+        self.assertEqual(res4.status, "NO_MATCH")
+        self.assertTrue(mock_get4.called)
+
+    def test_tcgdex_transient_http_errors_never_cached_as_no_match(self):
+        target = lot(reference="4/102")
+
+        # 1. /cards HTTP 429 -> ERROR, not in cache
+        mm.clear_tcgdex_cache()
+        with patch.object(mm, "_json_get", return_value=(429, {}, {})):
+            res_429 = mm.resolve_tcgdex_card(target)
+        self.assertEqual(res_429.status, "ERROR")
+        self.assertEqual(len(mm._TCGDEX_MEMORY_CACHE), 0)
+
+        # 2. /cards HTTP 500 -> ERROR, not in cache
+        mm.clear_tcgdex_cache()
+        with patch.object(mm, "_json_get", return_value=(500, {}, {})):
+            res_500 = mm.resolve_tcgdex_card(target)
+        self.assertEqual(res_500.status, "ERROR")
+        self.assertEqual(len(mm._TCGDEX_MEMORY_CACHE), 0)
+
+        # 3. card-detail HTTP 500 -> ERROR, not in cache
+        mm.clear_tcgdex_cache()
+        responses_detail_500 = [
+            (200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}),
+            (500, {}, {}),
+        ]
+        with patch.object(mm, "_json_get", side_effect=responses_detail_500):
+            res_det_500 = mm.resolve_tcgdex_card(target)
+        self.assertEqual(res_det_500.status, "ERROR")
+        self.assertEqual(len(mm._TCGDEX_MEMORY_CACHE), 0)
+
+        # 4. /sets HTTP 500 when needed -> ERROR, not in cache
+        mm.clear_tcgdex_cache()
+        responses_sets_500 = [
+            (200, [], {}),  # /cards returns empty
+            (500, {}, {}),  # /sets returns 500
+        ]
+        with patch.object(mm, "_json_get", side_effect=responses_sets_500):
+            res_sets_500 = mm.resolve_tcgdex_card(target)
+        self.assertEqual(res_sets_500.status, "ERROR")
+        self.assertEqual(len(mm._TCGDEX_MEMORY_CACHE), 0)
+
+        # 5. Next retry succeeds -> EXACT and cached
+        detail = tcgdex_card(local_id="4", official=102, total=102)
+        responses_ok = [
+            (200, [{"id": "base1-4", "name": "Charizard", "localId": "4"}], {}),
+            (200, detail, {}),
+        ]
+        with patch.object(mm, "_json_get", side_effect=responses_ok):
+            res_ok = mm.resolve_tcgdex_card(target)
+        self.assertEqual(res_ok.status, "EXACT")
+        self.assertEqual(len(mm._TCGDEX_MEMORY_CACHE), 1)
+
+        # 6. Clean 200 empty responses -> NO_MATCH and cached
+        mm.clear_tcgdex_cache()
+        non_existent = lot(name="UnknownCard", reference="999/100")
+        with patch.object(mm, "_json_get", return_value=(200, [], {})):
+            res_clean_nomatch = mm.resolve_tcgdex_card(non_existent)
+        self.assertEqual(res_clean_nomatch.status, "NO_MATCH")
+        self.assertEqual(len(mm._TCGDEX_MEMORY_CACHE), 1)
+
 
 class RawMarketSignalTests(unittest.TestCase):
     def setUp(self):
@@ -219,6 +358,33 @@ class RawMarketSignalTests(unittest.TestCase):
         self.assertEqual(signal.variant, "holo")
         self.assertIn("Cardmarket", signal.sources)
         self.assertIn("TCGplayer", signal.sources)
+
+    def test_tcgplayer_camelcase_and_unnormalized_pricing_keys(self):
+        target = lot()
+        target.variant = "Reverse"
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Charizard",
+            language_code="en",
+            pricing={
+                "tcgplayer": {
+                    "unit": "USD",
+                    "reverseHolofoil": {"marketPrice": 77.0},
+                },
+            },
+            variants={"normal": False, "holo": False, "reverse": True},
+        )
+        with patch.object(mm, "_usd_per_eur", return_value=1.0):
+            signal = mm.raw_market_signal(target, canonical)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.variant, "reverse")
+        self.assertIn("TCGplayer", signal.sources)
+        self.assertAlmostEqual(signal.central, 77.0)
 
     def test_ambiguous_variant_uses_conservative_manual_envelope(self):
         target = lot()
@@ -390,6 +556,7 @@ class PokeTraceExactGradedTests(unittest.TestCase):
 class MultiMarketIntegrationTests(unittest.TestCase):
     def setUp(self):
         mm._DIAGNOSTICS = mm.MultiMarketDiagnostics()
+        mm.clear_tcgdex_cache()
         self.target = lot(price=40)
         self.gcc = watcher.GccMarketEvidence(
             self.target,

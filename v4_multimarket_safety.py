@@ -10,27 +10,8 @@ import v4_canonical_multimarket as mm
 
 
 _ORIGINAL_PROVIDER_EXACT = mm._candidate_exact_for_canonical
-
-
-def _canonical_number_parts(value: object) -> tuple[str, str]:
-    left, right = mm._number_parts(value)
-
-    def normalize_part(part: str) -> str:
-        if part.isdigit():
-            return str(int(part))
-        return part
-
-    return normalize_part(left), normalize_part(right)
-
-
-def _same_card_number(first: object, second: object) -> bool:
-    first_left, first_right = _canonical_number_parts(first)
-    second_left, second_right = _canonical_number_parts(second)
-    if not first_left or not second_left or first_left != second_left:
-        return False
-    if first_right and second_right:
-        return first_right == second_right
-    return True
+_canonical_number_parts = mm._canonical_number_parts
+_same_card_number = mm._same_card_number
 
 
 def _candidate_sensitive_dimensions(candidate: Mapping[str, Any]) -> dict[str, set[str]]:
@@ -191,37 +172,7 @@ def safe_notify_manual_review(lead: mm.ManualReviewLead) -> None:
             )
 
 
-def _combine_retry_with_fallback(
-    primary: watcher.ExternalMarketEvidence,
-    fallback: watcher.ExternalMarketEvidence,
-) -> watcher.ExternalMarketEvidence:
-    if (
-        fallback.status == watcher.EXTERNAL_MATCHED
-        and fallback.strength == watcher.EVIDENCE_STRONG
-        and fallback.estimate is not None
-    ):
-        return fallback
-    if fallback.status in watcher.EXTERNAL_RETRY_STATUSES:
-        return fallback
-    if fallback.status == watcher.EXTERNAL_PENDING:
-        return fallback
-    if primary.status in watcher.EXTERNAL_RETRY_STATUSES:
-        return watcher.replace(
-            primary,
-            note=(
-                f"{primary.note}; fallback {fallback.source or 'external'} "
-                f"{fallback.status}: {fallback.note}"
-            ).strip("; "),
-        )
-    if primary.status == watcher.EXTERNAL_PENDING:
-        return watcher.replace(
-            primary,
-            note=(
-                f"{primary.note}; fallback {fallback.source or 'external'} "
-                f"{fallback.status}: {fallback.note}"
-            ).strip("; "),
-        )
-    return fallback
+_combine_retry_with_fallback = mm._combine_retry_with_fallback
 
 
 def hardened_multimarket_process_external_market_candidates(
@@ -237,6 +188,7 @@ def hardened_multimarket_process_external_market_candidates(
 ) -> list[watcher.Opportunity]:
     """All candidates get external evidence; provider outages remain retryable."""
     mm._DIAGNOSTICS = mm.MultiMarketDiagnostics()
+    mm.clear_tcgdex_cache()
     watcher.EXTERNAL_CACHE_SCHEMA_VERSION = mm.MULTIMARKET_EXTERNAL_CACHE_SCHEMA_VERSION
     request_budget = mm.RequestBudget()
     leads: dict[str, mm.ManualReviewLead] = {}

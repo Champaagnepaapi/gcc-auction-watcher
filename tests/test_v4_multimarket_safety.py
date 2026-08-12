@@ -196,10 +196,18 @@ class ProviderIdentityHardeningTests(unittest.TestCase):
             )
         )
 
+    def test_same_card_number_normalization_helpers(self):
+        self.assertTrue(safety._same_card_number("004/102", "4/102"))
+        self.assertTrue(safety._same_card_number("04", "4"))
+        self.assertTrue(safety._same_card_number("TG04/TG30", "TG04/TG30"))
+        self.assertFalse(safety._same_card_number("004/102", "4/130"))
+        self.assertFalse(safety._same_card_number("004/102", "5/102"))
+
 
 class ProviderFailureSemanticsTests(unittest.TestCase):
     def setUp(self):
         mm._DIAGNOSTICS = mm.MultiMarketDiagnostics()
+        mm.clear_tcgdex_cache()
         self.target = lot(variant="Holo")
         self.candidate = gcc_candidate(self.target)
         self.canonical = canonical()
