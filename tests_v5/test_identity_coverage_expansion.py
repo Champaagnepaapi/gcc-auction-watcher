@@ -174,6 +174,17 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         self.assertEqual(identity.set, "CS4.1C")
         self.assertEqual(identity.card_number, "014")
 
+    def test_extract_csv_chinese_set_code_and_number(self):
+        payload = {
+            "title": "Pokemon TCG Chinesisch Nachtara ex SAR CSV9.5C-239/208 Holo NM",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+            ],
+        }
+        identity = resolve_card_identity(payload).identity
+        self.assertEqual(identity.set, "CSV9.5C")
+        self.assertEqual(identity.card_number, "239/208")
+
     def test_extract_journey_together_canonical_set_and_fractional_number(self):
         """Journey Together 167/159 set name and fractional collector number extraction."""
         payload = {

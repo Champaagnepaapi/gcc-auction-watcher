@@ -17,6 +17,7 @@ from .card_identity_catalog import (
 from .identity_observability import (
     CoordinateState,
     UnresolvedIdentityDiagnostic,
+    ambiguity_fields,
     VariantDiagnostic,
     analyze_coordinates,
     analyze_variant_blocking,
@@ -399,6 +400,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
                 language=identity.language,
                 final_status=f_status,
                 coordinates=coords,
+                ambiguity_fields=ambiguity_fields(identity),
                 tcgdex_detail=tcgdex_detail,
                 poketrace_detail=poketrace_detail,
                 visual_detail=visual_detail,
@@ -455,6 +457,7 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
                 language=identity.language,
                 final_status="BLOCKED_VARIANT",
                 coordinates=coords,
+                ambiguity_fields=ambiguity_fields(identity),
                 tcgdex_detail=tcgdex_detail,
                 poketrace_detail="MACRO_RESOLVED",
                 visual_detail=visual_detail,

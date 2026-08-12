@@ -134,6 +134,162 @@ class DeterministicCatalogUniquenessTests(unittest.TestCase):
         self.assertEqual(poketrace.resolve_calls, 0)
         self.assertTrue(poketrace.set_provenance)
 
+    def test_post_macro_applicability_can_use_exact_name_number_uniqueness(self):
+        def handler(url, params):
+            if url.endswith("/en/sets"):
+                return _Response(200, [{"id": "me01", "name": "Mega Evolution"}])
+            if url.endswith("/fr/sets"):
+                return _Response(200, [])
+            if url.endswith("/en/cards"):
+                self.assertEqual(params["localId"], "eq:154")
+                return _Response(
+                    200,
+                    [{"id": "me01-154", "localId": "154", "name": "Stufful"}],
+                )
+            if url.endswith("/en/cards/me01-154"):
+                return _Response(
+                    200,
+                    full_card(
+                        "me01-154",
+                        "Stufful",
+                        "154",
+                        "me01",
+                        "Mega Evolution",
+                        132,
+                        variants={
+                            "firstEdition": False,
+                            "normal": True,
+                            "holo": False,
+                            "reverse": False,
+                        },
+                    ),
+                )
+            raise AssertionError(f"unexpected request {url} {params}")
+
+        resolver, poketrace = self.resolver(handler)
+        applicability = resolver.resolve_microvariant_applicability(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name="Stufful",
+                set="ME01: Mega Evolution",
+                card_number="154/132",
+                language="English",
+            )
+        )
+        self.assertEqual(applicability.source, "TCGDEX_EXACT")
+        self.assertTrue(applicability.finish_proven_single)
+        self.assertEqual(applicability.single_finish, "standard")
+        self.assertTrue(applicability.edition_proven_single)
+        self.assertEqual(poketrace.resolve_calls, 0)
+
+    def test_post_macro_applicability_rejects_unique_card_from_unrelated_set(self):
+        def handler(url, params):
+            if url.endswith("/en/sets"):
+                return _Response(200, [])
+            if url.endswith("/fr/sets"):
+                return _Response(200, [])
+            if url.endswith("/en/cards"):
+                return _Response(
+                    200,
+                    [{"id": "me01-154", "localId": "154", "name": "Stufful"}],
+                )
+            if url.endswith("/en/cards/me01-154"):
+                return _Response(
+                    200,
+                    full_card(
+                        "me01-154",
+                        "Stufful",
+                        "154",
+                        "me01",
+                        "Mega Evolution",
+                        132,
+                        variants={
+                            "firstEdition": False,
+                            "normal": True,
+                            "holo": False,
+                            "reverse": False,
+                        },
+                    ),
+                )
+            raise AssertionError(f"unexpected request {url} {params}")
+
+        resolver, _poketrace = self.resolver(handler)
+        applicability = resolver.resolve_microvariant_applicability(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name="Stufful",
+                set="Completely Unrelated Set",
+                card_number="154/132",
+                language="English",
+            )
+        )
+        self.assertEqual(
+            applicability.status,
+            "MICROVARIANT_APPLICABILITY_UNKNOWN",
+        )
+
+    def test_post_macro_applicability_stays_unknown_if_name_number_not_unique(self):
+        def handler(url, params):
+            if url.endswith("/en/sets") or url.endswith("/fr/sets"):
+                return _Response(200, [])
+            if url.endswith("/en/cards"):
+                return _Response(
+                    200,
+                    [
+                        {"id": "seta-154", "localId": "154", "name": "Stufful"},
+                        {"id": "setb-154", "localId": "154", "name": "Stufful"},
+                    ],
+                )
+            if url.endswith("/en/cards/seta-154"):
+                return _Response(
+                    200,
+                    full_card("seta-154", "Stufful", "154", "seta", "Set A", 132),
+                )
+            if url.endswith("/en/cards/setb-154"):
+                return _Response(
+                    200,
+                    full_card("setb-154", "Stufful", "154", "setb", "Set B", 132),
+                )
+            raise AssertionError(f"unexpected request {url} {params}")
+
+        resolver, _poketrace = self.resolver(handler)
+        applicability = resolver.resolve_microvariant_applicability(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name="Stufful",
+                set="Provider Set Label",
+                card_number="154/132",
+                language="English",
+            )
+        )
+        self.assertEqual(
+            applicability.status,
+            "MICROVARIANT_APPLICABILITY_UNKNOWN",
+        )
+
+    def test_post_macro_applicability_does_not_default_unknown_language_to_english(self):
+        def handler(url, params):
+            if url.endswith("/en/sets") or url.endswith("/fr/sets"):
+                return _Response(200, [])
+            raise AssertionError(
+                f"unsupported language must not trigger exact-name/number applicability retry: {url} {params}"
+            )
+
+        resolver, _poketrace = self.resolver(handler)
+        applicability = resolver.resolve_microvariant_applicability(
+            CardIdentity(
+                game="Pokémon TCG",
+                card_name="Stufful",
+                set="ME01: Mega Evolution",
+                card_number="154/132",
+                language=None,
+            )
+        )
+        self.assertEqual(
+            applicability.status,
+            "MICROVARIANT_APPLICABILITY_UNKNOWN",
+        )
+
     def test_same_9_over_111_number_can_resolve_accelgor_only_with_exact_name(self):
         def handler(url, _params):
             if url.endswith("/en/cards"):

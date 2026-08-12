@@ -40,6 +40,27 @@ COMMERCIAL_COLLISION_PROVEN = "COMMERCIAL_COLLISION_PROVEN"
 NUMBER_UNPROVEN = "NUMBER_UNPROVEN"
 SET_UNPROVEN = "SET_UNPROVEN"
 NAME_UNPROVEN = "NAME_UNPROVEN"
+LISTING_FIELD_CONFLICT = "LISTING_FIELD_CONFLICT"
+
+
+def ambiguity_fields(identity: CardIdentity) -> Tuple[str, ...]:
+    allowed = {
+        "game", "card_name", "set", "card_number", "language", "year",
+        "variant", "rarity", "finish", "edition", "illustrator",
+    }
+    fields = []
+    for ambiguity in identity.ambiguities:
+        text = str(ambiguity or "").strip()
+        prefix = text.split(":", 1)[0].strip().casefold()
+        if prefix in allowed:
+            fields.append(prefix)
+        elif "catalog_identity_ambiguous" in text.casefold():
+            fields.append("catalog")
+        elif "denominator" in text.casefold():
+            fields.append("card_number")
+        else:
+            fields.append("other")
+    return tuple(dict.fromkeys(fields))
 
 
 def sanitize_title(title: Optional[str], max_length: int = 80) -> str:
@@ -129,6 +150,7 @@ class UnresolvedIdentityDiagnostic:
     explanation: str = ""
     near_matches: Tuple[NearMatchDiff, ...] = ()
     variant_diag: Optional[VariantDiagnostic] = None
+    ambiguity_fields: Tuple[str, ...] = ()
 
     def format_block(self) -> str:
         lines = [
@@ -141,6 +163,7 @@ class UnresolvedIdentityDiagnostic:
             f"card_number={self.card_number or 'UNKNOWN'}",
             f"language={self.language or 'UNKNOWN'}",
             f"final={self.final_status}",
+            f"ambiguity_fields={list(self.ambiguity_fields)}",
             f"name_coordinate={self.coordinates.name}",
             f"set_coordinate={self.coordinates.set_name}",
             f"number_coordinate={self.coordinates.number}",
@@ -228,6 +251,21 @@ def determine_reason_code(
             return MULTIPLE_CANONICAL_CANDIDATES, "Multiple card numbers exist for this card in the set"
         return NUMBER_UNPROVEN, "Collector number could not be proven by catalog uniqueness or visual matching"
 
+    unresolved_fields = ambiguity_fields(identity)
+    if unresolved_fields:
+        return (
+            LISTING_FIELD_CONFLICT,
+            "Unresolved listing/catalog conflict remains in: "
+            + ", ".join(unresolved_fields),
+        )
+
+    tcgdex_upper = tcgdex_status.upper()
+    if "AMBIGUOUS=TRUE" in tcgdex_upper or "MULTI_CATALOG" in tcgdex_upper:
+        return (
+            MULTIPLE_CANONICAL_CANDIDATES,
+            "Exact listing coordinates still map to multiple TCGdex catalog candidates",
+        )
+
     if "SET_MISMATCH" in poketrace_status:
         return POKETRACE_SET_MISMATCH, "PokeTrace search candidates differed on set coordinate"
     if "NUMBER_MISMATCH" in poketrace_status:
@@ -240,7 +278,7 @@ def determine_reason_code(
     if "MARGIN" in visual_status or "CLOSE_SECOND" in visual_status:
         return VISUAL_MARGIN_TOO_SMALL, "Visual similarity margin between top candidates was below safety threshold"
 
-    if final_status == "IDENTITY_AMBIGUOUS":
+    if final_status in {"AMBIGUOUS", "IDENTITY_AMBIGUOUS"}:
         return MULTIPLE_CANONICAL_CANDIDATES, "Identity is ambiguous across multiple potential cards"
     return NUMBER_UNPROVEN, "Card coordinates remain insufficient for deterministic macro resolution"
 

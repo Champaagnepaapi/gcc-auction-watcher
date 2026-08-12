@@ -206,6 +206,51 @@ class EbayOfficialConnectorTests(unittest.TestCase):
         self.assertFalse(identity.is_unambiguous_pokemon())
         self.assertIn("card_name", identity.ambiguities[0])
 
+    def test_additive_features_do_not_create_false_variant_ambiguity(self):
+        identity = card_identity_from_aspects(
+            {
+                "Game": ("Pokemon TCG",),
+                "Card Name": ("Dark Blastoise",),
+                "Set": ("Team Rocket",),
+                "Card Number": ("3/82",),
+                "Language": ("English",),
+                "Features": ("Holo", "1st Edition"),
+            }
+        )
+        self.assertEqual(identity.finish, "holofoil")
+        self.assertEqual(identity.edition, "first_edition")
+        self.assertEqual(identity.ambiguities, ())
+        self.assertTrue(identity.is_unambiguous_pokemon())
+
+    def test_additive_features_preserve_positive_promo_evidence(self):
+        identity = card_identity_from_aspects(
+            {
+                "Game": ("Pokemon TCG",),
+                "Card Name": ("Pikachu",),
+                "Set": ("Fixture Set",),
+                "Card Number": ("1/10",),
+                "Language": ("English",),
+                "Features": ("Holo", "Promo"),
+            }
+        )
+        self.assertEqual(identity.finish, "holofoil")
+        self.assertEqual(identity.variant, "promo")
+        self.assertEqual(identity.ambiguities, ())
+
+    def test_additive_features_promo_conflict_fails_closed(self):
+        identity = card_identity_from_aspects(
+            {
+                "Game": ("Pokemon TCG",),
+                "Card Name": ("Pikachu",),
+                "Set": ("Fixture Set",),
+                "Card Number": ("1/10",),
+                "Language": ("English",),
+                "Parallel/Variety": ("Master Ball Reverse",),
+                "Features": ("Promo",),
+            }
+        )
+        self.assertTrue(any(value.startswith("promo:") for value in identity.ambiguities))
+
     def test_browse_search_uses_official_raw_aspect_filter(self):
         session = FakeEbaySession(self.payload)
         config = EbayBrowseConfig(

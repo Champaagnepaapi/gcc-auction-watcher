@@ -18,6 +18,7 @@ from .models import (
     StructuredGradingStatus,
     decimal_from,
 )
+from .variant_semantics import semantics_from_text
 
 
 PRODUCTION_IDENTITY_BASE = "https://api.ebay.com/identity/v1/oauth2"
@@ -399,12 +400,6 @@ IDENTITY_ALIASES = {
         "Parallel/Variety",
         "Variante",
         "Parallelita/Varieta",
-        "Features",
-        "Caracteristiques",
-        "Caractéristiques",
-        "Merkmale",
-        "Besonderheiten",
-        "Características",
     ),
     "rarity": (
         "Rarity",
@@ -435,6 +430,17 @@ IDENTITY_ALIASES = {
         "Ilustrador",
     ),
 }
+
+# eBay "Features" is additive: Holo + 1st Edition are orthogonal dimensions.
+FEATURE_ASPECT_ALIASES = (
+    "Features",
+    "Caracteristiques",
+    "Caractéristiques",
+    "Merkmale",
+    "Besonderheiten",
+    "Características",
+)
+
 
 DIRECT_CARD_NAME_ALIASES = (
     "Card Name",
@@ -640,6 +646,37 @@ def _card_name_from_aspects(
     return None, ()
 
 
+def _feature_semantic_fields(
+    aspects: Mapping[str, Tuple[str, ...]]
+) -> Tuple[Dict[str, str], Tuple[str, ...], bool]:
+    values = _matching_values(aspects, FEATURE_ASPECT_ALIASES)
+    finishes = []
+    editions = []
+    promo_seen = False
+    for raw in values:
+        semantic = semantics_from_text(raw)
+        finish_value = semantic.special_finish or semantic.finish
+        if finish_value:
+            finishes.append(finish_value)
+        if semantic.edition:
+            editions.append(semantic.edition)
+        promo_seen = promo_seen or semantic.promo is True
+
+    finish_values = tuple(dict.fromkeys(finishes))
+    edition_values = tuple(dict.fromkeys(editions))
+    fields: Dict[str, str] = {}
+    ambiguities = []
+    if len(finish_values) == 1:
+        fields["finish"] = finish_values[0]
+    elif len(finish_values) > 1:
+        ambiguities.append("finish: valeurs contradictoires dans Features")
+    if len(edition_values) == 1:
+        fields["edition"] = edition_values[0]
+    elif len(edition_values) > 1:
+        ambiguities.append("edition: valeurs contradictoires dans Features")
+    return fields, tuple(ambiguities), promo_seen
+
+
 def card_identity_from_aspects(
     aspects: Mapping[str, Tuple[str, ...]]
 ) -> CardIdentity:
@@ -651,6 +688,39 @@ def card_identity_from_aspects(
         if len(distinct) > 1:
             ambiguities.append(f"{field_name}: valeurs contradictoires ({', '.join(distinct)})")
         extracted[field_name] = distinct[0] if len(distinct) == 1 else None
+
+    feature_fields, feature_ambiguities, feature_promo = _feature_semantic_fields(aspects)
+    ambiguities.extend(feature_ambiguities)
+    for field_name, feature_value in feature_fields.items():
+        existing = extracted.get(field_name)
+        if existing is None:
+            extracted[field_name] = feature_value
+            continue
+        semantic = semantics_from_text(existing)
+        existing_value = (
+            semantic.special_finish or semantic.finish
+            if field_name == "finish"
+            else semantic.edition
+        )
+        if existing_value and existing_value != feature_value:
+            ambiguities.append(
+                f"{field_name}: conflit entre aspect dédié et Features"
+            )
+
+    if feature_promo:
+        existing_variant = extracted.get("variant")
+        existing_variant_semantics = semantics_from_text(existing_variant)
+        set_promo = semantics_from_text(extracted.get("set")).promo is True
+        rarity_promo = semantics_from_text(extracted.get("rarity")).promo is True
+        if existing_variant_semantics.promo is not True and not (set_promo or rarity_promo):
+            if not existing_variant or _normalize(existing_variant) in {"normal", "standard"}:
+                # "Standard" is only absence of a named parallel on eBay; it does
+                # not negate an explicit Promo feature.
+                extracted["variant"] = "promo"
+            else:
+                ambiguities.append(
+                    "promo: explicit Features promo conflicts with unresolved variant semantics"
+                )
 
     year = None
     if extracted["year"]:
@@ -834,7 +904,7 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
 
     # Asian/Chinese set code + number (e.g. CS4.1C-014, CS4aC-014, CS4.1C 014)
     chinese_match = re.search(
-        r"\b(CS\d+(?:\.\d+)?[A-Za-z]{0,3})\s*[-_]\s*(\d{1,4}(?:/\d{1,4})?)\b",
+        r"\b(CSV?\d+(?:\.\d+)?[A-Za-z]{0,3})\s*[-_]\s*(\d{1,4}(?:/\d{1,4})?)\b",
         title,
         flags=re.IGNORECASE,
     )
