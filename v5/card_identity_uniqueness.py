@@ -138,18 +138,40 @@ class DeterministicUniquenessHybridPokemonCardResolver(HybridPokemonCardResolver
             and identity.card_name
             and self._complete_printed_number(identity.card_number)
         ):
+            self.counters.post_macro_retry_ineligible += 1
             return applicability
 
         probe = replace(identity, set=None)
         exact = self._resolve_unique_name_number(probe)
-        if not (exact.matched and not exact.ambiguous and not exact.blocking):
+        if not exact.matched:
+            if exact.ambiguous:
+                self.counters.post_macro_unique_ambiguous += 1
+            elif exact.blocking:
+                self.counters.post_macro_unique_blocking += 1
+            else:
+                self.counters.post_macro_unique_no_match += 1
+            return applicability
+        if exact.ambiguous:
+            self.counters.post_macro_unique_ambiguous += 1
+            return applicability
+        if exact.blocking:
+            self.counters.post_macro_unique_blocking += 1
             return applicability
         if not self._post_macro_set_consistent(identity.set, exact):
+            self.counters.post_macro_set_mismatch += 1
             return applicability
 
         exact_applicability = exact.microvariant_applicability
         if exact_applicability.source != "TCGDEX_EXACT":
+            self.counters.post_macro_non_exact_source += 1
             return applicability
+
+        if exact_applicability.finish_proven_single:
+            self.counters.post_macro_exact_finish_single += 1
+        elif exact_applicability.finish_multiple_variants:
+            self.counters.post_macro_exact_finish_multiple += 1
+        else:
+            self.counters.post_macro_exact_finish_unknown += 1
 
         original_key = self._identity_key(identity)
         self._microvariant_applicability_cache[original_key] = exact_applicability

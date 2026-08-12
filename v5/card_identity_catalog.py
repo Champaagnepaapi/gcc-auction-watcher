@@ -136,6 +136,15 @@ class CardCatalogCounters:
     post_macro_applicability_cache_hits: int = 0
     post_macro_applicability_resolved: int = 0
     post_macro_applicability_unknown: int = 0
+    post_macro_retry_ineligible: int = 0
+    post_macro_unique_no_match: int = 0
+    post_macro_unique_ambiguous: int = 0
+    post_macro_unique_blocking: int = 0
+    post_macro_set_mismatch: int = 0
+    post_macro_non_exact_source: int = 0
+    post_macro_exact_finish_single: int = 0
+    post_macro_exact_finish_multiple: int = 0
+    post_macro_exact_finish_unknown: int = 0
 
 
 @dataclass(frozen=True)
@@ -1229,6 +1238,15 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
                 "post-macro applicability still unknown: "
                 f"{counters.post_macro_applicability_unknown}"
             ),
+            f"post-macro retry ineligible: {counters.post_macro_retry_ineligible}",
+            f"post-macro unique lookup no-match: {counters.post_macro_unique_no_match}",
+            f"post-macro unique lookup ambiguous: {counters.post_macro_unique_ambiguous}",
+            f"post-macro unique lookup blocking: {counters.post_macro_unique_blocking}",
+            f"post-macro exact-card set mismatch: {counters.post_macro_set_mismatch}",
+            f"post-macro non-exact applicability source: {counters.post_macro_non_exact_source}",
+            f"post-macro exact finish single: {counters.post_macro_exact_finish_single}",
+            f"post-macro exact finish multiple: {counters.post_macro_exact_finish_multiple}",
+            f"post-macro exact finish unknown: {counters.post_macro_exact_finish_unknown}",
             "language preserved as a first-class identity discriminator: YES",
             "persisted eBay records: 0",
         )

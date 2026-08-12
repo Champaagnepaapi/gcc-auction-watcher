@@ -904,7 +904,9 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
 
     # Asian/Chinese set code + number (e.g. CS4.1C-014, CS4aC-014, CS4.1C 014)
     chinese_match = re.search(
-        r"\b(CSV?\d+(?:\.\d+)?[A-Za-z]{0,3})\s*[-_]\s*(\d{1,4}(?:/\d{1,4})?)\b",
+        # Exact code token + exact collector number. eBay sellers use either
+        # a dash/underscore or plain whitespace between the two.
+        r"\b(CSV?\d+(?:\.\d+)?[A-Za-z]{0,3})(?:\s*[-_]\s*|\s+)(\d{1,4}(?:/\d{1,4})?)\b",
         title,
         flags=re.IGNORECASE,
     )

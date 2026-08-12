@@ -22,6 +22,7 @@ from .variant_semantics import semantics_from_identity, semantics_from_poketrace
 MISSING_NAME = "MISSING_NAME"
 MISSING_SET = "MISSING_SET"
 MISSING_NUMBER = "MISSING_NUMBER"
+MISSING_LANGUAGE = "MISSING_LANGUAGE"
 DENOMINATOR_CONFLICT = "DENOMINATOR_CONFLICT"
 MULTIPLE_CANONICAL_CANDIDATES = "MULTIPLE_CANONICAL_CANDIDATES"
 TCGDEX_SEARCH_ERROR = "TCGDEX_SEARCH_ERROR"
@@ -251,6 +252,13 @@ def determine_reason_code(
             return MULTIPLE_CANONICAL_CANDIDATES, "Multiple card numbers exist for this card in the set"
         return NUMBER_UNPROVEN, "Collector number could not be proven by catalog uniqueness or visual matching"
 
+    tcgdex_upper = tcgdex_status.upper()
+    if "AMBIGUOUS=TRUE" in tcgdex_upper or "MULTI_CATALOG" in tcgdex_upper:
+        return (
+            MULTIPLE_CANONICAL_CANDIDATES,
+            "Exact listing coordinates still map to multiple TCGdex catalog candidates",
+        )
+
     unresolved_fields = ambiguity_fields(identity)
     if unresolved_fields:
         return (
@@ -259,11 +267,10 @@ def determine_reason_code(
             + ", ".join(unresolved_fields),
         )
 
-    tcgdex_upper = tcgdex_status.upper()
-    if "AMBIGUOUS=TRUE" in tcgdex_upper or "MULTI_CATALOG" in tcgdex_upper:
+    if not identity.language:
         return (
-            MULTIPLE_CANONICAL_CANDIDATES,
-            "Exact listing coordinates still map to multiple TCGdex catalog candidates",
+            MISSING_LANGUAGE,
+            "Listing language is missing or unproven and is required for deterministic identity",
         )
 
     if "SET_MISMATCH" in poketrace_status:
@@ -309,7 +316,15 @@ def analyze_variant_blocking(
     provider = semantics_from_poketrace_candidate(poketrace_candidate) if poketrace_candidate else None
 
     target_evidence = f"edition={listing.edition or 'None'}, finish={listing.finish or 'None'}, promo={listing.promo}"
-    catalog_evidence = f"status={microvariant_applicability.status}, source={microvariant_applicability.source}"
+    catalog_evidence = (
+        f"status={microvariant_applicability.status}, "
+        f"source={microvariant_applicability.source}, "
+        f"single_finish={microvariant_applicability.single_finish or 'None'}, "
+        f"finish_proven_single={str(microvariant_applicability.finish_proven_single).lower()}, "
+        f"finish_multiple={str(microvariant_applicability.finish_multiple_variants).lower()}, "
+        f"edition_proven_single={str(microvariant_applicability.edition_proven_single).lower()}, "
+        f"edition_multiple={str(microvariant_applicability.edition_multiple_variants).lower()}"
+    )
     provider_evidence = (
         f"edition={provider.edition or 'None'}, finish={provider.finish or 'None'}, special_finish={provider.special_finish or 'None'}"
         if provider

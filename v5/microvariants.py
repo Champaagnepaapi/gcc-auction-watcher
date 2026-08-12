@@ -91,6 +91,48 @@ class MicrovariantResolution:
     confirmed_value: Optional[str] = None
 
 
+def _tcgdex_single_detailed_variant_applicability(
+    detailed: object,
+) -> MicrovariantApplicability:
+    """Accept only one simple exact TCGdex variant row as exhaustive proof.
+
+    This fallback is intentionally narrow. It is used only when an exact-card
+    response does not expose the legacy boolean ``variants`` mapping. A single
+    detailed row may prove one commercial finish only when it has no language
+    restriction, subtype, stamp or foil discriminator that this model could
+    otherwise collapse.
+    """
+
+    if not isinstance(detailed, list) or len(detailed) != 1:
+        return MicrovariantApplicability()
+    row = detailed[0]
+    if not isinstance(row, Mapping):
+        return MicrovariantApplicability()
+    if any(row.get(field) for field in ("languages", "subtype", "stamp", "foil")):
+        return MicrovariantApplicability()
+
+    finish_map = {
+        "normal": FINISH_STANDARD,
+        "holo": FINISH_HOLO,
+        "reverse": FINISH_REVERSE,
+    }
+    finish = finish_map.get(str(row.get("type") or "").strip().casefold())
+    size = str(row.get("size") or "").strip().casefold()
+    if not finish or size not in {"", "standard"}:
+        return MicrovariantApplicability()
+
+    # This is exact catalog cardinality proof, never seller/provider inference.
+    return MicrovariantApplicability(
+        status=MICROVARIANT_NOT_APPLICABLE,
+        source="TCGDEX_EXACT",
+        single_finish=finish,
+        finish_proven_single=True,
+        finish_multiple_variants=False,
+        edition_proven_single=True,
+        edition_multiple_variants=False,
+    )
+
+
 def tcgdex_microvariant_applicability(
     card: Mapping[str, object],
 ) -> MicrovariantApplicability:
@@ -98,7 +140,10 @@ def tcgdex_microvariant_applicability(
 
     variants = card.get("variants")
     if not isinstance(variants, Mapping):
-        return MicrovariantApplicability()
+        detailed = card.get("variants_detailed")
+        if detailed is None and isinstance(variants, list):
+            detailed = variants
+        return _tcgdex_single_detailed_variant_applicability(detailed)
     first_edition = variants.get("firstEdition")
     if first_edition is True:
         edition_status = MICROVARIANT_APPLICABLE
