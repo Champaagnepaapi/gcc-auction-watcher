@@ -2283,6 +2283,7 @@ class FixedIncrementalEconomicQueueTests(unittest.TestCase):
                 "evaluated_fingerprint",
                 "evaluation_version",
                 "last_evaluation_status",
+                "adaptive_ttl_hours",
                 "retry_count",
                 "retry_after",
                 "active",
