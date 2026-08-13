@@ -47,6 +47,10 @@ class MicrovariantApplicability:
     finish_multiple_variants: bool = False
     edition_proven_single: bool = False
     edition_multiple_variants: bool = False
+    single_special_finish: Optional[str] = None
+    special_finish_proven_single: bool = False
+    single_promo: Optional[bool] = None
+    promo_proven_single: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,6 +176,17 @@ def tcgdex_microvariant_applicability(
     finish_multiple = (len(true_finishes) >= 2)
     single_finish = true_finishes[0] if finish_proven_single else None
 
+    w_promo = variants.get("wPromo")
+    if w_promo is True:
+        single_promo = True
+        promo_proven_single = True
+    elif w_promo is False:
+        single_promo = False
+        promo_proven_single = True
+    else:
+        single_promo = None
+        promo_proven_single = False
+
     return MicrovariantApplicability(
         status=edition_status,
         source="TCGDEX_EXACT",
@@ -180,6 +195,8 @@ def tcgdex_microvariant_applicability(
         finish_multiple_variants=finish_multiple,
         edition_proven_single=edition_proven_single,
         edition_multiple_variants=edition_multiple,
+        single_promo=single_promo,
+        promo_proven_single=promo_proven_single,
     )
 
 
@@ -299,7 +316,7 @@ class LocalMicrovariantValidator:
                 **evidence_fields,
             )
 
-        # Explicit conflict between listing/provider and catalog applicability
+        # Explicit conflict between listing/provider/visual and catalog applicability
         if applicability.status == MICROVARIANT_NOT_APPLICABLE:
             if listing.edition in {EDITION_FIRST, EDITION_SHADOWLESS}:
                 return MicrovariantResolution(
@@ -319,8 +336,31 @@ class LocalMicrovariantValidator:
                     premium_candidate_not_inherited=premium_not_inherited,
                     **evidence_fields,
                 )
-        if applicability.finish_proven_single and listing.finish is not None:
-            if applicability.single_finish and listing.finish != applicability.single_finish:
+            if evidence is not None and (
+                evidence.first_edition_marker
+                or evidence.confirmed_value in {EDITION_FIRST, EDITION_SHADOWLESS}
+            ):
+                return MicrovariantResolution(
+                    applicability.status,
+                    EDITION_CONFLICT,
+                    blocks_economics=True,
+                    visual_attempted=visual_attempted,
+                    visual_confirmed=True,
+                    premium_candidate_not_inherited=premium_not_inherited,
+                    **evidence_fields,
+                )
+
+        if applicability.finish_proven_single and applicability.single_finish:
+            if listing.finish is not None and listing.finish != applicability.single_finish:
+                return MicrovariantResolution(
+                    applicability.status,
+                    EDITION_CONFLICT,
+                    blocks_economics=True,
+                    visual_attempted=visual_attempted,
+                    premium_candidate_not_inherited=premium_not_inherited,
+                    **evidence_fields,
+                )
+            if provider is not None and provider.finish and provider.finish != applicability.single_finish:
                 return MicrovariantResolution(
                     applicability.status,
                     EDITION_CONFLICT,
@@ -372,12 +412,13 @@ class LocalMicrovariantValidator:
             )
 
         if evidence is not None and evidence.first_edition_marker:
-            if not evidence.stamp_region_visible:
+            if not evidence.stamp_region_visible or applicability.status == MICROVARIANT_NOT_APPLICABLE:
                 return MicrovariantResolution(
                     applicability.status,
-                    EDITION_UNKNOWN,
+                    EDITION_CONFLICT if applicability.status == MICROVARIANT_NOT_APPLICABLE else EDITION_UNKNOWN,
                     blocks_economics=True,
                     visual_attempted=visual_attempted,
+                    visual_confirmed=True if applicability.status == MICROVARIANT_NOT_APPLICABLE else False,
                     premium_candidate_not_inherited=premium_not_inherited,
                     **evidence_fields,
                 )
@@ -442,13 +483,24 @@ class LocalMicrovariantValidator:
                 finish_blocks = True
 
         # Dimension: special finish / promo
-        # If candidate has premium special finish or promo, and listing lacks proof, fail-closed.
+        # If candidate has premium special finish or promo, and listing lacks proof, fail-closed
+        # UNLESS deterministic catalog proof confirms it is the exclusive/single variant.
         other_blocks = False
         if provider is not None:
             if provider.special_finish and not listing.special_finish:
-                other_blocks = True
+                if not (
+                    has_catalog_proof
+                    and applicability.special_finish_proven_single
+                    and applicability.single_special_finish == provider.special_finish
+                ):
+                    other_blocks = True
             if provider.promo is True and listing.promo is not True:
-                other_blocks = True
+                if not (
+                    has_catalog_proof
+                    and applicability.promo_proven_single
+                    and applicability.single_promo is True
+                ):
+                    other_blocks = True
 
         material_unknown = bool(not has_catalog_proof or edition_blocks or finish_blocks or other_blocks)
         edition_status = (

@@ -236,11 +236,15 @@ def semantics_from_poketrace_candidate(candidate: Mapping[str, object]) -> Varia
     set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else None
     parsed_rarity = semantics_from_text(candidate.get("rarity"))
     parsed_set = semantics_from_text(set_name)
+    direct_promo = True if candidate.get("promo") is True else (False if candidate.get("promo") is False else None)
     values = (
         semantics_from_text(candidate.get("variant")),
+        semantics_from_text(candidate.get("finish")),
+        semantics_from_text(candidate.get("edition")),
+        semantics_from_text(candidate.get("special_finish")),
         VariantSemantics(
-            promo=parsed_rarity.promo,
-            explicit=parsed_rarity.promo is not None,
+            promo=direct_promo if direct_promo is not None else parsed_rarity.promo,
+            explicit=direct_promo is not None or parsed_rarity.promo is not None,
         ),
         VariantSemantics(
             edition=parsed_set.edition,

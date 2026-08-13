@@ -520,7 +520,12 @@ Résolution déterministe de l'édition et des variantes structurées/titre :
 - extraction sécurisée de `1st Edition` / `Shadowless` / `Unlimited` depuis les titres eBay explicites ;
 - réconciliation déterministe avec les aspects structurés (priorité structurée, fail-closed en cas de contradiction) ;
 - extension des alias d'aspects structurés eBay (`Auflage`, `Druck`, `Edition / Print`, `Card Finish`, `Caratteristiche`) ;
-- unblocking automatique et fail-closed préservé dans `LocalMicrovariantValidator` pour les cartes vintage/modernes disposant d'une preuve d'édition ou de finish unique.
+- unblocking automatique et fail-closed préservé dans `LocalMicrovariantValidator` pour les cartes vintage/modernes disposant d'une preuve d'édition ou de finish unique ;
+- **P0/P1 Red Team Hardening** :
+  - rejet strict des hallucinations visuelles 1ère édition sur les cartes avec catalogue `MICROVARIANT_NOT_APPLICABLE` (fail-closed `EDITION_CONFLICT`) ;
+  - isolation stricte de l'observabilité : interdiction absolue d'inférer `SINGLE_COMPATIBLE` ou `unnecessary=true` depuis les métadonnées provider seules sans preuve catalogue exacte ;
+  - échec immédiat (`EDITION_CONFLICT`) en cas de finish provider incompatible avec un finish unique prouvé au catalogue ;
+  - validation déterministe des promos et finitions spéciales exclusives au catalogue pour éviter les faux blocages tout en maintenant le fail-closed.
 
 PR #8 reste draft et non mergée.
 

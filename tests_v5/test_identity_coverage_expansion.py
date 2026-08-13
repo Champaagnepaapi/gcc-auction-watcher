@@ -40,9 +40,17 @@ from v5.microvariants import (
     MICROVARIANT_NOT_APPLICABLE,
     MICROVARIANT_NOT_REQUIRED,
     UNLIMITED_CONFIRMED,
+    EditionRegionEvidence,
     LocalMicrovariantValidator,
     MicrovariantApplicability,
     tcgdex_microvariant_applicability,
+)
+from v5.identity_observability import (
+    VARIANT_FINISH_UNKNOWN,
+    VARIANT_FIRST_EDITION_UNKNOWN,
+    VARIANT_SINGLE_COMPATIBLE,
+    VARIANT_UNKNOWN_FIELD_ONLY,
+    analyze_variant_blocking,
 )
 
 
@@ -1225,6 +1233,165 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         res_unknown = validator.resolve(id_unknown, applicability=applicability)
         self.assertTrue(res_unknown.blocks_economics)
         self.assertEqual(res_unknown.edition_status, EDITION_UNKNOWN)
+
+    def test_visual_hallucination_plus_not_applicable_yields_conflict_and_blocks(self):
+        """P0: Visual first-edition marker must NEVER override catalog MICROVARIANT_NOT_APPLICABLE."""
+        validator = LocalMicrovariantValidator()
+        applicability = MicrovariantApplicability(
+            status=MICROVARIANT_NOT_APPLICABLE,
+            source="TCGDEX_EXACT",
+            edition_proven_single=True,
+            edition_multiple_variants=False,
+            single_finish="holo",
+            finish_proven_single=True,
+        )
+        card_id = CardIdentity(
+            card_name="Charizard ex",
+            set="Obsidian Flames",
+            card_number="125/197",
+            language="English",
+            finish="holo",
+        )
+        evidence = EditionRegionEvidence(
+            stamp_region_visible=True,
+            first_edition_marker=True,  # Visual detector hallucinated 1st edition marker on modern card
+        )
+        res = validator.resolve(card_id, evidence=evidence, applicability=applicability)
+        self.assertTrue(res.blocks_economics)
+        self.assertEqual(res.edition_status, EDITION_CONFLICT)
+
+    def test_provider_metadata_alone_never_yields_single_compatible(self):
+        """P0: Observability must NEVER infer SINGLE_COMPATIBLE from provider metadata alone."""
+        card_id = CardIdentity(
+            card_name="Pikachu",
+            set="Lost Origin",
+            card_number="TG05/TG30",
+            language="English",
+        )
+        validator = LocalMicrovariantValidator()
+        resolution = validator.resolve(card_id)  # blocks_economics=True, blocker_dimension="finish"
+
+        # 1. Without catalog proof, provider candidate with variant info should NOT produce SINGLE_COMPATIBLE
+        diag_finish = analyze_variant_blocking(
+            record={"item_id": "123456"},
+            item_id="123456",
+            identity=card_id,
+            microvariant_resolution=resolution,
+            microvariant_applicability=MicrovariantApplicability(
+                status="MICROVARIANT_APPLICABILITY_UNKNOWN",
+                source="UNAVAILABLE",
+            ),
+            card_catalog_card=None,
+            poketrace_candidate={"variant": "Holo", "finish": "Holo"},
+        )
+        self.assertEqual(diag_finish.variant_block_basis, "UNKNOWN_FIELD_ONLY")
+        self.assertFalse(diag_finish.variant_block_maybe_unnecessary)
+        self.assertEqual(diag_finish.current_block_reason, VARIANT_FINISH_UNKNOWN)
+
+        # 2. Edition dimension without catalog proof
+        resolution_edition = validator.resolve(
+            card_id,
+            evidence=EditionRegionEvidence(dimension="edition"),
+        )
+        diag_edition = analyze_variant_blocking(
+            record={"item_id": "123456"},
+            item_id="123456",
+            identity=card_id,
+            microvariant_resolution=resolution_edition,
+            microvariant_applicability=MicrovariantApplicability(
+                status="MICROVARIANT_APPLICABILITY_UNKNOWN",
+                source="UNAVAILABLE",
+            ),
+            card_catalog_card=None,
+            poketrace_candidate={"edition": "Unlimited"},
+        )
+        self.assertEqual(diag_edition.variant_block_basis, "UNKNOWN_FIELD_ONLY")
+        self.assertFalse(diag_edition.variant_block_maybe_unnecessary)
+        self.assertEqual(diag_edition.current_block_reason, VARIANT_FIRST_EDITION_UNKNOWN)
+
+    def test_provider_finish_conflicting_with_catalog_single_finish_fails_closed(self):
+        """P1: If catalog proves a single finish, conflicting provider finish must fail closed."""
+        validator = LocalMicrovariantValidator()
+        applicability = MicrovariantApplicability(
+            status=MICROVARIANT_NOT_APPLICABLE,
+            source="TCGDEX_EXACT",
+            edition_proven_single=True,
+            single_finish=FINISH_HOLO,
+            finish_proven_single=True,
+        )
+        # Listing has no finish explicitly stated
+        listing_id = CardIdentity(
+            card_name="Gengar",
+            set="Fossil",
+            card_number="5/62",
+            language="English",
+            finish=None,
+        )
+        # Provider candidate has conflicting finish (Reverse Holo instead of catalog single Holo)
+        provider_candidate = {
+            "card_name": "Gengar",
+            "set": "Fossil",
+            "card_number": "5/62",
+            "finish": "Reverse Holo",
+        }
+        res = validator.resolve(
+            listing_id,
+            candidate=provider_candidate,
+            applicability=applicability,
+        )
+        self.assertTrue(res.blocks_economics)
+        self.assertEqual(res.edition_status, EDITION_CONFLICT)
+
+    def test_catalog_exclusive_promo_and_special_finish_unblocks_safe_candidates(self):
+        """P1: Catalog proof of exclusive promo or special finish unblocks without false collision."""
+        validator = LocalMicrovariantValidator()
+        # Catalog proves promo is single & exclusive (e.g. SVP 001)
+        applicability_promo = MicrovariantApplicability(
+            status=MICROVARIANT_NOT_APPLICABLE,
+            source="TCGDEX_EXACT",
+            edition_proven_single=True,
+            single_finish=FINISH_HOLO,
+            finish_proven_single=True,
+            single_promo=True,
+            promo_proven_single=True,
+        )
+        listing_id = CardIdentity(
+            card_name="Pikachu",
+            set="SVP",
+            card_number="001",
+            language="English",
+            finish="holo",
+        )
+        provider_candidate = {
+            "card_name": "Pikachu",
+            "set": "SVP",
+            "card_number": "001",
+            "promo": True,
+            "finish": "Holo",
+        }
+        res_promo = validator.resolve(
+            listing_id,
+            candidate=provider_candidate,
+            applicability=applicability_promo,
+        )
+        self.assertFalse(res_promo.blocks_economics)
+
+        # But if catalog does NOT prove exclusive promo, provider promo=True must block!
+        applicability_non_promo = MicrovariantApplicability(
+            status=MICROVARIANT_NOT_APPLICABLE,
+            source="TCGDEX_EXACT",
+            edition_proven_single=True,
+            single_finish=FINISH_HOLO,
+            finish_proven_single=True,
+            single_promo=False,
+            promo_proven_single=True,
+        )
+        res_non_promo = validator.resolve(
+            listing_id,
+            candidate=provider_candidate,
+            applicability=applicability_non_promo,
+        )
+        self.assertTrue(res_non_promo.blocks_economics)
 
 
 if __name__ == "__main__":

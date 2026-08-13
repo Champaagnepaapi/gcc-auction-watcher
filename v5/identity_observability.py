@@ -337,10 +337,16 @@ def analyze_variant_blocking(
         if isinstance(raw_variants, Mapping):
             variants_payload = raw_variants
 
+    has_exact_catalog_proof = bool(
+        (microvariant_applicability.source == "TCGDEX_EXACT")
+        or (variants_payload and len(variants_payload) > 0)
+    )
+
     if dim == "edition":
         # Mutually exclusive options: firstEdition vs unlimited
-        if microvariant_applicability.status == MICROVARIANT_NOT_APPLICABLE or (
-            variants_payload and variants_payload.get("firstEdition") is False
+        if has_exact_catalog_proof and (
+            (microvariant_applicability.source == "TCGDEX_EXACT" and microvariant_applicability.status == MICROVARIANT_NOT_APPLICABLE)
+            or (variants_payload and variants_payload.get("firstEdition") is False)
         ):
             possible_values = ("unlimited",)
             distinct_count = 1
@@ -348,8 +354,9 @@ def analyze_variant_blocking(
             unnecessary = True
             basis = "SINGLE_COMPATIBLE"
             current_reason = VARIANT_SINGLE_COMPATIBLE
-        elif microvariant_applicability.status == MICROVARIANT_APPLICABLE or (
-            variants_payload and variants_payload.get("firstEdition") is True
+        elif has_exact_catalog_proof and (
+            (microvariant_applicability.source == "TCGDEX_EXACT" and microvariant_applicability.status == MICROVARIANT_APPLICABLE)
+            or (variants_payload and variants_payload.get("firstEdition") is True)
         ):
             possible_values = ("firstEdition", "unlimited")
             distinct_count = 2
@@ -371,7 +378,7 @@ def analyze_variant_blocking(
             f for f in ("normal", "holo", "reverse")
             if variants_payload.get(f) is True
         ]
-        if not finish_flags:
+        if not finish_flags and microvariant_applicability.source == "TCGDEX_EXACT":
             if microvariant_applicability.finish_proven_single and microvariant_applicability.single_finish:
                 finish_flags = [microvariant_applicability.single_finish]
             elif microvariant_applicability.finish_multiple_variants:
@@ -384,7 +391,7 @@ def analyze_variant_blocking(
             unnecessary = False
             basis = "REAL_COLLISION"
             current_reason = VARIANT_MULTIPLE_COMPATIBLE
-        elif len(finish_flags) == 1:
+        elif len(finish_flags) == 1 and has_exact_catalog_proof:
             possible_values = tuple(finish_flags)
             distinct_count = 1
             collision_proven = False
@@ -401,12 +408,24 @@ def analyze_variant_blocking(
             current_reason = VARIANT_FINISH_UNKNOWN
 
     elif dim == "promo":
-        possible_values = ("promo",)
-        distinct_count = 1
-        collision_proven = False
-        unnecessary = False
-        basis = "UNKNOWN_FIELD_ONLY"
-        current_reason = VARIANT_UNKNOWN_FIELD_ONLY
+        if (
+            microvariant_applicability.source == "TCGDEX_EXACT"
+            and microvariant_applicability.promo_proven_single
+            and microvariant_applicability.single_promo is True
+        ):
+            possible_values = ("promo",)
+            distinct_count = 1
+            collision_proven = False
+            unnecessary = True
+            basis = "SINGLE_COMPATIBLE"
+            current_reason = VARIANT_SINGLE_COMPATIBLE
+        else:
+            possible_values = ("promo",)
+            distinct_count = 1
+            collision_proven = False
+            unnecessary = False
+            basis = "UNKNOWN_FIELD_ONLY"
+            current_reason = VARIANT_UNKNOWN_FIELD_ONLY
 
     else:
         possible_values = (dim or "unknown",)
