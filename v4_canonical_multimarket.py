@@ -14,6 +14,8 @@ from urllib.parse import quote
 import requests
 
 import watcher
+import v4_raw_consensus as raw_consensus
+
 
 
 TCGDEX_BASE_URL = "https://api.tcgdex.net/v2"
@@ -99,10 +101,16 @@ class RawMarketSignal:
     low: float
     central: float
     high: float
-    currency: str
-    sources: tuple[str, ...]
-    variant: str
-    note: str
+    currency: str = "EUR"
+    sources: tuple[str, ...] = ()
+    variant: str = ""
+    note: str = ""
+    confidence: str = "STRONG"  # "STRONG", "MODERATE", "WEAK", "REJECTED"
+    anomaly_flags: tuple[str, ...] = ()
+    providers_used: tuple[str, ...] = ()
+    providers_rejected: tuple[str, ...] = ()
+    disagreement_ratio: float = 1.0
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass
@@ -702,25 +710,39 @@ def _raw_variant_choice(
     lot: watcher.Lot, canonical: CanonicalCard
 ) -> tuple[str, bool]:
     expected = watcher.expected_commercial_dimensions(lot)
+    multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
+        " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
+    )
+    for dim, val in multi_dims.items():
+        if dim not in expected or not expected[dim]:
+            expected[dim] = val
+        elif expected[dim] != val and val != "__conflict__":
+            expected[dim] = "__conflict__"
+
     if any(
         expected.get(key) not in {None, ""}
         for key in ("printing", "special_finish", "variant", "shadow")
     ):
         return "", False
+
+    if any(val == "__conflict__" for val in expected.values()):
+        return "", False
+
     edition = expected.get("edition", "")
     finish = expected.get("finish", "")
     variants = canonical.variants or {}
+    catalog_finish = raw_consensus.get_catalog_proven_finish(variants)
 
     if edition == "first_edition":
-        if finish == "holo":
+        if finish == "holo" or catalog_finish == "holo":
             return "1st-edition-holofoil", True
-        if finish in {"non_holo", ""}:
+        if finish in {"non_holo", ""} or catalog_finish == "normal":
             return "1st-edition", True
         return "", False
     if edition == "unlimited":
-        if finish == "holo":
+        if finish == "holo" or catalog_finish == "holo":
             return "unlimited-holofoil", True
-        if finish in {"non_holo", ""}:
+        if finish in {"non_holo", ""} or catalog_finish == "normal":
             return "unlimited", True
         return "", False
 
@@ -730,6 +752,9 @@ def _raw_variant_choice(
         return "reverse", True
     if finish == "non_holo":
         return "normal", True
+
+    if catalog_finish:
+        return catalog_finish, True
 
     available = [
         key
@@ -747,22 +772,18 @@ def _raw_variant_choice(
 
 def _all_raw_centers(
     canonical: CanonicalCard,
+    lot: Optional[watcher.Lot] = None,
 ) -> list[tuple[str, float, str]]:
     """Return conservative marketplace centers across every exposed RAW variant."""
     pricing = canonical.pricing
+    lot_lang = lot.language if lot is not None else "fr"
     centers: list[tuple[str, float, str]] = []
     cardmarket = pricing.get("cardmarket")
     if isinstance(cardmarket, Mapping):
         for suffix, label in (("", "normal"), ("-holo", "holo")):
-            values = [
-                _finite_positive(cardmarket.get(f"trend{suffix}")),
-                _finite_positive(cardmarket.get(f"avg7{suffix}")),
-                _finite_positive(cardmarket.get(f"avg30{suffix}")),
-                _finite_positive(cardmarket.get(f"avg{suffix}")),
-            ]
-            values = [value for value in values if value is not None]
-            if values:
-                centers.append(("Cardmarket", median(values), label))
+            est = raw_consensus.estimate_cardmarket_raw(cardmarket, label, lot_lang)
+            if est and est.confidence != "REJECTED":
+                centers.append(("Cardmarket", est.central, label))
 
     tcgplayer = pricing.get("tcgplayer")
     if isinstance(tcgplayer, Mapping):
@@ -770,15 +791,29 @@ def _all_raw_centers(
         for key, tier in tcgplayer.items():
             if key in {"unit", "updated"} or not isinstance(tier, Mapping):
                 continue
-            value = (
-                _finite_positive(tier.get("marketPrice"))
-                or _finite_positive(tier.get("midPrice"))
-            )
-            if value is None:
-                continue
-            converted = _to_eur(value, unit)
-            if converted is not None:
-                centers.append(("TCGplayer", converted, str(key)))
+            est = raw_consensus.estimate_tcgplayer_raw(tcgplayer, str(key), lot_lang)
+            if est and est.confidence != "REJECTED":
+                centers.append(("TCGplayer", est.central, str(key)))
+
+    justtcg = pricing.get("justtcg")
+    if isinstance(justtcg, Mapping):
+        for label in ("normal", "holo", "reverse"):
+            est = raw_consensus.estimate_justtcg_raw(justtcg, label, lot_lang)
+            if est and est.confidence != "REJECTED":
+                centers.append(("JustTCG", est.central, label))
+
+    pricecharting = pricing.get("pricecharting")
+    if isinstance(pricecharting, Mapping):
+        est = raw_consensus.estimate_pricecharting_raw(pricecharting, lot_lang)
+        if est and est.confidence != "REJECTED":
+            centers.append(("PriceCharting", est.central, "ungraded"))
+
+    ebay_raw = pricing.get("ebay_raw")
+    if isinstance(ebay_raw, Mapping):
+        est = raw_consensus.estimate_ebay_raw(ebay_raw, lot_lang)
+        if est and est.confidence != "REJECTED":
+            centers.append(("eBay RAW", est.central, "sales"))
+
     return centers
 
 
@@ -790,91 +825,114 @@ def raw_market_signal(
         return None
     variant, deterministic = _raw_variant_choice(lot, canonical)
     pricing = canonical.pricing
-    centers: list[tuple[str, float]] = []
+    lot_lang = lot.language or "fr"
 
     if deterministic:
+        expected = watcher.expected_commercial_dimensions(lot)
+        multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
+            " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
+        )
+        for dim, val in multi_dims.items():
+            if dim not in expected or not expected[dim]:
+                expected[dim] = val
+
+        edition_sensitive = expected.get("edition") not in {None, ""}
+        variants = canonical.variants or {}
+        catalog_proven = raw_consensus.get_catalog_proven_finish(variants)
+
+        estimates: list[raw_consensus.RawProviderEstimate] = []
+
         cardmarket = pricing.get("cardmarket")
         if isinstance(cardmarket, Mapping):
-            # Cardmarket has only normal vs holo fields; never use it as an
-            # exact edition/reverse/special-printing proof.
-            expected = watcher.expected_commercial_dimensions(lot)
-            edition_sensitive = expected.get("edition") not in {None, ""}
             if not edition_sensitive and variant in {"normal", "holo"}:
-                suffix = "-holo" if variant == "holo" else ""
-                values = [
-                    _finite_positive(cardmarket.get(f"trend{suffix}")),
-                    _finite_positive(cardmarket.get(f"avg7{suffix}")),
-                    _finite_positive(cardmarket.get(f"avg30{suffix}")),
-                    _finite_positive(cardmarket.get(f"avg{suffix}")),
-                ]
-                values = [value for value in values if value is not None]
-                if values:
-                    centers.append(("Cardmarket", median(values)))
+                cm_est = raw_consensus.estimate_cardmarket_raw(
+                    cardmarket, variant, lot_lang, expected, catalog_proven
+                )
+                if cm_est is not None:
+                    estimates.append(cm_est)
 
         tcgplayer = pricing.get("tcgplayer")
         if isinstance(tcgplayer, Mapping):
-            key_patterns = {
-                "normal": ("normal",),
-                "holo": ("holo", "holofoil"),
-                "reverse": ("reverse", "reverseholofoil", "reverseholo"),
-                "1st-edition": ("1stedition", "firstedition", "1steditionnormal"),
-                "1st-edition-holofoil": (
-                    "1steditionholofoil",
-                    "firsteditionholofoil",
-                    "1steditionholo",
-                ),
-                "unlimited": ("unlimited", "unlimitednormal"),
-                "unlimited-holofoil": ("unlimitedholofoil", "unlimitedholo"),
-            }.get(variant, ())
+            tp_est = raw_consensus.estimate_tcgplayer_raw(
+                tcgplayer, variant, lot_lang, expected, catalog_proven
+            )
+            if tp_est is not None:
+                estimates.append(tp_est)
 
-            norm_tcgplayer = {
-                re.sub(r"[^a-z0-9]", "", str(k).lower()): (k, v)
-                for k, v in tcgplayer.items()
-                if isinstance(v, Mapping)
-            }
-            for pat in key_patterns:
-                matched = norm_tcgplayer.get(pat)
-                if matched is not None:
-                    _, tier = matched
-                    value = (
-                        _finite_positive(tier.get("marketPrice"))
-                        or _finite_positive(tier.get("midPrice"))
-                    )
-                    if value is not None:
-                        unit = str(tcgplayer.get("unit") or "USD")
-                        converted = _to_eur(value, unit)
-                        if converted is not None:
-                            centers.append(("TCGplayer", converted))
-                            break
+        justtcg = pricing.get("justtcg")
+        if isinstance(justtcg, Mapping):
+            jt_est = raw_consensus.estimate_justtcg_raw(
+                justtcg, variant, lot_lang, expected, catalog_proven
+            )
+            if jt_est is not None:
+                estimates.append(jt_est)
+
+        pricecharting = pricing.get("pricecharting")
+        if isinstance(pricecharting, Mapping):
+            pc_est = raw_consensus.estimate_pricecharting_raw(
+                pricecharting, lot_lang, expected
+            )
+            if pc_est is not None:
+                estimates.append(pc_est)
+
+        ebay_raw = pricing.get("ebay_raw")
+        if isinstance(ebay_raw, Mapping):
+            eb_est = raw_consensus.estimate_ebay_raw(
+                ebay_raw, lot_lang, expected
+            )
+            if eb_est is not None:
+                estimates.append(eb_est)
+
+        consensus = raw_consensus.arbitrate_raw_consensus(estimates, lot_lang)
+        if consensus.status == "REJECTED" or consensus.central <= 0:
+            return None
+
+        signal = RawMarketSignal(
+            low=max(0.01, consensus.low),
+            central=consensus.central,
+            high=max(consensus.central, consensus.high),
+            currency=consensus.currency,
+            sources=consensus.providers_used,
+            variant=variant,
+            note=consensus.note,
+            confidence=consensus.confidence,
+            anomaly_flags=consensus.anomaly_flags,
+            providers_used=consensus.providers_used,
+            providers_rejected=consensus.providers_rejected,
+            disagreement_ratio=consensus.disagreement_ratio,
+            diagnostics=consensus.diagnostics,
+        )
+        _DIAGNOSTICS.raw_signal_found += 1
+        return signal
+
     else:
         # Variant uncertainty must never become an automatic graded valuation.
         # For manual-review only, use the minimum across every exposed RAW
         # variant as the conservative floor. If a slab is still deeply below
         # that floor, it is worth human inspection without claiming its value.
         _DIAGNOSTICS.raw_signal_variant_ambiguous += 1
-        centers = [
-            (f"{source}:{raw_variant}", value)
-            for source, value, raw_variant in _all_raw_centers(canonical)
-        ]
-        variant = "AMBIGUOUS_CONSERVATIVE_ENVELOPE"
+        all_centers = _all_raw_centers(canonical, lot)
+        if not all_centers:
+            return None
+        values = [val for _, val, _ in all_centers]
+        central = float(median(values))
+        low = min(values) * 0.90
+        high = max(values) * 1.10
+        sources = tuple(dict.fromkeys(src for src, _, _ in all_centers))
+        signal = RawMarketSignal(
+            low=max(0.01, low),
+            central=central,
+            high=max(central, high),
+            currency="EUR",
+            sources=sources,
+            variant="AMBIGUOUS_CONSERVATIVE_ENVELOPE",
+            note="; ".join(f"{src}:{var} {val:.2f} €" for src, val, var in all_centers),
+            confidence="MODERATE" if len(sources) >= 2 else "WEAK",
+            providers_used=sources,
+        )
+        _DIAGNOSTICS.raw_signal_found += 1
+        return signal
 
-    if not centers:
-        return None
-    values = [value for _, value in centers]
-    central = median(values)
-    low = min(values) * 0.90
-    high = max(values) * 1.10
-    signal = RawMarketSignal(
-        low=max(0.01, low),
-        central=central,
-        high=max(central, high),
-        currency="EUR",
-        sources=tuple(source for source, _ in centers),
-        variant=variant,
-        note="; ".join(f"{source} {value:.2f} €" for source, value in centers),
-    )
-    _DIAGNOSTICS.raw_signal_found += 1
-    return signal
 
 
 def _poketrace_headers() -> Mapping[str, str]:
@@ -1308,6 +1366,10 @@ def _should_manual_review(
 ) -> tuple[bool, float]:
     if raw is None or lot.current_price is None or raw.low <= 0:
         return False, 0.0
+    if raw.confidence not in {"STRONG", "MODERATE"}:
+        return False, 0.0
+    if any(flag in raw.anomaly_flags for flag in ("FLOOR_DISCONNECT", "OUTLIER_SPIKE", "PROVIDER_DISAGREEMENT")):
+        return False, 0.0
     gap = (raw.low - lot.current_price) / raw.low * 100
     return gap >= watcher.MIN_DISCOUNT, gap
 
@@ -1365,16 +1427,20 @@ def _manual_review_should_notify(
 def _notify_manual_review(lead: ManualReviewLead) -> None:
     title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
     grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
+    extra_sources = f"Sources RAW : {', '.join(lead.raw.sources)}"
+    if lead.raw.providers_rejected:
+        extra_sources += f" [Rejetés: {', '.join(lead.raw.providers_rejected)}]"
+
     message = (
         f"{title}\n\n"
         f"{lead.canonical.name} #{lead.canonical.full_number}\n"
         f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
         f"{grade}\n\n"
         f"Prix GCC : {lead.lot.current_price:.2f} €\n"
-        f"Marché RAW externe : {lead.raw.low:.2f}–{lead.raw.high:.2f} €\n"
+        f"Marché RAW consensus : {lead.raw.low:.2f}–{lead.raw.high:.2f} € (confiance {lead.raw.confidence})\n"
         f"RAW central : {lead.raw.central:.2f} €\n"
-        f"Sources RAW : {', '.join(lead.raw.sources)}\n"
-        f"Écart prudent vs RAW : {lead.gap_pct:.1f}%\n"
+        f"{extra_sources}\n"
+        f"Écart prudent vs plancher RAW : {lead.gap_pct:.1f}%\n"
         f"Marché gradé : {lead.graded_note or 'non confirmé'}\n\n"
         "RAW ≠ valeur du slab gradé. Aucun prix max conseillé n'est "
         "calculé depuis le RAW; revue manuelle uniquement.\n"
@@ -1398,6 +1464,7 @@ def _notify_manual_review(lead: ManualReviewLead) -> None:
             watcher.log(
                 f"Notification manual review échouée: {type(error).__name__}"
             )
+
 
 
 def _fallback_external(

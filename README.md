@@ -242,9 +242,9 @@ Important : **PR #46 ne rend pas PSA APR “disponible” lorsqu’un WAF bloque
 
 Cette voie utilise la **page web publique APR**, pas l’ancienne API Collectors publique.
 
-## RAW TCGdex : signal secondaire uniquement
+## RAW multi-provider : consensus robuste, microvariantes et observabilité (Backport V5 → V4)
 
-TCGdex peut fournir des prix Cardmarket / TCGplayer RAW.
+V4 intègre un moteur de consensus multi-marché RAW (`v4_raw_consensus.py`) couvrant **Cardmarket**, **JustTCG**, **TCGplayer**, **PriceCharting** et **eBay RAW**.
 
 Règle absolue :
 
@@ -254,12 +254,23 @@ RAW market ≠ valeur du slab gradé
 
 Le RAW :
 
-- ne crée jamais une estimation PSA/BGS/CGC ;
-- ne crée jamais `max_recommended` ;
-- ne crée jamais une opportunity automatique ;
-- peut servir de **signal de revue manuelle**.
+- ne crée jamais une estimation PSA/PCA/BGS/CGC ;
+- ne crée jamais `max_recommended` ni d'achat/enchère automatique ;
+- sert exclusivement de **signal d'alerte pour revue manuelle humaine**.
 
-Si le marché gradé exact reste indisponible mais qu’un slab est au moins ~30 % sous une enveloppe RAW externe prudente, V4 peut envoyer :
+### Pipeline de validation & Backport sélectif V5 → V4
+Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5 :
+1. **Parser multilingue déterministe** : Extraction stricte des éditions (1ère Édition, 1. Edition, Prima Edizione, Unlimited), finitions (Holo, Reverse Holo, Nicht-Holo, Olografica) et finitions spéciales (Poke Ball, Master Ball, Cosmos, Galaxy, Cracked Ice). Les contradictions de titre échouent immédiatement en `__conflict__` fail-closed.
+2. **Validateur de microvariantes (*Microvariant Gate*)** : Blocage systématique des comparables incompatibles (`FINISH_MISMATCH`, `EDITION_MISMATCH`, `PROMO_MISMATCH`, `LANGUAGE_MISMATCH`, `SET_MISMATCH`, `NUMBER_MISMATCH`).
+3. **Preuve d'unicité catalogue (*Catalog Uniqueness*)** : Déduction de finition déterministe uniquement lorsque l'invariant TCGdex prouve mathématiquement qu'une seule variante existe (`variants = {"normal": False, "holo": True, "reverse": False}`).
+4. **Intégration JustTCG RAW** : Fournisseur indépendant de référence Near Mint avec validation linguistique exacte (FR).
+5. **Rejet des anomalies statistiques (*Anti-Outlier Engine*)** :
+   - Déconnexion du plancher (*Floor Disconnect*) : détection des écarts anormaux entre trend/avg30 et `low`.
+   - Rupture inter-périodes (*Period Divergence*) : détection des effondrements récents (`avg7 < 0.45 * avg30`).
+   - Rejet de contamination (`OUTLIER_CONTAMINATION`) lorsque les fournisseurs indépendants concordent.
+6. **Observabilité & Codes de motifs** : Traçabilité complète du statut de chaque fournisseur (`ACCEPTED`, `DOWNWEIGHTED`, `REJECTED`) avec reason codes standardisés (`EXACT_COMPATIBLE`, `OUTLIER_CONTAMINATION`, `LANGUAGE_MISMATCH`, `FINISH_MISMATCH`, `PROVIDER_DISAGREEMENT`, etc.).
+
+Si le marché gradé exact reste indisponible et que la confiance RAW est `STRONG` ou `MODERATE` avec un écart $\ge 30\,\%$, V4 peut envoyer :
 
 ```text
 GCC MANUAL REVIEW — GRADED MARKET PENDING
@@ -267,13 +278,13 @@ GCC MANUAL REVIEW — GRADED MARKET PENDING
 
 La notification :
 
-- montre identité TCGdex, grade, prix GCC, plage RAW et sources ;
+- montre l'identité TCGdex exacte, le grade, le prix GCC, la plage et le centre RAW consensus, ainsi que le niveau de confiance ;
+- liste exhaustivement les sources acceptées avec reason codes et les sources rejetées pour anomalie ;
 - explique explicitement que RAW ≠ valeur du slab ;
 - n’affiche aucun prix max d’achat dérivé du RAW ;
-- est dédupliquée 24 h ;
-- peut renotifier après baisse de prix significative ou amélioration matérielle du gap.
+- est dédupliquée 24 h (avec renotification possible en cas de baisse $\ge 10\,\%$ ou amélioration $\ge 5\,\%$ du gap).
 
-Ainsi une carte potentiellement anormalement bon marché ne disparaît plus silencieusement uniquement parce que PSA APR/eBay n’ont pas fourni de prix gradé.
+
 
 ---
 
