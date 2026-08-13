@@ -102,9 +102,34 @@ def _edition_from_text(text: str) -> Optional[str]:
         return None
     if "shadowless" in text:
         return EDITION_SHADOWLESS
-    if _contains_any(text, ("1st edition", "first edition", "1 edition")):
+    if _contains_any(
+        text,
+        (
+            "1st edition",
+            "first edition",
+            "1 edition",
+            "1st ed",
+            "1ere edition",
+            "premiere edition",
+            "1 auflage",
+            "erste auflage",
+            "1a edizione",
+            "prima edizione",
+            "1a edicion",
+            "primera edicion",
+        ),
+    ):
         return EDITION_FIRST
-    if "unlimited" in text:
+    if _contains_any(
+        text,
+        (
+            "unlimited",
+            "unbegrenzt",
+            "illimitee",
+            "illimitata",
+            "ilimitada",
+        ),
+    ):
         return EDITION_UNLIMITED
     return None
 

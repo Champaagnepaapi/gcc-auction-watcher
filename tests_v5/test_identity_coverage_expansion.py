@@ -11,6 +11,7 @@ from v5.ebay import (
     CardIdentity,
     canonicalize_chinese_card_number,
     card_identity_from_ebay_payload,
+    extract_title_edition,
     extract_title_finish,
     is_bundle_or_multi_card_listing,
     resolve_card_identity,
@@ -22,6 +23,9 @@ from v5.live_raw_pipeline import (
     identity_status,
 )
 from v5.variant_semantics import (
+    EDITION_FIRST,
+    EDITION_SHADOWLESS,
+    EDITION_UNLIMITED,
     FINISH_HOLO,
     FINISH_REVERSE,
     FINISH_STANDARD,
@@ -35,6 +39,7 @@ from v5.microvariants import (
     MICROVARIANT_APPLICABLE,
     MICROVARIANT_NOT_APPLICABLE,
     MICROVARIANT_NOT_REQUIRED,
+    UNLIMITED_CONFIRMED,
     LocalMicrovariantValidator,
     MicrovariantApplicability,
     tcgdex_microvariant_applicability,
@@ -967,6 +972,259 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         finish, contra = extract_title_finish(invalid_title)
         # Should not match as Poké Ball Reverse
         self.assertNotEqual(finish, "Poké Ball Reverse")
+
+    # ----------------------------------------------------------------------
+    # 7. Explicit eBay Title Edition Parsing and Reconciliation
+    # ----------------------------------------------------------------------
+
+    def test_title_edition_extraction_english(self):
+        """English explicit edition phrases must resolve to canonical edition names."""
+        cases = [
+            ("Charizard 4/102 1st Edition Base Set Holo", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 First Edition Base Set Holo", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 1st ed Base Set Holo", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 1st ed. Base Set Holo", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 Shadowless Base Set Holo", "Shadowless", EDITION_SHADOWLESS),
+            ("Charizard 4/102 Unlimited Base Set Holo", "Unlimited", EDITION_UNLIMITED),
+        ]
+        for title, exp_display, exp_edition in cases:
+            with self.subTest(title=title):
+                edition, contra = extract_title_edition(title)
+                self.assertFalse(contra, f"Unexpected contradiction in title: {title}")
+                self.assertEqual(edition, exp_display)
+                sem = semantics_from_text(edition)
+                self.assertEqual(sem.edition, exp_edition)
+
+    def test_title_edition_extraction_multilingual(self):
+        """Multilingual explicit edition phrases (FR, DE, IT, ES) must resolve safely."""
+        cases = [
+            ("Dracaufeu 4/102 1ère Édition Base Set", "1st Edition", EDITION_FIRST),
+            ("Dracaufeu 4/102 1ere Edition Set de Base", "1st Edition", EDITION_FIRST),
+            ("Dracaufeu 4/102 Première Édition", "1st Edition", EDITION_FIRST),
+            ("Dracaufeu 4/102 Illimitée Set de Base", "Unlimited", EDITION_UNLIMITED),
+            ("Glurak 4/102 1. Auflage Basis Set", "1st Edition", EDITION_FIRST),
+            ("Glurak 4/102 1. Edition Basis Set", "1st Edition", EDITION_FIRST),
+            ("Glurak 4/102 1 Auflage Basis Set", "1st Edition", EDITION_FIRST),
+            ("Glurak 4/102 Erste Auflage Basis Set", "1st Edition", EDITION_FIRST),
+            ("Glurak 4/102 Unbegrenzt Basis Set", "Unlimited", EDITION_UNLIMITED),
+            ("Charizard 4/102 1ª Edizione Set Base", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 1a Edizione Set Base", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 Prima Edizione Set Base", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 1ª Edición Set Base", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 1a Edicion Set Base", "1st Edition", EDITION_FIRST),
+            ("Charizard 4/102 Primera Edición Set Base", "1st Edition", EDITION_FIRST),
+        ]
+        for title, exp_display, exp_edition in cases:
+            with self.subTest(title=title):
+                edition, contra = extract_title_edition(title)
+                self.assertFalse(contra, f"Unexpected contradiction in title: {title}")
+                self.assertEqual(edition, exp_display)
+                sem = semantics_from_text(edition)
+                self.assertEqual(sem.edition, exp_edition)
+
+    def test_title_edition_lone_words_and_false_positives_rejected(self):
+        """Generic single words or non-edition markers must never prove edition."""
+        cases = [
+            "Charizard 4/102 Base Set Edition 2021",
+            "Charizard 4/102 1st Place Trophy Card",
+            "Charizard 4/102 First Place Winner",
+            "Charizard 4/102 Auflage 2000",
+            "Charizard 4/102 Print 1999",
+            "Charizard 4/102 Standard Print",
+        ]
+        for title in cases:
+            with self.subTest(title=title):
+                edition, contra = extract_title_edition(title)
+                self.assertFalse(contra)
+                self.assertIsNone(edition, f"Expected no edition for title: {title}")
+
+    def test_title_edition_contradictory_phrases_fail_closed(self):
+        """Contradictory edition phrases within a title must return contradiction flag."""
+        contradictory_titles = [
+            "Charizard 4/102 1st Edition Unlimited Base Set",
+            "Charizard 4/102 1st Edition Shadowless Base Set",
+            "Charizard 4/102 First Edition Unlimited",
+        ]
+        for title in contradictory_titles:
+            with self.subTest(title=title):
+                edition, contra = extract_title_edition(title)
+                self.assertTrue(contra, f"Expected contradiction for title: {title}")
+                self.assertIsNone(edition)
+
+    def test_resolve_card_identity_edition_reconciliation(self):
+        """Structured aspect and title edition reconciliation rules."""
+        # Case 1: Structured agreement
+        payload_agree = {
+            "title": "Charizard 4/102 1st Edition Base Set Holo",
+            "localizedAspects": [
+                {"name": "Card Name", "value": "Charizard"},
+                {"name": "Set", "value": "Base Set"},
+                {"name": "Card Number", "value": "4/102"},
+                {"name": "Edition", "value": "1st Edition"},
+            ],
+        }
+        res_agree = resolve_card_identity(payload_agree)
+        self.assertEqual(res_agree.identity.edition, "1st Edition")
+        self.assertFalse(res_agree.identity.ambiguities)
+
+        # Case 2: Structured conflict with title
+        payload_conflict = {
+            "title": "Charizard 4/102 1st Edition Base Set Holo",
+            "localizedAspects": [
+                {"name": "Card Name", "value": "Charizard"},
+                {"name": "Set", "value": "Base Set"},
+                {"name": "Card Number", "value": "4/102"},
+                {"name": "Edition", "value": "Unlimited"},
+            ],
+        }
+        res_conflict = resolve_card_identity(payload_conflict)
+        self.assertEqual(res_conflict.identity.edition, "Unlimited")
+        self.assertTrue(any("edition: conflit" in a for a in res_conflict.identity.ambiguities))
+
+        # Case 3: Structured missing + title edition fallback
+        payload_title_only = {
+            "title": "Charizard 4/102 1st Edition Base Set Holo",
+            "localizedAspects": [
+                {"name": "Card Name", "value": "Charizard"},
+                {"name": "Set", "value": "Base Set"},
+                {"name": "Card Number", "value": "4/102"},
+            ],
+        }
+        res_title_only = resolve_card_identity(payload_title_only)
+        self.assertEqual(res_title_only.identity.edition, "1st Edition")
+        self.assertFalse(res_title_only.identity.ambiguities)
+
+        # Case 4: Structured missing + contradictory title edition
+        payload_title_contra = {
+            "title": "Charizard 4/102 1st Edition Unlimited Base Set",
+            "localizedAspects": [
+                {"name": "Card Name", "value": "Charizard"},
+                {"name": "Set", "value": "Base Set"},
+                {"name": "Card Number", "value": "4/102"},
+            ],
+        }
+        res_title_contra = resolve_card_identity(payload_title_contra)
+        self.assertIsNone(res_title_contra.identity.edition)
+        self.assertTrue(any("edition: valeurs contradictoires" in a for a in res_title_contra.identity.ambiguities))
+
+    def test_extended_structured_aspect_aliases(self):
+        """German Auflage, Finish aliases and Italian Caratteristiche are recognized."""
+        payload_de = {
+            "title": "Glurak 4/102 Basis Set",
+            "localizedAspects": [
+                {"name": "Kartenname", "value": "Glurak"},
+                {"name": "Kartenset", "value": "Basis Set"},
+                {"name": "Kartennummer", "value": "4/102"},
+                {"name": "Auflage", "value": "1. Auflage"},
+                {"name": "Card Finish", "value": "Holo"},
+            ],
+        }
+        res_de = resolve_card_identity(payload_de)
+        self.assertEqual(res_de.identity.edition, "1. Auflage")
+        self.assertEqual(res_de.identity.finish, "Holo")
+
+        payload_it = {
+            "title": "Charizard 4/102 Set Base",
+            "localizedAspects": [
+                {"name": "Nome carta", "value": "Charizard"},
+                {"name": "Set", "value": "Set Base"},
+                {"name": "Numero carta", "value": "4/102"},
+                {"name": "Caratteristiche", "value": "1ª Edizione"},
+            ],
+        }
+        res_it = resolve_card_identity(payload_it)
+        self.assertEqual(res_it.identity.edition, "first_edition")
+        self.assertEqual(semantics_from_text(res_it.identity.edition).edition, EDITION_FIRST)
+
+    def test_local_microvariant_validator_unblocks_proven_edition(self):
+        """When TCGdex proves both 1st Edition and Unlimited exist, proven edition unblocks economics."""
+        card_data = {
+            "id": "base1-4",
+            "variants": {
+                "normal": False,
+                "reverse": False,
+                "holo": True,
+                "firstEdition": True,
+            },
+        }
+        applicability = tcgdex_microvariant_applicability(card_data)
+        self.assertEqual(applicability.status, MICROVARIANT_APPLICABLE)
+        self.assertFalse(applicability.edition_proven_single)
+        self.assertTrue(applicability.finish_proven_single)
+
+        validator = LocalMicrovariantValidator()
+
+        # 1. 1st Edition proven on listing -> FIRST_EDITION_CONFIRMED, unblocked!
+        id_1st = CardIdentity(
+            card_name="Charizard",
+            set="Base Set",
+            card_number="4/102",
+            language="English",
+            edition="1st Edition",
+        )
+        res_1st = validator.resolve(id_1st, applicability=applicability)
+        self.assertFalse(res_1st.blocks_economics)
+        self.assertEqual(res_1st.edition_status, FIRST_EDITION_CONFIRMED)
+
+        # 2. Unlimited proven on listing -> UNLIMITED_CONFIRMED, unblocked!
+        id_unl = CardIdentity(
+            card_name="Charizard",
+            set="Base Set",
+            card_number="4/102",
+            language="English",
+            edition="Unlimited",
+        )
+        res_unl = validator.resolve(id_unl, applicability=applicability)
+        self.assertFalse(res_unl.blocks_economics)
+        self.assertEqual(res_unl.edition_status, UNLIMITED_CONFIRMED)
+
+        # 3. German 1. Auflage proven on listing -> FIRST_EDITION_CONFIRMED, unblocked!
+        id_de = CardIdentity(
+            card_name="Glurak",
+            set="Basis Set",
+            card_number="4/102",
+            language="German",
+            edition="1. Auflage",
+        )
+        res_de = validator.resolve(id_de, applicability=applicability)
+        self.assertFalse(res_de.blocks_economics)
+        self.assertEqual(res_de.edition_status, FIRST_EDITION_CONFIRMED)
+
+        # 4. French 1ère Édition proven on listing -> FIRST_EDITION_CONFIRMED, unblocked!
+        id_fr = CardIdentity(
+            card_name="Dracaufeu",
+            set="Set de Base",
+            card_number="4/102",
+            language="French",
+            edition="1ère Édition",
+        )
+        res_fr = validator.resolve(id_fr, applicability=applicability)
+        self.assertFalse(res_fr.blocks_economics)
+        self.assertEqual(res_fr.edition_status, FIRST_EDITION_CONFIRMED)
+
+        # 5. Shadowless proven on listing -> MICROVARIANT_NOT_REQUIRED, unblocked!
+        id_shadow = CardIdentity(
+            card_name="Charizard",
+            set="Base Set",
+            card_number="4/102",
+            language="English",
+            edition="Shadowless",
+        )
+        res_shadow = validator.resolve(id_shadow, applicability=applicability)
+        self.assertFalse(res_shadow.blocks_economics)
+        self.assertEqual(res_shadow.edition_status, MICROVARIANT_NOT_REQUIRED)
+
+        # 6. Unproven edition on listing -> EDITION_UNKNOWN, blocked! (fail closed preserved)
+        id_unknown = CardIdentity(
+            card_name="Charizard",
+            set="Base Set",
+            card_number="4/102",
+            language="English",
+            edition=None,
+        )
+        res_unknown = validator.resolve(id_unknown, applicability=applicability)
+        self.assertTrue(res_unknown.blocks_economics)
+        self.assertEqual(res_unknown.edition_status, EDITION_UNKNOWN)
 
 
 if __name__ == "__main__":

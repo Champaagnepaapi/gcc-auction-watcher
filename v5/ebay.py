@@ -421,8 +421,31 @@ IDENTITY_ALIASES = {
         "Oberflache",
         "Finitura",
         "Acabado",
+        "Card Finish",
+        "Surface Finish",
+        "Finition de la carte",
+        "Oberflächeneffekt",
+        "Effetto superficie",
+        "Efecto de superficie",
     ),
-    "edition": ("Edition", "Édition", "Edizione", "Ausgabe", "Edición"),
+    "edition": (
+        "Edition",
+        "Édition",
+        "Edizione",
+        "Ausgabe",
+        "Edición",
+        "Edition / Print",
+        "Edition/Print",
+        "Card Condition Edition",
+        "Druck",
+        "Auflage",
+        "Stampa",
+        "Printing",
+        "Print",
+        "Édition / Impression",
+        "Edizione / Stampa",
+        "Edición / Impresión",
+    ),
     "illustrator": (
         "Illustrator",
         "Illustrateur",
@@ -439,6 +462,7 @@ FEATURE_ASPECT_ALIASES = (
     "Merkmale",
     "Besonderheiten",
     "Características",
+    "Caratteristiche",
 )
 
 
@@ -1004,6 +1028,86 @@ def extract_title_finish(title: str) -> Tuple[Optional[str], bool]:
     return found[0], False
 
 
+_TITLE_FIRST_EDITION_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    # English
+    re.compile(r"\b(?:1st|first)\s+edition\b", re.IGNORECASE),
+    re.compile(r"\b1st\s+ed(?:\.|\b)", re.IGNORECASE),
+    # French
+    re.compile(r"\b1[èe]re?\s+[eé]dition\b", re.IGNORECASE),
+    re.compile(r"\bpremi[èe]re\s+[eé]dition\b", re.IGNORECASE),
+    # German
+    re.compile(r"\b1\.\s*(?:edition|auflage)\b", re.IGNORECASE),
+    re.compile(r"\b1\s+auflage\b", re.IGNORECASE),
+    re.compile(r"\berste\s+auflage\b", re.IGNORECASE),
+    # Italian
+    re.compile(r"\b1[ªa]\s+edizione\b", re.IGNORECASE),
+    re.compile(r"\bprima\s+edizione\b", re.IGNORECASE),
+    # Spanish
+    re.compile(r"\b1[ªa]\s+edici[oó]n\b", re.IGNORECASE),
+    re.compile(r"\bprimera\s+edici[oó]n\b", re.IGNORECASE),
+)
+
+_TITLE_SHADOWLESS_PATTERN = re.compile(r"\bshadowless\b", re.IGNORECASE)
+
+_TITLE_UNLIMITED_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bunlimited\b", re.IGNORECASE),
+    re.compile(r"\bunbegrenzt\b", re.IGNORECASE),
+    re.compile(r"\billimit[eé]e?\b", re.IGNORECASE),
+)
+
+
+def extract_title_edition(title: str) -> Tuple[Optional[str], bool]:
+    """Extract only explicit, unambiguous edition phrases using span masking.
+
+    Precedence order:
+    1. Shadowless -> "Shadowless"
+    2. 1st Edition / First Edition / 1ère Édition / 1. Auflage / etc. -> "1st Edition"
+    3. Unlimited / Unbegrenzt / Illimitée -> "Unlimited"
+
+    Words alone that are NOT accepted: edition, 1st, first, ed, auflage, print, printing.
+    """
+    if not title:
+        return None, False
+
+    working = title
+    found: list[str] = []
+
+    def mask_span(match: re.Match[str]) -> str:
+        return " " * len(match.group(0))
+
+    # 1. Shadowless (distinct vintage premium variant)
+    for _match in _TITLE_SHADOWLESS_PATTERN.finditer(working):
+        found.append("Shadowless")
+    working = _TITLE_SHADOWLESS_PATTERN.sub(mask_span, working)
+
+    # 2. 1st Edition
+    found_1st = False
+    for pat in _TITLE_FIRST_EDITION_PATTERNS:
+        for _match in pat.finditer(working):
+            if not found_1st:
+                found.append("1st Edition")
+                found_1st = True
+        working = pat.sub(mask_span, working)
+
+    # 3. Unlimited
+    found_unl = False
+    for pat in _TITLE_UNLIMITED_PATTERNS:
+        for _match in pat.finditer(working):
+            if not found_unl:
+                found.append("Unlimited")
+                found_unl = True
+        working = pat.sub(mask_span, working)
+
+    if not found:
+        return None, False
+
+    distinct_semantics = tuple(dict.fromkeys(semantics_from_text(f) for f in found))
+    if len(distinct_semantics) > 1:
+        return None, True
+
+    return found[0], False
+
+
 def _title_fallbacks(title: str) -> Dict[str, object]:
     """Extrait seulement des signaux explicites ou des motifs tres bornes."""
 
@@ -1095,6 +1199,10 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
     title_finish, title_finish_contra = extract_title_finish(title)
     if title_finish and not title_finish_contra:
         values["finish"] = title_finish
+
+    title_edition, title_edition_contra = extract_title_edition(title)
+    if title_edition and not title_edition_contra:
+        values["edition"] = title_edition
 
     language_names = {
         "english": "English",
@@ -1323,11 +1431,46 @@ def resolve_card_identity(
     elif len(distinct_title_semantics) == 1 and not title_finish_contradictory:
         fields["finish"] = distinct_title_finishes[0]
 
+    title_editions: list[str] = []
+    title_edition_contradictory = False
+    for title in titles:
+        t_edition, t_contra = extract_title_edition(title)
+        if t_contra:
+            title_edition_contradictory = True
+        if t_edition:
+            title_editions.append(t_edition)
+
+    distinct_title_editions = tuple(dict.fromkeys(title_editions))
+    distinct_title_edition_semantics = tuple(
+        dict.fromkeys(semantics_from_text(e) for e in title_editions)
+    )
+    if title_edition_contradictory or len(distinct_title_edition_semantics) > 1:
+        ambiguities.append("edition: valeurs contradictoires dans le titre")
+
+    structured_edition = structured.edition
+    if structured_edition is not None:
+        fields["edition"] = structured_edition
+        if distinct_title_editions and not title_edition_contradictory:
+            structured_sem = semantics_from_text(structured_edition)
+            title_sem = distinct_title_edition_semantics[0]
+            edition_conflict = bool(
+                structured_sem.edition
+                and title_sem.edition
+                and structured_sem.edition != title_sem.edition
+            )
+            if edition_conflict:
+                ambiguities.append(
+                    f"edition: conflit entre aspect ({structured_edition}) et titre ({distinct_title_editions[0]})"
+                )
+    elif len(distinct_title_edition_semantics) == 1 and not title_edition_contradictory:
+        fields["edition"] = distinct_title_editions[0]
+
     for name, value in fallback.items():
         if (
             name in fields
             and name != "card_name"
             and name != "finish"
+            and name != "edition"
             and fields[name] is None
         ):
             fields[name] = value

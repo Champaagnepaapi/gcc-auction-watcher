@@ -512,7 +512,17 @@ Elle durcit la résolution déterministe des finishes explicitement présents da
 - pattern Poké Ball resserré ;
 - aucune relaxation fuzzy de l’identité.
 
-PR #8 reste draft et non mergée après cette intégration.
+### Réduction du bottleneck BLOCKED_VARIANT
+
+Résolution déterministe de l'édition et des variantes structurées/titre :
+
+- parser `extract_title_edition` par span-masking multilingue strict (English, French, German, Italian, Spanish) ;
+- extraction sécurisée de `1st Edition` / `Shadowless` / `Unlimited` depuis les titres eBay explicites ;
+- réconciliation déterministe avec les aspects structurés (priorité structurée, fail-closed en cas de contradiction) ;
+- extension des alias d'aspects structurés eBay (`Auflage`, `Druck`, `Edition / Print`, `Card Finish`, `Caratteristiche`) ;
+- unblocking automatique et fail-closed préservé dans `LocalMicrovariantValidator` pour les cartes vintage/modernes disposant d'une preuve d'édition ou de finish unique.
+
+PR #8 reste draft et non mergée.
 
 ---
 
