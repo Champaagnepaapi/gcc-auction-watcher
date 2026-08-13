@@ -4291,13 +4291,72 @@ def scrape_psa_apr(
     query = psa_apr_search_query(lot)
     log(f"APR recherche: {query}")
     try:
-        page.goto(
+        response = page.goto(
             PSA_APR_SEARCH_URL,
             wait_until="domcontentloaded",
             timeout=PSA_APR_NAV_TIMEOUT,
         )
+        http_status = None
+        if response is not None and hasattr(response, "status"):
+            status_val = response.status
+            http_status = status_val() if callable(status_val) else status_val
+
+        if http_status == 429:
+            log("APR: trop de requêtes (HTTP 429) -> abandon APR pour cette carte")
+            return PsaAprData(
+                [], note="APR trop de requêtes (HTTP 429)",
+                provider_status=EXTERNAL_RATE_LIMITED,
+            )
+        if http_status == 403:
+            log("APR: accès refusé (HTTP 403) -> abandon APR pour cette carte")
+            return PsaAprData(
+                [], note="APR accès refusé (HTTP 403)",
+                provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+            )
+        if http_status is not None and http_status >= 400:
+            log(f"APR: erreur HTTP {http_status} -> abandon APR pour cette carte")
+            return PsaAprData(
+                [], note=f"APR erreur HTTP {http_status}",
+                provider_status=EXTERNAL_PROVIDER_ERROR,
+            )
+
+        title = ""
+        try:
+            title = (page.title() or "").lower()
+        except Exception:
+            pass
+
+        body = ""
+        try:
+            body = page.locator("body").inner_text(timeout=min(PSA_APR_NAV_TIMEOUT, 2500))
+        except Exception:
+            pass
+
+        lower_content = f"{title}\n{body}".lower()
+        if any(
+            marker in lower_content
+            for marker in (
+                "captcha", "access denied", "verify you are human",
+                "pardon our interruption", "too many requests",
+                "just a moment...", "attention required",
+                "cloudflare", "perimeterx", "datadome",
+            )
+        ):
+            log("APR: refus/anti-bot détecté -> abandon APR pour cette carte")
+            status = (
+                EXTERNAL_RATE_LIMITED
+                if "too many requests" in lower_content
+                else EXTERNAL_TRANSIENT_UNAVAILABLE
+            )
+            return PsaAprData(
+                [], note="APR refusé ou anti-bot", provider_status=status
+            )
+
         search = page.locator(
-            'input[name="q"], input[placeholder*="Search PSA-Graded Items"]'
+            'input[name="q"], '
+            'input[placeholder*="Search PSA-Graded Items"], '
+            'input[type="search"], '
+            'input[placeholder*="Search" i]'
         ).first
         if search.count() == 0:
             return PsaAprData(
@@ -4330,6 +4389,8 @@ def scrape_psa_apr(
         for marker in (
             "captcha", "access denied", "verify you are human",
             "pardon our interruption", "too many requests",
+            "just a moment...", "attention required",
+            "cloudflare", "perimeterx", "datadome",
         )
     ):
         log("APR: refus/anti-bot détecté -> abandon APR pour cette carte")
@@ -4381,14 +4442,54 @@ def scrape_psa_apr(
     )
     try:
         if page.url != detail_candidate.url:
-            page.goto(
+            detail_response = page.goto(
                 detail_candidate.url,
                 wait_until="domcontentloaded",
                 timeout=PSA_APR_NAV_TIMEOUT,
             )
+            detail_http_status = None
+            if detail_response is not None and hasattr(detail_response, "status"):
+                d_status = detail_response.status
+                detail_http_status = d_status() if callable(d_status) else d_status
+            if detail_http_status == 429:
+                return PsaAprData(
+                    [], note="fiche APR trop de requêtes (HTTP 429)",
+                    provider_status=EXTERNAL_RATE_LIMITED,
+                )
+            if detail_http_status == 403:
+                return PsaAprData(
+                    [], note="fiche APR accès refusé (HTTP 403)",
+                    provider_status=EXTERNAL_TRANSIENT_UNAVAILABLE,
+                )
+            if detail_http_status is not None and detail_http_status >= 400:
+                return PsaAprData(
+                    [], note=f"fiche APR erreur HTTP {detail_http_status}",
+                    provider_status=EXTERNAL_PROVIDER_ERROR,
+                )
+
         detail_body = page.locator("body").inner_text(
             timeout=min(PSA_APR_NAV_TIMEOUT, 2500)
         )
+        lower_detail = detail_body.lower()
+        if any(
+            marker in lower_detail
+            for marker in (
+                "captcha", "access denied", "verify you are human",
+                "pardon our interruption", "too many requests",
+                "just a moment...", "attention required",
+                "cloudflare", "perimeterx", "datadome",
+            )
+        ):
+            status = (
+                EXTERNAL_RATE_LIMITED
+                if "too many requests" in lower_detail
+                else EXTERNAL_TRANSIENT_UNAVAILABLE
+            )
+            return PsaAprData(
+                [], note="fiche APR refusée ou anti-bot",
+                provider_status=status,
+            )
+
         verified_score, verified_reason = psa_apr_match_score(lot, detail_body)
         if verified_score < PSA_APR_MATCH_MIN_SCORE:
             log(f"APR correspondance: fiche rejetée ({verified_reason})")

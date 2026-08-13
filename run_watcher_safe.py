@@ -15,7 +15,9 @@ _ORIGINAL_SCRAPE_PSA_APR = watcher.scrape_psa_apr
 
 PSA_APR_SEARCH_SELECTOR = (
     'input[name="q"], '
-    'input[placeholder*="Search PSA-Graded Items"]'
+    'input[placeholder*="Search PSA-Graded Items"], '
+    'input[type="search"], '
+    'input[placeholder*="Search" i]'
 )
 PSA_APR_SUBMIT_SELECTOR = (
     '[role="search"] button[aria-label="Search"], '
