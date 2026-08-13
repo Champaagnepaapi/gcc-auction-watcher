@@ -1,43 +1,119 @@
 # GCC Auction Watcher
 
 > **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
-> Ce README doit rester la source de vérité pour reprendre le projet sans reconstruire l’historique complet.
+> Après tout changement important de production, d’architecture V5, de provider, de benchmark ou de workflow, mettre ce README à jour avant de considérer la phase terminée.
 
-## État canonique — 11 août 2026
+## État canonique — 13 août 2026
+
+Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ### Principes non négociables
 
-- **V4 sur `main` = production canonique.** V5 ne la remplace pas implicitement.
-- Pokémon **cartes individuelles uniquement**. Produits scellés/non-cartes exclus : boosters, packs, displays, boxes, ETB, coffrets, blisters, bundles, decks, tins, cases, etc.
-- Découverte économique : **0–100 €** afin de ne pas rater les anomalies très basses ; `MAX_PRICE=100`.
-- Décote minimale : **30 %**, éventuellement relevée lorsque les comparables sont faibles.
-- Enchères pertinentes uniquement si fin **≤60 min**.
+- **V4 sur `main` = production canonique.**
+- **V5 = expérimental, PR #8. Ne jamais merger PR #8 sans autorisation explicite.**
+- Pokémon **cartes individuelles uniquement** ; sealed/lots restent hors scope actuel.
+- Discovery V4 : **0–100 €** pour capter les anomalies extrêmes ; `MAX_PRICE=100`.
+- Décote minimale utilisateur : **30 %**, avec seuil adaptatif plus exigeant lorsque les preuves sont faibles.
+- Fixed + auctions ; une auction n’est économiquement pertinente que si elle finit dans **≤60 min**.
 - Aucun achat, bid, checkout ou grading payant automatique.
-- Les données listing-level eBay/PokeTrace/JustTCG restent **mémoire-only** dans les diagnostics V5 : pas de persistance d’itemId, titre, URL, prix ou images.
-- Une ambiguïté d’identité reste bloquante. La cible `15+/20` est un objectif de couverture uniquement si les preuves le permettent.
+- `AMBIGUOUS` / conflit matériel = fail-closed. Ne jamais relâcher le matching pour améliorer artificiellement la couverture.
+- Une absence de valorisation n’est **pas** un signal négatif : distinguer `pas de marché confirmé` de `mauvaise offre`.
 
 ---
 
-# V4 — production GCC
+# V4 — production canonique
 
-## Scheduler et persistance
+## Scheduler / état
 
-- Production : **Cron-job.org → `workflow_dispatch` GitHub Actions environ toutes les 10 minutes**.
-- Ne pas réintroduire de `schedule:` GitHub en parallèle : cela doublerait les scans.
-- `state.json` est restauré/sauvegardé via cache GitHub Actions.
-- Chaque run V4 est journalisé dans l’**issue #1** avec trigger, durée, opportunités, mode/scope auction, timers et fallback.
+Deux cronjobs externes distincts sont utilisés sur Cron-job.org :
 
-## Découverte fixed
+```text
+GCC Auction Watcher — Main Scanner
+    ↓ workflow_dispatch ~toutes les 10 min
+.github/workflows/watcher.yml
+    ↓
+GCC Auction Watcher V4
 
-- API publique GCC `/on-sale-items`.
-- File de priorité : `NEW → CHANGED → NEVER_EVALUATED → STALE`.
-- TTL de réévaluation : 24 h.
-- Budget de traitement fixe : 120.
-- Découverte 0–100 € ; un prix très bas ne crée jamais à lui seul une opportunité.
+GCC Auction Watcher — Fast Lane
+    ↓ workflow_dispatch toutes les 3 min
+.github/workflows/v4-final-auction-check.yml
+    ↓
+recheck ciblé des auctions déjà armées et arrivant à ≤5 min
+```
 
-## Découverte auctions
+Règles :
 
-Discovery primaire lot par lot :
+- Ne pas ajouter de `schedule:` GitHub parallèle pour ces deux lanes : cela doublerait les scans.
+- `state.json` est restauré/sauvegardé par le Main Scanner via cache GitHub Actions.
+- La Fast Lane restaure `state.json` en **lecture seule** et ne possède pas l’état principal.
+- La Fast Lane écrit uniquement son namespace de déduplication `final_alerts.json`.
+- Concurrency Main Scanner sérialisée, `cancel-in-progress: false`.
+- La Fast Lane possède un groupe de concurrency séparé afin de ne pas bloquer le Main Scanner.
+- Les runs V4 principaux sont journalisés dans l’issue #1.
+
+### Fast Lane — production active
+
+La Fast Lane a été introduite par PR #45 et est maintenant activée en production.
+
+Feature flag :
+
+```text
+V4_FAST_LANE_FINAL_CHECK_ENABLED=true
+```
+
+Kill switch immédiat : passer cette variable de repository à `false`.
+
+Comportement :
+
+- ne découvre aucun nouveau listing ;
+- ne relance aucun provider marché externe ;
+- ne considère que les auctions déjà armées/notifiées dans `state.json` ;
+- ne traite que celles arrivant dans la fenêtre finale `≤5 min` ;
+- rafraîchit le prix et le timer du lot GCC exact ;
+- compare le prix courant au `max_recommended` persistant déjà calculé ;
+- envoie au maximum une alerte finale dédupliquée si le lot reste sous le plafond ;
+- aucune mutation de `state.json` ;
+- aucun achat, bid ou checkout.
+
+Le Main Scanner restaure `final_alerts.json` en lecture seule et supprime son propre doublon synchrone de dernière minute lorsque la Fast Lane est activée, ce qui garde une propriété d’alerte finale **exact-once** entre les deux lanes.
+
+### Cron externe / token GitHub
+
+Le cron Fast Lane appelle :
+
+```text
+POST https://api.github.com/repos/Champaagnepaapi/gcc-auction-watcher/actions/workflows/v4-final-auction-check.yml/dispatches
+Body: {"ref":"main"}
+Cadence: */3 * * * *
+```
+
+Authentification : fine-grained GitHub PAT limité au repository `Champaagnepaapi/gcc-auction-watcher`, avec permission `Actions: Read and write` et Metadata read-only automatique.
+
+- Le PAT a été créé avec expiration **90 jours** : le renouveler avant expiration.
+- Ne jamais stocker le token dans le repo, le README, une issue ou un log.
+- Réponse attendue du dispatch GitHub : **HTTP 204 No Content**.
+
+Activation initiale confirmée le 13 août 2026 :
+
+- dispatch authentifié `workflow_dispatch` réussi ;
+- run GitHub `31662123261` : success ;
+- premier cycle cron automatique confirmé à 04:54 : HTTP 204 ;
+- run GitHub `31662233558` : success.
+
+Un suivi multi-cycle est à conserver comme contrôle opérationnel ; aucun faux positif, achat, bid ou checkout n’est autorisé même en cas d’erreur de scheduler.
+
+## Discovery fixed
+
+- Source : API publique GCC `/on-sale-items`.
+- File économique : `NEW → CHANGED → NEVER_EVALUATED → STALE`.
+- Budget : 120 évaluations/run.
+- TTL fixed : 24 h par défaut, avec refresh externe adaptatif décrit plus bas pour les annonces proches du seuil.
+- Discovery et couverture économique sont comptabilisées séparément.
+- Un prix bas ne crée jamais à lui seul une opportunité.
+
+## Discovery auctions
+
+Source primaire item-level :
 
 ```text
 /on-sale-items
@@ -45,637 +121,439 @@ sellingTypeGroup=AUCTION
 sortType=ENDING_SOON
 status=ON_SALE
         ↓
-lots individuels
-        ↓
 endTime individuel
         ↓
 Pokémon + carte + 0–100 € + ≤60 min
-        ↓
-analyse économique V4
 ```
 
-Le watcher s’arrête lorsque l’ordre `ENDING_SOON` prouve que l’horizon de 60 min est franchi ou lorsque l’inventaire est épuisé. Statut attendu :
-
-```text
-COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
-```
-
-L’ancien collector auction reste fallback uniquement si l’API/pagination/ordre/endTime ne permet plus de prouver la couverture.
-
-## Valorisation V4
-
-- même grader + même grade = comparables prioritaires ;
-- médiane pondérée par récence ;
-- filtrage robuste MAD/IQR ;
-- fourchette prudente ;
-- PSA Auction Prices Realized en premier pour PSA exact lorsque possible ;
-- eBay public en fallback si APR insuffisant.
-
-### Grade arbitrage
-
-Une carte de grade supérieur peut être intéressante si son prix est autour du marché robuste d’un grade inférieur du **même grader**. Cette voie :
-
-- ne doit jamais inventer la valeur du grade supérieur ;
-- exige une preuve externe exacte suffisante avant notification ;
-- garde les autres graders comme comparables secondaires ;
-- interdit qu’un proxy cross-grader crée seul une valeur achetable sans ratio empirique documenté.
-
-## ntfy / anti-spam
-
-Renotifier une opportunité déjà signalée uniquement si :
-
-- prix baisse ≥10 % ;
-- décote s’améliore ≥5 points ;
-- franchissement d’un seuil temporel ;
-- une alerte haute priorité unique peut partir à ≤5 min si le prix reste sous le max prudent.
-
-### Alertes techniques
-
-Les petits drifts dynamiques fixed pendant une pagination saine restent dans les logs mais ne notifient pas le téléphone. Sont toujours actionnables : page API échouée, pagination structurelle incohérente, écart matériel, couverture auction/économique incomplète, NEW/CHANGED urgent non traité, état/cache incohérent, invariant comptable cassé.
-
-## Runtime Playwright
-
-- PR #13 : cache pip + cache Playwright + probe Chromium.
-- Run initial `31479526838` : cache miss attendu, téléchargement initial puis cache Playwright ~279 MB.
-- Run `31480316615` : pip hit + Playwright hit, aucun gros téléchargement Chromium/FFmpeg/Headless Shell.
-- Les runners GitHub-hosted restent jetables ; le cache évite les gros téléchargements.
-- Runner self-hosted : **pas justifié actuellement**.
+- Le watcher s’arrête lorsque l’ordre `ENDING_SOON` prouve que l’horizon 60 min est franchi ou lorsque l’inventaire est épuisé.
+- Statut nominal : `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`.
+- L’ancien collector auction reste fallback uniquement si API/pagination/ordre/endTime ne permettent plus de prouver la couverture.
+- L’ancien prototype long-wait PR #30 est **supersédé** par la Fast Lane zéro-sleep de PR #45 ; ne pas réintroduire de `sleep` long dans le Main Scanner.
 
 ---
 
-# Workflows GitHub Actions — inventaire utile après nettoyage
+# V4 — identité canonique et valorisation multi-marché
 
-Le nettoyage PR #24 a supprimé du repo les workflows redondants :
+Architecture de production introduite par PR #33 :
 
-- `V5 eBay Enrichment Diagnostic` ;
-- `V5 GCC History Diagnostic` ;
-- `V5 Market Valuation Diagnostic`.
+```text
+GCC listing
+  ↓
+identité canonique TCGdex déterministe
+  ├→ GCC history
+  ├→ PokeTrace exact card + grader + grade
+  ├→ PSA Auction Prices Realized exact grade
+  ├→ eBay sold exact grader + exact grade
+  └→ TCGdex Cardmarket / TCGplayer RAW
+  ↓
+arbitrage par force de preuve
+  ↓
+opportunity / conflict / pending / manual review
+```
 
-Le cleanup a été mergé dans `main` (`a10740cb67aa80372bb0a2dc1add89f12541b660`) puis resynchronisé dans V5 via PR #25. La branche V5 est revenue à `behind main = 0`.
+**Principe central : les sources externes sont évaluées pour toute carte économiquement évaluée, même si GCC possède déjà un historique.** GCC n’est plus un préalable obligatoire à la validation externe.
 
-Workflows à conserver :
+## TCGdex = identité canonique V4
 
-1. **GCC Auction Watcher** — production V4.
-2. **V4 Auction Discovery Validation** — validation spécialisée auction.
-3. **V4 GCC Coverage Audit** — audit de couverture V4.
-4. **PSA Public API Diagnostic** — diagnostic APR/PSA.
-5. **V5 Live Raw Pipeline Diagnostic** — diagnostic live eBay → identité → marché.
-6. **V5 Catalog Identity Benchmark** — benchmark manuel TCGdex ↔ JustTCG sur la branche V5.
-7. **V5 GCC Catalog Refresh** — fonction unique : entretenir le catalogue cumulatif GCC ; conserve son refresh quotidien.
+TCGdex est utilisé comme resolver déterministe avant le marché externe :
 
-Ne plus créer de workflows `Temp`, `one-shot`, `repair`, `handoff` ou reporter dédiés pour chaque micro-opération. Pour le développement : **Codex/tests locaux → une validation finale si nécessaire → workflow manuel existant pour le live**.
+- langue localisée conservée ;
+- nom exact + `localId` exact ;
+- dénominateur `x/y` vérifié contre le set ;
+- fallback `set exact + localId exact` ;
+- plusieurs candidats exacts sans preuve discriminante → `AMBIGUOUS` ;
+- `004/102` et `4/102` peuvent être normalisés numériquement ; `4/102` et `4/130` restent incompatibles ;
+- aucun Levenshtein, substring, containment ou fuzzy ratio comme preuve d’identité.
 
-Les anciens noms peuvent rester visibles dans l’historique/sidebar GitHub Actions même après suppression du YAML ; ils ne correspondent plus à des workflows actifs du repo.
+Le titre/identité listing n’est jamais silencieusement remplacé ; les IDs TCGdex sont attachés comme provenance structurée.
+
+## Scope PSA V4
+
+Production PSA volontairement limitée à :
+
+```text
+PSA 8
+PSA 8.5
+PSA 9
+PSA 10
+```
+
+- PSA <8 : exclu du pipeline économique production.
+- PSA 9.5 : ne pas fabriquer/accepter cette note comme grade PSA de production, même si certains providers exposent des tiers génériques de demi-grade.
+- Les autres graders gardent leurs échelles valides existantes.
+
+Objectif : concentrer les budgets sur les slabs ayant le plus de valeur/liquidité et éviter les grades bas avec marché externe très pauvre.
+
+## PokeTrace = marché gradé externe
+
+- Auth : `X-API-Key` uniquement.
+- Preflight : `/auth/info`.
+- Plans acceptés pour graded : Pro / Growth / Scale.
+- Budget V4 : max 40 requêtes PokeTrace/run.
+- Pacing : 0.40 s.
+- `/cards` fournit l’agrégat de prix ; le endpoint Scale listing-level n’est pas requis par cette V4.
+
+Une preuve PokeTrace automatique forte exige notamment :
+
+- identité macro TCGdex exacte ;
+- même grader ;
+- même grade exact ;
+- dimensions commerciales compatibles ;
+- au moins 3 ventes agrégées ;
+- dispersion non élevée ;
+- provenance langue/marché prouvable.
+
+### Sécurité microvariantes
+
+La metadata candidate PokeTrace **ne devient jamais une preuve du variant du listing**.
+
+- First Edition provider sans preuve listing → bloque ;
+- si TCGdex indique que First Edition est applicable mais que l’édition listing est inconnue → bloque ;
+- plusieurs finishes possibles dans le catalogue + finish listing inconnu → bloque ;
+- un finish provider peut être accepté automatiquement uniquement si le catalogue exact prouve qu’il n’existe qu’un seul finish possible compatible ;
+- édition, Shadowless, promo/stamp, Cosmos/Galaxy/Cracked Ice/Poké Ball/Master Ball et autres dimensions sensibles restent fail-closed.
+
+## PSA APR / eBay
+
+PSA APR et eBay restent des providers indépendants :
+
+- PSA : APR exact grade en priorité, puis eBay exact en fallback ;
+- non-PSA : eBay même grader + même grade ;
+- langue/édition/finish/variant sensibles doivent être prouvés, pas seulement non contradits.
+
+### PSA APR web hydration et diagnostics anti-bot
+
+PR #32 a corrigé le race condition de la page publique APR :
+
+- attente bornée du champ de recherche client-rendered ;
+- attente bornée du bouton Search ;
+- puis délégation au scraper strict existant ;
+- timeout/anti-bot/erreur restent fail-closed.
+
+PR #46 améliore ensuite le **diagnostic** de cette voie :
+
+- inspecte HTTP 403 / 429 / 4xx / 5xx avant le contrôle du formulaire ;
+- reconnaît les pages de challenge anti-bot (Cloudflare, PerimeterX, Datadome, CAPTCHA, etc.) ;
+- évite de masquer un vrai blocage WAF sous le message générique `formulaire APR indisponible` ;
+- conserve le fail-closed et les fallbacks.
+
+Important : **PR #46 ne rend pas PSA APR “disponible” lorsqu’un WAF bloque GitHub Actions.** Elle corrige la classification et l’observabilité. En cas de 403/challenge réel, APR reste transitoirement indisponible et eBay/fallbacks continuent selon les règles existantes.
+
+Cette voie utilise la **page web publique APR**, pas l’ancienne API Collectors publique.
+
+## RAW TCGdex : signal secondaire uniquement
+
+TCGdex peut fournir des prix Cardmarket / TCGplayer RAW.
+
+Règle absolue :
+
+```text
+RAW market ≠ valeur du slab gradé
+```
+
+Le RAW :
+
+- ne crée jamais une estimation PSA/BGS/CGC ;
+- ne crée jamais `max_recommended` ;
+- ne crée jamais une opportunity automatique ;
+- peut servir de **signal de revue manuelle**.
+
+Si le marché gradé exact reste indisponible mais qu’un slab est au moins ~30 % sous une enveloppe RAW externe prudente, V4 peut envoyer :
+
+```text
+GCC MANUAL REVIEW — GRADED MARKET PENDING
+```
+
+La notification :
+
+- montre identité TCGdex, grade, prix GCC, plage RAW et sources ;
+- explique explicitement que RAW ≠ valeur du slab ;
+- n’affiche aucun prix max d’achat dérivé du RAW ;
+- est dédupliquée 24 h ;
+- peut renotifier après baisse de prix significative ou amélioration matérielle du gap.
+
+Ainsi une carte potentiellement anormalement bon marché ne disparaît plus silencieusement uniquement parce que PSA APR/eBay n’ont pas fourni de prix gradé.
+
+---
+
+# V4 — arbitrage économique
+
+Forces : `STRONG`, `WEAK`, `UNAVAILABLE`.
+
+Chemins principaux :
+
+- `GCC_ONLY`
+- `GCC_EXTERNAL_CONFIRMED`
+- `EXTERNAL_RESCUE`
+- `EXTERNAL_PENDING`
+- `MARKET_CONFLICT_BLOCKED`
+
+Règles :
+
+- GCC fort + externe fort concordant → confirmation prudente ;
+- GCC faible/indisponible + externe fort → `EXTERNAL_RESCUE` possible ;
+- deux marchés forts contradictoires → blocage ;
+- provider indisponible ≠ no-match ;
+- budget épuisé → pending/requeue, jamais faux no-match ;
+- une panne PokeTrace n’empêche pas APR/eBay d’être tentés ;
+- une réponse APR/eBay faible/propre ne masque pas un transient/rate-limit PokeTrace dans un cache 24 h.
+
+Concordance forte GCC/externe :
+
+- intervalles prudents `low/high` qui se chevauchent ;
+- ratio des centres dans `0.80–1.25`.
+
+## Cache externe et rafraîchissement adaptatif
+
+PR #47 active le rafraîchissement adaptatif des **fixed listings uniquement** :
+
+- clé hashée d’identité commerciale stricte ;
+- TTL par défaut 24 h ;
+- rafraîchissement adaptatif (TTL 1–6 h) pour les annonces proches du seuil d’opportunité :
+  - gap ≤ 3 % du seuil requis → TTL 1 h ;
+  - gap ≤ 6 % du seuil requis → TTL 2 h ;
+  - gap ≤ 10 % du seuil requis → TTL 3 h ;
+  - gap ≤ 15 % du seuil requis → TTL 6 h ;
+  - gap > 15 % ou sans estimation → TTL standard 24 h ;
+- les auctions conservent le cache externe standard 24 h et s’appuient sur leur boucle ending-soon dédiée ;
+- réévaluation prioritaire dans la file fixed `P3_STALE` sans famine des files `P0_NEW`, `P1_CHANGED`, `P2_NEVER_EVALUATED` ;
+- après refresh, l’économie est recalculée **depuis les nouvelles preuves**, jamais promue depuis une valeur stale ;
+- schéma versionné ;
+- `MATCHED`, `CLEAN_NO_MATCH`, `CLEAN_INSUFFICIENT` cachables ;
+- `PROVIDER_ERROR`, `TRANSIENT_UNAVAILABLE`, `RATE_LIMIT` jamais cachés comme résultat propre ;
+- budget pending reste requeue ;
+- les budgets providers restent bornés.
+
+Le schéma est bumpé lors de l’activation PokeTrace afin d’éviter de réutiliser comme vérité des entrées antérieures à la couche multi-marché.
+
+---
+
+# V4 — enchères / notifications
+
+`max_recommended` reste le plafond prudent de référence.
+
+Pour une opportunity auction :
+
+- prix courant > `max_recommended` → pas de notification ;
+- la notification affiche `Prix max conseillé` ;
+- `EXTERNAL_RESCUE` calcule le plafond depuis l’estimation externe retenue ;
+- `GCC_EXTERNAL_CONFIRMED` le calcule depuis l’estimation prudente combinée ;
+- rappels temporels réutilisent le même plafond ;
+- la Fast Lane de dernière minute réutilise **le même `max_recommended` persistant** et ne le recalcule pas avec des providers externes.
+
+Anti-spam opportunity : renotifier principalement si :
+
+- prix baisse ≥10 % ;
+- décote s’améliore ≥5 points ;
+- franchissement d’un seuil temporel.
+
+Aucun code ne place une enchère automatiquement.
+
+---
+
+# Validation V4 multi-marché
+
+PR #33 source head validé :
+
+```text
+05c0e638678a698269e4fd89a7b49fb356eb87b5
+```
+
+GitHub Actions :
+
+```text
+run 31579694767
+job 94059724327
+```
+
+Résultat :
+
+- **304/304 tests V4** ;
+- compilation des nouveaux/anciens entrypoints V4 : OK ;
+- `git diff --check` : OK ;
+- auction comparison live read-only : primary 16 / legacy 16 ;
+- primary-only 0 ; legacy-only 0 ; unresolved 0 ; PASS ;
+- aucune action économique/ntfy/bid/purchase/checkout/state mutation dans cette comparaison.
+
+Régressions spécifiques : identité TCGdex exacte/ambiguë, dénominateurs, scope PSA, PokeTrace grade exact, non-héritage premium, edition/finish unknown fail-closed, transient/rate-limit non cachés, fallback APR/eBay indépendant, RAW manual-review, encodage ntfy et wiring production.
+
+## Déploiements V4 du 13 août 2026
+
+### PR #45 — Fast Lane finale
+
+Merge production :
+
+```text
+0978aa50309fc850f6c8b9e18743ea8011bd2444
+```
+
+- architecture zéro-sleep ;
+- workflow séparé `v4-final-auction-check.yml` ;
+- safe-off par défaut tant que le flag n’est pas activé ;
+- état principal lecture seule ;
+- `final_alerts.json` séparé ;
+- simulations des deux ordres de concurrence : une seule alerte finale totale ;
+- aucun provider externe dans la lane finale ;
+- aucune action d’achat/bid/checkout.
+
+### PR #46 — diagnostics PSA APR
+
+Merge production :
+
+```text
+fdf2c273b732e1c91dfc8a40f8540f31a9a92f02
+```
+
+Classification explicite des 403/429/5xx/challenges avant le test de présence du formulaire ; aucune tentative de contournement anti-bot.
+
+### PR #47 — refresh marché adaptatif
+
+Merge production :
+
+```text
+0df59c2140af22410a082fea9a673dc0f6f599a4
+```
+
+Validation PR :
+
+- **364 tests passés** ;
+- `compileall` : OK ;
+- `git diff --check` : clean ;
+- budgets providers inchangés et bornés ;
+- refresh 1–6 h réservé aux fixed listings proches du seuil.
 
 ---
 
 # V5 — expérimental, PR #8, NE PAS MERGER
 
-- PR : **#8**.
-- Branche exacte : `agent/v5-poketrace-cardmarket-market-data`.
-- PR reste **draft, ouverte, non mergée**.
-- Baseline de cette passe offline avant le pont de set :
-  `336358e64e24dbe5f7712490bf62d2c589fab153`.
-- `main` réellement synchronisé dans V5 :
-  `510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d`.
-- V5 = diagnostic **RAW eBay** séparé de la V4 graded GCC.
-- Aucun achat/bid/checkout/CardGrader.
-- Le plan PokeTrace Pro est désormais activé pour **un unique diagnostic manuel de 20 listings**, précédé d’un preflight `/auth/info` fail-closed. Aucun live n’est lancé depuis le développement local.
+PR : **#8**  
+Branche : `agent/v5-poketrace-cardmarket-market-data`
 
-## Architecture resolver retenue
-
-1. **TCGdex = resolver principal multilingue**.
-2. **PokeTrace = fallback identité strict + marché US**, avec Free toujours disponible comme mode de repli.
-3. Pokémon TCG API = fallback anglais/unknown.
-4. Matching visuel local + OCR ciblé = arbitres conservateurs pour `AMBIGUOUS/INSUFFICIENT` seulement.
-5. **JustTCG = seconde opinion / benchmark expérimental**, pas principal.
-6. **Scrydex / Vision** = réservé aux ambiguïtés persistantes après la chaîne gratuite.
-
-Les workflows V5 live et benchmark restent **`workflow_dispatch` uniquement**. Aucun déclenchement automatique PokeTrace/JustTCG.
-
-## Transition PokeTrace Free → Pro
-
-Le provider Free et ses tests restent disponibles avec `POKETRACE_PLAN=free` :
-recherche explicite `market=US`, prix RAW US uniquement et cadence minimale de
-2,25 s. Le workflow manuel principal utilise maintenant `POKETRACE_PLAN=pro`.
-Un preflight lit uniquement le schéma officiel `/auth/info`, accepte Pro ou un
-plan documenté supérieur, et arrête le job avant le pipeline si
-l’authentification est invalide, la clé inactive ou le plan inférieur à Pro.
-Les logs du preflight sont limités au statut HTTP, tier normalisé, quota
-journalier/usage/remaining/reset disponibles et raison technique agrégée.
-Lorsque le corps authentifié ne fournit pas les champs de quota, le preflight
-peut lire les headers documentés `X-Plan`, `X-RateLimit-Limit`,
-`X-RateLimit-Remaining` et `X-RateLimit-Reset`. Le corps reste prioritaire, les
-headers complets ne sont jamais affichés et un Pro valide n'est pas refusé
-uniquement parce que les chiffres d'usage sont indisponibles.
-
-La cadence Pro est fixée à **≥0,40 s/requête**, marge conservatrice sous le burst
-documenté de 30 requêtes/10 s. Le circuit-breaker 429 et son unique retry court
-restent inchangés.
-
-Les recherches d’identité sont toujours market-explicites : **US d’abord**, puis
-**EU uniquement après un clean no-match US**. Un match, une ambiguïté, une
-erreur, un conflit bloquant de variante ou un rate-limit US interdit le fallback
-EU. Les IDs, résultats et caches sont qualifiés par marché et par identité
-complète/variante/provenance ; aucun no-match ou échec US n’empoisonne EU.
-
-Pour la valorisation, US/USD reste la seule entrée du moteur économique RAW et
-fournit aussi PSA8/PSA9/PSA10 lorsqu’ils existent, uniquement comme comparaison
-grading optionnelle. EU/EUR reste un diagnostic séparé :
-`cardmarket.AGGREGATED` est une tendance/référence et `cardmarket_unsold` décrit
-des demandes actives, jamais des ventes réalisées. Aucun mélange USD/EUR.
-
-## Alias fournisseur multilingues déterministes
-
-Les noms localisés ne sont jamais traduits par fuzzy matching ni par table
-manuelle. Après une résolution TCGdex exacte dans une langue non anglaise, V5
-demande au catalogue TCGdex le même ID dans l’endpoint anglais. Un alias
-PokeTrace n’existe que si les deux réponses ont exactement le même `id`, le
-même `set.id` et le même `localId`, avec un nom et un set anglais présents.
-
-L’alias et sa provenance `TCGDEX_EXACT_ENGLISH_TWIN` restent séparés du
-`CardIdentity` réel. Le nom/set anglais servent uniquement à la requête et à la
-comparaison locale PokeTrace ; le nom, le set, la langue, le numéro et la
-variante affichés/économiques restent ceux de l’identité localisée. Le numéro
-PokeTrace doit correspondre exactement au jumeau et le set doit être identique
-ou relié par le pont déterministe décrit ci-dessous ; les contraintes de
-variante restent inchangées. Sans jumeau anglais exact, aucun alias n’est
-inventé et aucune nouvelle langue n’est rendue fuzzy-éligible.
-
-Ce pont peut donc bénéficier, carte par carte, aux langues TCGdex documentées
-et déjà routées par V5 (`fr`, `de`, `es`, `it`, `ja`, `pt`, `pt-br`, `pt-pt`,
-`zh-tw`, `zh-cn`, `ko`, `nl`, `pl`, `ru`, `id`, `th`) uniquement lorsque cette
-preuve de coordonnées identiques existe. Cela ne garantit ni qu’un record
-PokeTrace US existe, ni qu’il contienne une valeur RAW.
-
-## Pont déterministe TCGdex → nomenclature de set PokeTrace
-
-Une résolution TCGdex exacte conserve désormais, dans un objet séparé du
-listing, la langue catalogue, `set.id`, `set.name`, les noms officiels localisés
-déjà chargés, `card.id`, `localId` et le nom catalogue. Aucun de ces champs ne
-remplace le set, la langue ou l’identité commerciale du listing.
-
-Le matcher peut prouver uniquement le champ set d’un candidat PokeTrace lorsque
-le nom de carte et le numéro sont déjà exacts. Les seules relations admises
-sont : nom officiel TCGdex exact, jumeau anglais exact existant, clé PokeTrace
-observée en mémoire après une concordance exacte, ou exception statique petite,
-versionnée, sourcée et testée. La table de production est vide à cette étape.
-Les noms, slugs et IDs PokeTrace restent trois namespaces distincts : un
-`set.id` TCGdex identique par hasard à un slug/ID PokeTrace ne constitue aucune
-preuve.
-
-Il n’existe aucun chemin substring, containment, token overlap, traduction
-supposée, Levenshtein ou seuil fuzzy. Un nom ou slug partagé, un même nom avec
-des IDs contradictoires, un alias officiel vers plusieurs sets, une langue
-incompatible, un parent/subset ou un main set/promo subset reste
-`AMBIGUOUS`/bloquant. Le pont ne prouve aucune microvariante et ne modifie aucun
-gate visuel ou économique.
-
-## Discovery eBay Europe
-
-La whitelist V5 couvre désormais `EBAY_US`, `EBAY_CH`, `EBAY_DE`, `EBAY_FR`,
-`EBAY_IT`, `EBAY_ES`, `EBAY_AT`, `EBAY_BE`, `EBAY_NL`, `EBAY_PL`, `EBAY_IE` et
-`EBAY_GB`. Le prochain live active seulement `EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES`
-via l'unique variable `V5_LIVE_EBAY_MARKETPLACES`.
-
-`V5_LIVE_RAW_RESULT_LIMIT=20` est une limite globale. Chaque marketplace peut
-fournir des summaries, puis un round-robin déterministe choisit au plus vingt
-`itemId` uniques, backfill les marchés vides et déduplique les doublons
-cross-market avant `getItem`. Il n'existe plus de quota de vingt `getItem` par
-marketplace.
-
-Chaque marché résout son propre default category tree et ses propres category
-suggestions. Seule une catégorie explicitement reconnue comme cartes
-individuelles est acceptée. Une taxonomie absente ou non sûre produit
-`marketplace unavailable/incomplete` et interdit toute recherche Pokémon large
-ou tout enrichissement sur ce marché. Un filtre local conservateur exclut aussi
-boosters, displays, ETB, coffrets, boxes, blisters, decks, lots, bulk et sealed.
-
-Pour tout marché non-CH, Browse reçoit `deliveryCountry:CH`. Le header
-`contextualLocation` n'est envoyé que si un NPA suisse de quatre chiffres est
-explicitement fourni par `V5_EBAY_DELIVERY_POSTAL_CODE`; aucun postcode ni coût
-de livraison n'est inventé. Sans coût fourni par Browse, le diagnostic indique
-`shipping estimate limited` et une annonce sans preuve d'éligibilité Suisse ne
-peut pas entrer dans l'économie.
-
-## Constat du premier live Pro et correctifs offline suivants
-
-Le run manuel Pro `31525792380` / job `93893666902` a produit le baseline
-agrégé suivant :
-
-- preflight HTTP 200, plan `PRO`, accepté ; quota/usage/remaining/reset
-  `UNAVAILABLE` ;
-- échantillon global de 20 annonces uniques sur US/DE/FR/IT/ES, 20 appels
-  `getItem` réussis et 19 RAW acceptées ;
-- US : taxonomie/recherche OK, 5 sélectionnées, `USD=5` ; DE : OK, 5,
-  `EUR=5` ; IT : OK, 5, `EUR=5` ; ES : OK, 5, `EUR=5` et 3 doublons
-  cross-market ;
-- FR : taxonomie HTTP 200/200, mais `SAFE_INDIVIDUAL_CATEGORY_MISSING` et
-  Browse correctement `NOT_CALLED` ;
-- éligibilité livraison Suisse et estimation de livraison disponibles pour
-  les 20 annonces sélectionnées ;
-- identité : 9 utilisables, 2 ambiguës, 9 insuffisantes ; TCGdex 0 hit ;
-  matching visuel 14 tentatives/5 sauvetages et OCR 3 tentatives/0 sauvetage ;
-- PokeTrace : 0 identité exacte, 0×429, 0 panne de requête ; 5 snapshots
-  US avec RAW/PSA8/PSA9/PSA10 et 0 snapshot EU/CardMarket ;
-- valeurs marché trouvées pour 5 des 9 identités utilisables, mais chemin
-  économique RAW évalué 0 fois et `ECONOMICS_DEFERRED_CURRENCY_POLICY=6`.
-
-FR a été arrêté avant Browse parce que la suggestion réaliste
-`JCC : cartes à l’unité` n'était pas reconnue par la whitelist, alors que la
-taxonomie répondait 200.
-Le marqueur de taxonomie normalise maintenant de façon déterministe les
-apostrophes ASCII/Unicode et accepte cette formulation, tout en rejetant
-toujours les lots, boîtes et produits scellés. Il n'existe toujours aucun ID de
-catégorie codé en dur ni fallback vers une recherche large.
-
-Les cinq sauvetages visuels ont tous concerné des marketplaces non-US. Ils ont
-amorcé cinq snapshots US/USD, mais aucun snapshot EU/EUR ; trois
-identités US utilisables sont en outre restées sans valeur USD. Le diagnostic
-rapporte donc désormais, par marketplace eBay, les valeurs trouvées, les sources
-PokeTrace US/USD et EU/EUR acceptées, les annonces non-US avec snapshot US seul,
-les annonces US avec/sans valeur USD et les annonces EUR avec/sans valeur
-EU/CardMarket. Ces sorties restent uniquement agrégées.
-
-Le chemin économique à zéro n'était donc pas un bug de calcul : aucune
-annonce ne réunissait simultanément `EBAY_US`, un prix listing USD et une valeur
-marché USD. Les snapshots US issus des sauvetages appartenaient aux annonces
-EUR IT/ES, tandis que les trois annonces US utilisables n'avaient aucune
-valeur PokeTrace.
-
-Après un sauvetage visuel/OCR réussi sur une annonce non-US, un unique lookup
-EU optionnel peut maintenant enrichir le cache CardMarket. Le cœur nom + set +
-numéro doit rester exact. Une variante/finition explicitement compatible suffit ;
-une métadonnée de microvariante absente ne peut plus être remplacée par une
-simple ressemblance du scan complet. Un conflit explicite ou plusieurs
-candidats plausibles interdisent le match. L'identité eBay/TCGdex n'est jamais
-remplacée par l'enrichissement EU, les IDs/caches restent séparés par marché et
-aucune valeur EUR n'entre dans l'économie RAW.
-
-## File forensique et sécurité des microvariantes
-
-Les annonces initialement insuffisantes ne sont plus traitées comme du bruit :
-elles forment une file forensique bornée et déterministe, priorisée avant les
-identités déjà propres. Le plafond
-`V5_VISUAL_IDENTITY_MAX_LISTINGS_PER_RUN` borne les annonces soumises au
-sauvetage local ; les seuils de preuve visuelle/OCR restent strictement
-inchangés. Le diagnostic compare désormais cinq cohortes agrégées :
-`STRUCTURED_USABLE`, `RESCUED_FROM_INSUFFICIENT`,
-`RESCUED_FROM_AMBIGUOUS`, `STILL_INSUFFICIENT` et `STILL_AMBIGUOUS`, avec pour
-chacune valeurs marché trouvées/manquantes, provenance US/EU et économie
-évaluée/différée. Aucune donnée listing-level n'est rendue ou persistée.
-
-La preuve d'identité est séparée en deux niveaux :
-
-- identité macro : jeu, nom exact, set exact, numéro de collection exact et
-  langue ;
-- microvariante commerciale : édition, finition, promo, stamp ou impression
-  spéciale susceptible de changer matériellement la valeur.
-
-Le scan perceptuel complet peut sauver uniquement l'identité macro. Il ne peut
-pas fabriquer une 1st Edition, une finition ou une promo depuis le candidat
-fournisseur : les champs vendeur restent inchangés et le candidat premium reste
-une provenance non héritée. La validation microvariante vient seulement après
-la macro, via une interface locale à région/layout ou référence canonique
-exacte. L'édition 1st/Unlimited n'est activée que lorsqu'un catalogue exact — en
-priorité `TCGdex variants.firstEdition` — prouve que la famille possède cette
-distinction. Une famille explicitement non concernée n'est pas bloquée.
-
-`EDITION_UNKNOWN` n'est jamais assimilé à Unlimited. L'absence visuelle d'un
-stamp, à elle seule, ne prouve pas Unlimited ; il faut une couverture suffisante
-de la région attendue et une référence Unlimited déterministe. Si l'édition est
-applicable et reste inconnue, ou si les preuves se contredisent, les prix de la
-microvariante premium ne sont pas amorcés et l'économie est différée.
-
-La prochaine étape reste une revue de ce batch offline. Seulement en l'absence
-de blocker, elle pourra être suivie d'au plus un live contrôlé de 20 annonces ;
-ce batch Codex ne lance aucun workflow.
-
-Le prochain live doit rester le workflow manuel existant et ne sera justifié
-qu'après revue de ces changements offline. Il devra vérifier : Browse FR via la
-catégorie sûre résolue, la provenance par marketplace, les compteurs
-d'enrichissement EU (tentatives/candidats/matches/ambiguïtés/rejets) et les
-snapshots CardMarket récupérés, sans recommandation d'achat ni économie EUR.
-
-La devise du listing reste inchangée. Le chemin économique existant continue
-uniquement pour un listing `EBAY_US` en USD avec des valeurs marché USD. EUR,
-CHF, GBP ou toute autre devise traversent discovery, identité et diagnostics
-marché, puis retournent `ECONOMICS_DEFERRED_CURRENCY_POLICY`; aucun prix d'achat
-non-USD n'est injecté dans le modèle de coûts USD. Les aliases eBay espagnols
-ajoutés (`Juego`, `Idioma`, `Edición`, etc.) sont explicites et déterministes ;
-l'identité utilisateur/localisée et le contrat du jumeau TCGdex exact restent
-inchangés.
-
-Le résumé live expose seulement, par marketplace, taxonomie/statut technique,
-total et summaries, sélection globale, doublons, rejets sealed/multi-produit,
-appels `getItem`, RAW, shipping CH, disponibilité de l'estimation shipping,
-distribution des devises et economics différées. Aucune valeur listing-level
-n'est loggée ou persistée.
-
----
-
-# V5 — validation offline la plus récente
-
-Baseline d’entrée de ce pont de nomenclature :
+Head V5 canonique actuellement vérifié :
 
 ```text
-336358e64e24dbe5f7712490bf62d2c589fab153
+df4df3da2ae90bc8083ccfcfa108e4010a2c4d05
 ```
 
-Validation offline après synchronisation de `main`, transition Free → Pro,
-extension eBay EU, séparation macro/microvariante, détecteur local par paire de
-références et pont exact TCGdex → PokeTrace :
+État :
 
-- V5 : **454/454** ;
-- V4 : **169/169** ;
-- V4 identique à `origin/main` ;
-- `compileall v5` : OK ;
-- YAML : **7/7** ;
-- `git diff --check` : OK ;
-- aucun appel PokeTrace/TCGdex/JustTCG/eBay/GCC live pendant le batch Codex ;
-- aucun secret consulté ;
-- aucun CardGrader, achat, bid ou checkout.
+- open ;
+- draft ;
+- non mergée ;
+- base `main` a encore avancé depuis la dernière synchronisation V5 ;
+- ne pas resynchroniser/merger aveuglément : auditer les changements V4 d’abord.
 
-SHA final : commit final de la branche de la PR #8, communiqué dans le rapport
-de validation (un commit ne peut pas contenir son propre hash).
-
-Le merge post-Codex `0e3660ed330d0fc5220dfa239911d934d700398c` resynchronise `main` `510a174ae4bd7edfaa8ea4b9cf01a34522e98d2d` dans V5. Il ne modifie aucun fichier `v5/`; les deux fichiers V4 repris de `main` ont été validés à **169/169** par le workflow V4 de la PR #27.
-
-## Durcissements déjà intégrés
-
-- isolation des caches par variante/finition/édition/rareté ;
-- suppression des alias fuzzy dangereux (`Team Rocket` ≠ `Team Rocket Returns`) ;
-- finish/promo/premium missing restent bloquants ;
-- requêtes PokeTrace canonisées sans `set=` non vérifié ;
-- faux conflit eBay `Standard` + `Holo` corrigé ;
-- reconstruction prudente du numéro complet via `cardCount.official` TCGdex ;
-- langues TCGdex alignées sur les codes documentés ;
-- JustTCG exige langue + printing et un set ID fiable ;
-- diagnostics near-match SET/NUMBER/NAME détaillés ;
-- équivalences acceptées uniquement lorsqu’elles sont déterministes : wrapper Pokémon TCG, ponctuation/espacement, zéros initiaux, casse alphanumérique, préfixes explicites de numéro ;
-- parent/subset, containment, traduction, préfixes significatifs, genre, mécaniques EX/GX/V/VMAX/VSTAR et numéros contradictoires restent bloqués ;
-- rendement PokeTrace mesuré par stratégie ;
-- parser eBay enrichi uniquement avec aliases structurés déterministes ;
-- failures TCGdex et Pokémon TCG API séparées dans les diagnostics.
-- détecteur microvariante concret câblé par défaut après preuve macro :
-  localisation de la carte, orientation/normalisation, alignement de deux scans
-  canoniques exacts, construction locale des seules régions où ces scans
-  diffèrent, puis comparaison du vendeur avec seuil absolu, marge et qualité ;
-- références concurrentes limitées au même nom, set, numéro et langue
-  déterministes, même produit `single`, avec cache mémoire et borne stricte ;
-  aucune image, réponse fournisseur ou donnée listing-level n'est persistée ;
-- une identité sauvée visuellement reçoit une seconde chance TCGdex exacte et
-  cachée pour l'applicabilité microvariante, sans PokeTrace/Pokémon TCG fallback
-  et sans remplacement des champs commerciaux du listing ;
-- First Edition exige un aspect vendeur explicite ou une région positive sur
-  une paire exacte ; Unlimited exige une vraie référence Unlimited du même
-  layout et un meilleur match significatif — l'absence de stamp ne suffit
-  jamais ;
-- holo/reverse reste `UNKNOWN` sous éclairage vendeur arbitraire ; promo et
-  special/stamped ne peuvent être confirmés que par une différence statique
-  utilisable entre références exactes. Crop, glare, basse résolution,
-  alignement faible, références trop proches/absentes ou dimensions multiples
-  restent fail-closed ;
-- le snapshot US et l'unique enrichissement EU éventuel sont amorcés seulement
-  après `CONFIRMED` / `NOT_APPLICABLE` / absence de blocker. Les devises et IDs
-  fournisseur restent inchangés ;
-- diagnostics pré-marché dédiés : gate bloquée, snapshot non amorcé,
-  enrichissement EU non tenté, dimension du blocker, applicabilité avant/après
-  macro, paires présentes/absentes, normalisation, alignement, région
-  discriminante et issues First/Unlimited/autre/UNKNOWN/CONFLICT ;
-- l'ancien `economics_blocked_microvariant_unknown` reste présent mais signifie
-  uniquement « valeurs marché trouvées, puis économie bloquée » ; il ne mesure
-  pas les snapshots empêchés avant le marché ;
-- diagnostics set PokeTrace enrichis sans fuzzy : état avant/après pont,
-  name+number+set ponté, compatibilité variante après pont, tentatives/exacts/
-  absences de mapping/ambiguïtés/collisions et provenance exacte TCGdex,
-  jumeau anglais ou mapping versionné ;
-- alias anglais PokeTrace autorisé uniquement par un jumeau TCGdex exact
-  `id + set.id + localId`, conservé en mémoire et isolé des caches par identité
-  complète/variante/provenance ;
-- diagnostics agrégés des identités localisées, alias trouvés/indisponibles,
-  alias utilisés en recherche identité/marché, matches attribuables et appels
-  identité évités grâce au hit TCGdex exact ;
-- les 429 sont classés uniquement via `Retry-After` : délai ≤30 s = un
-  unique retry, délai long/absent/invalide = terminal ; un second 429 ouvre
-  également le circuit ;
-- le circuit-breaker partagé arrête les recherches PokeTrace suivantes du run,
-  évite aussi l'appel marché après identité, et compte les appels évités sans
-  transformer le rate-limit en `NO_MATCH`.
-
-## RAW→RAW MVP économique
-
-La revente RAW est maintenant une voie économique autonome et prioritaire.
-Elle exige une identité exacte/non ambiguë, une valeur RAW fiable et non
-conflictuelle, une devise cohérente et tous les coûts RAW matériels connus.
-L'absence de valeurs PSA ou de budget de grading ne rejette plus une
-opportunité RAW rentable.
-
-Formule conservatrice :
+Architecture V5 :
 
 ```text
-valeur RAW prudente = borne basse des valeurs RAW agrégées fiables
-coûts RAW fixes = achat + frais acheteur + transports d'acquisition + autres coûts non-grading
-frais de vente = valeur prudente × (selling fee % + buffer FX %) + frais fixes de vente
-base totale RAW = coûts RAW fixes + frais de vente
-profit net RAW = valeur RAW prudente - base totale RAW
-ROI RAW = profit net RAW / base totale RAW × 100
+eBay metadata
+  ↓
+TCGdex exact multilingual
+  ↓
+PokeTrace fallback identité / marché
+  ↓
+Pokémon TCG API fallback
+  ↓
+visual matcher local + OCR
+  ↓
+local deterministic microvariant detector
 ```
 
-`grading_fee`, `grading_shipping` et `vault_fee` sont explicitement exclus de
-la base RAW. Le grading n'est qu'une comparaison optionnelle : il faut les
-valeurs par grade suffisantes, des photos compatibles, une analyse visuelle
-autorisée dans le quota et une EV nette supportée. Le chemin recommandé est
-alors celui dont le profit net supporté est le plus élevé ; sans cette preuve,
-aucun avantage grading n'est inventé.
+Principes V5 :
 
-Le prochain diagnostic live exposera seulement des compteurs agrégés : marché
-RAW suffisant, voie RAW évaluée, RAW rentable/rejetée, comparaison graded
-disponible, RAW bat grading, grading bat RAW, et graded absent mais RAW
-évaluable. Aucun contenu listing-level n'est ajouté aux logs.
+- TCGdex principal ;
+- PokeTrace fallback identité + provider marché ;
+- bridge set TCGdex ↔ PokeTrace déterministe uniquement ;
+- candidate provider premium ≠ preuve listing ;
+- détecteur microvariante local par références différentielles ;
+- First/Unlimited/finish sensibles fail-closed ;
+- pas de listing/image/OCR eBay persisté ;
+- aucun achat/bid/checkout/CardGrader automatique.
 
----
+### Bridge set V5
 
-# Références live PokeTrace
+Le bridge ne peut prouver le set d’un candidat PokeTrace que si nom + numéro sont déjà exacts et qu’une relation déterministe existe :
 
-## Baseline propre avant diagnostics near-match — run `31498195243`
+- nom officiel exact ;
+- jumeau anglais TCGdex exact (`card.id + set.id + localId`) ;
+- observation exacte en mémoire ;
+- mapping versionné minimal et explicite.
 
-Commit : `9ec5ebf66792802ef7f4a4f20aad56ea11034bc3`.
+Aucun fuzzy/substr/Levenshtein/containment comme preuve.
 
-- eBay search/getItem : **20/20** ; RAW : **20/20** ;
-- identity usable : **9** ; ambiguous 4 ; insufficient 7 ;
-- TCGdex : 5 requêtes, **0 hit** ;
-- PokeTrace : 12 identities / **66 HTTP** / **401 candidats uniques** ;
-- name matched 27 ; set 34 ; number 19 ;
-- name+set 1 ; set+number 5 ;
-- **all-three 0 ; exact 0** ;
-- 51 near-matches à un seul champ près : 5 name-only, 25 set-only, 21 number-only ;
-- PokeTrace request failures 0 ; 429 = 0 ;
-- visual/OCR rescues = 0 ;
-- market values found = **0**.
+### PR V5 enfant #31
 
-Ce run a motivé les nouveaux diagnostics détaillés et le rendement par stratégie.
+Branche : `agent/v5-deterministic-catalog-uniqueness`.
 
-## Dernier live complet avant le détecteur — run `31533156545`
+Objectif : autoriser une résolution macro `2 champs sur 3` uniquement lorsque TCGdex prouve l’unicité :
 
-La taxonomie **EBAY_FR a été prouvée live correcte** avec la catégorie sûre
-existante. Elle n'est ni modifiée ni relâchée par ce batch offline.
+- nom exact + numéro complet → set récupérable si résultat unique ;
+- set exact + nom exact → numéro récupérable si résultat unique ;
+- numéro seul / set seul → jamais suffisant ;
+- ambiguïté → bloque.
 
-- identité exploitable : **9** ; ambiguë : 1 ; insuffisante : 10 ;
-- cohortes forensiques : structured usable 6, rescued from insufficient 2,
-  still insufficient 10, still ambiguous 1 ;
-- visual attempted : **13** ; rescued : **2** ;
-- OCR attempted : 4 ; OCR rescued : 0 ;
-- les **2/2** sauvetages visuels ont atteint le gate microvariante : premium
-  candidate not inherited 2, visual attempts 2, confirmed 0, inconclusive 2 ;
-- snapshots marché amorcés : 0 ; enrichissements EU : 0 ;
-- TCGdex : 14 requêtes, 0 hit ;
-- PokeTrace : 13 identités, 129 recherches, 776 candidats, 0 exact ;
-- candidats name/number/set matched : 206/40/**1** ;
-- 24 candidats échouaient uniquement sur le set, dont 23 sans relation
-  déterministe.
+PR #31 reste séparée tant qu’elle n’est pas explicitement intégrée à la branche V5 canonique.
 
-Ce baseline démontre deux blocages séparés : l'ancien provider d'évidence
-microvariante était absent (`None`) et les sets PokeTrace ne disposent presque
-jamais d'un pont sûr. Le premier est maintenant remplacé par le détecteur local
-générique décrit ci-dessus. Le second reçoit uniquement des diagnostics : le
-matcher set, ses seuils et ses rejets restent strictement identiques.
+### PR V5 enfant #44 — parser finish eBay
 
-Le détecteur suit deux phases explicites : listing → preuve macro → nouvelle
-applicabilité exacte si nécessaire → sélection de références concurrentes
-exactes → preuve locale de région → `CONFIRMED`, `NOT_APPLICABLE`, `UNKNOWN` ou
-`CONFLICT` → amorçage marché seulement si le gate est ouvert. Les métadonnées
-fournisseur ne servent qu'à sélectionner les références et ne constituent
-jamais la preuve visuelle du listing.
+PR #44 a été mergée **dans la branche V5 canonique uniquement**, jamais dans `main` :
 
-Il n'y a **pas de prochain live autorisé par ce changement lui-même**. La revue
-offline doit d'abord confirmer l'architecture, les fixtures synthétiques et
-les diagnostics. Ensuite seulement, le propriétaire pourra déclencher
-manuellement le workflow existant ; Codex ne le déclenche pas.
+```text
+head source: 136dcc6fca27c4cf39abfaacae9de237304484a6
+merge V5:    df4df3da2ae90bc8083ccfcfa108e4010a2c4d05
+```
 
-## Dernier live — run `31504468613`, job `93822427440`
+Elle durcit la résolution déterministe des finishes explicitement présents dans le titre eBay :
 
-Commit testé : `d4e445b3e450339a8ff576c36b66abd9f6da2f9d`.
-Fingerprint : `031a3770c6e599d8`.
+- parser par span-masking des phrases finish explicites ;
+- conservation d’un finish spécial explicite compatible lorsque la metadata structurée reste générique ;
+- prévention des faux conflits provoqués par des tokens `holo` résiduels ;
+- pattern Poké Ball resserré ;
+- aucune relaxation fuzzy de l’identité.
 
-### eBay / identité
-
-- OAuth : 200 ;
-- search/getItem : **20/20** ; RAW : **20/20** ;
-- identity usable : **11** ; ambiguous 3 ; insufficient 6 ;
-- card_name coverage : **12/20** ;
-- set coverage : **18/20** ;
-- card_number coverage : **14/20** ;
-- unmapped card-name-like / card-number-like aspect labels : **0/0**.
-
-### TCGdex / Pokémon TCG API
-
-- TCGdex requests : 7 ; hits : **0** ;
-- TCGdex failures transport/HTTP/JSON/set/card : **0/0/0/0/0** ;
-- no-match set/card : 10/2 ; skipped missing set/number : 6 ;
-- Pokémon TCG API requests : 6 ; hits : 0 ; HTTP failures : **4** ;
-- l’ancien compteur ambigu `catalog request failures` est maintenant correctement attribué : les 4 failures venaient du fallback Pokémon TCG API, pas de TCGdex.
-
-### PokeTrace — run PARTIELLEMENT CENSURÉ PAR 429
-
-- identities queried : **13** ;
-- HTTP search attempts : **38** ; fallback searches : 18 ;
-- unique candidates received : **121** ;
-- exact matches : **0** ;
-- **429 responses : 15** ; retries : 0 ; request failures : 0 ;
-- le 429 commence pendant l’identité 5 puis affecte la majorité des identités suivantes ;
-- ce run ne doit donc **pas** être utilisé comme comparaison complète de qualité contre le run `31498195243`.
-
-Rendement observé avant/pendant le rate-limit :
-
-| stratégie | requêtes | uniques | near-match | all-three | exact | redondants |
-|---|---:|---:|---:|---:|---:|---:|
-| contextual-canonical | 12 | 2 | 0 | 0 | 0 | 0 |
-| contextual | 5 | 1 | 1 | 0 | 0 | 2 |
-| structured | 5 | 0 | 0 | 0 | 0 | 3 |
-| broad-name | 4 | 58 | 0 | 0 | 0 | 2 |
-| broad-number | 4 | 40 | 1 | 0 | 0 | 2 |
-| broad-set | 1 | 20 | 0 | 0 | 0 | 0 |
-
-Signal provisoire seulement : `broad-name`/`broad-set` ramènent beaucoup de candidats mais aucun near-match/exact sur la portion observée ; `structured` a été entièrement redondant sur cette portion. **Ne pas supprimer une stratégie uniquement sur ce run censuré.**
-
-Near-matches effectivement observés avant rate-limit : 2, tous deux échouant uniquement sur le nom :
-
-- translation/localization : 1 ;
-- différence significative : 1.
-
-### Visual/OCR / marché
-
-- visual attempted : 7 ; candidate searches unavailable : **6** à cause de l’indisponibilité PokeTrace ; rescues : 0 ;
-- OCR attempted/calls : 0/0 sur ce run ;
-- market values found : **0/11** ;
-- RAW direct / PSA9 / PSA10 : 0/0/0 ;
-- achats/bids/checkout/CardGrader : **0/0/0/0**.
-
-### Interprétation du 429
-
-Ce run historique Free imposait ≥2,25 s entre appels mais a reçu 15×429 persistants. Plusieurs runs Free avaient déjà consommé du quota le même jour ; le type exact n’était pas prouvé par les anciens logs. Cette consigne d’attente Free est désormais remplacée par le preflight Pro fail-closed et le circuit-breaker partagé.
+PR #8 reste draft et non mergée après cette intégration.
 
 ---
 
-# Benchmark TCGdex ↔ JustTCG — source de vérité
+# Workflows GitHub Actions à conserver
 
-Run `31489148268`, job `93771289624`, fingerprint `7ef358f50c335f7d`.
-PokeTrace non injecté : 0 appel.
+1. `GCC Auction Watcher` — V4 production Main Scanner.
+2. `GCC Final Auction Check` — V4 Fast Lane finale, déclenchée extérieurement toutes les 3 min.
+3. `V4 Auction Discovery Validation` — CI + comparaison discovery read-only.
+4. `V4 GCC Coverage Audit` — audit couverture V4.
+5. `PSA Public API Diagnostic` — diagnostic PSA/APR historique.
+6. `V5 Live Raw Pipeline Diagnostic` — live V5 manuel.
+7. `V5 Catalog Identity Benchmark` — benchmark identité.
+8. `V5 GCC Catalog Refresh` — catalogue cumulatif GCC.
 
-### TCGdex
-
-- exact : **5/20** ;
-- ambiguous : 3 ; unresolved 12 ;
-- requests : 28 ; failures : 0 ;
-- canonical changes name/set/number : 3/4/1 ;
-- denominator conflicts : 2 ;
-- set aliases unique/ambiguous : 8/1 ;
-- no-match set/card : 2/3 ;
-- localId alternate attempts/hits : 4/2 ;
-- direct-card fallbacks/hits : 9/0.
-
-### JustTCG
-
-- exact : **0/20** ;
-- ambiguous : 3 ; unresolved 17 ;
-- request failures/429 : 0/0 ;
-- candidates received : 6 ;
-- all-core candidate : 1, rejeté sur variante.
-
-Conclusion : **TCGdex reste clairement principal.** JustTCG reste second avis expérimental.
+Éviter les workflows temporaires/redondants lorsqu’un workflow existant suffit.
 
 ---
 
-# Prochaines actions V5
+# Gouvernance avant tout merge futur
 
-**Ne pas merger PR #8.**
+## V4
 
-Ordre recommandé :
+Avant merge vers `main` :
 
-1. après revue et seulement sans blocker, lancer manuellement **un seul** `V5 Live Raw Pipeline Diagnostic` sur au plus vingt listings uniques globaux, avec `EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES` ;
-2. vérifier d’abord le résumé du preflight Pro, puis les diagnostics agrégés eBay par marketplace, US→EU PokeTrace, circuit-breaker, near-match, rendement par stratégie et compteurs RAW ;
-3. seulement après ce run propre, décider si `structured`, `broad-name`, `broad-set` ou d’autres fallbacks peuvent être réduits/supprimés ;
-4. continuer à chercher des équivalences uniquement déterministes ; ne jamais assouplir le matching pour atteindre `15+/20` ;
-5. si PokeTrace reste à 0 exact/0 market value après ce run Pro propre, réévaluer les stratégies sans relâcher le matcher ;
-6. Scrydex/Vision reste différé tant que l’identité structurée et les sources marché ne sont pas mieux comprises.
+- full V4 tests verts ;
+- compile ;
+- YAML ;
+- `git diff --check` ;
+- discovery/coverage inchangée sauf changement explicitement voulu ;
+- aucune action d’achat/bid/checkout ;
+- auditer les providers/caches et les effets prod ;
+- pour tout changement Fast Lane, vérifier explicitement ownership de `state.json`, déduplication cross-lane et comportement safe-off.
 
----
+## V5
 
-# Gouvernance et sécurité
+Avant toute intégration de PR #8 :
 
-- **Ne jamais merger silencieusement PR #8.**
-- `AMBIGUOUS` reste bloquant.
-- Ne jamais assouplir le matching uniquement pour atteindre `15+/20`.
-- Une source externe ne peut pas inventer une valeur achetable.
-- Même grader/même grade reste la preuve principale pour le graded.
-- Aucune identité higher-grade ne doit être inventée à partir d’un lower-grade.
-- Données listing-level eBay/PokeTrace/JustTCG restent memory-only.
-- Aucun achat, bid ou checkout automatique.
-- Aucun CardGrader payant dans les diagnostics actuels.
+- autorisation explicite utilisateur obligatoire ;
+- auditer base/head/ancestry ;
+- V4 production ne doit pas régresser ;
+- vérifier gates microvariantes et provenance langue/set ;
+- live contrôlé manuel avant toute décision de merge.
 
----
-
-# Référence cloud
-
-La production recommandée reste la **V4 cloud GitHub Actions** : aucun Mac ne doit rester allumé. Voir [`README_CLOUD.md`](README_CLOUD.md) pour l’installation et le fonctionnement détaillé.
+**PR #8 reste expérimentale et non mergée par défaut.**
