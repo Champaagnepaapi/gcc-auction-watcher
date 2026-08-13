@@ -277,19 +277,27 @@ Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5
    - Filtrage strict de compatibilité dimensionnelle sur chaque palier avant inclusion dans l'enveloppe de variantes ambiguës.
    - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants compatibles (une source unique reste diagnostique / WEAK).
 
-Si le marché gradé exact reste indisponible et que la confiance RAW est `STRONG` ou `MODERATE` avec un écart $\ge 30\,\%$, V4 peut envoyer :
+### Observabilité du Backlog Externe & ETA Réaliste
+La couverture économique sépare strictement :
+- `FIRST_EVALUATION_COVERAGE` : achèvement du premier passage d'évaluation interne (lots `P0_NEW`, `P1_CHANGED`, `P2_NEVER_EVALUATED`) ;
+- `EXTERNAL_MARKET_COVERAGE` : achèvement de la file externe `P4_EXTERNAL_PENDING` ;
+- `EXTERNAL_PENDING_BACKLOG` : nombre exact de lots en attente de validation externe ;
+- `realistic backlog ETA` : estimation réaliste du nombre de runs restants basée sur le débit effectif de la file P4 (10 lots/run max), et non sur le budget global de 120 cartes.
 
-```text
-GCC MANUAL REVIEW — GRADED MARKET PENDING
-```
+Un run ne peut plus déclarer une couverture globale complète ni un résultat digne de confiance (`economic result trustworthy = YES`) tant qu'un backlog P4 subsiste.
 
-La notification :
+### Écart de Grader & Découverte de Prix Asymétrique (*Grader Spread & Price Discovery*)
+Le module `v4_price_discovery.py` permet d'exploiter la valeur asymétrique de slabs secondaires ou peu liquides à travers trois catégories d'opportunités de revue manuelle :
+1. `CROSSGRADE_OPPORTUNITY` : Slabs secondaires de très haut grade (PCA 10 / BGS 9.5 / CGC 10) bénéficiant d'un spread massif face au benchmark PSA.
+2. `SECONDARY_GRADER_DISCOUNT` : Marché secondaire liquide mais décoté significativement par rapport à la valeur équitable.
+3. `ILLIQUID_PRICE_DISCOVERY` : Liquidité exacte faible sur le slab considéré, mais multiples ancres adjacentes solides (PSA 10 vendu, consensus RAW français, ventes historiques GCC) prouvant une décote asymétrique majeure.
 
-- montre l'identité TCGdex exacte, le grade, le prix GCC, la plage et le centre RAW consensus, ainsi que le niveau de confiance ;
-- liste exhaustivement les sources acceptées avec reason codes et les sources rejetées pour anomalie ;
-- explique explicitement que RAW ≠ valeur du slab ;
-- n’affiche aucun prix max d’achat dérivé du RAW ;
-- est dédupliquée 24 h (avec renotification possible en cas de baisse $\ge 10\,\%$ ou amélioration $\ge 5\,\%$ du gap).
+**Principes de sécurité :**
+- `LOW_LIQUIDITY` est une caractéristique d'incertitude (`uncertainty = HIGH`), jamais un rejet automatique.
+- La probabilité de crossgrade est facultative (`crossgrade_required = false`).
+- Les annonces actives seules (*active asks*) ne créent jamais d'opportunité.
+- Les ancres trans-linguistiques (ex. PSA 10 anglais vs slab français) sont explicitement décotées et augmentent l'incertitude.
+- Les slabs de bas grade (ex. note $\le 7$) ne peuvent pas utiliser d'ancre PSA 10 sans échelon intermédiaire.
 
 
 

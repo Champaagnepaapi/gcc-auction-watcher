@@ -61,6 +61,51 @@ class FixedQueueBacklogDiagnosticTests(unittest.TestCase):
         self.assertEqual(queue.queued_backlog, 241)
         self.assertEqual(queue.estimated_backlog_runs, 3)
 
+    def test_external_pending_backlog_calculates_realistic_eta_and_blocks_coverage(self):
+        """Invariant: 2253 P4 pending with max 10 P4 processed/run requires ~226 runs, not 19, and blocks complete external coverage."""
+        queue = watcher.FixedEconomicQueueDiagnostics(processing_budget=120, p4_processing_budget=10)
+        queue.initialized = True
+
+        for index in range(2253):
+            queue.register(f"pending-{index}", watcher.QUEUE_P4_EXTERNAL_PENDING)
+
+        run_watcher_safe.install_fixed_queue_backlog_diagnostics()
+
+        # First evaluation is complete (no P0/P1/P2 backlog)
+        self.assertEqual(queue.first_evaluation_backlog, 0)
+        self.assertEqual(queue.first_evaluation_coverage_status, watcher.COVERAGE_COMPLETE)
+
+        # External market coverage is INCOMPLETE due to 2253 pending items
+        self.assertEqual(queue.external_pending_backlog, 2253)
+        self.assertEqual(queue.external_market_coverage_status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(queue.status, watcher.COVERAGE_INCOMPLETE)
+
+        # Realistic ETA must use P4 capacity (10/run), giving ceil(2253/10) = 226 runs, NOT ceil(2253/120) = 19
+        self.assertEqual(queue.estimated_external_backlog_runs, 226)
+        self.assertEqual(queue.estimated_backlog_runs, 226)
+
+        diagnostics = watcher.RunDiagnostics()
+        diagnostics.fixed_queue = queue
+        diagnostics.fixed_coverage.set_end_reason("EOF")
+        diagnostics.auction_coverage.set_end_reason("EOF")
+        diagnostics.fixed_coverage.expected_total_scope = "COMPLETE"
+        diagnostics.auction_coverage.expected_total_scope = "COMPLETE"
+        diagnostics.fixed_economic_coverage.register_candidates([], discovered_listings=0)
+        diagnostics.auction_economic_coverage.register_candidates([], discovered_listings=0)
+        diagnostics.fixed_economic_coverage.finalized = True
+        diagnostics.auction_economic_coverage.finalized = True
+
+        # Scan text must truthfully reflect incomplete external coverage and untrustworthy overall result
+        summary = watcher.format_scan_coverage(diagnostics)
+        self.assertIn("FIRST_EVALUATION_COVERAGE: COMPLETE", summary)
+        self.assertIn("EXTERNAL_MARKET_COVERAGE: INCOMPLETE", summary)
+        self.assertIn("EXTERNAL_PENDING_BACKLOG: 2253", summary)
+        self.assertIn("realistic backlog ETA: 226 runs", summary)
+        self.assertIn("economic result trustworthy: NO", summary)
+
+
+
+
 
 class FixedQueueFourTierSchedulingTests(unittest.TestCase):
     def setUp(self):

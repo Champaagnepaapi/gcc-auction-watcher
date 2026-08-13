@@ -876,6 +876,7 @@ class FixedEconomicQueueDiagnostics:
     """Comptabilité de la file fixed; aucune donnée ne modifie la valorisation."""
 
     processing_budget: int = MAX_FIXED_CANDIDATES
+    p4_processing_budget: int = MAX_EXTERNAL_PENDING_PER_RUN
     category_ids: dict[str, set[str]] = field(
         default_factory=lambda: {
             QUEUE_P0_NEW: set(),
@@ -948,7 +949,7 @@ class FixedEconomicQueueDiagnostics:
         )
 
     @property
-    def coverage_backlog(self) -> int:
+    def first_evaluation_backlog(self) -> int:
         return sum(
             self.backlog_count(category)
             for category in (
@@ -959,10 +960,53 @@ class FixedEconomicQueueDiagnostics:
         )
 
     @property
-    def estimated_backlog_runs(self) -> int:
-        if self.coverage_backlog <= 0:
+    def coverage_backlog(self) -> int:
+        return self.first_evaluation_backlog
+
+    @property
+    def external_pending_backlog(self) -> int:
+        return self.backlog_count(QUEUE_P4_EXTERNAL_PENDING)
+
+    @property
+    def stale_backlog(self) -> int:
+        return self.backlog_count(QUEUE_P3_STALE)
+
+    @property
+    def first_evaluation_coverage_status(self) -> str:
+        if not self.initialized:
+            return COVERAGE_UNKNOWN
+        if self.first_evaluation_backlog > 0 or self.failed_ids or not self.accounting_coherent:
+            return COVERAGE_INCOMPLETE
+        return COVERAGE_COMPLETE
+
+    @property
+    def external_market_coverage_status(self) -> str:
+        if not self.initialized:
+            return COVERAGE_UNKNOWN
+        if self.external_pending_backlog > 0:
+            return COVERAGE_INCOMPLETE
+        return COVERAGE_COMPLETE
+
+    @property
+    def estimated_first_evaluation_runs(self) -> int:
+        if self.first_evaluation_backlog <= 0:
             return 0
-        return (self.coverage_backlog + self.processing_budget - 1) // self.processing_budget
+        budget = max(1, self.processing_budget)
+        return (self.first_evaluation_backlog + budget - 1) // budget
+
+    @property
+    def estimated_external_backlog_runs(self) -> int:
+        if self.external_pending_backlog <= 0:
+            return 0
+        p4_cap = max(1, getattr(self, "p4_processing_budget", MAX_EXTERNAL_PENDING_PER_RUN))
+        return (self.external_pending_backlog + p4_cap - 1) // p4_cap
+
+    @property
+    def estimated_backlog_runs(self) -> int:
+        other_backlog = self.first_evaluation_backlog + self.stale_backlog
+        budget = max(1, self.processing_budget)
+        other_runs = (other_backlog + budget - 1) // budget if other_backlog > 0 else 0
+        return max(other_runs, self.estimated_external_backlog_runs)
 
     @property
     def accounting_coherent(self) -> bool:
@@ -977,9 +1021,15 @@ class FixedEconomicQueueDiagnostics:
     def status(self) -> str:
         if not self.initialized:
             return COVERAGE_UNKNOWN
-        if self.coverage_backlog or self.failed_ids or not self.accounting_coherent:
+        if (
+            self.first_evaluation_coverage_status == COVERAGE_INCOMPLETE
+            or self.external_market_coverage_status == COVERAGE_INCOMPLETE
+            or self.failed_ids
+            or not self.accounting_coherent
+        ):
             return COVERAGE_INCOMPLETE
         return COVERAGE_COMPLETE
+
 
 
 @dataclass
@@ -1198,6 +1248,41 @@ class RunDiagnostics:
         return self.overall_coverage_status
 
     @property
+    def first_evaluation_coverage_status(self) -> str:
+        fixed_status = (
+            self.fixed_queue.first_evaluation_coverage_status
+            if self.fixed_queue.initialized
+            else self.fixed_economic_coverage.status
+        )
+        statuses = {
+            fixed_status,
+            self.auction_economic_coverage.status,
+        }
+        if COVERAGE_INCOMPLETE in statuses:
+            return COVERAGE_INCOMPLETE
+        if statuses == {COVERAGE_COMPLETE}:
+            return COVERAGE_COMPLETE
+        return COVERAGE_UNKNOWN
+
+    @property
+    def external_market_coverage_status(self) -> str:
+        if self.fixed_queue.initialized:
+            return self.fixed_queue.external_market_coverage_status
+        return COVERAGE_COMPLETE
+
+    @property
+    def external_pending_backlog(self) -> int:
+        if self.fixed_queue.initialized:
+            return self.fixed_queue.external_pending_backlog
+        return 0
+
+    @property
+    def estimated_backlog_runs(self) -> int:
+        if self.fixed_queue.initialized:
+            return self.fixed_queue.estimated_backlog_runs
+        return 0
+
+    @property
     def economic_coverage_status(self) -> str:
         fixed_status = (
             self.fixed_queue.status
@@ -1230,6 +1315,8 @@ class RunDiagnostics:
     def economic_result_trustworthy(self) -> bool:
         return (
             self.discovery_coverage_status == COVERAGE_COMPLETE
+            and self.first_evaluation_coverage_status == COVERAGE_COMPLETE
+            and self.external_market_coverage_status == COVERAGE_COMPLETE
             and self.economic_coverage_status == COVERAGE_COMPLETE
         )
 
@@ -7624,7 +7711,11 @@ def format_fixed_economic_queue(
                 "pending retry backlog: "
                 f"{queue.backlog_count(QUEUE_P4_EXTERNAL_PENDING)}"
             ),
+            f"first-evaluation backlog: {queue.first_evaluation_backlog}",
+            f"external pending backlog: {queue.external_pending_backlog}",
             f"evaluation failures: {len(queue.failed_ids)}",
+            f"first-evaluation coverage: {queue.first_evaluation_coverage_status}",
+            f"external-market coverage: {queue.external_market_coverage_status}",
             f"economic coverage: {queue.status}",
             f"estimated backlog runs remaining: {queue.estimated_backlog_runs}",
             f"accounting invariant: {'OK' if queue.accounting_coherent else 'FAILED'}",
@@ -7944,6 +8035,8 @@ def format_economic_coverage(
 def format_scan_coverage(diagnostics: RunDiagnostics) -> str:
     discovery_status = diagnostics.discovery_coverage_status
     economic_status = diagnostics.economic_coverage_status
+    first_eval_status = diagnostics.first_evaluation_coverage_status
+    external_status = diagnostics.external_market_coverage_status
     status = diagnostics.scan_coverage_status
     trustworthy = "YES" if diagnostics.economic_result_trustworthy else "NO"
     if diagnostics.final_opportunities == 0:
@@ -7986,7 +8079,14 @@ def format_scan_coverage(diagnostics: RunDiagnostics) -> str:
                         diagnostics,
                         "auction",
                     ),
-                    f"ECONOMIC OVERALL\neconomic coverage status: {economic_status}",
+                    (
+                        "ECONOMIC OVERALL\n"
+                        f"FIRST_EVALUATION_COVERAGE: {first_eval_status}\n"
+                        f"EXTERNAL_MARKET_COVERAGE: {external_status}\n"
+                        f"EXTERNAL_PENDING_BACKLOG: {diagnostics.external_pending_backlog}\n"
+                        f"realistic backlog ETA: {diagnostics.estimated_backlog_runs} runs\n"
+                        f"economic coverage status: {economic_status}"
+                    ),
                 )
             ),
             "\n".join(
