@@ -404,5 +404,212 @@ class V4PriceDiscoveryAndGraderSpreadTests(unittest.TestCase):
         self.assertIn(mm.MANUAL_REVIEW_STATE_KEY, state)
 
 
+class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
+    """
+    Test suite for TEMPORAL_CROSS_GRADER_ADJUSTMENT:
+    - Rebasing old secondary-grader sales with broader market appreciation.
+    - Outlier rejection across multiple observations.
+    - Uncertainty and confidence downweighting on language mismatch and market volatility.
+    - Clean fail-closed behavior when no usable historical ratio/reference is present.
+    - Recent exact sales overriding temporal adjustment.
+    """
+
+    def test_1_rayquaza_xy141_sgs8_temporal_cross_grader_adjustment(self):
+        """
+        Rayquaza XY141 SGS 8 at 39 EUR:
+        - Old SGS 8 sale = 18 EUR (250 days ago)
+        - Historical PSA 8 benchmark at that time = 30 EUR -> historical ratio = 0.60
+        - Current robust PSA 8 market value = 100 EUR
+        => Old SGS 8 sale is rebased to 60 EUR (range 51-69 EUR) rather than treating 18 EUR as today's value.
+        => Implicit discount vs GCC price 39 EUR is 35.0%.
+        => is_extrapolated = True, manual review recommended.
+        """
+        historical_sgs = [
+            pd.HistoricalRatioObservation(
+                target_grader_price=18.0,
+                reference_grader_price=30.0,
+                ratio=0.60,
+                age_days=250,
+                target_grader="SGS",
+                reference_grader="PSA",
+                grade="8",
+                language="fr",
+                reference_language="fr",
+            )
+        ]
+
+        res = pd.evaluate_temporal_cross_grader_adjustment(
+            target_grader="SGS",
+            target_grade="8",
+            gcc_price=39.0,
+            historical_target_sales=historical_sgs,
+            current_robust_reference_value=100.0,
+            reference_grader="PSA",
+            target_language="fr",
+            reference_language="fr",
+        )
+
+        self.assertTrue(res.applied)
+        self.assertTrue(res.is_extrapolated)
+        self.assertEqual(res.extrapolation_type, pd.EXTRAPOLATION_TEMPORAL_CROSS_GRADER)
+        self.assertEqual(res.evidence_level, pd.EVIDENCE_LEVEL_TEMPORALLY_ADJUSTED)
+        self.assertEqual(res.historical_exact_grader_sale, 18.0)
+        self.assertEqual(res.historical_reference_price, 30.0)
+        self.assertEqual(res.historical_grader_reference_ratio, 0.60)
+        self.assertEqual(res.current_robust_reference_value, 100.0)
+        self.assertEqual(res.temporally_adjusted_central, 60.0)
+        self.assertEqual(res.temporally_adjusted_low, 51.0)
+        self.assertEqual(res.temporally_adjusted_high, 69.0)
+        self.assertAlmostEqual(res.implicit_discount_pct, 35.0, delta=0.1)
+
+        # Signal integration check
+        signal = pd.evaluate_price_discovery(
+            listing_identity="rayquaza_xy141_sgs8_fr",
+            gcc_price=39.0,
+            grader="SGS",
+            grade="8",
+            language="fr",
+            temporal_adjustment=res,
+            adjacent_anchors=(
+                pd.AdjacentAnchor(
+                    anchor_type="PSA_SAME_GRADE",
+                    source="poketrace",
+                    grader="PSA",
+                    grade="8",
+                    language="fr",
+                    price=100.0,
+                    price_type="SOLD",
+                    sale_count=4,
+                ),
+            ),
+        )
+
+        self.assertTrue(signal.is_extrapolated)
+        self.assertEqual(signal.extrapolation_type, pd.EXTRAPOLATION_TEMPORAL_CROSS_GRADER)
+        self.assertEqual(signal.evidence_level, pd.EVIDENCE_LEVEL_TEMPORALLY_ADJUSTED)
+        self.assertEqual(signal.temporally_adjusted_central, 60.0)
+        self.assertTrue(signal.manual_review_recommended)
+        self.assertIn("temporally rebased", signal.main_thesis)
+
+    def test_2_anomalous_outlier_ratio_does_not_dominate(self):
+        """
+        Multiple historical ratio observations with one huge outlier (e.g. 2.0 vs 0.60):
+        The robust median ensures the outlier does not distort the central estimate.
+        """
+        historical_obs = [
+            pd.HistoricalRatioObservation(18.0, 30.0, 0.60, age_days=200, target_grader="SGS"),
+            pd.HistoricalRatioObservation(17.5, 30.0, 0.5833, age_days=210, target_grader="SGS"),
+            pd.HistoricalRatioObservation(18.5, 30.0, 0.6167, age_days=190, target_grader="SGS"),
+            pd.HistoricalRatioObservation(60.0, 30.0, 2.00, age_days=220, target_grader="SGS"),  # anomalous outlier
+        ]
+
+        res = pd.evaluate_temporal_cross_grader_adjustment(
+            target_grader="SGS",
+            target_grade="8",
+            gcc_price=39.0,
+            historical_target_sales=historical_obs,
+            current_robust_reference_value=100.0,
+            reference_grader="PSA",
+        )
+
+        self.assertTrue(res.applied)
+        # Robust ratio should remain ~0.60, not pulled towards 1.0+
+        self.assertAlmostEqual(res.historical_grader_reference_ratio, 0.60, delta=0.03)
+        self.assertAlmostEqual(res.temporally_adjusted_central, 60.0, delta=3.0)
+
+    def test_3_language_mismatch_increases_uncertainty(self):
+        """
+        French SGS 8 paired with English PSA 8 reference:
+        Language mismatch must be flagged and increase uncertainty.
+        """
+        historical_obs = [
+            pd.HistoricalRatioObservation(
+                18.0, 30.0, 0.60, age_days=200, target_grader="SGS", language="fr", reference_language="en"
+            )
+        ]
+
+        res = pd.evaluate_temporal_cross_grader_adjustment(
+            target_grader="SGS",
+            target_grade="8",
+            gcc_price=39.0,
+            historical_target_sales=historical_obs,
+            current_robust_reference_value=100.0,
+            reference_grader="PSA",
+            target_language="fr",
+            reference_language="en",
+        )
+
+        self.assertTrue(res.applied)
+        self.assertIn("CROSS_LANGUAGE_BENCHMARK_FR_VS_EN", res.uncertainty_reasons)
+        self.assertIn(res.uncertainty, {pd.UNCERTAINTY_HIGH, pd.UNCERTAINTY_VERY_HIGH})
+
+    def test_4_stale_volatile_reference_market_prevents_strong_confidence(self):
+        """
+        When the reference market is volatile (high variance), confidence cannot be STRONG.
+        """
+        historical_obs = [
+            pd.HistoricalRatioObservation(18.0, 30.0, 0.60, age_days=200, target_grader="SGS")
+        ]
+
+        res = pd.evaluate_temporal_cross_grader_adjustment(
+            target_grader="SGS",
+            target_grade="8",
+            gcc_price=39.0,
+            historical_target_sales=historical_obs,
+            current_robust_reference_value=100.0,
+            reference_volatility="HIGH",
+        )
+
+        self.assertTrue(res.applied)
+        self.assertNotEqual(res.confidence, pd.EVIDENCE_QUALITY_STRONG)
+        self.assertIn("REFERENCE_MARKET_VOLATILITY_HIGH", res.uncertainty_reasons)
+
+    def test_5_no_usable_historical_data_fails_closed_without_invented_estimate(self):
+        """
+        If there is no usable historical ratio or reference value,
+        no estimate is invented and evidence level is MANUAL_REVIEW_NO_ESTIMATE.
+        """
+        res = pd.evaluate_temporal_cross_grader_adjustment(
+            target_grader="SGS",
+            target_grade="8",
+            gcc_price=39.0,
+            historical_target_sales=[],
+            current_robust_reference_value=None,
+        )
+
+        self.assertFalse(res.applied)
+        self.assertFalse(res.is_extrapolated)
+        self.assertIsNone(res.temporally_adjusted_central)
+        self.assertEqual(res.evidence_level, pd.EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE)
+        self.assertEqual(res.uncertainty, pd.UNCERTAINTY_VERY_HIGH)
+
+    def test_6_recent_exact_sales_override_temporal_extrapolation(self):
+        """
+        Recent exact sales of the target grader (within 90 days) override temporal extrapolation.
+        Evidence level is EXACT_RECENT_COMP and is_extrapolated is False.
+        """
+        recent_sales = [
+            type("Comp", (), {"price": 38.0})(),
+            type("Comp", (), {"price": 40.0})(),
+        ]
+
+        res = pd.evaluate_temporal_cross_grader_adjustment(
+            target_grader="SGS",
+            target_grade="8",
+            gcc_price=39.0,
+            historical_target_sales=[
+                pd.HistoricalRatioObservation(18.0, 30.0, 0.60, age_days=250)
+            ],
+            recent_exact_sales=recent_sales,
+            current_robust_reference_value=100.0,
+        )
+
+        self.assertFalse(res.applied)
+        self.assertFalse(res.is_extrapolated)
+        self.assertEqual(res.evidence_level, pd.EVIDENCE_LEVEL_EXACT_RECENT)
+        self.assertEqual(res.historical_exact_grader_sale, 39.0)
+        self.assertIn("RECENT_EXACT_SALES_AVAILABLE", res.uncertainty_reasons)
+
+
 if __name__ == "__main__":
     unittest.main()

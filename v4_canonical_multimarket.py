@@ -1503,7 +1503,9 @@ def _collect_price_discovery_lead(
             exact_grader_sales=exact_sales,
             adjacent_anchors=anchors,
             raw_consensus=raw,
+            historical_target_sales=exact_sales,
         )
+
 
         if signal.manual_review_recommended:
             key = _manual_review_key(candidate.lot)
@@ -1607,6 +1609,17 @@ def _notify_manual_review(lead: ManualReviewLead) -> None:
             f"- {a.anchor_type} ({a.source}): {a.price:.2f} €" + (f" ({', '.join(a.uncertainty_reasons)})" if a.uncertainty_reasons else "")
             for a in sig.credible_adjacent_anchors[:4]
         )
+        extrap_text = ""
+        if sig.is_extrapolated and sig.temporally_adjusted_central:
+            extrap_text = (
+                f"\nAjustement temporel : {sig.extrapolation_type} (Niveau preuve: {sig.evidence_level})\n"
+                f"- Vente historique exacte ({lead.lot.grader}) : {sig.historical_exact_grader_sale or 0:.2f} €\n"
+                f"- Référence historique (PSA) : {sig.historical_reference_price or 0:.2f} €\n"
+                f"- Ratio historique Grader/PSA : {sig.historical_grader_reference_ratio or 0:.4f}\n"
+                f"- Marché PSA robuste actuel : {sig.current_robust_reference_value or 0:.2f} €\n"
+                f"- Estimation ajustée actuelle : {sig.temporally_adjusted_low or 0:.2f}–{sig.temporally_adjusted_high or 0:.2f} € (central: {sig.temporally_adjusted_central:.2f} €)\n"
+                f"- Décote implicite vs GCC : {sig.implicit_discount_pct or 0:.1f}%\n"
+            )
         message = (
             f"{title}\n\n"
             f"{lead.canonical.name} #{lead.canonical.full_number}\n"
@@ -1616,11 +1629,13 @@ def _notify_manual_review(lead: ManualReviewLead) -> None:
             f"Référence haute crédible : {sig.credible_high_reference:.2f} € (Upside {sig.asymmetric_upside_ratio:.1f}x)\n"
             f"Liquidité : {sig.liquidity} | Qualité preuve : {sig.evidence_quality} | Incertitude : {sig.uncertainty}\n"
             f"Spread Grader : {sig.grader_spread}\n"
-            f"Thèse : {sig.main_thesis}\n\n"
+            f"Thèse : {sig.main_thesis}\n"
+            f"{extrap_text}\n"
             f"Ancres adjacentes crédibles :\n{anchor_lines or 'Aucune'}\n\n"
             "Revue manuelle uniquement. Aucun achat ou enchère automatique.\n"
             f"{lead.lot.url}"
         )
+
     else:
         title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
         grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)

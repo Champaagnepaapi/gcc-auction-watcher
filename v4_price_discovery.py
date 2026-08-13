@@ -45,6 +45,51 @@ GRADER_SPREAD_MODERATE = "MODERATE"
 GRADER_SPREAD_HIGH = "HIGH"
 GRADER_SPREAD_VERY_HIGH = "VERY_HIGH"
 
+EVIDENCE_LEVEL_EXACT_RECENT = "EXACT_RECENT_COMP"
+EVIDENCE_LEVEL_TEMPORALLY_ADJUSTED = "EXACT_OLD_COMP_TEMPORALLY_ADJUSTED"
+EVIDENCE_LEVEL_CROSS_GRADER_ONLY = "CROSS_GRADER_ESTIMATE_ONLY"
+EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE = "MANUAL_REVIEW_NO_ESTIMATE"
+
+EXTRAPOLATION_TEMPORAL_CROSS_GRADER = "TEMPORAL_CROSS_GRADER_ADJUSTMENT"
+
+
+@dataclass(frozen=True)
+class HistoricalRatioObservation:
+    """Historical sale of target grader with matched reference grader benchmark."""
+    target_grader_price: float
+    reference_grader_price: float
+    ratio: float  # target_grader_price / reference_grader_price
+    sold_at: Optional[Any] = None
+    age_days: Optional[int] = None
+    target_grader: str = ""
+    reference_grader: str = "PSA"
+    grade: str = ""
+    language: str = "fr"
+    reference_language: str = "fr"
+    is_outlier: bool = False
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class TemporalAdjustmentResult:
+    """Detailed output of temporal cross-grader adjustment."""
+    applied: bool = False
+    historical_exact_grader_sale: Optional[float] = None
+    historical_reference_price: Optional[float] = None
+    historical_grader_reference_ratio: Optional[float] = None
+    current_robust_reference_value: Optional[float] = None
+    temporally_adjusted_low: Optional[float] = None
+    temporally_adjusted_central: Optional[float] = None
+    temporally_adjusted_high: Optional[float] = None
+    implicit_discount_pct: Optional[float] = None
+    is_extrapolated: bool = False
+    extrapolation_type: Optional[str] = None
+    evidence_level: str = EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE
+    observations_count: int = 0
+    uncertainty: str = UNCERTAINTY_HIGH
+    confidence: str = EVIDENCE_QUALITY_MODERATE
+    uncertainty_reasons: tuple[str, ...] = ()
+
 
 @dataclass(frozen=True)
 class AdjacentAnchor:
@@ -82,6 +127,18 @@ class PriceDiscoverySignal:
     crossgrade_required: bool = False
     manual_review_recommended: bool = True
     diagnostics: tuple[str, ...] = ()
+    # Temporal Cross Grader Adjustment fields
+    historical_exact_grader_sale: Optional[float] = None
+    historical_reference_price: Optional[float] = None
+    historical_grader_reference_ratio: Optional[float] = None
+    current_robust_reference_value: Optional[float] = None
+    temporally_adjusted_low: Optional[float] = None
+    temporally_adjusted_central: Optional[float] = None
+    temporally_adjusted_high: Optional[float] = None
+    implicit_discount_pct: Optional[float] = None
+    is_extrapolated: bool = False
+    extrapolation_type: Optional[str] = None
+    evidence_level: str = EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE
 
 
 def _numeric_grade(raw_grade: object) -> Optional[float]:
@@ -91,6 +148,215 @@ def _numeric_grade(raw_grade: object) -> Optional[float]:
         return float(str(raw_grade).strip())
     except (ValueError, TypeError):
         return None
+
+
+def evaluate_temporal_cross_grader_adjustment(
+    *,
+    target_grader: str,
+    target_grade: str,
+    gcc_price: float,
+    historical_target_sales: Sequence[Any] = (),
+    historical_reference_sales: Sequence[Any] = (),
+    current_robust_reference_value: Optional[float] = None,
+    reference_grader: str = "PSA",
+    target_language: str = "fr",
+    reference_language: str = "fr",
+    reference_volatility: str = "LOW",
+    recent_exact_sales: Sequence[Any] = (),
+) -> TemporalAdjustmentResult:
+    """
+    Compute TEMPORAL_CROSS_GRADER_ADJUSTMENT:
+    Rebase old exact secondary-grader sales using historical target/reference ratios
+    and current robust reference-grader appreciation.
+    """
+    norm_target_grader = (target_grader or "").strip().upper()
+    norm_ref_grader = (reference_grader or "PSA").strip().upper()
+    norm_target_lang = (target_language or "fr").strip().lower()
+    norm_ref_lang = (reference_language or "fr").strip().lower()
+
+    # 1. Check if recent exact sales exist (within 90 days)
+    if recent_exact_sales:
+        recent_prices = [
+            getattr(s, "price", s) for s in recent_exact_sales
+            if (getattr(s, "price", s) or 0) > 0
+        ]
+        if recent_prices:
+            recent_avg = sum(recent_prices) / len(recent_prices)
+            discount = ((recent_avg - gcc_price) / recent_avg * 100) if recent_avg > 0 else 0.0
+            return TemporalAdjustmentResult(
+                applied=False,
+                historical_exact_grader_sale=round(recent_avg, 2),
+                current_robust_reference_value=current_robust_reference_value,
+                implicit_discount_pct=round(discount, 1),
+                is_extrapolated=False,
+                evidence_level=EVIDENCE_LEVEL_EXACT_RECENT,
+                observations_count=len(recent_prices),
+                uncertainty=UNCERTAINTY_LOW if len(recent_prices) >= 3 else UNCERTAINTY_MODERATE,
+                confidence=EVIDENCE_QUALITY_STRONG if len(recent_prices) >= 3 else EVIDENCE_QUALITY_MODERATE,
+                uncertainty_reasons=("RECENT_EXACT_SALES_AVAILABLE",),
+            )
+
+    # 2. Extract and pair historical observations
+    observations: list[HistoricalRatioObservation] = []
+
+    # Can accept HistoricalRatioObservation directly or pairs of (target_sale, ref_sale)
+    for item in historical_target_sales:
+        if isinstance(item, HistoricalRatioObservation):
+            observations.append(item)
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            t_price = float(item[0])
+            r_price = float(item[1])
+            age = int(item[2]) if len(item) > 2 else 180
+            if t_price > 0 and r_price > 0:
+                observations.append(
+                    HistoricalRatioObservation(
+                        target_grader_price=t_price,
+                        reference_grader_price=r_price,
+                        ratio=round(t_price / r_price, 4),
+                        age_days=age,
+                        target_grader=norm_target_grader,
+                        reference_grader=norm_ref_grader,
+                        grade=str(target_grade),
+                        language=norm_target_lang,
+                        reference_language=norm_ref_lang,
+                    )
+                )
+        elif hasattr(item, "price") and (item.price or 0) > 0:
+            # Look for paired reference price or use historical reference sales
+            t_price = float(item.price)
+            age = getattr(item, "age_days", 180)
+            # Find matching historical reference sale
+            ref_prices = [
+                getattr(r, "price", r) for r in historical_reference_sales
+                if (getattr(r, "price", r) or 0) > 0
+            ]
+            if ref_prices:
+                r_price = float(ref_prices[0])
+                observations.append(
+                    HistoricalRatioObservation(
+                        target_grader_price=t_price,
+                        reference_grader_price=r_price,
+                        ratio=round(t_price / r_price, 4),
+                        age_days=age,
+                        target_grader=norm_target_grader,
+                        reference_grader=norm_ref_grader,
+                        grade=str(target_grade),
+                        language=norm_target_lang,
+                        reference_language=norm_ref_lang,
+                    )
+                )
+
+    if not observations or not current_robust_reference_value or current_robust_reference_value <= 0:
+        return TemporalAdjustmentResult(
+            applied=False,
+            is_extrapolated=False,
+            evidence_level=EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE,
+            uncertainty=UNCERTAINTY_VERY_HIGH,
+            confidence=EVIDENCE_QUALITY_LOW,
+            uncertainty_reasons=("NO_USABLE_HISTORICAL_RATIO_OR_REFERENCE",),
+        )
+
+    # 3. Robust median / outlier rejection on historical ratios
+    ratios = [obs.ratio for obs in observations if obs.ratio > 0]
+    if not ratios:
+        return TemporalAdjustmentResult(
+            applied=False,
+            is_extrapolated=False,
+            evidence_level=EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE,
+            uncertainty=UNCERTAINTY_VERY_HIGH,
+            confidence=EVIDENCE_QUALITY_LOW,
+            uncertainty_reasons=("INVALID_RATIOS",),
+        )
+
+    # Outlier filter if >= 3 observations
+    sorted_ratios = sorted(ratios)
+    if len(sorted_ratios) >= 3:
+        median_idx = len(sorted_ratios) // 2
+        med = sorted_ratios[median_idx]
+        # Keep ratios within [0.4 * med, 2.0 * med]
+        clean_ratios = [r for r in sorted_ratios if 0.4 * med <= r <= 2.0 * med]
+        if not clean_ratios:
+            clean_ratios = [med]
+    else:
+        clean_ratios = sorted_ratios
+
+    # Compute robust median ratio
+    mid = len(clean_ratios) // 2
+    if len(clean_ratios) % 2 == 1:
+        robust_ratio = clean_ratios[mid]
+    else:
+        robust_ratio = (clean_ratios[mid - 1] + clean_ratios[mid]) / 2.0
+
+    # 4. Estimate current target-grader value
+    curr_ref = float(current_robust_reference_value)
+    adjusted_central = round(curr_ref * robust_ratio, 2)
+    adjusted_low = round(adjusted_central * 0.85, 2)
+    adjusted_high = round(adjusted_central * 1.15, 2)
+
+    implicit_discount = round(((adjusted_central - gcc_price) / max(0.01, adjusted_central)) * 100, 1)
+
+    # Representative historical observation
+    rep_obs = observations[0]
+    hist_target_sale = round(rep_obs.target_grader_price, 2)
+    hist_ref_price = round(rep_obs.reference_grader_price, 2)
+
+    # 5. Calculate uncertainty and confidence
+    uncertainty_score = 0
+    reasons: list[str] = []
+
+    if len(observations) == 1:
+        uncertainty_score += 1
+        reasons.append("SINGLE_HISTORICAL_RATIO_OBSERVATION")
+
+    max_age = max((obs.age_days or 180) for obs in observations)
+    if max_age > 180:
+        uncertainty_score += 1
+        reasons.append(f"STALE_TARGET_GRADER_SALE_{max_age}D")
+
+    if norm_target_lang != norm_ref_lang:
+        uncertainty_score += 1
+        reasons.append(f"CROSS_LANGUAGE_BENCHMARK_{norm_target_lang.upper()}_VS_{norm_ref_lang.upper()}")
+
+    if reference_volatility.upper() in {"MODERATE", "HIGH"}:
+        uncertainty_score += 1
+        reasons.append(f"REFERENCE_MARKET_VOLATILITY_{reference_volatility.upper()}")
+
+    if norm_target_grader not in {"PSA", "BGS", "CGC"}:
+        uncertainty_score += 1
+        reasons.append(f"SECONDARY_GRADER_{norm_target_grader}")
+
+    if uncertainty_score >= 3:
+        uncertainty = UNCERTAINTY_HIGH if uncertainty_score == 3 else UNCERTAINTY_VERY_HIGH
+        confidence = EVIDENCE_QUALITY_LOW if uncertainty_score >= 4 else EVIDENCE_QUALITY_MODERATE
+    elif uncertainty_score == 2:
+        uncertainty = UNCERTAINTY_HIGH
+        confidence = EVIDENCE_QUALITY_MODERATE
+    elif uncertainty_score == 1:
+        uncertainty = UNCERTAINTY_MODERATE
+        confidence = EVIDENCE_QUALITY_MODERATE
+    else:
+        uncertainty = UNCERTAINTY_LOW
+        confidence = EVIDENCE_QUALITY_STRONG
+
+    return TemporalAdjustmentResult(
+        applied=True,
+        historical_exact_grader_sale=hist_target_sale,
+        historical_reference_price=hist_ref_price,
+        historical_grader_reference_ratio=round(robust_ratio, 4),
+        current_robust_reference_value=round(curr_ref, 2),
+        temporally_adjusted_low=adjusted_low,
+        temporally_adjusted_central=adjusted_central,
+        temporally_adjusted_high=adjusted_high,
+        implicit_discount_pct=implicit_discount,
+        is_extrapolated=True,
+        extrapolation_type=EXTRAPOLATION_TEMPORAL_CROSS_GRADER,
+        evidence_level=EVIDENCE_LEVEL_TEMPORALLY_ADJUSTED,
+        observations_count=len(observations),
+        uncertainty=uncertainty,
+        confidence=confidence,
+        uncertainty_reasons=tuple(reasons),
+    )
+
 
 
 def evaluate_price_discovery(
@@ -104,6 +370,9 @@ def evaluate_price_discovery(
     adjacent_anchors: Sequence[AdjacentAnchor] = (),
     raw_consensus: Optional[Any] = None,
     crossgrade_probability: Optional[float] = None,
+    temporal_adjustment: Optional[TemporalAdjustmentResult] = None,
+    historical_target_sales: Sequence[Any] = (),
+    historical_reference_sales: Sequence[Any] = (),
 ) -> PriceDiscoverySignal:
     """
     Evaluate grader spread and price discovery for a listing using credible adjacent evidence.
@@ -112,6 +381,26 @@ def evaluate_price_discovery(
     norm_grade = (grade or "").strip()
     num_grade = _numeric_grade(norm_grade)
     norm_lang = (language or "fr").strip().lower()
+
+    # If temporal adjustment is not precomputed but historical sales are supplied, compute it
+    if temporal_adjustment is None and historical_target_sales:
+        # Find current PSA / reference value from adjacent anchors
+        ref_prices = [
+            a.price for a in adjacent_anchors
+            if (a.grader or "").upper() in {"PSA", "BGS", "CGC"} and (_numeric_grade(a.grade) == num_grade or ((num_grade or 0) >= 9.5 and _numeric_grade(a.grade) == 10.0)) and a.price_type == "SOLD"
+        ]
+        curr_ref = max(ref_prices) if ref_prices else None
+        if curr_ref:
+            temporal_adjustment = evaluate_temporal_cross_grader_adjustment(
+                target_grader=norm_grader,
+                target_grade=norm_grade,
+                gcc_price=gcc_price,
+                historical_target_sales=historical_target_sales,
+                historical_reference_sales=historical_reference_sales,
+                current_robust_reference_value=curr_ref,
+                target_language=norm_lang,
+                recent_exact_sales=exact_grader_sales,
+            )
 
     exact_sales_count = len(exact_grader_sales)
     if exact_sales_count == 0:
@@ -124,6 +413,24 @@ def evaluate_price_discovery(
     # 1. Process and filter adjacent anchors
     credible_anchors: list[AdjacentAnchor] = []
     has_active_ask_only = True
+
+    # If temporal adjustment is applied, inject the temporally adjusted estimate anchor
+    if temporal_adjustment is not None and temporal_adjustment.applied and temporal_adjustment.temporally_adjusted_central:
+        credible_anchors.append(
+            AdjacentAnchor(
+                anchor_type="TEMPORALLY_ADJUSTED_ESTIMATE",
+                source="temporal_cross_grader",
+                grader=norm_grader,
+                grade=norm_grade,
+                language=norm_lang,
+                price=temporal_adjustment.temporally_adjusted_central,
+                price_type="ADJUSTED_ESTIMATE",
+                sale_count=temporal_adjustment.observations_count or 1,
+                weight=1.0,
+                uncertainty_reasons=temporal_adjustment.uncertainty_reasons,
+            )
+        )
+        has_active_ask_only = False
     
     for anchor in adjacent_anchors:
         reasons = list(anchor.uncertainty_reasons)
@@ -207,7 +514,6 @@ def evaluate_price_discovery(
     if psa_anchors:
         credible_high_ref = round(max(a.price for a in psa_anchors), 2)
 
-
     upside_ratio = round(credible_high_ref / max(0.01, gcc_price), 2) if gcc_price > 0 else 1.0
 
     # 3. Calculate Grader Spread
@@ -246,6 +552,12 @@ def evaluate_price_discovery(
     if norm_grader not in {"PSA", "BGS", "CGC"}:
         uncertainty_score += 1
 
+    if temporal_adjustment is not None and temporal_adjustment.applied:
+        if temporal_adjustment.uncertainty == UNCERTAINTY_HIGH:
+            uncertainty_score += 1
+        elif temporal_adjustment.uncertainty == UNCERTAINTY_VERY_HIGH:
+            uncertainty_score += 2
+
     if uncertainty_score >= 3:
         uncertainty = UNCERTAINTY_HIGH if uncertainty_score == 3 else UNCERTAINTY_VERY_HIGH
     elif uncertainty_score == 2:
@@ -283,10 +595,12 @@ def evaluate_price_discovery(
     elif norm_grader not in {"PSA"} and exact_grader_liquidity in {LIQUIDITY_MODERATE, LIQUIDITY_HIGH}:
         category = CATEGORY_SECONDARY_GRADER_DISCOUNT
         main_thesis = f"Liquid {norm_grader} {norm_grade} market trading at discount vs market consensus ({upside_ratio:.1f}x)"
+    elif temporal_adjustment is not None and temporal_adjustment.applied:
+        category = CATEGORY_ILLIQUID_PRICE_DISCOVERY
+        main_thesis = f"Old exact {norm_grader} {norm_grade} sale ({temporal_adjustment.historical_exact_grader_sale:.2f}€) temporally rebased via PSA appreciation to {temporal_adjustment.temporally_adjusted_central:.2f}€ ({upside_ratio:.1f}x upside)"
     else:
         category = CATEGORY_ILLIQUID_PRICE_DISCOVERY
         main_thesis = f"Sparse exact {norm_grader} {norm_grade} liquidity rescued by {len(sold_anchors)} adjacent sold/consensus anchors ({upside_ratio:.1f}x upside)"
-
 
     # 6. Manual Review Recommendation Decision
     # Negative regression check: Liquid secondary market where ask >= fair market => no discount signal
@@ -298,9 +612,12 @@ def evaluate_price_discovery(
         manual_review = True
     elif upside_ratio >= 1.30 and len(sold_anchors) >= 2:
         manual_review = True
+    elif temporal_adjustment is not None and temporal_adjustment.applied and (temporal_adjustment.implicit_discount_pct or 0) >= 25.0:
+        manual_review = True
     else:
         manual_review = False
 
+    t_res = temporal_adjustment
     return PriceDiscoverySignal(
         listing_identity=listing_identity,
         gcc_price=gcc_price,
@@ -319,4 +636,15 @@ def evaluate_price_discovery(
         crossgrade_required=False,
         manual_review_recommended=manual_review,
         diagnostics=(f"CATEGORY_{category}", f"QUALITY_{evidence_quality}", f"UNCERTAINTY_{uncertainty}"),
+        historical_exact_grader_sale=t_res.historical_exact_grader_sale if t_res else None,
+        historical_reference_price=t_res.historical_reference_price if t_res else None,
+        historical_grader_reference_ratio=t_res.historical_grader_reference_ratio if t_res else None,
+        current_robust_reference_value=t_res.current_robust_reference_value if t_res else None,
+        temporally_adjusted_low=t_res.temporally_adjusted_low if t_res else None,
+        temporally_adjusted_central=t_res.temporally_adjusted_central if t_res else None,
+        temporally_adjusted_high=t_res.temporally_adjusted_high if t_res else None,
+        implicit_discount_pct=t_res.implicit_discount_pct if t_res else None,
+        is_extrapolated=t_res.is_extrapolated if t_res else False,
+        extrapolation_type=t_res.extrapolation_type if t_res else None,
+        evidence_level=t_res.evidence_level if t_res else (EVIDENCE_LEVEL_EXACT_RECENT if exact_sales_count >= 1 else EVIDENCE_LEVEL_CROSS_GRADER_ONLY if len(sold_anchors) >= 1 else EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE),
     )
