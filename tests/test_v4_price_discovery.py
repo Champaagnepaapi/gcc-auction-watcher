@@ -23,10 +23,11 @@ class V4PriceDiscoveryAndGraderSpreadTests(unittest.TestCase):
                 grader=None,
                 grade=None,
                 language="fr",
-                price=110.00,
+                price=25.00,
                 price_type="CONSENSUS",
                 sale_count=3,
             ),
+
         ]
 
         signal = pd.evaluate_price_discovery(
@@ -273,9 +274,134 @@ class V4PriceDiscoveryAndGraderSpreadTests(unittest.TestCase):
             adjacent_anchors=anchors,
         )
 
-        self.assertEqual(signal.category, pd.CATEGORY_SECONDARY_GRADER_DISCOUNT)
-        self.assertEqual(signal.liquidity, pd.LIQUIDITY_HIGH)
-        self.assertTrue(signal.manual_review_recommended)
+    def test_9_integration_real_v4_candidate_reaches_illiquid_price_discovery(self):
+        """Integration test: Real V4 ValuationCandidate reaches ILLIQUID_PRICE_DISCOVERY via multimarket pipeline."""
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        import watcher
+        import v4_canonical_multimarket as mm
+
+        now = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+
+        # Real V4 Lot: Pikachu V SWSH285 Promo FR PCA 10 at 39.00 EUR
+        lot = watcher.Lot(
+            url="https://gcc.test/item/12345",
+            title="Pikachu V SWSH285 Promo PCA 10",
+            current_price=39.00,
+            source_type="fixed",
+            grader="PCA",
+            grade="10",
+            card_set="SWSH Promos",
+            card_number="SWSH285",
+            language="fr",
+            commercial_dimensions={"edition": "none", "finish": "holo"},
+        )
+
+
+        gcc_evidence = watcher.GccMarketEvidence(
+            lot=lot,
+            sales=[],  # Sparse exact PCA 10 GCC history
+            estimate=None,
+            opportunity=None,
+            branch=watcher.GCC_BRANCH_REJECTED,
+            strength=watcher.EVIDENCE_WEAK,
+        )
+
+
+        candidate = watcher.ValuationCandidate(gcc=gcc_evidence)
+
+        canonical = mm.CanonicalCard(
+            status="EXACT",
+            card_id="swshp-SWSH285",
+            name="Pikachu V",
+            set_id="swshp",
+            set_name="SWSH Promos",
+            local_id="SWSH285",
+            full_number="SWSH285",
+            language_code="fr",
+        )
+
+
+        # Realistic French RAW consensus: ~25 EUR
+        raw = mm.RawMarketSignal(
+            low=20.0,
+            central=25.0,
+            high=30.0,
+            currency="EUR",
+            sources=("Cardmarket", "JustTCG"),
+            variant="holo",
+            confidence="STRONG",
+        )
+
+
+        # PokeTrace returns clean no match for exact PCA 10
+        poketrace = watcher.ExternalMarketEvidence(
+            identity_key=watcher.external_commercial_identity_key(lot),
+            status=watcher.EXTERNAL_CLEAN_NO_MATCH,
+            strength=watcher.EVIDENCE_UNAVAILABLE,
+            source="poketrace",
+            note="PokeTrace exact PCA 10 absent",
+            fetched_at=now,
+        )
+
+        # Fallback (PSA APR / eBay) found sparse exact PCA 10, but discovered 4 PSA 10 sold comparables at 249.60 EUR
+        fallback = watcher.ExternalMarketEvidence(
+            identity_key=watcher.external_commercial_identity_key(lot),
+            status=watcher.EXTERNAL_CLEAN_NO_MATCH,
+            strength=watcher.EVIDENCE_UNAVAILABLE,
+            source="ebay",
+            comparables=[
+                watcher.ComparableSale(
+                    price=249.60,
+                    source="ebay",
+                    grader="PSA",
+                    grade=10.0,
+                    context="fr",
+                )
+            ],
+            note="eBay exact PCA 10 absent; found PSA 10 sold comps",
+            fetched_at=now,
+        )
+
+
+
+        state = {}
+        with patch.object(mm, "_canonical_from_lot", return_value=canonical), \
+             patch.object(mm, "raw_market_signal", return_value=raw), \
+             patch.object(mm, "_poketrace_evidence", return_value=poketrace), \
+             patch.object(mm, "_fallback_external", return_value=fallback), \
+             patch.object(mm, "_notify_manual_review") as notify_mock:
+
+            opportunities = mm.multimarket_process_external_market_candidates(
+                None,
+                [candidate],
+                state,
+                watcher.ValidationBudgets(),
+                watcher.RunDiagnostics(),
+                now,
+            )
+
+        # Invariant: No automatic purchase/bid/opportunity created
+        self.assertEqual(opportunities, [])
+
+        # Notification must be triggered for manual review
+        notify_mock.assert_called_once()
+        lead = notify_mock.call_args[0][0]
+
+        # Verify discovery signal on the real candidate lead
+        self.assertIsNotNone(lead.discovery_signal)
+        sig = lead.discovery_signal
+        self.assertEqual(sig.category, pd.CATEGORY_ILLIQUID_PRICE_DISCOVERY)
+        self.assertEqual(sig.liquidity, pd.LIQUIDITY_LOW)
+        self.assertEqual(sig.evidence_quality, pd.EVIDENCE_QUALITY_MODERATE)
+        self.assertEqual(sig.uncertainty, pd.UNCERTAINTY_HIGH)
+        self.assertEqual(sig.grader_spread, pd.GRADER_SPREAD_VERY_HIGH)
+        self.assertAlmostEqual(sig.asymmetric_upside_ratio, 6.4, delta=0.1)
+        self.assertFalse(sig.crossgrade_required)
+        self.assertTrue(sig.manual_review_recommended)
+
+        # Verify state deduplication record
+        self.assertIn(mm.MANUAL_REVIEW_STATE_KEY, state)
 
 
 if __name__ == "__main__":

@@ -202,19 +202,14 @@ def hardened_multimarket_process_external_market_candidates(
         candidate: watcher.ValuationCandidate,
         canonical: mm.CanonicalCard,
         raw: mm.RawMarketSignal | None,
-        graded_note: str,
+        poketrace: watcher.ExternalMarketEvidence | None,
+        fallback: watcher.ExternalMarketEvidence | None,
     ) -> None:
-        should_review, gap = mm._should_manual_review(candidate.lot, raw)
-        if should_review and raw is not None:
-            key = mm._manual_review_key(candidate.lot)
-            leads[key] = mm.ManualReviewLead(
-                key,
-                candidate.lot,
-                canonical,
-                raw,
-                gap,
-                graded_note,
-            )
+        lead = mm._collect_price_discovery_lead(
+            candidate, canonical, raw, poketrace, fallback
+        )
+        if lead is not None:
+            leads[lead.identity_key] = lead
 
     def fetch(candidate, validation_budgets, fetch_now):
         if provider is not None:
@@ -251,11 +246,11 @@ def hardened_multimarket_process_external_market_candidates(
                 candidate,
                 canonical,
                 raw,
-                "; ".join(
-                    value for value in (poketrace.note, fallback.note) if value
-                ),
+                poketrace,
+                fallback,
             )
         return combined
+
 
     opportunities = mm._ORIGINAL_PROCESS_EXTERNAL(
         page,

@@ -148,20 +148,25 @@ class RequestBudget:
     auth_note: str = ""
 
 
+import v4_price_discovery as pd
+
+
 @dataclass(frozen=True)
 class ManualReviewLead:
     identity_key: str
     lot: watcher.Lot
     canonical: CanonicalCard
-    raw: RawMarketSignal
+    raw: Optional[RawMarketSignal]
     gap_pct: float
     graded_note: str
+    discovery_signal: Optional[pd.PriceDiscoverySignal] = None
 
 
 _ORIGINAL_INSPECT_ITEM = watcher.inspect_item
 _ORIGINAL_IS_VALID_POKEMON_CARD = watcher.is_valid_pokemon_card
 _ORIGINAL_PROCESS_EXTERNAL = watcher.process_external_market_candidates
 _ORIGINAL_FORMAT_RUN_DIAGNOSTICS = watcher.format_run_diagnostics
+
 
 _SESSION = requests.Session()
 _DIAGNOSTICS = MultiMarketDiagnostics()
@@ -1381,6 +1386,155 @@ def _poketrace_evidence(
     )
 
 
+def _collect_price_discovery_lead(
+    candidate: watcher.ValuationCandidate,
+    canonical: CanonicalCard,
+    raw: Optional[RawMarketSignal],
+    poketrace: Optional[watcher.ExternalMarketEvidence] = None,
+    fallback: Optional[watcher.ExternalMarketEvidence] = None,
+) -> Optional[ManualReviewLead]:
+    """Extract validated V4 evidence anchors and evaluate price discovery for manual review."""
+    anchors: list[pd.AdjacentAnchor] = []
+
+    # 1. RAW consensus anchor
+    if raw is not None and raw.central > 0 and raw.confidence in {"STRONG", "MODERATE", "WEAK"}:
+        if not any(flag in raw.anomaly_flags for flag in ("FLOOR_DISCONNECT", "OUTLIER_SPIKE", "OUTLIER_CONTAMINATION")):
+            anchors.append(
+                pd.AdjacentAnchor(
+                    anchor_type="RAW_CONSENSUS",
+                    source="raw_consensus",
+                    grader=None,
+                    grade=None,
+                    language=canonical.language_code or "fr",
+                    price=raw.central,
+                    price_type="CONSENSUS",
+                    sale_count=len(raw.sources) or 1,
+                )
+            )
+
+    # 2. PokeTrace sold evidence
+    if poketrace is not None:
+        if poketrace.estimate is not None and poketrace.estimate.central > 0:
+            anchors.append(
+                pd.AdjacentAnchor(
+                    anchor_type="PSA_SAME_GRADE" if (candidate.lot.grader or "").upper() == "PSA" else "POKETRACE_SOLD",
+                    source="poketrace",
+                    grader=candidate.lot.grader,
+                    grade=candidate.lot.grade,
+                    language=canonical.language_code or "en",
+                    price=poketrace.estimate.central,
+                    price_type="SOLD",
+                    sale_count=poketrace.estimate.exact_grade_count or 1,
+                )
+            )
+        for comp in poketrace.comparables:
+            if comp.price > 0:
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="PSA_SAME_GRADE" if (comp.grader or "").upper() == "PSA" else "POKETRACE_SOLD",
+                        source="poketrace",
+                        grader=comp.grader or candidate.lot.grader,
+                        grade=str(comp.grade) if comp.grade is not None else candidate.lot.grade,
+                        language=comp.context or canonical.language_code or "en",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                    )
+                )
+
+    # 3. Fallback (PSA APR / eBay) sold evidence
+    if fallback is not None:
+        if fallback.estimate is not None and fallback.estimate.central > 0:
+            anchors.append(
+                pd.AdjacentAnchor(
+                    anchor_type="PSA_SAME_GRADE" if (candidate.lot.grader or "").upper() == "PSA" else "EBAY_SOLD",
+                    source=fallback.source or "ebay",
+                    grader=candidate.lot.grader,
+                    grade=candidate.lot.grade,
+                    language=canonical.language_code or "en",
+                    price=fallback.estimate.central,
+                    price_type="SOLD",
+                    sale_count=fallback.estimate.exact_grade_count or 1,
+                )
+            )
+        for comp in fallback.comparables:
+            if comp.price > 0:
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="PSA_SAME_GRADE" if (comp.grader or "").upper() == "PSA" else "EBAY_SOLD",
+                        source=fallback.source or "ebay",
+                        grader=comp.grader or candidate.lot.grader,
+                        grade=str(comp.grade) if comp.grade is not None else candidate.lot.grade,
+                        language=comp.context or canonical.language_code or "en",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                    )
+                )
+
+
+    # 4. GCC completed sales history
+    exact_sales: list[float] = []
+    if candidate.gcc and candidate.gcc.sales:
+        for comp in candidate.gcc.sales:
+            if comp.price > 0:
+                exact_sales.append(comp.price)
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="GCC_HISTORY",
+                        source="gcc",
+                        grader=comp.grader,
+                        grade=str(comp.grade) if comp.grade is not None else None,
+                        language=candidate.lot.language or "fr",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                    )
+                )
+
+
+    if anchors or raw is not None:
+        signal = pd.evaluate_price_discovery(
+            listing_identity=f"{canonical.name} #{canonical.full_number}",
+            gcc_price=candidate.lot.current_price or 0.0,
+            grader=candidate.lot.grader,
+            grade=candidate.lot.grade,
+            language=canonical.language_code or "fr",
+            exact_grader_sales=exact_sales,
+            adjacent_anchors=anchors,
+            raw_consensus=raw,
+        )
+
+        if signal.manual_review_recommended:
+            key = _manual_review_key(candidate.lot)
+            gap = max(0.0, (signal.credible_high_reference - (candidate.lot.current_price or 0.0)) / max(0.01, signal.credible_high_reference) * 100)
+            return ManualReviewLead(
+                identity_key=key,
+                lot=candidate.lot,
+                canonical=canonical,
+                raw=raw,
+                gap_pct=gap,
+                graded_note=signal.main_thesis,
+                discovery_signal=signal,
+            )
+
+    # Check classic RAW manual review fallback
+    should_review, gap = _should_manual_review(candidate.lot, raw)
+    if should_review and raw is not None:
+        key = _manual_review_key(candidate.lot)
+        return ManualReviewLead(
+            identity_key=key,
+            lot=candidate.lot,
+            canonical=canonical,
+            raw=raw,
+            gap_pct=gap,
+            graded_note="Marché gradé non confirmé; revue RAW",
+            discovery_signal=None,
+        )
+
+    return None
+
+
 def _should_manual_review(
     lot: watcher.Lot, raw: Optional[RawMarketSignal]
 ) -> tuple[bool, float]:
@@ -1445,28 +1599,51 @@ def _manual_review_should_notify(
 
 
 def _notify_manual_review(lead: ManualReviewLead) -> None:
-    title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
-    grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
-    extra_sources = f"Sources RAW : {', '.join(lead.raw.sources)}"
-    if lead.raw.providers_rejected:
-        extra_sources += f" [Rejetés: {', '.join(lead.raw.providers_rejected)}]"
+    if lead.discovery_signal is not None:
+        sig = lead.discovery_signal
+        title = f"GCC MANUAL REVIEW — {sig.category}"
+        grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
+        anchor_lines = "\n".join(
+            f"- {a.anchor_type} ({a.source}): {a.price:.2f} €" + (f" ({', '.join(a.uncertainty_reasons)})" if a.uncertainty_reasons else "")
+            for a in sig.credible_adjacent_anchors[:4]
+        )
+        message = (
+            f"{title}\n\n"
+            f"{lead.canonical.name} #{lead.canonical.full_number}\n"
+            f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
+            f"{grade}\n\n"
+            f"Prix GCC : {lead.lot.current_price:.2f} €\n"
+            f"Référence haute crédible : {sig.credible_high_reference:.2f} € (Upside {sig.asymmetric_upside_ratio:.1f}x)\n"
+            f"Liquidité : {sig.liquidity} | Qualité preuve : {sig.evidence_quality} | Incertitude : {sig.uncertainty}\n"
+            f"Spread Grader : {sig.grader_spread}\n"
+            f"Thèse : {sig.main_thesis}\n\n"
+            f"Ancres adjacentes crédibles :\n{anchor_lines or 'Aucune'}\n\n"
+            "Revue manuelle uniquement. Aucun achat ou enchère automatique.\n"
+            f"{lead.lot.url}"
+        )
+    else:
+        title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
+        grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
+        extra_sources = f"Sources RAW : {', '.join(lead.raw.sources)}" if lead.raw else ""
+        if lead.raw and lead.raw.providers_rejected:
+            extra_sources += f" [Rejetés: {', '.join(lead.raw.providers_rejected)}]"
 
-    message = (
-        f"{title}\n\n"
-        f"{lead.canonical.name} #{lead.canonical.full_number}\n"
-        f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
-        f"{grade}\n\n"
-        f"Prix GCC : {lead.lot.current_price:.2f} €\n"
-        f"Marché RAW consensus : {lead.raw.low:.2f}–{lead.raw.high:.2f} € (confiance {lead.raw.confidence})\n"
-        f"RAW central : {lead.raw.central:.2f} €\n"
-        f"{extra_sources}\n"
-        f"Écart prudent vs plancher RAW : {lead.gap_pct:.1f}%\n"
-        f"Marché gradé : {lead.graded_note or 'non confirmé'}\n\n"
-        "RAW ≠ valeur du slab gradé. Aucun prix max conseillé n'est "
-        "calculé depuis le RAW; revue manuelle uniquement.\n"
-        f"{lead.lot.url}"
-    )
-    watcher.log("*** MANUAL REVIEW: graded market pending ***")
+        message = (
+            f"{title}\n\n"
+            f"{lead.canonical.name} #{lead.canonical.full_number}\n"
+            f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
+            f"{grade}\n\n"
+            f"Prix GCC : {lead.lot.current_price:.2f} €\n"
+            + (f"Marché RAW consensus : {lead.raw.low:.2f}–{lead.raw.high:.2f} € (confiance {lead.raw.confidence})\n" if lead.raw else "")
+            + (f"RAW central : {lead.raw.central:.2f} €\n" if lead.raw else "")
+            + (f"{extra_sources}\n" if extra_sources else "")
+            + f"Écart prudent vs plancher RAW : {lead.gap_pct:.1f}%\n"
+            f"Marché gradé : {lead.graded_note or 'non confirmé'}\n\n"
+            "RAW ≠ valeur du slab gradé. Aucun prix max conseillé n'est "
+            "calculé depuis le RAW; revue manuelle uniquement.\n"
+            f"{lead.lot.url}"
+        )
+    watcher.log(f"*** MANUAL REVIEW: {title} ***")
     print(message, flush=True)
     if watcher.NTFY_TOPIC:
         try:
@@ -1491,14 +1668,20 @@ def _fallback_external(
     page,
     candidate: watcher.ValuationCandidate,
     budgets: watcher.ValidationBudgets,
-    external_diagnostics: watcher.ExternalMarketDiagnostics,
+    diagnostics: watcher.ExternalMarketDiagnostics,
     now: datetime,
 ) -> watcher.ExternalMarketEvidence:
-    global _DIAGNOSTICS
-    _DIAGNOSTICS.fallback_apr_ebay += 1
-    return watcher.fetch_external_market_evidence(
-        page, candidate, budgets, external_diagnostics, now
-    )
+    """Conserve l'arbre strict existant (APR/eBay) sans budget supplémentaire."""
+    lot = candidate.lot
+    if lot.grader == "PSA":
+        _DIAGNOSTICS.fallback_apr_ebay += 1
+        apr_evidence = watcher.fetch_psa_apr_evidence(
+            page, lot, budgets, diagnostics, now
+        )
+        if apr_evidence.status == watcher.EXTERNAL_MATCHED:
+            return apr_evidence
+        return watcher.fetch_ebay_evidence(page, lot, budgets, diagnostics, now)
+    return watcher.fetch_ebay_evidence(page, lot, budgets, diagnostics, now)
 
 
 def _combine_retry_with_fallback(
@@ -1532,6 +1715,7 @@ def _combine_retry_with_fallback(
             ).strip("; "),
         )
     return fallback
+
 
 
 def multimarket_process_external_market_candidates(
@@ -1571,19 +1755,6 @@ def multimarket_process_external_market_candidates(
         ):
             return poketrace
 
-        if poketrace.status == watcher.EXTERNAL_PENDING:
-            should_review, gap = _should_manual_review(candidate.lot, raw)
-            if should_review and raw is not None:
-                leads[_manual_review_key(candidate.lot)] = ManualReviewLead(
-                    _manual_review_key(candidate.lot),
-                    candidate.lot,
-                    canonical,
-                    raw,
-                    gap,
-                    poketrace.note,
-                )
-            return poketrace
-
         fallback = _fallback_external(
             page,
             candidate,
@@ -1592,21 +1763,16 @@ def multimarket_process_external_market_candidates(
             fetch_now,
         )
         combined = _combine_retry_with_fallback(poketrace, fallback)
-        should_review, gap = _should_manual_review(candidate.lot, raw)
-        if should_review and raw is not None and combined.strength != watcher.EVIDENCE_STRONG:
-            leads[_manual_review_key(candidate.lot)] = ManualReviewLead(
-                _manual_review_key(candidate.lot),
-                candidate.lot,
-                canonical,
-                raw,
-                gap,
-                "; ".join(
-                    value
-                    for value in (poketrace.note, fallback.note)
-                    if value
-                ),
-            )
+        if not (
+            combined.status == watcher.EXTERNAL_MATCHED
+            and combined.strength == watcher.EVIDENCE_STRONG
+            and combined.estimate is not None
+        ):
+            lead = _collect_price_discovery_lead(candidate, canonical, raw, poketrace, fallback)
+            if lead is not None:
+                leads[lead.identity_key] = lead
         return combined
+
 
     opportunities = _ORIGINAL_PROCESS_EXTERNAL(
         page,

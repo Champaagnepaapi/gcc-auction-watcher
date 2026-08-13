@@ -202,10 +202,11 @@ def evaluate_price_discovery(
     # If PSA same-grade or top-grade (PSA 10) sold anchor exists, use it as benchmark reference
     psa_anchors = [
         a for a in sold_anchors
-        if (a.grader or "").upper() == "PSA" and (a.grade == norm_grade or ((num_grade or 0) >= 9.5 and a.grade == "10"))
+        if (a.grader or "").upper() == "PSA" and (_numeric_grade(a.grade) == num_grade or ((num_grade or 0) >= 9.5 and _numeric_grade(a.grade) == 10.0))
     ]
     if psa_anchors:
         credible_high_ref = round(max(a.price for a in psa_anchors), 2)
+
 
     upside_ratio = round(credible_high_ref / max(0.01, gcc_price), 2) if gcc_price > 0 else 1.0
 
