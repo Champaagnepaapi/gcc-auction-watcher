@@ -1392,9 +1392,14 @@ def _collect_price_discovery_lead(
     raw: Optional[RawMarketSignal],
     poketrace: Optional[watcher.ExternalMarketEvidence] = None,
     fallback: Optional[watcher.ExternalMarketEvidence] = None,
+    now: Optional[Any] = None,
 ) -> Optional[ManualReviewLead]:
     """Extract validated V4 evidence anchors and evaluate price discovery for manual review."""
     anchors: list[pd.AdjacentAnchor] = []
+    target_grader = (candidate.lot.grader or "").strip().upper()
+    target_grade = str(candidate.lot.grade or "").strip()
+    target_num_grade = pd._numeric_grade(target_grade)
+    effective_now = now or getattr(candidate.lot, "fetched_at", None)
 
     # 1. RAW consensus anchor
     if raw is not None and raw.central > 0 and raw.confidence in {"STRONG", "MODERATE", "WEAK"}:
@@ -1408,20 +1413,20 @@ def _collect_price_discovery_lead(
                     language=canonical.language_code or "fr",
                     price=raw.central,
                     price_type="CONSENSUS",
-                    sale_count=len(raw.sources) or 1,
+                    sale_count=len(raw.sources),
                 )
             )
 
-    # 2. PokeTrace sold evidence
+    # 2. PokeTrace exact and adjacent graded evidence
     if poketrace is not None:
         if poketrace.estimate is not None and poketrace.estimate.central > 0:
             anchors.append(
                 pd.AdjacentAnchor(
-                    anchor_type="PSA_SAME_GRADE" if (candidate.lot.grader or "").upper() == "PSA" else "POKETRACE_SOLD",
+                    anchor_type="PSA_SAME_GRADE" if target_grader == "PSA" else "POKETRACE_ESTIMATE",
                     source="poketrace",
                     grader=candidate.lot.grader,
                     grade=candidate.lot.grade,
-                    language=canonical.language_code or "en",
+                    language=canonical.language_code or "fr",
                     price=poketrace.estimate.central,
                     price_type="SOLD",
                     sale_count=poketrace.estimate.exact_grade_count or 1,
@@ -1442,12 +1447,13 @@ def _collect_price_discovery_lead(
                     )
                 )
 
+
     # 3. Fallback (PSA APR / eBay) sold evidence
     if fallback is not None:
         if fallback.estimate is not None and fallback.estimate.central > 0:
             anchors.append(
                 pd.AdjacentAnchor(
-                    anchor_type="PSA_SAME_GRADE" if (candidate.lot.grader or "").upper() == "PSA" else "EBAY_SOLD",
+                    anchor_type="PSA_SAME_GRADE" if target_grader == "PSA" else "EBAY_SOLD",
                     source=fallback.source or "ebay",
                     grader=candidate.lot.grader,
                     grade=candidate.lot.grade,
@@ -1472,13 +1478,46 @@ def _collect_price_discovery_lead(
                     )
                 )
 
+    # 4. GCC completed sales history: strictly filter exact target sales and historical reference sales
+    exact_target_sales: list[Any] = []
+    historical_ref_sales: list[Any] = []
 
-    # 4. GCC completed sales history
-    exact_sales: list[float] = []
     if candidate.gcc and candidate.gcc.sales:
         for comp in candidate.gcc.sales:
-            if comp.price > 0:
-                exact_sales.append(comp.price)
+            if comp.price <= 0 or getattr(comp, "exact_card", True) is False:
+                continue
+            c_grader = (comp.grader or "").strip().upper()
+            c_grade = pd._numeric_grade(comp.grade)
+
+            if c_grader == target_grader and c_grade == target_num_grade:
+                exact_target_sales.append(comp)
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="EXACT_GCC_SOLD",
+                        source="gcc",
+                        grader=comp.grader,
+                        grade=str(comp.grade) if comp.grade is not None else None,
+                        language=candidate.lot.language or "fr",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                    )
+                )
+            elif c_grader in {"PSA", "CGC", "BGS"} and c_grade == target_num_grade:
+                historical_ref_sales.append(comp)
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="PSA_SAME_GRADE" if c_grader == "PSA" else "NEIGHBORING_GRADE",
+                        source="gcc",
+                        grader=comp.grader,
+                        grade=str(comp.grade) if comp.grade is not None else None,
+                        language=candidate.lot.language or "fr",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                    )
+                )
+            else:
                 anchors.append(
                     pd.AdjacentAnchor(
                         anchor_type="GCC_HISTORY",
@@ -1492,6 +1531,45 @@ def _collect_price_discovery_lead(
                     )
                 )
 
+    # Collect additional historical reference comps from poketrace / fallback if dated
+    for src_obj in (poketrace, fallback):
+        if src_obj is not None and getattr(src_obj, "comparables", None):
+            for comp in src_obj.comparables:
+                if getattr(comp, "price", 0) > 0 and getattr(comp, "exact_card", True) is not False:
+                    c_grader = (getattr(comp, "grader", None) or "").strip().upper()
+                    c_grade = pd._numeric_grade(getattr(comp, "grade", None))
+                    if c_grader in {"PSA", "CGC", "BGS"} and c_grade == target_num_grade and getattr(comp, "sold_at", None):
+                        historical_ref_sales.append(comp)
+
+    # Partition exact target sales into recent vs stale
+    recent_exact_sales: list[Any] = []
+    stale_target_sales: list[Any] = []
+    for s in exact_target_sales:
+        s_sold_at = getattr(s, "sold_at", None)
+        if s_sold_at is not None and effective_now is not None:
+            try:
+                delta_days = (effective_now - s_sold_at).total_seconds() / 86400.0
+                if delta_days <= 90:
+                    recent_exact_sales.append(s)
+                else:
+                    stale_target_sales.append(s)
+            except Exception:
+                stale_target_sales.append(s)
+        else:
+            stale_target_sales.append(s)
+
+    # Date-matched pairing for temporal cross grader adjustment
+    historical_observations: list[pd.HistoricalRatioObservation] = []
+    if stale_target_sales and historical_ref_sales:
+        historical_observations = pd.pair_date_matched_historical_ratios(
+            stale_target_sales,
+            historical_ref_sales,
+            target_grader=target_grader,
+            target_grade=target_grade,
+            reference_grader="PSA",
+            target_language=candidate.lot.language or "fr",
+            now=effective_now,
+        )
 
     if anchors or raw is not None:
         signal = pd.evaluate_price_discovery(
@@ -1500,11 +1578,14 @@ def _collect_price_discovery_lead(
             grader=candidate.lot.grader,
             grade=candidate.lot.grade,
             language=canonical.language_code or "fr",
-            exact_grader_sales=exact_sales,
+            exact_grader_sales=exact_target_sales,
+            recent_exact_sales=recent_exact_sales,
             adjacent_anchors=anchors,
             raw_consensus=raw,
-            historical_target_sales=exact_sales,
+            historical_target_sales=historical_observations,
+            now=effective_now,
         )
+
 
 
         if signal.manual_review_recommended:
@@ -1783,7 +1864,8 @@ def multimarket_process_external_market_candidates(
             and combined.strength == watcher.EVIDENCE_STRONG
             and combined.estimate is not None
         ):
-            lead = _collect_price_discovery_lead(candidate, canonical, raw, poketrace, fallback)
+            lead = _collect_price_discovery_lead(candidate, canonical, raw, poketrace, fallback, now=fetch_now)
+
             if lead is not None:
                 leads[lead.identity_key] = lead
         return combined

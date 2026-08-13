@@ -204,9 +204,10 @@ def hardened_multimarket_process_external_market_candidates(
         raw: mm.RawMarketSignal | None,
         poketrace: watcher.ExternalMarketEvidence | None,
         fallback: watcher.ExternalMarketEvidence | None,
+        fetch_now: datetime | None = None,
     ) -> None:
         lead = mm._collect_price_discovery_lead(
-            candidate, canonical, raw, poketrace, fallback
+            candidate, canonical, raw, poketrace, fallback, now=fetch_now
         )
         if lead is not None:
             leads[lead.identity_key] = lead
@@ -248,6 +249,7 @@ def hardened_multimarket_process_external_market_candidates(
                 raw,
                 poketrace,
                 fallback,
+                fetch_now,
             )
         return combined
 

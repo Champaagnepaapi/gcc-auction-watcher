@@ -150,6 +150,132 @@ def _numeric_grade(raw_grade: object) -> Optional[float]:
         return None
 
 
+def compute_robust_reference_value(prices: Sequence[float]) -> Optional[float]:
+    """Compute robust reference value avoiding single-outlier distortions."""
+    valid_prices = sorted([float(p) for p in prices if p is not None and float(p) > 0])
+    if not valid_prices:
+        return None
+    if len(valid_prices) == 1:
+        return round(valid_prices[0], 2)
+    if len(valid_prices) == 2:
+        return round(sum(valid_prices) / 2.0, 2)
+
+    # 3 or more: filter extreme outliers outside [0.4 * med, 2.0 * med]
+    med = valid_prices[len(valid_prices) // 2]
+    clean_prices = [p for p in valid_prices if 0.4 * med <= p <= 2.0 * med]
+    if not clean_prices:
+        clean_prices = [med]
+
+    mid = len(clean_prices) // 2
+    if len(clean_prices) % 2 == 1:
+        robust_val = clean_prices[mid]
+    else:
+        robust_val = (clean_prices[mid - 1] + clean_prices[mid]) / 2.0
+    return round(robust_val, 2)
+
+
+def pair_date_matched_historical_ratios(
+    stale_target_sales: Sequence[Any],
+    historical_reference_sales: Sequence[Any],
+    *,
+    target_grader: str,
+    target_grade: str,
+    reference_grader: str = "PSA",
+    target_language: str = "fr",
+    max_delta_days: int = 90,
+    now: Optional[Any] = None,
+) -> list[HistoricalRatioObservation]:
+    """
+    Pair stale target-grader sales with date-matched same-grade reference-grader sales.
+    Do NOT pair with current prices to compute historical ratio.
+    """
+    observations: list[HistoricalRatioObservation] = []
+    norm_tg = (target_grader or "").strip().upper()
+    num_grade = _numeric_grade(target_grade)
+    norm_ref_grader = (reference_grader or "PSA").strip().upper()
+    norm_t_lang = (target_language or "fr").strip().lower()
+
+    # Filter reference sales to same grade and reference grader
+    valid_ref_sales = []
+    for r in historical_reference_sales:
+        r_grader = (getattr(r, "grader", None) or "").strip().upper()
+        r_grade = _numeric_grade(getattr(r, "grade", None))
+        r_price = float(getattr(r, "price", 0) or 0)
+        if (
+            r_grader == norm_ref_grader
+            and r_grade == num_grade
+            and r_price > 0
+        ):
+            valid_ref_sales.append(r)
+
+    if not valid_ref_sales:
+        return []
+
+    for t_comp in stale_target_sales:
+        t_price = float(getattr(t_comp, "price", 0) or 0)
+        t_sold_at = getattr(t_comp, "sold_at", None)
+        t_age = getattr(t_comp, "age_days", None)
+        if t_sold_at is not None and now is not None:
+            try:
+                t_age = max(0, int((now - t_sold_at).total_seconds() / 86400.0))
+            except Exception:
+                pass
+        if t_age is None:
+            t_age = 180
+
+        if t_price <= 0:
+            continue
+
+        # Find reference sales close to t_sold_at or matching age
+        matched_refs: list[tuple[float, float, Any]] = []
+        for r_comp in valid_ref_sales:
+            r_price = float(getattr(r_comp, "price", 0) or 0)
+            r_sold_at = getattr(r_comp, "sold_at", None)
+            r_age = getattr(r_comp, "age_days", None)
+            if r_sold_at is not None and now is not None:
+                try:
+                    r_age = max(0, int((now - r_sold_at).total_seconds() / 86400.0))
+                except Exception:
+                    pass
+
+            # Check date closeness
+            if t_sold_at is not None and r_sold_at is not None:
+                try:
+                    delta = abs((t_sold_at - r_sold_at).total_seconds()) / 86400.0
+                    if delta <= max_delta_days:
+                        matched_refs.append((delta, r_price, r_comp))
+                except Exception:
+                    pass
+            elif t_age is not None and r_age is not None:
+                delta = abs(float(t_age) - float(r_age))
+                if delta <= max_delta_days:
+                    matched_refs.append((delta, r_price, r_comp))
+
+        if matched_refs:
+            matched_refs.sort(key=lambda x: x[0])
+            ref_prices = [m[1] for m in matched_refs]
+            r_price_matched = compute_robust_reference_value(ref_prices)
+            if r_price_matched and r_price_matched > 0:
+                best_ref = matched_refs[0][2]
+                r_lang = getattr(best_ref, "context", None) or getattr(best_ref, "language", None) or norm_t_lang
+                observations.append(
+                    HistoricalRatioObservation(
+                        target_grader_price=round(t_price, 2),
+                        reference_grader_price=round(r_price_matched, 2),
+                        ratio=round(t_price / r_price_matched, 4),
+                        sold_at=t_sold_at,
+                        age_days=t_age,
+                        target_grader=norm_tg,
+                        reference_grader=norm_ref_grader,
+                        grade=str(target_grade),
+                        language=norm_t_lang,
+                        reference_language=str(r_lang).lower(),
+                    )
+                )
+
+    return observations
+
+
 def evaluate_temporal_cross_grader_adjustment(
     *,
     target_grader: str,
@@ -163,6 +289,7 @@ def evaluate_temporal_cross_grader_adjustment(
     reference_language: str = "fr",
     reference_volatility: str = "LOW",
     recent_exact_sales: Sequence[Any] = (),
+    now: Optional[Any] = None,
 ) -> TemporalAdjustmentResult:
     """
     Compute TEMPORAL_CROSS_GRADER_ADJUSTMENT:
@@ -177,7 +304,7 @@ def evaluate_temporal_cross_grader_adjustment(
     # 1. Check if recent exact sales exist (within 90 days)
     if recent_exact_sales:
         recent_prices = [
-            getattr(s, "price", s) for s in recent_exact_sales
+            float(getattr(s, "price", s) or 0) for s in recent_exact_sales
             if (getattr(s, "price", s) or 0) > 0
         ]
         if recent_prices:
@@ -199,7 +326,7 @@ def evaluate_temporal_cross_grader_adjustment(
     # 2. Extract and pair historical observations
     observations: list[HistoricalRatioObservation] = []
 
-    # Can accept HistoricalRatioObservation directly or pairs of (target_sale, ref_sale)
+    # If already HistoricalRatioObservation or tuples
     for item in historical_target_sales:
         if isinstance(item, HistoricalRatioObservation):
             observations.append(item)
@@ -221,30 +348,18 @@ def evaluate_temporal_cross_grader_adjustment(
                         reference_language=norm_ref_lang,
                     )
                 )
-        elif hasattr(item, "price") and (item.price or 0) > 0:
-            # Look for paired reference price or use historical reference sales
-            t_price = float(item.price)
-            age = getattr(item, "age_days", 180)
-            # Find matching historical reference sale
-            ref_prices = [
-                getattr(r, "price", r) for r in historical_reference_sales
-                if (getattr(r, "price", r) or 0) > 0
-            ]
-            if ref_prices:
-                r_price = float(ref_prices[0])
-                observations.append(
-                    HistoricalRatioObservation(
-                        target_grader_price=t_price,
-                        reference_grader_price=r_price,
-                        ratio=round(t_price / r_price, 4),
-                        age_days=age,
-                        target_grader=norm_target_grader,
-                        reference_grader=norm_ref_grader,
-                        grade=str(target_grade),
-                        language=norm_target_lang,
-                        reference_language=norm_ref_lang,
-                    )
-                )
+
+    # If raw target comps + raw reference comps are passed
+    if not observations and historical_target_sales and historical_reference_sales:
+        observations = pair_date_matched_historical_ratios(
+            historical_target_sales,
+            historical_reference_sales,
+            target_grader=norm_target_grader,
+            target_grade=str(target_grade),
+            reference_grader=norm_ref_grader,
+            target_language=norm_target_lang,
+            now=now,
+        )
 
     if not observations or not current_robust_reference_value or current_robust_reference_value <= 0:
         return TemporalAdjustmentResult(
@@ -367,12 +482,14 @@ def evaluate_price_discovery(
     grade: str,
     language: str = "fr",
     exact_grader_sales: Sequence[Any] = (),
+    recent_exact_sales: Sequence[Any] = (),
     adjacent_anchors: Sequence[AdjacentAnchor] = (),
     raw_consensus: Optional[Any] = None,
     crossgrade_probability: Optional[float] = None,
     temporal_adjustment: Optional[TemporalAdjustmentResult] = None,
     historical_target_sales: Sequence[Any] = (),
     historical_reference_sales: Sequence[Any] = (),
+    now: Optional[datetime] = None,
 ) -> PriceDiscoverySignal:
     """
     Evaluate grader spread and price discovery for a listing using credible adjacent evidence.
@@ -382,15 +499,31 @@ def evaluate_price_discovery(
     num_grade = _numeric_grade(norm_grade)
     norm_lang = (language or "fr").strip().lower()
 
+    # Determine actual recent exact sales (<= 90 days)
+    filtered_recent_sales: list[Any] = list(recent_exact_sales)
+    if not filtered_recent_sales and exact_grader_sales:
+        for s in exact_grader_sales:
+            s_sold_at = getattr(s, "sold_at", None)
+            s_age = getattr(s, "age_days", None)
+            if s_sold_at is not None and now is not None:
+                try:
+                    if (now - s_sold_at).total_seconds() <= 90 * 86400:
+                        filtered_recent_sales.append(s)
+                except Exception:
+                    pass
+            elif s_age is not None:
+                if s_age <= 90:
+                    filtered_recent_sales.append(s)
+
     # If temporal adjustment is not precomputed but historical sales are supplied, compute it
     if temporal_adjustment is None and historical_target_sales:
-        # Find current PSA / reference value from adjacent anchors
+        # Find current PSA / reference value from adjacent anchors robustly
         ref_prices = [
             a.price for a in adjacent_anchors
             if (a.grader or "").upper() in {"PSA", "BGS", "CGC"} and (_numeric_grade(a.grade) == num_grade or ((num_grade or 0) >= 9.5 and _numeric_grade(a.grade) == 10.0)) and a.price_type == "SOLD"
         ]
-        curr_ref = max(ref_prices) if ref_prices else None
-        if curr_ref:
+        curr_ref = compute_robust_reference_value(ref_prices)
+        if curr_ref and curr_ref > 0:
             temporal_adjustment = evaluate_temporal_cross_grader_adjustment(
                 target_grader=norm_grader,
                 target_grade=norm_grade,
@@ -399,8 +532,11 @@ def evaluate_price_discovery(
                 historical_reference_sales=historical_reference_sales,
                 current_robust_reference_value=curr_ref,
                 target_language=norm_lang,
-                recent_exact_sales=exact_grader_sales,
+                recent_exact_sales=filtered_recent_sales,
+                now=now,
             )
+
+
 
     exact_sales_count = len(exact_grader_sales)
     if exact_sales_count == 0:

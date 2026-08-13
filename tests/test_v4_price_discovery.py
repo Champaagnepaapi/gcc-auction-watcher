@@ -1,9 +1,14 @@
 import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
+import v4_canonical_multimarket as mm
 import v4_price_discovery as pd
+import watcher
 
 
 class V4PriceDiscoveryAndGraderSpreadTests(unittest.TestCase):
+
     def test_1_pikachu_v_swsh285_pca10_french_illiquid_price_discovery(self):
         """Positive regression: Pikachu V SWSH285 FR PCA10 at 39 EUR with sparse exact liquidity but strong adjacent anchors."""
         anchors = [
@@ -609,6 +614,304 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
         self.assertEqual(res.evidence_level, pd.EVIDENCE_LEVEL_EXACT_RECENT)
         self.assertEqual(res.historical_exact_grader_sale, 39.0)
         self.assertIn("RECENT_EXACT_SALES_AVAILABLE", res.uncertainty_reasons)
+
+    def test_7_true_pipeline_integration_real_valuation_candidate_temporal_cross_grader_adjustment(self):
+        """
+        True pipeline integration test:
+        Real ValuationCandidate -> multimarket_process_external_market_candidates / _collect_price_discovery_lead ->
+        Old Rayquaza XY141 SGS 8 sale + historical PSA 8 reference comp ->
+        Current robust PSA 8 comps ->
+        TEMPORAL_CROSS_GRADER_ADJUSTMENT -> manual review.
+        """
+        now = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
+        lot = watcher.Lot(
+            url="https://gcc.example/lot/rayquaza_sgs8",
+            title="Rayquaza XY141 Promo SGS 8",
+            current_price=39.0,
+            source_type="fixed",
+            grader="SGS",
+            grade="8",
+            card_set="XY Promos",
+            card_number="XY141",
+            language="fr",
+        )
+
+        # Real GCC sales history:
+        # 1. Stale SGS 8 sale (18 €) 250 days ago
+        # 2. Historical PSA 8 sale (30 €) 240 days ago (delta = 10 days <= 90 days)
+        # 3. Unrelated PCA 9 sale (50 €) 100 days ago
+        # 4. Unrelated PSA 10 sale (200 €) 10 days ago
+        gcc_sales = [
+            watcher.ComparableSale(
+                price=18.0,
+                grader="SGS",
+                grade=8.0,
+                sold_at=now - timedelta(days=250),
+                exact_card=True,
+                source="gcc",
+            ),
+            watcher.ComparableSale(
+                price=30.0,
+                grader="PSA",
+                grade=8.0,
+                sold_at=now - timedelta(days=240),
+                exact_card=True,
+                source="gcc",
+            ),
+            watcher.ComparableSale(
+                price=50.0,
+                grader="PCA",
+                grade=9.0,
+                sold_at=now - timedelta(days=100),
+                exact_card=True,
+                source="gcc",
+            ),
+            watcher.ComparableSale(
+                price=200.0,
+                grader="PSA",
+                grade=10.0,
+                sold_at=now - timedelta(days=10),
+                exact_card=True,
+                source="gcc",
+            ),
+        ]
+        gcc_evidence = watcher.GccMarketEvidence(
+            lot=lot,
+            sales=gcc_sales,
+            estimate=None,
+            opportunity=None,
+            branch=watcher.GCC_BRANCH_REJECTED,
+            strength=watcher.EVIDENCE_WEAK,
+        )
+
+        candidate = watcher.ValuationCandidate(gcc=gcc_evidence)
+        state = {}
+
+        # Mock TCGdex canonical resolution
+        canonical = mm.CanonicalCard(
+            status="EXACT",
+            card_id="xy-141",
+            name="Rayquaza",
+            set_id="xy",
+            set_name="XY Promos",
+            local_id="XY141",
+            full_number="XY141",
+            language_code="fr",
+        )
+
+
+        # Current external market for PSA 8 around 100 EUR
+        poketrace_evidence = watcher.ExternalMarketEvidence(
+            identity_key=watcher.external_commercial_identity_key(lot),
+            status=watcher.EXTERNAL_MATCHED,
+            strength=watcher.EVIDENCE_WEAK,  # Weak exact SGS 8 evidence from PokeTrace
+            source="poketrace",
+            note="PokeTrace graded",
+            fetched_at=now,
+            comparables=[
+                watcher.ComparableSale(
+                    price=98.0,
+                    grader="PSA",
+                    grade=8.0,
+                    sold_at=now - timedelta(days=5),
+                    exact_card=True,
+                    source="poketrace",
+                ),
+                watcher.ComparableSale(
+                    price=100.0,
+                    grader="PSA",
+                    grade=8.0,
+                    sold_at=now - timedelta(days=12),
+                    exact_card=True,
+                    source="poketrace",
+                ),
+                watcher.ComparableSale(
+                    price=102.0,
+                    grader="PSA",
+                    grade=8.0,
+                    sold_at=now - timedelta(days=20),
+                    exact_card=True,
+                    source="poketrace",
+                ),
+            ],
+        )
+
+        with patch("v4_canonical_multimarket._canonical_from_lot", return_value=canonical), \
+             patch("v4_canonical_multimarket.raw_market_signal", return_value=None), \
+             patch("v4_canonical_multimarket._poketrace_evidence", return_value=poketrace_evidence), \
+             patch("v4_canonical_multimarket._fallback_external", return_value=watcher.ExternalMarketEvidence(
+                 identity_key=watcher.external_commercial_identity_key(lot),
+                 status=watcher.EXTERNAL_CLEAN_NO_MATCH,
+                 strength=watcher.EVIDENCE_UNAVAILABLE,
+                 source="ebay",
+                 fetched_at=now,
+             )), \
+             patch("v4_canonical_multimarket._notify_manual_review") as notify_mock:
+
+            opportunities = mm.multimarket_process_external_market_candidates(
+                None,
+                [candidate],
+                state,
+                watcher.ValidationBudgets(),
+                watcher.RunDiagnostics(),
+                now,
+            )
+
+        # Invariants
+        self.assertEqual(opportunities, [])
+        notify_mock.assert_called_once()
+        lead = notify_mock.call_args[0][0]
+
+        self.assertIsNotNone(lead.discovery_signal)
+        sig = lead.discovery_signal
+
+        # Verify temporal extrapolation details
+        self.assertTrue(sig.is_extrapolated)
+        self.assertEqual(sig.extrapolation_type, pd.EXTRAPOLATION_TEMPORAL_CROSS_GRADER)
+        self.assertEqual(sig.evidence_level, pd.EVIDENCE_LEVEL_TEMPORALLY_ADJUSTED)
+        self.assertEqual(sig.historical_exact_grader_sale, 18.0)
+        self.assertEqual(sig.historical_reference_price, 30.0)
+        self.assertAlmostEqual(sig.historical_grader_reference_ratio, 0.60, delta=0.01)
+        self.assertAlmostEqual(sig.current_robust_reference_value, 100.0, delta=1.0)
+        self.assertAlmostEqual(sig.temporally_adjusted_central, 60.0, delta=1.0)
+        self.assertAlmostEqual(sig.implicit_discount_pct, 35.0, delta=1.0)
+        self.assertTrue(sig.manual_review_recommended)
+
+    def test_8_mixed_grader_gcc_history_does_not_inflate_exact_sgs_liquidity(self):
+        """
+        Negative test: A card with 5 PSA 10 GCC sales must NOT count as SGS 8 liquidity.
+        Exact SGS 8 liquidity must remain LOW.
+        """
+        now = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
+        lot = watcher.Lot(
+            url="https://gcc.example/lot/sgs8_mixed",
+            title="SGS 8",
+            current_price=50.0,
+            source_type="fixed",
+            grader="SGS",
+            grade="8",
+            language="fr",
+        )
+        gcc_sales = [
+            watcher.ComparableSale(price=100.0, grader="PSA", grade=10.0, sold_at=now - timedelta(days=i), exact_card=True)
+            for i in range(1, 6)
+        ]
+        gcc_evidence = watcher.GccMarketEvidence(
+            lot=lot,
+            sales=gcc_sales,
+            estimate=None,
+            opportunity=None,
+            branch=watcher.GCC_BRANCH_REJECTED,
+            strength=watcher.EVIDENCE_WEAK,
+        )
+        candidate = watcher.ValuationCandidate(gcc=gcc_evidence)
+        canonical = mm.CanonicalCard(status="EXACT", card_id="c1", name="Card", set_id="s1", set_name="Set", local_id="1", full_number="1", language_code="fr")
+
+        lead = mm._collect_price_discovery_lead(candidate, canonical, raw=None, now=now)
+        self.assertIsNotNone(lead)
+        self.assertEqual(lead.discovery_signal.exact_grader_liquidity, pd.LIQUIDITY_LOW)
+        self.assertEqual(lead.discovery_signal.liquidity, pd.LIQUIDITY_LOW)
+
+    def test_9_mixed_grade_gcc_history_does_not_count_as_exact_liquidity(self):
+        """
+        Negative test: SGS 9 sales must NOT count as exact SGS 8 liquidity.
+        """
+        now = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
+        lot = watcher.Lot(
+            url="https://gcc.example/lot/sgs8_mixed_grades",
+            title="SGS 8",
+            current_price=50.0,
+            source_type="fixed",
+            grader="SGS",
+            grade="8",
+            language="fr",
+        )
+        gcc_sales = [
+            watcher.ComparableSale(price=80.0, grader="SGS", grade=9.0, sold_at=now - timedelta(days=i), exact_card=True)
+            for i in range(1, 5)
+        ]
+        gcc_evidence = watcher.GccMarketEvidence(
+            lot=lot,
+            sales=gcc_sales,
+            estimate=None,
+            opportunity=None,
+            branch=watcher.GCC_BRANCH_REJECTED,
+            strength=watcher.EVIDENCE_WEAK,
+        )
+        candidate = watcher.ValuationCandidate(gcc=gcc_evidence)
+        canonical = mm.CanonicalCard(status="EXACT", card_id="c1", name="Card", set_id="s1", set_name="Set", local_id="1", full_number="1", language_code="fr")
+
+        lead = mm._collect_price_discovery_lead(candidate, canonical, raw=None, now=now)
+        self.assertIsNotNone(lead)
+        self.assertEqual(lead.discovery_signal.exact_grader_liquidity, pd.LIQUIDITY_LOW)
+
+    def test_10_current_psa_high_without_date_matched_historical_psa_fails_closed(self):
+        """
+        Negative test: An old SGS 8 sale without a date-matched historical PSA 8 sale
+        must NOT use current PSA 8 prices to invent a ratio.
+        is_extrapolated must be False, and evidence_level is MANUAL_REVIEW_NO_ESTIMATE.
+        """
+        now = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
+        lot = watcher.Lot(
+            url="https://gcc.example/lot/sgs8_fail_closed",
+            title="SGS 8",
+            current_price=39.0,
+            source_type="fixed",
+            grader="SGS",
+            grade="8",
+            language="fr",
+        )
+        # SGS 8 sold 250 days ago, but NO historical PSA 8 sale existed around that date
+        gcc_sales = [
+            watcher.ComparableSale(
+                price=18.0,
+                grader="SGS",
+                grade=8.0,
+                sold_at=now - timedelta(days=250),
+                exact_card=True,
+            ),
+        ]
+        gcc_evidence = watcher.GccMarketEvidence(
+            lot=lot,
+            sales=gcc_sales,
+            estimate=None,
+            opportunity=None,
+            branch=watcher.GCC_BRANCH_REJECTED,
+            strength=watcher.EVIDENCE_WEAK,
+        )
+        candidate = watcher.ValuationCandidate(gcc=gcc_evidence)
+        canonical = mm.CanonicalCard(status="EXACT", card_id="c1", name="Card", set_id="s1", set_name="Set", local_id="1", full_number="1", language_code="fr")
+
+        # Only current PSA 8 comps exist
+        poketrace = watcher.ExternalMarketEvidence(
+            identity_key=watcher.external_commercial_identity_key(lot),
+            status=watcher.EXTERNAL_MATCHED,
+            strength=watcher.EVIDENCE_WEAK,
+            source="poketrace",
+            fetched_at=now,
+            comparables=[
+                watcher.ComparableSale(price=100.0, grader="PSA", grade=8.0, sold_at=now - timedelta(days=2), exact_card=True),
+            ],
+        )
+
+        lead = mm._collect_price_discovery_lead(candidate, canonical, raw=None, poketrace=poketrace, now=now)
+        self.assertIsNotNone(lead)
+        sig = lead.discovery_signal
+        # Must fail closed: no invented extrapolation
+        self.assertFalse(sig.is_extrapolated)
+        self.assertIsNone(sig.temporally_adjusted_central)
+        self.assertNotEqual(sig.evidence_level, pd.EVIDENCE_LEVEL_TEMPORALLY_ADJUSTED)
+
+
+
+    def test_11_single_current_psa_outlier_does_not_become_robust_reference_value(self):
+        """
+        Negative test: If current PSA comps have prices [98.0, 100.0, 102.0, 1000.0 (outlier)],
+        compute_robust_reference_value must return ~100.0, not 1000.0 or 325.0.
+        """
+        prices = [98.0, 100.0, 102.0, 1000.0]
+        robust_ref = pd.compute_robust_reference_value(prices)
+        self.assertAlmostEqual(robust_ref, 100.0, delta=2.0)
 
 
 if __name__ == "__main__":
