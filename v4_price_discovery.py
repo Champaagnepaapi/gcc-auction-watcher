@@ -104,6 +104,7 @@ class AdjacentAnchor:
     sale_count: int = 1
     is_active_ask: bool = False
     weight: float = 1.0
+    sold_at: Optional[Any] = None
     age_days: Optional[int] = None
     is_recent: bool = True
     uncertainty_reasons: tuple[str, ...] = ()
@@ -614,6 +615,22 @@ def evaluate_price_discovery(
         reasons = list(anchor.uncertainty_reasons)
         weight = float(anchor.weight)
 
+        # Dated SOLD evidence older than the current-reference window is
+        # historical context only. It cannot become a current benchmark or
+        # independently recommend a manual review.
+        if (
+            anchor.price_type == "SOLD"
+            and anchor.anchor_type != "EXACT_GCC_SOLD"
+            and (
+                not getattr(anchor, "is_recent", True)
+                or (
+                    anchor.age_days is not None
+                    and anchor.age_days > 90
+                )
+            )
+        ):
+            continue
+
         # Stale active ask cannot create a strong opportunity alone
         if anchor.is_active_ask or anchor.price_type == "ASK":
             weight *= 0.15
@@ -650,6 +667,9 @@ def evaluate_price_discovery(
                     sale_count=anchor.sale_count,
                     is_active_ask=anchor.is_active_ask,
                     weight=weight,
+                    sold_at=anchor.sold_at,
+                    age_days=anchor.age_days,
+                    is_recent=anchor.is_recent,
                     uncertainty_reasons=tuple(reasons),
                 )
             )

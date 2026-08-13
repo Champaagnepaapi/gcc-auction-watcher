@@ -777,6 +777,60 @@ def _raw_variant_choice(
     return "", False
 
 
+def _deterministic_catalog_proven_dimensions(
+    canonical: CanonicalCard,
+) -> dict[str, str]:
+    """Return only dimensions proven by the exact TCGdex card-price attachment."""
+    deterministic_reasons = {
+        "TCGDEX_EXACT_NAME_LOCALID",
+        "TCGDEX_EXACT_NAME_LOCALID_SET",
+        "TCGDEX_EXACT_SET_LOCALID",
+    }
+    if (
+        canonical.status != "EXACT"
+        or canonical.reason not in deterministic_reasons
+        or not canonical.card_id
+        or not canonical.set_id
+        or not canonical.set_name
+        or not canonical.local_id
+    ):
+        return {}
+
+    proven = {
+        "set": canonical.set_name,
+        "collector_number": canonical.full_number or canonical.local_id,
+    }
+    finish = raw_consensus.get_catalog_proven_finish(canonical.variants or {})
+    if finish:
+        proven["finish"] = finish
+    return proven
+
+
+def _raw_target_dimensions(
+    lot: watcher.Lot, canonical: CanonicalCard
+) -> tuple[dict[str, str], dict[str, str]]:
+    expected = watcher.expected_commercial_dimensions(lot)
+    multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
+        " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
+    )
+    for dimension, value in multi_dims.items():
+        if dimension not in expected or not expected[dimension]:
+            expected[dimension] = value
+
+    # These are matching targets only. They never become provenance proof.
+    if lot.card_set:
+        expected["set"] = str(lot.card_set)
+    if lot.card_number:
+        expected["number"] = str(lot.card_number)
+
+    catalog_proven = _deterministic_catalog_proven_dimensions(canonical)
+    if catalog_proven.get("set"):
+        expected["set"] = canonical.set_name
+    if catalog_proven.get("collector_number"):
+        expected["number"] = canonical.full_number or canonical.local_id
+    return expected, catalog_proven
+
+
 def _all_raw_centers(
     canonical: CanonicalCard,
     lot: Optional[watcher.Lot] = None,
@@ -784,23 +838,24 @@ def _all_raw_centers(
     """Return conservative marketplace centers across every exposed RAW variant passing the compatibility gate."""
     pricing = canonical.pricing
     lot_lang = lot.language if lot is not None else "fr"
-    expected = watcher.expected_commercial_dimensions(lot) if lot is not None else {}
     if lot is not None:
-        multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
-            " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
-        )
-        for dim, val in multi_dims.items():
-            if dim not in expected or not expected[dim]:
-                expected[dim] = val
+        expected, catalog_dimensions = _raw_target_dimensions(lot, canonical)
+    else:
+        expected, catalog_dimensions = {}, {}
 
-    catalog_proven = raw_consensus.get_catalog_proven_finish(canonical.variants or {})
+    catalog_proven = catalog_dimensions.get("finish")
     centers: list[tuple[str, float, str]] = []
 
     cardmarket = pricing.get("cardmarket")
     if isinstance(cardmarket, Mapping):
         for suffix, label in (("", "normal"), ("-holo", "holo")):
             est = raw_consensus.estimate_cardmarket_raw(
-                cardmarket, label, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
+                cardmarket,
+                label,
+                lot_lang,
+                listing_dimensions=expected,
+                catalog_proven_finish=catalog_proven,
+                catalog_proven_dimensions=catalog_dimensions,
             )
             if est and est.confidence != "REJECTED" and est.status != "REJECTED":
                 centers.append(("Cardmarket", est.central, label))
@@ -811,7 +866,12 @@ def _all_raw_centers(
             if key in {"unit", "updated"} or not isinstance(tier, Mapping):
                 continue
             est = raw_consensus.estimate_tcgplayer_raw(
-                tcgplayer, str(key), lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
+                tcgplayer,
+                str(key),
+                lot_lang,
+                listing_dimensions=expected,
+                catalog_proven_finish=catalog_proven,
+                catalog_proven_dimensions=catalog_dimensions,
             )
             if est and est.confidence != "REJECTED" and est.status != "REJECTED":
                 centers.append(("TCGplayer", est.central, str(key)))
@@ -830,17 +890,10 @@ def raw_market_signal(
     lot_lang = lot.language or "fr"
 
     if deterministic:
-        expected = watcher.expected_commercial_dimensions(lot)
-        multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
-            " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
-        )
-        for dim, val in multi_dims.items():
-            if dim not in expected or not expected[dim]:
-                expected[dim] = val
+        expected, catalog_dimensions = _raw_target_dimensions(lot, canonical)
 
         edition_sensitive = expected.get("edition") not in {None, ""}
-        variants = canonical.variants or {}
-        catalog_proven = raw_consensus.get_catalog_proven_finish(variants)
+        catalog_proven = catalog_dimensions.get("finish")
 
         estimates: list[raw_consensus.RawProviderEstimate] = []
 
@@ -848,7 +901,12 @@ def raw_market_signal(
         if isinstance(cardmarket, Mapping):
             if not edition_sensitive and variant in {"normal", "holo"}:
                 cm_est = raw_consensus.estimate_cardmarket_raw(
-                    cardmarket, variant, lot_lang, expected, catalog_proven
+                    cardmarket,
+                    variant,
+                    lot_lang,
+                    expected,
+                    catalog_proven,
+                    catalog_dimensions,
                 )
                 if cm_est is not None:
                     estimates.append(cm_est)
@@ -856,7 +914,12 @@ def raw_market_signal(
         tcgplayer = pricing.get("tcgplayer")
         if isinstance(tcgplayer, Mapping):
             tp_est = raw_consensus.estimate_tcgplayer_raw(
-                tcgplayer, variant, lot_lang, expected, catalog_proven
+                tcgplayer,
+                variant,
+                lot_lang,
+                expected,
+                catalog_proven,
+                catalog_dimensions,
             )
             if tp_est is not None:
                 estimates.append(tp_est)
@@ -1355,6 +1418,15 @@ def _collect_price_discovery_lead(
     target_num_grade = pd._numeric_grade(target_grade)
     effective_now = now or getattr(candidate.lot, "fetched_at", None)
 
+    def sold_temporal_fields(comp: Any) -> dict[str, Any]:
+        sold_at = getattr(comp, "sold_at", None)
+        age = watcher.sale_age_days(comp, effective_now) if sold_at else None
+        return {
+            "sold_at": sold_at,
+            "age_days": int(age) if age is not None else None,
+            "is_recent": bool(age is not None and age <= 90),
+        }
+
     # 1. RAW consensus anchor: only robust, non-conflicting, multi-source or strong consensus
     if raw is not None and raw.central > 0 and raw.confidence in {"STRONG", "MODERATE"}:
         blocked_flags = {
@@ -1409,6 +1481,7 @@ def _collect_price_discovery_lead(
                         price=comp.price,
                         price_type="SOLD",
                         sale_count=1,
+                        **sold_temporal_fields(comp),
                     )
                 )
 
@@ -1440,6 +1513,7 @@ def _collect_price_discovery_lead(
                         price=comp.price,
                         price_type="SOLD",
                         sale_count=1,
+                        **sold_temporal_fields(comp),
                     )
                 )
 
@@ -1466,6 +1540,7 @@ def _collect_price_discovery_lead(
                         price=comp.price,
                         price_type="SOLD",
                         sale_count=1,
+                        **sold_temporal_fields(comp),
                     )
                 )
             elif c_grader in {"PSA", "CGC", "BGS"} and c_grade == target_num_grade:
@@ -1480,6 +1555,7 @@ def _collect_price_discovery_lead(
                         price=comp.price,
                         price_type="SOLD",
                         sale_count=1,
+                        **sold_temporal_fields(comp),
                     )
                 )
             else:
@@ -1493,6 +1569,7 @@ def _collect_price_discovery_lead(
                         price=comp.price,
                         price_type="SOLD",
                         sale_count=1,
+                        **sold_temporal_fields(comp),
                     )
                 )
 

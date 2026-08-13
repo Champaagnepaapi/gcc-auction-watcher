@@ -362,6 +362,7 @@ class V4PriceDiscoveryAndGraderSpreadTests(unittest.TestCase):
                     source="ebay",
                     grader="PSA",
                     grade=10.0,
+                    sold_at=now - timedelta(days=10),
                     context="fr",
                 )
             ],
@@ -926,6 +927,94 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
         self.assertIsNone(sig.temporally_adjusted_central)
         self.assertNotEqual(sig.evidence_level, pd.EVIDENCE_LEVEL_TEMPORALLY_ADJUSTED)
 
+    def test_10b_production_assembly_stale_gcc_reference_cannot_become_current(self):
+        """The real GCC-anchor assembly propagates dates and rejects a 300-day benchmark."""
+        now = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
+        target = watcher.Lot(
+            url="https://gcc.example/lot/stale-sgs8",
+            title="Card SGS 8",
+            current_price=10.0,
+            source_type="fixed",
+            grader="SGS",
+            grade="8",
+            card_set="Set",
+            card_number="1/100",
+            language="fr",
+        )
+        sold_at = now - timedelta(days=300)
+        gcc = watcher.GccMarketEvidence(
+            lot=target,
+            sales=[
+                watcher.ComparableSale(
+                    price=20.0,
+                    grader="SGS",
+                    grade=8.0,
+                    sold_at=sold_at,
+                    exact_card=True,
+                    source="gcc",
+                ),
+                watcher.ComparableSale(
+                    price=40.0,
+                    grader="PSA",
+                    grade=8.0,
+                    sold_at=sold_at,
+                    exact_card=True,
+                    source="gcc",
+                ),
+            ],
+            estimate=None,
+            opportunity=None,
+            branch=watcher.GCC_BRANCH_REJECTED,
+            strength=watcher.EVIDENCE_WEAK,
+        )
+        candidate = watcher.ValuationCandidate(gcc=gcc)
+        canonical = mm.CanonicalCard(
+            status="EXACT",
+            card_id="set-1",
+            set_id="set",
+            set_name="Set",
+            local_id="1",
+            full_number="1/100",
+            name="Card",
+            language_code="fr",
+        )
+
+        captured = {}
+        original_evaluate = pd.evaluate_price_discovery
+
+        def capture_evaluation(**kwargs):
+            captured["kwargs"] = kwargs
+            captured["signal"] = original_evaluate(**kwargs)
+            return captured["signal"]
+
+        with patch.object(
+            pd,
+            "evaluate_price_discovery",
+            side_effect=capture_evaluation,
+        ):
+            lead = mm._collect_price_discovery_lead(
+                candidate,
+                canonical,
+                raw=None,
+                now=now,
+            )
+
+        self.assertIsNone(lead)
+        signal = captured["signal"]
+        self.assertEqual(
+            signal.evidence_level,
+            pd.EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE,
+        )
+        self.assertIsNone(signal.current_robust_reference_value)
+        self.assertIsNone(signal.temporally_adjusted_central)
+        self.assertFalse(signal.manual_review_recommended)
+
+        anchors = captured["kwargs"]["adjacent_anchors"]
+        psa_anchor = next(anchor for anchor in anchors if anchor.grader == "PSA")
+        self.assertEqual(psa_anchor.sold_at, sold_at)
+        self.assertEqual(psa_anchor.age_days, 300)
+        self.assertFalse(psa_anchor.is_recent)
+
 
 
     def test_11_single_current_psa_outlier_does_not_become_robust_reference_value(self):
@@ -1068,4 +1157,3 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

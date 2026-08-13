@@ -564,16 +564,21 @@ class RawMarketSignalTests(unittest.TestCase):
             language_code="en",
             pricing={
                 "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
                     "trend-holo": 100,
                     "avg7-holo": 98,
                     "avg30-holo": 96,
                 },
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
                     "holo": {"marketPrice": 110},
                 },
             },
             variants={"normal": False, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
         with patch.object(mm, "_usd_per_eur", return_value=1.1):
             signal = mm.raw_market_signal(target, canonical)
@@ -597,10 +602,13 @@ class RawMarketSignalTests(unittest.TestCase):
             pricing={
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
                     "reverseHolofoil": {"marketPrice": 77.0},
                 },
             },
             variants={"normal": False, "holo": False, "reverse": True},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
         with patch.object(mm, "_usd_per_eur", return_value=1.0):
             signal = mm.raw_market_signal(target, canonical)
@@ -621,14 +629,22 @@ class RawMarketSignalTests(unittest.TestCase):
             name="Charizard",
             language_code="en",
             pricing={
-                "cardmarket": {"trend": 50, "trend-holo": 100},
+                "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
+                    "trend": 50,
+                    "trend-holo": 100,
+                },
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
                     "normal": {"marketPrice": 55},
                     "holo": {"marketPrice": 110},
                 },
             },
             variants={"normal": True, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
         with patch.object(mm, "_usd_per_eur", return_value=1.0):
             signal = mm.raw_market_signal(target, canonical)
@@ -1024,31 +1040,39 @@ class MultiMarketIntegrationTests(unittest.TestCase):
 
     def test_safe_notify_manual_review_installed_hardening_does_not_recurse(self):
         """CRITICAL: After install_multimarket_safety_hardening(), notifying raw=None lead does not cause RecursionError."""
-        mms.install_multimarket_safety_hardening()
-        signal = pd.PriceDiscoverySignal(
-            listing_identity="Dracaufeu #4/102",
-            gcc_price=40.0,
-            grader="PCA",
-            grade="8",
-            exact_grader_liquidity=pd.LIQUIDITY_LOW,
-            category=pd.CATEGORY_ILLIQUID_PRICE_DISCOVERY,
-            liquidity=pd.LIQUIDITY_LOW,
-            evidence_quality=pd.EVIDENCE_QUALITY_MODERATE,
-            uncertainty=pd.UNCERTAINTY_HIGH,
-            grader_spread=pd.GRADER_SPREAD_LOW,
-            credible_high_reference=220.0,
-            asymmetric_upside_ratio=5.5,
-            main_thesis="Thèse de test",
-            credible_adjacent_anchors=(),
-            crossgrade_required=False,
-            manual_review_recommended=True,
-            diagnostics=(),
-        )
-        lead = mm.ManualReviewLead(
-            "key-rec-test", self.target, self.canonical, raw=None, gap_pct=0.0, graded_note="graded absent", discovery_signal=signal
-        )
-        # Calling mm._notify_manual_review (which is safe_notify_manual_review) must execute without RecursionError
-        mm._notify_manual_review(lead)
+        original_candidate_matcher = mm._candidate_exact_for_canonical
+        original_notifier = mm._notify_manual_review
+        original_processor = watcher.process_external_market_candidates
+        try:
+            mms.install_multimarket_safety_hardening()
+            signal = pd.PriceDiscoverySignal(
+                listing_identity="Dracaufeu #4/102",
+                gcc_price=40.0,
+                grader="PCA",
+                grade="8",
+                exact_grader_liquidity=pd.LIQUIDITY_LOW,
+                category=pd.CATEGORY_ILLIQUID_PRICE_DISCOVERY,
+                liquidity=pd.LIQUIDITY_LOW,
+                evidence_quality=pd.EVIDENCE_QUALITY_MODERATE,
+                uncertainty=pd.UNCERTAINTY_HIGH,
+                grader_spread=pd.GRADER_SPREAD_LOW,
+                credible_high_reference=220.0,
+                asymmetric_upside_ratio=5.5,
+                main_thesis="Thèse de test",
+                credible_adjacent_anchors=(),
+                crossgrade_required=False,
+                manual_review_recommended=True,
+                diagnostics=(),
+            )
+            lead = mm.ManualReviewLead(
+                "key-rec-test", self.target, self.canonical, raw=None, gap_pct=0.0, graded_note="graded absent", discovery_signal=signal
+            )
+            # Calling the installed notifier must execute without recursion.
+            mm._notify_manual_review(lead)
+        finally:
+            mm._candidate_exact_for_canonical = original_candidate_matcher
+            mm._notify_manual_review = original_notifier
+            watcher.process_external_market_candidates = original_processor
 
     def test_synthetic_pricing_keys_are_not_consumed_in_production_raw_signal(self):
         """Production raw_market_signal ignores synthetic justtcg/pricecharting/ebay_raw keys."""
@@ -1083,4 +1107,3 @@ class MultiMarketIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

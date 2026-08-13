@@ -353,6 +353,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             language_code="fr",
             pricing={
                 "cardmarket": {
+                    "language": "fr",
+                    "condition": "NM",
                     "trend-holo": 100.0,
                     "avg-holo": 100.0,
                     "avg7-holo": 95.0,
@@ -361,6 +363,7 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
                 }
             },
             variants={"normal": False, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
 
         signal = mm.raw_market_signal(target_lot, canonical)
@@ -404,11 +407,14 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             pricing={
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
                     "unlimitedHolofoil": {"marketPrice": 300.0},
                     "1stEditionHolofoil": {"marketPrice": 3000.0},
                 }
             },
             variants={"normal": False, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
 
         with patch.object(raw_consensus, "_usd_per_eur", return_value=1.08):
@@ -433,6 +439,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             language_code="fr",
             pricing={
                 "cardmarket": {
+                    "language": "fr",
+                    "condition": "NM",
                     "trend-holo": 105.0,
                     "avg7-holo": 100.0,
                     "avg30-holo": 98.0,
@@ -441,6 +449,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
                 },
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "fr",
+                    "condition": "NM",
                     "holofoil": {"marketPrice": 108.0, "lowPrice": 95.0},
                 },
                 "justtcg": {
@@ -452,6 +462,7 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
                 },
             },
             variants={"normal": False, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
 
         with patch.object(raw_consensus, "_usd_per_eur", return_value=1.08):
@@ -481,6 +492,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             language_code="fr",
             pricing={
                 "cardmarket": {
+                    "language": "fr",
+                    "condition": "NM",
                     "trend-holo": 313.34,
                     "avg30-holo": 349.03,
                     "avg7-holo": 114.35,
@@ -489,6 +502,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
                 },
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "fr",
+                    "condition": "NM",
                     "holofoil": {"marketPrice": 28.00, "lowPrice": 22.00},
                 },
                 "justtcg": {
@@ -503,6 +518,7 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             },
 
             variants={"normal": False, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
 
         with patch.object(raw_consensus, "_usd_per_eur", return_value=1.08):
@@ -525,11 +541,23 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
 
     def test_15_cardmarket_holo_without_holo_keys_rejects_unless_catalog_proven(self):
         """Cardmarket data with generic keys cannot masquerade as holo unless catalog proves single holo finish."""
-        cm_data = {"trend": 100.0, "avg": 95.0, "avg7": 90.0, "avg30": 92.0}
+        cm_data = {
+            "trend": 100.0,
+            "avg": 95.0,
+            "avg7": 90.0,
+            "avg30": 92.0,
+            "language": "fr",
+            "condition": "NM",
+        }
+        catalog_identity = {"set": "Base Set", "collector_number": "4/102"}
 
         # When catalog does not prove single finish: must reject
         est_unproven = raw_consensus.estimate_cardmarket_raw(
-            cm_data, variant="holo", lot_language="fr", catalog_proven_finish=None
+            cm_data,
+            variant="holo",
+            lot_language="fr",
+            catalog_proven_finish=None,
+            catalog_proven_dimensions=catalog_identity,
         )
         self.assertIsNotNone(est_unproven)
         self.assertEqual(est_unproven.confidence, "REJECTED")
@@ -537,7 +565,11 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
 
         # When catalog proves card only exists in holo: accept generic
         est_proven = raw_consensus.estimate_cardmarket_raw(
-            cm_data, variant="holo", lot_language="fr", catalog_proven_finish="holo"
+            cm_data,
+            variant="holo",
+            lot_language="fr",
+            catalog_proven_finish="holo",
+            catalog_proven_dimensions=catalog_identity,
         )
         self.assertIsNotNone(est_proven)
         self.assertEqual(est_proven.status, "ACCEPTED")
@@ -623,11 +655,23 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             name="Charizard",
             language_code="en",
             pricing={
-                "cardmarket": {"trend": 100.0, "avg": 105.0},
-                "tcgplayer": {"normal": {"marketPrice": 110.0}, "unit": "USD"},
+                "cardmarket": {
+                    "trend": 100.0,
+                    "avg": 105.0,
+                    "language": "en",
+                    "condition": "NM",
+                    "variant": "normal",
+                },
+                "tcgplayer": {
+                    "normal": {"marketPrice": 110.0},
+                    "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
+                },
             },
             variants={"normal": True, "holo": True},
             unique_name_number=True,
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
         target_lot = watcher.Lot(
             url="https://gradedcardcenter.com/item/1",
@@ -683,15 +727,178 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         self.assertEqual(est_tp_lp.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
 
         # 6. Cardmarket generic price without holo keys when listing requires holo
-        cm_no_holo = {"trend": 20.0, "avg": 22.0}
+        cm_no_holo = {
+            "trend": 20.0,
+            "avg": 22.0,
+            "language": "fr",
+            "condition": "NM",
+        }
         est_cm_no_holo = raw_consensus.estimate_cardmarket_raw(
-            cm_no_holo, variant="holo", lot_language="fr", catalog_proven_finish=None
+            cm_no_holo,
+            variant="holo",
+            lot_language="fr",
+            catalog_proven_finish=None,
+            catalog_proven_dimensions={
+                "set": "Base Set",
+                "collector_number": "4/102",
+            },
         )
         self.assertIsNotNone(est_cm_no_holo)
         self.assertEqual(est_cm_no_holo.confidence, "REJECTED")
         self.assertEqual(est_cm_no_holo.reason_code, RawReasonCode.FINISH_MISMATCH)
 
+    def test_22_production_cardmarket_and_tcgplayer_missing_language_condition_fail_closed(self):
+        """Exact TCGdex set/number proof cannot manufacture provider language or condition."""
+        target_lot = make_lot(
+            title="Gengar",
+            language="en",
+            variant="Holo",
+            card_number="94/119",
+            card_set="Phantom Forces",
+        )
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="xy4-94",
+            set_id="xy4",
+            set_name="Phantom Forces",
+            local_id="94",
+            full_number="94/119",
+            name="Gengar EX",
+            language_code="en",
+            pricing={
+                "cardmarket": {"trend-holo": 100.0, "avg7-holo": 98.0},
+                "tcgplayer": {
+                    "unit": "USD",
+                    "holofoil": {"marketPrice": 102.0},
+                },
+            },
+            variants={"normal": False, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
+        )
+
+        signal = mm.raw_market_signal(target_lot, canonical)
+        self.assertIsNone(signal)
+
+        catalog = mm._deterministic_catalog_proven_dimensions(canonical)
+        cm = raw_consensus.estimate_cardmarket_raw(
+            canonical.pricing["cardmarket"],
+            "holo",
+            "en",
+            {"set": "Phantom Forces", "number": "94/119", "finish": "holo"},
+            "holo",
+            catalog,
+        )
+        tp = raw_consensus.estimate_tcgplayer_raw(
+            canonical.pricing["tcgplayer"],
+            "holo",
+            "en",
+            {"set": "Phantom Forces", "number": "94/119", "finish": "holo"},
+            "holo",
+            catalog,
+        )
+        for estimate in (cm, tp):
+            self.assertIsNotNone(estimate)
+            self.assertEqual(estimate.status, "REJECTED")
+            self.assertEqual(estimate.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
+            self.assertEqual(estimate.language, "")
+            self.assertEqual(
+                estimate.dimension_provenance["language"],
+                raw_consensus.RawDimensionProvenance.UNKNOWN,
+            )
+            self.assertEqual(
+                estimate.dimension_provenance["condition"],
+                raw_consensus.RawDimensionProvenance.UNKNOWN,
+            )
+
+    def test_23_production_missing_set_number_requires_deterministic_catalog_proof(self):
+        """Provider prices missing card identity are safe only when attached to a proven exact TCGdex card."""
+        target_lot = make_lot(
+            title="Gengar",
+            language="en",
+            variant="Holo",
+            card_number="94/119",
+            card_set="Phantom Forces",
+        )
+        pricing = {
+            "cardmarket": {
+                "language": "en",
+                "condition": "NM",
+                "trend-holo": 100.0,
+                "avg7-holo": 98.0,
+            },
+            "tcgplayer": {
+                "unit": "USD",
+                "language": "en",
+                "condition": "NM",
+                "holofoil": {"marketPrice": 102.0},
+            },
+        }
+        unproven = mm.CanonicalCard(
+            "EXACT",
+            card_id="xy4-94",
+            set_id="xy4",
+            set_name="Phantom Forces",
+            local_id="94",
+            full_number="94/119",
+            name="Gengar EX",
+            language_code="en",
+            pricing=pricing,
+            variants={"normal": False, "holo": True, "reverse": False},
+            reason="synthetic request identity",
+        )
+        self.assertIsNone(mm.raw_market_signal(target_lot, unproven))
+
+        proven = mm.CanonicalCard(
+            **{
+                **unproven.__dict__,
+                "reason": "TCGDEX_EXACT_NAME_LOCALID",
+            }
+        )
+        with patch.object(raw_consensus, "_usd_per_eur", return_value=1.0):
+            signal = mm.raw_market_signal(target_lot, proven)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.confidence, "STRONG")
+        self.assertEqual(set(signal.sources), {"Cardmarket", "TCGplayer"})
+
+        catalog = mm._deterministic_catalog_proven_dimensions(proven)
+        self.assertEqual(
+            catalog,
+            {
+                "set": "Phantom Forces",
+                "collector_number": "94/119",
+                "finish": "holo",
+            },
+        )
+
+    def test_24_two_incomplete_provider_estimates_cannot_form_eligible_consensus(self):
+        """Arbitration remains fail-closed even if two incomplete adapters agree exactly."""
+        incomplete = []
+        for provider in ("Cardmarket", "TCGplayer"):
+            incomplete.append(
+                raw_consensus.RawProviderEstimate(
+                    provider=provider,
+                    central=100.0,
+                    low=90.0,
+                    high=110.0,
+                    language="en",
+                    is_exact_language=True,
+                    is_exact_variant=True,
+                    is_exact_condition=True,
+                    dimension_provenance={
+                        "set": raw_consensus.RawDimensionProvenance.UNKNOWN,
+                        "collector_number": raw_consensus.RawDimensionProvenance.UNKNOWN,
+                        "language": raw_consensus.RawDimensionProvenance.PROVIDER_PROVEN,
+                        "condition": raw_consensus.RawDimensionProvenance.PROVIDER_PROVEN,
+                        "finish": raw_consensus.RawDimensionProvenance.PROVIDER_PROVEN,
+                    },
+                    required_dimensions=raw_consensus.RAW_BASE_REQUIRED_DIMENSIONS,
+                )
+            )
+        consensus = raw_consensus.arbitrate_raw_consensus(incomplete, "en")
+        self.assertEqual(consensus.status, "REJECTED")
+        self.assertEqual(consensus.confidence, "REJECTED")
+        self.assertEqual(consensus.providers_used, ())
+
 
 if __name__ == "__main__":
     unittest.main()
-
