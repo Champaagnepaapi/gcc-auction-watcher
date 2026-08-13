@@ -244,7 +244,7 @@ Cette voie utilise la **page web publique APR**, pas l’ancienne API Collectors
 
 ## RAW multi-provider : consensus robuste, microvariantes et observabilité (Backport V5 → V4)
 
-V4 intègre un moteur de consensus multi-marché RAW (`v4_raw_consensus.py`) couvrant **Cardmarket**, **JustTCG**, **TCGplayer**, **PriceCharting** et **eBay RAW**.
+V4 intègre un moteur de consensus multi-marché RAW (`v4_raw_consensus.py`) couvrant **Cardmarket**, **JustTCG**, **TCGplayer**, **PriceCharting** et **eBay RAW**. En production, seuls **Cardmarket** et **TCGplayer**, attachés à l'identité carte TCGdex déterministe, alimentent le consensus ; JustTCG, PriceCharting et eBay RAW restent des adaptateurs diagnostiques/hors-ligne.
 
 Règle absolue :
 
@@ -261,24 +261,33 @@ Le RAW :
 ### Pipeline de validation & Backport sélectif V5 → V4
 Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5 :
 1. **Fournisseurs de production live vs adaptateurs spécialisés** :
-   - **Production live** : TCGdex (données de catalogue Cardmarket et TCGplayer intégrées de façon synchrone via requêtes déterministes).
-   - **Adaptateurs spécialisés** : JustTCG, PriceCharting et eBay RAW sont implémentés sous forme d'adaptateurs stricts avec validation des dimensions déterministes (langue, condition NM/Mint, finish prouvé par le provider ou le catalogue). Ils ne prétendent pas être des flux temps réel non bornés.
+   - **Production live** : Cardmarket et TCGplayer via les données de prix rattachées à une résolution exacte TCGdex.
+   - **Adaptateurs spécialisés** : JustTCG, PriceCharting et eBay RAW sont conservés pour les tests et diagnostics hors-ligne. Une réponse incomplète reste observable, mais ne peut pas entrer dans le quorum.
 2. **Parser multilingue déterministe** : Extraction stricte des éditions (1ère Édition, 1. Edition, Prima Edizione, Unlimited), finitions (Holo, Reverse Holo, Nicht-Holo, Olografica) et finitions spéciales (Poke Ball, Master Ball, Cosmos, Galaxy, Cracked Ice). Les contradictions de titre échouent immédiatement en `__conflict__` fail-closed.
 3. **Validateur de microvariantes (*Microvariant Gate*) & Normalisation sémantique** :
    - Blocage systématique des comparables incompatibles (`FINISH_MISMATCH`, `EDITION_MISMATCH`, `PROMO_MISMATCH`, `LANGUAGE_MISMATCH`, `SET_MISMATCH`, `NUMBER_MISMATCH`).
    - Validation symétrique des promos (rejet listing promo vs provider régulier ET listing régulier vs provider promo).
    - Normalisation multi-tokens robuste des éditions (espaces, tirets, camelCase, compact, ordinaux multilingues : *1ère Édition, 1. Edition, 1a Edición, Prima Edizione, Unlimited, Shadowless*).
    - Décomposition des labels composés (*1stEditionHolofoil, 1steditionreverseholo, unlimitedholofoil*) avec vérification indépendante de chaque dimension.
-4. **Preuve d'unicité catalogue (*Catalog Uniqueness*)** : Déduction de finition déterministe uniquement lorsque l'invariant TCGdex prouve mathématiquement qu'une seule variante existe (`variants = {"normal": False, "holo": True, "reverse": False}`).
-5. **Rejet des anomalies statistiques (*Anti-Outlier Engine*)** :
+4. **Provenance explicite des dimensions d'identité** :
+   - Chaque dimension requise et applicable est classée `PROVIDER_PROVEN`, `CATALOG_PROVEN` ou `UNKNOWN`. La valeur demandée par le listing ou la requête est une cible de comparaison, jamais une preuve.
+   - Un fournisseur ne peut compter vers un consensus RAW `STRONG` / éligible à notification que si **toutes** ses dimensions requises et applicables sont `PROVIDER_PROVEN` ou `CATALOG_PROVEN`.
+   - Une dimension requise `UNKNOWN` laisse la donnée fournisseur visible dans les diagnostics, mais exclut ce fournisseur de `providers_used` et du quorum indépendant. Deux fournisseurs incomplets ne peuvent donc jamais se combiner en `STRONG`.
+   - Cette règle est appliquée dans la couche commune d'arbitrage, y compris lorsque les adaptateurs sont appelés directement ou hors-ligne.
+5. **Preuve catalogue déterministe (*Catalog Proof*)** :
+   - La preuve catalogue n'est pas limitée au finish. Une identité carte exacte et déterministe TCGdex peut prouver une dimension applicable uniquement lorsque l'invariant catalogue établit réellement cette dimension ; elle peut notamment porter le set, le numéro de collection, un finish unique ou une édition explicitement déterminée.
+   - Exemple de finish prouvé : une seule variante existe (`variants = {"normal": False, "holo": True, "reverse": False}`). La simple présence de `firstEdition: true` indique que l'édition est applicable ; elle ne prouve pas, à elle seule, l'édition exacte du lot.
+   - Pour une carte où First Edition / Unlimited est applicable, l'édition doit être prouvée par le fournisseur ou par un invariant catalogue déterministe valide. Le silence d'un fournisseur n'implique jamais Unlimited. Une édition explicitement contradictoire est rejetée.
+   - Lorsque l'édition est réellement non applicable au produit, son omission par le fournisseur est admise.
+6. **Rejet des anomalies statistiques (*Anti-Outlier Engine*)** :
    - Déconnexion du plancher (*Floor Disconnect*) : détection des écarts anormaux entre trend/avg30 et `low`.
    - Rupture inter-périodes (*Period Divergence*) : détection des effondrements récents (`avg7 < 0.45 * avg30`).
    - Rejet de contamination (`OUTLIER_CONTAMINATION`) lorsque les fournisseurs indépendants concordent.
-6. **Observabilité, Filtrage des paliers & Consensus multi-sources** :
+7. **Observabilité, Filtrage des paliers & Consensus multi-sources** :
    - Traçabilité complète du statut de chaque fournisseur (`ACCEPTED`, `DOWNWEIGHTED`, `REJECTED`) avec reason codes standardisés (`EXACT_COMPATIBLE`, `OUTLIER_CONTAMINATION`, `LANGUAGE_MISMATCH`, `FINISH_MISMATCH`, `PROVIDER_DISAGREEMENT`, etc.).
    - Filtrage strict de compatibilité dimensionnelle sur chaque palier avant inclusion dans l'enveloppe de variantes ambiguës.
-   - En production V4, le consensus RAW s'appuie exclusivement sur les fournisseurs disposant d'une ingestion réelle (`Cardmarket` et `TCGplayer` via l'API TCGdex), les adaptateurs JustTCG/PriceCharting/eBay RAW restant isolés pour les tests et diagnostics hors-ligne.
-   - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants compatibles (une source unique reste diagnostique / WEAK).
+   - En production V4, le consensus RAW s'appuie exclusivement sur Cardmarket et TCGplayer via TCGdex ; les adaptateurs JustTCG/PriceCharting/eBay RAW restent isolés pour les tests et diagnostics hors-ligne.
+   - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants, compatibles et entièrement prouvés. Une source unique complète reste diagnostique / `WEAK` ; une source incomplète reste `DIAGNOSTIC_ONLY` et ne compte jamais vers ce seuil.
    - Les conflits ou désaccords inter-fournisseurs (`disagreement_ratio > 1.30`) bloquent strictement l'utilisation de l'ancre RAW dans le price-discovery.
 
 
