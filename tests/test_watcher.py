@@ -2283,6 +2283,8 @@ class FixedIncrementalEconomicQueueTests(unittest.TestCase):
                 "evaluated_fingerprint",
                 "evaluation_version",
                 "last_evaluation_status",
+                "retry_count",
+                "retry_after",
                 "active",
             },
         )
@@ -3579,9 +3581,17 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
             ),
         )
         record = state[watcher.FIXED_QUEUE_STATE_KEY]["items"][item_id]
+        # Cooldown is active immediately after run
         self.assertEqual(
             watcher._fixed_queue_category(record, "same", NOW),
-            watcher.QUEUE_P1_CHANGED,
+            watcher.QUEUE_FRESH,
+        )
+        # Becomes P4_EXTERNAL_PENDING once cooldown expires
+        self.assertEqual(
+            watcher._fixed_queue_category(
+                record, "same", NOW + timedelta(minutes=16)
+            ),
+            watcher.QUEUE_P4_EXTERNAL_PENDING,
         )
 
     def test_transient_fixed_external_work_is_requeued_next_run(self):
@@ -3615,9 +3625,17 @@ class IndependentExternalMarketValuationTests(unittest.TestCase):
             ),
         )
         record = state[watcher.FIXED_QUEUE_STATE_KEY]["items"][item_id]
+        # Cooldown is active immediately after run
         self.assertEqual(
             watcher._fixed_queue_category(record, "same", NOW),
-            watcher.QUEUE_P1_CHANGED,
+            watcher.QUEUE_FRESH,
+        )
+        # Becomes P4_EXTERNAL_PENDING once cooldown expires
+        self.assertEqual(
+            watcher._fixed_queue_category(
+                record, "same", NOW + timedelta(minutes=16)
+            ),
+            watcher.QUEUE_P4_EXTERNAL_PENDING,
         )
 
     def test_external_queue_prioritizes_auction_ending_soonest(self):

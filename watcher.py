@@ -90,7 +90,12 @@ QUEUE_P0_NEW = "P0_NEW"
 QUEUE_P1_CHANGED = "P1_CHANGED"
 QUEUE_P2_NEVER_EVALUATED = "P2_NEVER_EVALUATED"
 QUEUE_P3_STALE = "P3_STALE"
+QUEUE_P4_EXTERNAL_PENDING = "P4_EXTERNAL_PENDING"
 QUEUE_FRESH = "FRESH_ALREADY_EVALUATED"
+MAX_EXTERNAL_PENDING_PER_RUN = 10
+MIN_STALE_DISCOVERY_RESERVATION = 20
+EXTERNAL_PENDING_BASE_COOLDOWN_MINUTES = 15
+EXTERNAL_PENDING_MAX_COOLDOWN_MINUTES = 360
 GCC_PAGE_RETRIES = int(os.getenv("GCC_PAGE_RETRIES", "2"))
 GCC_LISTING_SCROLL_LIMIT = 45
 GCC_FIXED_PAGE_SIZE = 100
@@ -867,6 +872,7 @@ class FixedEconomicQueueDiagnostics:
             QUEUE_P1_CHANGED: set(),
             QUEUE_P2_NEVER_EVALUATED: set(),
             QUEUE_P3_STALE: set(),
+            QUEUE_P4_EXTERNAL_PENDING: set(),
             QUEUE_FRESH: set(),
         },
         repr=False,
@@ -927,6 +933,7 @@ class FixedEconomicQueueDiagnostics:
                 QUEUE_P1_CHANGED,
                 QUEUE_P2_NEVER_EVALUATED,
                 QUEUE_P3_STALE,
+                QUEUE_P4_EXTERNAL_PENDING,
             )
         )
 
@@ -6423,6 +6430,7 @@ def _external_queue_sort_key(
         QUEUE_P1_CHANGED: 2,
         QUEUE_P2_NEVER_EVALUATED: 3,
         QUEUE_P3_STALE: 5,
+        QUEUE_P4_EXTERNAL_PENDING: 6,
     }
     local_rejection_rank = 3 if candidate.gcc.branch != GCC_BRANCH_SUPPORTED else 4
     return (
@@ -6433,7 +6441,7 @@ def _external_queue_sort_key(
 
 
 def _record_fixed_external_status(
-    state: dict, lot: Lot, status: str
+    state: dict, lot: Lot, status: str, run_now: Optional[datetime] = None
 ) -> None:
     if lot.source_type != "fixed":
         return
@@ -6441,7 +6449,22 @@ def _record_fixed_external_status(
     entries = queue.get("items") if isinstance(queue, dict) else None
     item_id = fixed_listing_id(lot)
     if isinstance(entries, dict) and isinstance(entries.get(item_id), dict):
-        entries[item_id]["last_evaluation_status"] = status
+        record = entries[item_id]
+        record["last_evaluation_status"] = status
+        if run_now is not None:
+            if status in {REJECTION_EXTERNAL_PENDING, REJECTION_EXTERNAL_RETRY}:
+                retry_count = int(record.get("retry_count") or 0) + 1
+                record["retry_count"] = retry_count
+                cooldown_min = min(
+                    EXTERNAL_PENDING_BASE_COOLDOWN_MINUTES * (2 ** (retry_count - 1)),
+                    EXTERNAL_PENDING_MAX_COOLDOWN_MINUTES,
+                )
+                record["retry_after"] = (
+                    run_now + timedelta(minutes=cooldown_min)
+                ).isoformat()
+            else:
+                record["retry_count"] = 0
+                record["retry_after"] = None
 
 
 def process_external_market_candidates(
@@ -6530,6 +6553,7 @@ def process_external_market_candidates(
                     else result.path
                 )
             ),
+            run_now=now,
         )
         if result.opportunity is not None:
             run_diagnostics.record_valuation(candidate.lot)
@@ -6991,10 +7015,12 @@ def _fixed_queue_category(
     last_evaluated = _parse_state_datetime(record.get("last_evaluated_at"))
     evaluated_fingerprint = record.get("evaluated_fingerprint")
     evaluation_version = record.get("evaluation_version")
-    if record.get("last_evaluation_status") in {
-        REJECTION_EXTERNAL_PENDING, REJECTION_EXTERNAL_RETRY
-    }:
+
+    # 1. Genuine listing changes take absolute priority
+    if evaluated_fingerprint is not None and evaluated_fingerprint != fingerprint:
         return QUEUE_P1_CHANGED
+
+    # 2. Never evaluated or obsolete evaluation version
     if (
         last_evaluated is None
         or not isinstance(evaluated_fingerprint, str)
@@ -7002,11 +7028,22 @@ def _fixed_queue_category(
         or evaluation_version != ECONOMIC_EVALUATION_VERSION
     ):
         return QUEUE_P2_NEVER_EVALUATED
-    if evaluated_fingerprint != fingerprint:
-        return QUEUE_P1_CHANGED
+
+    # 3. External Pending / Retry with exponential cooldown
+    if record.get("last_evaluation_status") in {
+        REJECTION_EXTERNAL_PENDING,
+        REJECTION_EXTERNAL_RETRY,
+    }:
+        retry_after = _parse_state_datetime(record.get("retry_after"))
+        if retry_after is not None and now < retry_after:
+            return QUEUE_FRESH  # Cooldown active; skip this run
+        return QUEUE_P4_EXTERNAL_PENDING
+
+    # 4. Standard STALE re-evaluation
     age = now - last_evaluated
     if age >= timedelta(hours=FIXED_REEVALUATION_TTL_HOURS):
         return QUEUE_P3_STALE
+
     return QUEUE_FRESH
 
 
@@ -7024,6 +7061,13 @@ def _fixed_queue_sort_key(
         return (first_seen or earliest, item_id)
     if category in {QUEUE_P1_CHANGED, QUEUE_P3_STALE}:
         return (last_evaluated or earliest, first_seen or earliest, item_id)
+    if category == QUEUE_P4_EXTERNAL_PENDING:
+        retry_after = _parse_state_datetime(record.get("retry_after"))
+        return (
+            retry_after or last_evaluated or earliest,
+            first_seen or earliest,
+            item_id,
+        )
     return (first_seen or earliest, item_id)
 
 
@@ -7071,6 +7115,8 @@ def _prepare_fixed_economic_queue(
                 "evaluated_fingerprint": None,
                 "evaluation_version": None,
                 "last_evaluation_status": None,
+                "retry_count": 0,
+                "retry_after": None,
                 "active": True,
             }
             records[item_id] = existing
@@ -7098,6 +7144,11 @@ def _prepare_fixed_economic_queue(
                 existing["evaluation_version"] = None
             category = _fixed_queue_category(existing, fingerprint, run_now)
 
+        # Invariant I6: Material listing changes reset backoff state
+        if category == QUEUE_P1_CHANGED:
+            existing["retry_count"] = 0
+            existing["retry_after"] = None
+
         existing.update(
             {
                 "item_id": item_id,
@@ -7110,34 +7161,76 @@ def _prepare_fixed_economic_queue(
         category_by_id[item_id] = category
         queue_diagnostics.register(item_id, category)
 
-    priority_order = (
-        QUEUE_P0_NEW,
-        QUEUE_P1_CHANGED,
-        QUEUE_P2_NEVER_EVALUATED,
-        QUEUE_P3_STALE,
-    )
-    ordered_queue: list[Lot] = []
-    for category in priority_order:
-        category_lots = [
+    # Sort each tier deterministically
+    def get_sorted_lots(cat: str) -> list[Lot]:
+        lots = [
             by_id[item_id]
             for item_id, value in category_by_id.items()
-            if value == category
+            if value == cat
         ]
-        ordered_queue.extend(
-            sorted(
-                category_lots,
-                key=lambda lot, current=category: _fixed_queue_sort_key(
-                    lot, current, records
-                ),
-            )
+        return sorted(
+            lots,
+            key=lambda lot, current=cat: _fixed_queue_sort_key(
+                lot, current, records
+            ),
         )
 
-    selected = ordered_queue[:valuation_cap]
+    p0_lots = get_sorted_lots(QUEUE_P0_NEW)
+    p1_lots = get_sorted_lots(QUEUE_P1_CHANGED)
+    p2_lots = get_sorted_lots(QUEUE_P2_NEVER_EVALUATED)
+    p3_lots = get_sorted_lots(QUEUE_P3_STALE)
+    p4_lots = get_sorted_lots(QUEUE_P4_EXTERNAL_PENDING)
+
+    selected: list[Lot] = []
+
+    # 1. Tier 1: Urgent Pool (P0_NEW + P1_CHANGED)
+    urgent_pool = p0_lots + p1_lots
+    take_urgent = min(len(urgent_pool), valuation_cap)
+    selected.extend(urgent_pool[:take_urgent])
+    remaining_budget = valuation_cap - len(selected)
+
+    # 2. Tier 2: Hard-Capped External Pending Reservation
+    reserved_pending_cap = min(MAX_EXTERNAL_PENDING_PER_RUN, remaining_budget)
+    take_pending = min(len(p4_lots), reserved_pending_cap)
+    selected.extend(p4_lots[:take_pending])
+    remaining_budget = valuation_cap - len(selected)
+
+    # 3. Tier 3: Anti-Starvation Discovery Sharing (P2_NEVER_EVALUATED & P3_STALE)
+    if remaining_budget > 0:
+        # 3a. Reserve Stale Floor
+        stale_floor_cap = min(MIN_STALE_DISCOVERY_RESERVATION, remaining_budget)
+        take_stale_floor = min(len(p3_lots), stale_floor_cap)
+        selected_stale = p3_lots[:take_stale_floor]
+        p3_remaining = p3_lots[take_stale_floor:]
+        discovery_avail = remaining_budget - take_stale_floor
+
+        # 3b. Serve NEVER_EVALUATED
+        take_p2 = min(len(p2_lots), discovery_avail)
+        selected_p2 = p2_lots[:take_p2]
+        p2_remaining = p2_lots[take_p2:]
+        discovery_avail -= take_p2
+
+        # 3c. Dynamic Reclaim: Drain unused P2 capacity into P3, or unused P3 floor into P2
+        if discovery_avail > 0:
+            if p2_remaining:
+                extra_p2 = min(len(p2_remaining), discovery_avail)
+                selected_p2.extend(p2_remaining[:extra_p2])
+                discovery_avail -= extra_p2
+            elif p3_remaining:
+                extra_p3 = min(len(p3_remaining), discovery_avail)
+                selected_stale.extend(p3_remaining[:extra_p3])
+                discovery_avail -= extra_p3
+
+        selected.extend(selected_p2)
+        selected.extend(selected_stale)
+
     selected_ids = {fixed_listing_id(lot) for lot in selected}
     for item_id in selected_ids:
         queue_diagnostics.record_selected(item_id)
-    for lot in ordered_queue[valuation_cap:]:
-        queue_diagnostics.record_budget_skipped(fixed_listing_id(lot))
+    for lot in p0_lots + p1_lots + p2_lots + p3_lots + p4_lots:
+        item_id = fixed_listing_id(lot)
+        if item_id not in selected_ids:
+            queue_diagnostics.record_budget_skipped(item_id)
     return selected, category_by_id, records
 
 
@@ -7255,6 +7348,7 @@ def format_fixed_economic_queue(
             f"changed: {queue.count(QUEUE_P1_CHANGED)}",
             f"never evaluated: {queue.count(QUEUE_P2_NEVER_EVALUATED)}",
             f"stale: {queue.count(QUEUE_P3_STALE)}",
+            f"pending retry: {queue.count(QUEUE_P4_EXTERNAL_PENDING)}",
             f"fresh already evaluated: {queue.fresh_already_evaluated}",
             f"processing budget: {queue.processing_budget}",
             f"processed this run: {queue.processed_this_run}",
@@ -7265,6 +7359,10 @@ def format_fixed_economic_queue(
                 f"{queue.processed_count(QUEUE_P2_NEVER_EVALUATED)}"
             ),
             f"processed stale: {queue.processed_count(QUEUE_P3_STALE)}",
+            (
+                "processed pending retry: "
+                f"{queue.processed_count(QUEUE_P4_EXTERNAL_PENDING)}"
+            ),
             (
                 "new skipped due budget: "
                 f"{queue.budget_skipped_count(QUEUE_P0_NEW)}"
@@ -7278,6 +7376,10 @@ def format_fixed_economic_queue(
                 f"{queue.backlog_count(QUEUE_P2_NEVER_EVALUATED)}"
             ),
             f"stale backlog: {queue.backlog_count(QUEUE_P3_STALE)}",
+            (
+                "pending retry backlog: "
+                f"{queue.backlog_count(QUEUE_P4_EXTERNAL_PENDING)}"
+            ),
             f"evaluation failures: {len(queue.failed_ids)}",
             f"economic coverage: {queue.status}",
             f"estimated backlog runs remaining: {queue.estimated_backlog_runs}",
