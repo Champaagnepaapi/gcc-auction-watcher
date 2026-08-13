@@ -83,6 +83,14 @@ jobs:
           restore-keys: |
             gcc-state-
 
+      - name: Restore final alerts deduplication state (read-only context)
+        uses: actions/cache/restore@v4
+        with:
+          path: final_alerts.json
+          key: gcc-final-alerts-${{ github.run_id }}
+          restore-keys: |
+            gcc-final-alerts-
+
       - name: Scan GCC auctions
         id: scan
         env:
@@ -95,8 +103,20 @@ jobs:
 
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
+          POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
 
           STATE_FILE: state.json
+
+          V4_TCGDEX_ENABLED: "true"
+          V4_TCGDEX_REQUEST_TIMEOUT: "6"
+          V4_TCGDEX_CACHE_TTL_HOURS: "24"
+
+          V4_POKETRACE_ENABLED: "true"
+          V4_POKETRACE_MAX_REQUESTS_PER_RUN: "40"
+          V4_POKETRACE_REQUEST_TIMEOUT: "8"
+          V4_POKETRACE_PACING_SECONDS: "0.40"
+          V4_POKETRACE_MIN_SALES: "3"
+          V4_RAW_REVIEW_TTL_HOURS: "24"
 
           EBAY_ENABLED: "true"
           EBAY_MAX_QUERIES_PER_CARD: "2"
@@ -117,7 +137,7 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           scan_exit_code=$?
           if [ "$scan_exit_code" -eq 0 ]; then
-            python run_watcher_safe.py
+            python run_watcher_multimarket.py
             scan_exit_code=$?
           fi
           set -e
