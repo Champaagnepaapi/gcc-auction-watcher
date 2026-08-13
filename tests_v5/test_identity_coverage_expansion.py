@@ -11,8 +11,22 @@ from v5.ebay import (
     CardIdentity,
     canonicalize_chinese_card_number,
     card_identity_from_ebay_payload,
+    extract_title_finish,
     is_bundle_or_multi_card_listing,
     resolve_card_identity,
+)
+from v5.live_raw_pipeline import (
+    IDENTITY_AMBIGUOUS,
+    IDENTITY_INSUFFICIENT,
+    IDENTITY_OK,
+    identity_status,
+)
+from v5.variant_semantics import (
+    FINISH_HOLO,
+    FINISH_REVERSE,
+    FINISH_STANDARD,
+    semantics_from_identity,
+    semantics_from_text,
 )
 from v5.microvariants import (
     EDITION_CONFLICT,
@@ -668,6 +682,291 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         res2 = resolve_card_identity(payload2)
         self.assertEqual(res2.identity.set, "CSV10C")
         self.assertEqual(res2.identity.card_number, "268/222")
+
+    # ----------------------------------------------------------------------
+    # 5. Explicit Title Finish Evidence & Conflict Handling
+    # ----------------------------------------------------------------------
+
+    def test_title_finish_sylveon_sar_holo_extracts_holofoil(self):
+        """Sylveon ex SAR Holo -> finish Holo extracted (holofoil), SAR ignored."""
+        payload = {
+            "title": "Pokémon TCG Sylveon ex SAR Holo CSV9.5C-233/208",
+            "localizedAspects": {},
+        }
+        res = resolve_card_identity(payload)
+        self.assertEqual(res.identity.finish, "Holo")
+        semantics, is_ambiguous = semantics_from_identity(res.identity)
+        self.assertFalse(is_ambiguous)
+        self.assertEqual(semantics.finish, FINISH_HOLO)
+        self.assertIsNone(semantics.special_finish)
+
+    def test_title_finish_non_holo_extracts_standard(self):
+        """Non-Holo -> standard finish, and Holo token inside Non-Holo is not matched."""
+        variants = [
+            "Pikachu 025/165 Non-Holo Scarlet & Violet 151",
+            "Pikachu 025/165 Non Holo Scarlet & Violet 151",
+            "Pikachu 025/165 Nonholo Scarlet & Violet 151",
+        ]
+        for title in variants:
+            with self.subTest(title=title):
+                payload = {"title": title, "localizedAspects": {}}
+                res = resolve_card_identity(payload)
+                self.assertEqual(res.identity.finish, "Non-Holo")
+                semantics, is_ambiguous = semantics_from_identity(res.identity)
+                self.assertFalse(is_ambiguous)
+                self.assertEqual(semantics.finish, FINISH_STANDARD)
+                self.assertNotEqual(semantics.finish, FINISH_HOLO)
+
+    def test_title_finish_reverse_holo_extracts_reverse(self):
+        """Reverse Holo -> reverse_holofoil, not generic holofoil."""
+        variants = [
+            "Mewtwo Reverse Holo 150/165 Pokemon 151",
+            "Mewtwo Reverse-Holo 150/165 Pokemon 151",
+            "Mewtwo Reverse Holofoil 150/165 Pokemon 151",
+        ]
+        for title in variants:
+            with self.subTest(title=title):
+                payload = {"title": title, "localizedAspects": {}}
+                res = resolve_card_identity(payload)
+                self.assertEqual(res.identity.finish, "Reverse Holo")
+                semantics, is_ambiguous = semantics_from_identity(res.identity)
+                self.assertFalse(is_ambiguous)
+                self.assertEqual(semantics.finish, FINISH_REVERSE)
+
+    def test_title_finish_holofoil_and_holographic(self):
+        """Holofoil, Holographic, and French Holographique map to holofoil."""
+        variants = [
+            ("Charizard Holofoil 4/102 Base Set", FINISH_HOLO),
+            ("Charizard Holographic 4/102 Base Set", FINISH_HOLO),
+            ("Dracaufeu Holographique 4/102 Set de Base", FINISH_HOLO),
+        ]
+        for title, expected_finish in variants:
+            with self.subTest(title=title):
+                payload = {"title": title, "localizedAspects": {}}
+                res = resolve_card_identity(payload)
+                self.assertEqual(res.identity.finish, "Holo")
+                semantics, is_ambiguous = semantics_from_identity(res.identity)
+                self.assertFalse(is_ambiguous)
+                self.assertEqual(semantics.finish, expected_finish)
+
+    def test_title_special_finishes_not_collapsed_to_generic(self):
+        """Special finishes populate their exact special_finish semantic value."""
+        cases = [
+            ("Pikachu Master Ball Reverse 025/165 Japanese sv2a", FINISH_REVERSE, "masterball_reverse"),
+            ("Pikachu Poké Ball Reverse 025/165 Japanese sv2a", FINISH_REVERSE, "pokeball_reverse"),
+            ("Pikachu Poke Ball Reverse 025/165 Japanese sv2a", FINISH_REVERSE, "pokeball_reverse"),
+            ("Pikachu Cosmos Holo 025/165 Promo", FINISH_HOLO, "cosmos_holo"),
+            ("Pikachu Galaxy Holo 025/165 Promo", FINISH_HOLO, "galaxy_holo"),
+            ("Pikachu Cracked Ice Holo 025/165 Promo", FINISH_HOLO, "cracked_ice_holo"),
+            ("Pikachu Stamped Holo 025/165 Promo", FINISH_HOLO, "stamped_holo"),
+        ]
+        for title, exp_finish, exp_special in cases:
+            with self.subTest(title=title):
+                payload = {"title": title, "localizedAspects": {}}
+                res = resolve_card_identity(payload)
+                semantics, is_ambiguous = semantics_from_identity(res.identity)
+                self.assertFalse(is_ambiguous)
+                self.assertEqual(semantics.finish, exp_finish)
+                self.assertEqual(semantics.special_finish, exp_special)
+
+    def test_rarity_labels_alone_never_prove_finish(self):
+        """SAR, AR, SR, IR, SIR, UR, HR, CHR, CSR, TG, GG alone must never prove finish."""
+        rarities = ["SAR", "AR", "SR", "IR", "SIR", "UR", "HR", "CHR", "CSR", "TG", "GG"]
+        for r in rarities:
+            with self.subTest(rarity=r):
+                payload = {
+                    "title": f"Sylveon ex {r} CSV9.5C-233/208 Chinese",
+                    "localizedAspects": {},
+                }
+                res = resolve_card_identity(payload)
+                self.assertIsNone(res.identity.finish)
+                semantics, is_ambiguous = semantics_from_identity(res.identity)
+                self.assertFalse(is_ambiguous)
+                self.assertIsNone(semantics.finish)
+
+    def test_generic_words_alone_never_create_finish(self):
+        """'foil', 'reverse', 'normal', 'standard' alone must never produce finish evidence."""
+        generic_words = ["foil", "reverse", "normal", "standard"]
+        for w in generic_words:
+            with self.subTest(word=w):
+                payload = {
+                    "title": f"Charizard {w} 006/165 Pokemon Card",
+                    "localizedAspects": {},
+                }
+                res = resolve_card_identity(payload)
+                self.assertIsNone(res.identity.finish)
+                semantics, is_ambiguous = semantics_from_identity(res.identity)
+                self.assertFalse(is_ambiguous)
+                self.assertIsNone(semantics.finish)
+
+    def test_structured_finish_retained_on_title_agreement(self):
+        """Structured finish is authoritative and retained when title agrees."""
+        payload = {
+            "title": "Gengar Holo 094/165 Pokemon 151",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Character", "value": "Gengar"},
+                {"name": "Set", "value": "151"},
+                {"name": "Card Number", "value": "094/165"},
+                {"name": "Finish", "value": "Holo"},
+                {"name": "Language", "value": "English"},
+            ],
+        }
+        res = resolve_card_identity(payload)
+        self.assertEqual(res.identity.finish, "Holo")
+        self.assertEqual(identity_status(res.identity), IDENTITY_OK)
+        self.assertEqual(len(res.identity.ambiguities), 0)
+
+    def test_structured_finish_conflicts_with_title_fails_closed(self):
+        """Structured finish conflicting with explicit title finish must mark AMBIGUOUS."""
+        # Structured Reverse Holo vs Title Holo
+        payload_rev_vs_holo = {
+            "title": "Gengar Holo 094/165 Pokemon 151",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Character", "value": "Gengar"},
+                {"name": "Set", "value": "151"},
+                {"name": "Card Number", "value": "094/165"},
+                {"name": "Finish", "value": "Reverse Holo"},
+            ],
+        }
+        res1 = resolve_card_identity(payload_rev_vs_holo)
+        self.assertEqual(identity_status(res1.identity), IDENTITY_AMBIGUOUS)
+        self.assertTrue(any("finish:" in amb.lower() for amb in res1.identity.ambiguities))
+
+        # Structured Holo vs Title Non-Holo
+        payload_holo_vs_non = {
+            "title": "Gengar Non-Holo 094/165 Pokemon 151",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Character", "value": "Gengar"},
+                {"name": "Set", "value": "151"},
+                {"name": "Card Number", "value": "094/165"},
+                {"name": "Finish", "value": "Holo"},
+            ],
+        }
+        res2 = resolve_card_identity(payload_holo_vs_non)
+        self.assertEqual(identity_status(res2.identity), IDENTITY_AMBIGUOUS)
+        self.assertTrue(any("finish:" in amb.lower() for amb in res2.identity.ambiguities))
+
+    def test_title_contradictory_finishes_fails_closed(self):
+        """Multiple contradictory finishes in title must fail closed."""
+        payload = {
+            "title": "Gengar Non-Holo Reverse Holo 094/165",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Character", "value": "Gengar"},
+                {"name": "Set", "value": "151"},
+                {"name": "Card Number", "value": "094/165"},
+            ],
+        }
+        res = resolve_card_identity(payload)
+        self.assertEqual(identity_status(res.identity), IDENTITY_AMBIGUOUS)
+        self.assertTrue(any("finish:" in amb.lower() for amb in res.identity.ambiguities))
+
+
+    def test_structured_holo_with_title_cosmos_holo_preserves_cosmos_holo(self):
+        """Structured generic Holo + title Cosmos Holo preserves material cosmos_holo."""
+        payload = {
+            "title": "Pikachu Cosmos Holo 025/165 Promo",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Character", "value": "Pikachu"},
+                {"name": "Set", "value": "Scarlet & Violet Promos"},
+                {"name": "Card Number", "value": "SVP 025"},
+                {"name": "Language", "value": "English"},
+                {"name": "Finish", "value": "Holo"},
+            ],
+        }
+        res = resolve_card_identity(payload)
+        self.assertEqual(res.identity.finish, "Cosmos Holo")
+        semantics, is_ambiguous = semantics_from_identity(res.identity)
+        self.assertFalse(is_ambiguous)
+        self.assertEqual(semantics.finish, FINISH_HOLO)
+        self.assertEqual(semantics.special_finish, "cosmos_holo")
+        self.assertEqual(identity_status(res.identity), IDENTITY_OK)
+        self.assertEqual(len(res.identity.ambiguities), 0)
+
+    def test_structured_reverse_holo_with_title_masterball_reverse_preserves_masterball(self):
+        """Structured generic Reverse Holo + title Master Ball Reverse preserves masterball_reverse."""
+        payload = {
+            "title": "Pikachu Master Ball Reverse 025/165 sv2a",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Character", "value": "Pikachu"},
+                {"name": "Set", "value": "sv2a"},
+                {"name": "Card Number", "value": "025/165"},
+                {"name": "Language", "value": "Japanese"},
+                {"name": "Finish", "value": "Reverse Holo"},
+            ],
+        }
+        res = resolve_card_identity(payload)
+        self.assertEqual(res.identity.finish, "Master Ball Reverse")
+        semantics, is_ambiguous = semantics_from_identity(res.identity)
+        self.assertFalse(is_ambiguous)
+        self.assertEqual(semantics.finish, FINISH_REVERSE)
+        self.assertEqual(semantics.special_finish, "masterball_reverse")
+        self.assertEqual(identity_status(res.identity), IDENTITY_OK)
+        self.assertEqual(len(res.identity.ambiguities), 0)
+
+    def test_structured_non_holo_with_title_cosmos_holo_fails_closed(self):
+        """Structured Non-Holo + title Cosmos Holo is an explicit conflict and must fail closed."""
+        payload = {
+            "title": "Pikachu Cosmos Holo 025/165 Promo",
+            "localizedAspects": [
+                {"name": "Game", "value": "Pokémon TCG"},
+                {"name": "Character", "value": "Pikachu"},
+                {"name": "Set", "value": "Scarlet & Violet Promos"},
+                {"name": "Card Number", "value": "SVP 025"},
+                {"name": "Language", "value": "English"},
+                {"name": "Finish", "value": "Non-Holo"},
+            ],
+        }
+        res = resolve_card_identity(payload)
+        self.assertEqual(identity_status(res.identity), IDENTITY_AMBIGUOUS)
+        self.assertTrue(any("finish:" in amb.lower() for amb in res.identity.ambiguities))
+
+    def test_special_finish_span_masking_consumes_trailing_holo_and_holofoil(self):
+        """Special finish phrases containing trailing holo tokens must not leave orphan holo."""
+        cases = [
+            ("Pikachu Master Ball Reverse Holo 025/165", "Master Ball Reverse", FINISH_REVERSE, "masterball_reverse"),
+            ("Pikachu Master Ball Reverse Holofoil 025/165", "Master Ball Reverse", FINISH_REVERSE, "masterball_reverse"),
+            ("Pikachu Masterball Reverse Holo 025/165", "Master Ball Reverse", FINISH_REVERSE, "masterball_reverse"),
+            ("Pikachu Poké Ball Reverse Holo 025/165", "Poké Ball Reverse", FINISH_REVERSE, "pokeball_reverse"),
+            ("Pikachu Poké Ball Reverse Holofoil 025/165", "Poké Ball Reverse", FINISH_REVERSE, "pokeball_reverse"),
+            ("Pikachu Poke Ball Reverse Holo 025/165", "Poké Ball Reverse", FINISH_REVERSE, "pokeball_reverse"),
+            ("Pikachu Cosmos Holofoil 025/165", "Cosmos Holo", FINISH_HOLO, "cosmos_holo"),
+            ("Pikachu Galaxy Holographic 025/165", "Galaxy Holo", FINISH_HOLO, "galaxy_holo"),
+            ("Pikachu Cracked Ice Holofoil 025/165", "Cracked Ice Holo", FINISH_HOLO, "cracked_ice_holo"),
+            ("Pikachu Stamped Holofoil 025/165", "Stamped Holo", FINISH_HOLO, "stamped_holo"),
+        ]
+        for title, exp_display, exp_finish, exp_special in cases:
+            with self.subTest(title=title):
+                finish, contra = extract_title_finish(title)
+                self.assertFalse(contra, f"Unexpected contradiction in title: {title}")
+                self.assertEqual(finish, exp_display)
+                sem = semantics_from_text(finish)
+                self.assertEqual(sem.finish, exp_finish)
+                self.assertEqual(sem.special_finish, exp_special)
+
+    def test_pokeball_reverse_regex_is_tightened(self):
+        """Poké Ball reverse matches exact poke/poké forms and not typo strings like polkeball."""
+        valid_titles = [
+            "Pikachu Poké Ball Reverse 025/165",
+            "Pikachu Poke Ball Reverse 025/165",
+            "Pikachu Pokéball Reverse 025/165",
+            "Pikachu Pokeball Reverse 025/165",
+        ]
+        for title in valid_titles:
+            with self.subTest(title=title):
+                finish, contra = extract_title_finish(title)
+                self.assertFalse(contra)
+                self.assertEqual(finish, "Poké Ball Reverse")
+
+        invalid_title = "Pikachu Polkeball Reverse 025/165"
+        finish, contra = extract_title_finish(invalid_title)
+        # Should not match as Poké Ball Reverse
+        self.assertNotEqual(finish, "Poké Ball Reverse")
 
 
 if __name__ == "__main__":
