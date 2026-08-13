@@ -1,0 +1,85 @@
+name: GCC Final Auction Check
+
+on:
+  # Driven externally (e.g. Cron-job.org or webhook) through workflow_dispatch.
+  # Do not add a GitHub Actions schedule: here: GitHub-scheduled Actions suffer
+  # from variable execution jitter and would duplicate external runs.
+  workflow_dispatch:
+
+concurrency:
+  # Isolated concurrency group so the fast lane never blocks or gets blocked
+  # by the main V4 discovery and valuation scanner (gcc-auction-watcher).
+  group: gcc-auction-final-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        shell: bash
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "Playwright browser cache miss: downloading Chromium once"
+            playwright install chromium
+          else
+            echo "Playwright browser cache hit: Chromium payload restored"
+          fi
+
+      - name: Restore bot state (read-only context)
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: gcc-state-${{ github.run_id }}
+          restore-keys: |
+            gcc-state-
+
+      - name: Restore final alerts deduplication state (read-write)
+        uses: actions/cache/restore@v4
+        with:
+          path: final_alerts.json
+          key: gcc-final-alerts-${{ github.run_id }}
+          restore-keys: |
+            gcc-final-alerts-
+
+      - name: Run targeted final auction check
+        env:
+          HEADLESS: "true"
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
+          STATE_FILE: state.json
+          FINAL_ALERTS_STATE_FILE: final_alerts.json
+          V4_FAST_LANE_FINAL_CHECK_ENABLED: ${{ vars.V4_FAST_LANE_FINAL_CHECK_ENABLED || secrets.V4_FAST_LANE_FINAL_CHECK_ENABLED || 'false' }}
+        run: |
+          printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
+          python run_final_auction_check.py
+
+      - name: Save final alerts deduplication state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: final_alerts.json
+          key: gcc-final-alerts-${{ github.run_id }}
