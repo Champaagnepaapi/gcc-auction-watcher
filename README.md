@@ -3,7 +3,7 @@
 > **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
 > Après tout changement important de production, d’architecture V5, de provider, de benchmark ou de workflow, mettre ce README à jour avant de considérer la phase terminée.
 
-## État canonique — 12 août 2026
+## État canonique — 13 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -25,25 +25,89 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ## Scheduler / état
 
+Deux cronjobs externes distincts sont utilisés sur Cron-job.org :
+
 ```text
-Cron-job.org
+GCC Auction Watcher — Main Scanner
     ↓ workflow_dispatch ~toutes les 10 min
-GitHub Actions
+.github/workflows/watcher.yml
     ↓
 GCC Auction Watcher V4
+
+GCC Auction Watcher — Fast Lane
+    ↓ workflow_dispatch toutes les 3 min
+.github/workflows/v4-final-auction-check.yml
+    ↓
+recheck ciblé des auctions déjà armées et arrivant à ≤5 min
 ```
 
-- Ne pas ajouter un `schedule:` GitHub parallèle : cela doublerait les scans.
-- `state.json` est restauré/sauvegardé via cache GitHub Actions.
-- Concurrency V4 sérialisée, `cancel-in-progress: false`.
-- Les runs V4 sont journalisés dans l’issue #1.
+Règles :
+
+- Ne pas ajouter de `schedule:` GitHub parallèle pour ces deux lanes : cela doublerait les scans.
+- `state.json` est restauré/sauvegardé par le Main Scanner via cache GitHub Actions.
+- La Fast Lane restaure `state.json` en **lecture seule** et ne possède pas l’état principal.
+- La Fast Lane écrit uniquement son namespace de déduplication `final_alerts.json`.
+- Concurrency Main Scanner sérialisée, `cancel-in-progress: false`.
+- La Fast Lane possède un groupe de concurrency séparé afin de ne pas bloquer le Main Scanner.
+- Les runs V4 principaux sont journalisés dans l’issue #1.
+
+### Fast Lane — production active
+
+La Fast Lane a été introduite par PR #45 et est maintenant activée en production.
+
+Feature flag :
+
+```text
+V4_FAST_LANE_FINAL_CHECK_ENABLED=true
+```
+
+Kill switch immédiat : passer cette variable de repository à `false`.
+
+Comportement :
+
+- ne découvre aucun nouveau listing ;
+- ne relance aucun provider marché externe ;
+- ne considère que les auctions déjà armées/notifiées dans `state.json` ;
+- ne traite que celles arrivant dans la fenêtre finale `≤5 min` ;
+- rafraîchit le prix et le timer du lot GCC exact ;
+- compare le prix courant au `max_recommended` persistant déjà calculé ;
+- envoie au maximum une alerte finale dédupliquée si le lot reste sous le plafond ;
+- aucune mutation de `state.json` ;
+- aucun achat, bid ou checkout.
+
+Le Main Scanner restaure `final_alerts.json` en lecture seule et supprime son propre doublon synchrone de dernière minute lorsque la Fast Lane est activée, ce qui garde une propriété d’alerte finale **exact-once** entre les deux lanes.
+
+### Cron externe / token GitHub
+
+Le cron Fast Lane appelle :
+
+```text
+POST https://api.github.com/repos/Champaagnepaapi/gcc-auction-watcher/actions/workflows/v4-final-auction-check.yml/dispatches
+Body: {"ref":"main"}
+Cadence: */3 * * * *
+```
+
+Authentification : fine-grained GitHub PAT limité au repository `Champaagnepaapi/gcc-auction-watcher`, avec permission `Actions: Read and write` et Metadata read-only automatique.
+
+- Le PAT a été créé avec expiration **90 jours** : le renouveler avant expiration.
+- Ne jamais stocker le token dans le repo, le README, une issue ou un log.
+- Réponse attendue du dispatch GitHub : **HTTP 204 No Content**.
+
+Activation initiale confirmée le 13 août 2026 :
+
+- dispatch authentifié `workflow_dispatch` réussi ;
+- run GitHub `31662123261` : success ;
+- premier cycle cron automatique confirmé à 04:54 : HTTP 204 ;
+- run GitHub `31662233558` : success.
+
+Un suivi multi-cycle est à conserver comme contrôle opérationnel ; aucun faux positif, achat, bid ou checkout n’est autorisé même en cas d’erreur de scheduler.
 
 ## Discovery fixed
 
 - Source : API publique GCC `/on-sale-items`.
 - File économique : `NEW → CHANGED → NEVER_EVALUATED → STALE`.
 - Budget : 120 évaluations/run.
-- TTL fixed : 24 h.
+- TTL fixed : 24 h par défaut, avec refresh externe adaptatif décrit plus bas pour les annonces proches du seuil.
 - Discovery et couverture économique sont comptabilisées séparément.
 - Un prix bas ne crée jamais à lui seul une opportunité.
 
@@ -65,7 +129,7 @@ Pokémon + carte + 0–100 € + ≤60 min
 - Le watcher s’arrête lorsque l’ordre `ENDING_SOON` prouve que l’horizon 60 min est franchi ou lorsque l’inventaire est épuisé.
 - Statut nominal : `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`.
 - L’ancien collector auction reste fallback uniquement si API/pagination/ordre/endTime ne permettent plus de prouver la couverture.
-- Une PR séparée #30 (`agent/v4-targeted-final-auction-check`) contient un recheck ciblé T−4 pour fiabiliser l’alerte finale ; elle n’est pas incluse implicitement dans la prod tant qu’elle n’est pas mergée.
+- L’ancien prototype long-wait PR #30 est **supersédé** par la Fast Lane zéro-sleep de PR #45 ; ne pas réintroduire de `sleep` long dans le Main Scanner.
 
 ---
 
@@ -158,7 +222,7 @@ PSA APR et eBay restent des providers indépendants :
 - non-PSA : eBay même grader + même grade ;
 - langue/édition/finish/variant sensibles doivent être prouvés, pas seulement non contradits.
 
-### PSA APR web hydration
+### PSA APR web hydration et diagnostics anti-bot
 
 PR #32 a corrigé le race condition de la page publique APR :
 
@@ -166,6 +230,15 @@ PR #32 a corrigé le race condition de la page publique APR :
 - attente bornée du bouton Search ;
 - puis délégation au scraper strict existant ;
 - timeout/anti-bot/erreur restent fail-closed.
+
+PR #46 améliore ensuite le **diagnostic** de cette voie :
+
+- inspecte HTTP 403 / 429 / 4xx / 5xx avant le contrôle du formulaire ;
+- reconnaît les pages de challenge anti-bot (Cloudflare, PerimeterX, Datadome, CAPTCHA, etc.) ;
+- évite de masquer un vrai blocage WAF sous le message générique `formulaire APR indisponible` ;
+- conserve le fail-closed et les fallbacks.
+
+Important : **PR #46 ne rend pas PSA APR “disponible” lorsqu’un WAF bloque GitHub Actions.** Elle corrige la classification et l’observabilité. En cas de 403/challenge réel, APR reste transitoirement indisponible et eBay/fallbacks continuent selon les règles existantes.
 
 Cette voie utilise la **page web publique APR**, pas l’ancienne API Collectors publique.
 
@@ -233,6 +306,8 @@ Concordance forte GCC/externe :
 
 ## Cache externe et rafraîchissement adaptatif
 
+PR #47 active le rafraîchissement adaptatif des **fixed listings uniquement** :
+
 - clé hashée d’identité commerciale stricte ;
 - TTL par défaut 24 h ;
 - rafraîchissement adaptatif (TTL 1–6 h) pour les annonces proches du seuil d’opportunité :
@@ -241,11 +316,14 @@ Concordance forte GCC/externe :
   - gap ≤ 10 % du seuil requis → TTL 3 h ;
   - gap ≤ 15 % du seuil requis → TTL 6 h ;
   - gap > 15 % ou sans estimation → TTL standard 24 h ;
+- les auctions conservent le cache externe standard 24 h et s’appuient sur leur boucle ending-soon dédiée ;
 - réévaluation prioritaire dans la file fixed `P3_STALE` sans famine des files `P0_NEW`, `P1_CHANGED`, `P2_NEVER_EVALUATED` ;
+- après refresh, l’économie est recalculée **depuis les nouvelles preuves**, jamais promue depuis une valeur stale ;
 - schéma versionné ;
 - `MATCHED`, `CLEAN_NO_MATCH`, `CLEAN_INSUFFICIENT` cachables ;
 - `PROVIDER_ERROR`, `TRANSIENT_UNAVAILABLE`, `RATE_LIMIT` jamais cachés comme résultat propre ;
-- budget pending reste requeue.
+- budget pending reste requeue ;
+- les budgets providers restent bornés.
 
 Le schéma est bumpé lors de l’activation PokeTrace afin d’éviter de réutiliser comme vérité des entrées antérieures à la couche multi-marché.
 
@@ -261,7 +339,8 @@ Pour une opportunity auction :
 - la notification affiche `Prix max conseillé` ;
 - `EXTERNAL_RESCUE` calcule le plafond depuis l’estimation externe retenue ;
 - `GCC_EXTERNAL_CONFIRMED` le calcule depuis l’estimation prudente combinée ;
-- rappels temporels réutilisent le même plafond.
+- rappels temporels réutilisent le même plafond ;
+- la Fast Lane de dernière minute réutilise **le même `max_recommended` persistant** et ne le recalcule pas avec des providers externes.
 
 Anti-spam opportunity : renotifier principalement si :
 
@@ -299,6 +378,51 @@ Résultat :
 
 Régressions spécifiques : identité TCGdex exacte/ambiguë, dénominateurs, scope PSA, PokeTrace grade exact, non-héritage premium, edition/finish unknown fail-closed, transient/rate-limit non cachés, fallback APR/eBay indépendant, RAW manual-review, encodage ntfy et wiring production.
 
+## Déploiements V4 du 13 août 2026
+
+### PR #45 — Fast Lane finale
+
+Merge production :
+
+```text
+0978aa50309fc850f6c8b9e18743ea8011bd2444
+```
+
+- architecture zéro-sleep ;
+- workflow séparé `v4-final-auction-check.yml` ;
+- safe-off par défaut tant que le flag n’est pas activé ;
+- état principal lecture seule ;
+- `final_alerts.json` séparé ;
+- simulations des deux ordres de concurrence : une seule alerte finale totale ;
+- aucun provider externe dans la lane finale ;
+- aucune action d’achat/bid/checkout.
+
+### PR #46 — diagnostics PSA APR
+
+Merge production :
+
+```text
+fdf2c273b732e1c91dfc8a40f8540f31a9a92f02
+```
+
+Classification explicite des 403/429/5xx/challenges avant le test de présence du formulaire ; aucune tentative de contournement anti-bot.
+
+### PR #47 — refresh marché adaptatif
+
+Merge production :
+
+```text
+0df59c2140af22410a082fea9a673dc0f6f599a4
+```
+
+Validation PR :
+
+- **364 tests passés** ;
+- `compileall` : OK ;
+- `git diff --check` : clean ;
+- budgets providers inchangés et bornés ;
+- refresh 1–6 h réservé aux fixed listings proches du seuil.
+
 ---
 
 # V5 — expérimental, PR #8, NE PAS MERGER
@@ -306,10 +430,10 @@ Régressions spécifiques : identité TCGdex exacte/ambiguë, dénominateurs, sc
 PR : **#8**  
 Branche : `agent/v5-poketrace-cardmarket-market-data`
 
-Dernier head canonique V5 vérifié avant resync :
+Head V5 canonique actuellement vérifié :
 
 ```text
-abc5fa8e45ff2832d36c6e78c4ecb3e287973ba4
+df4df3da2ae90bc8083ccfcfa108e4010a2c4d05
 ```
 
 État :
@@ -317,7 +441,7 @@ abc5fa8e45ff2832d36c6e78c4ecb3e287973ba4
 - open ;
 - draft ;
 - non mergée ;
-- base `main` a avancé depuis sa dernière synchronisation V5 ;
+- base `main` a encore avancé depuis la dernière synchronisation V5 ;
 - ne pas resynchroniser/merger aveuglément : auditer les changements V4 d’abord.
 
 Architecture V5 :
@@ -371,17 +495,37 @@ Objectif : autoriser une résolution macro `2 champs sur 3` uniquement lorsque T
 
 PR #31 reste séparée tant qu’elle n’est pas explicitement intégrée à la branche V5 canonique.
 
+### PR V5 enfant #44 — parser finish eBay
+
+PR #44 a été mergée **dans la branche V5 canonique uniquement**, jamais dans `main` :
+
+```text
+head source: 136dcc6fca27c4cf39abfaacae9de237304484a6
+merge V5:    df4df3da2ae90bc8083ccfcfa108e4010a2c4d05
+```
+
+Elle durcit la résolution déterministe des finishes explicitement présents dans le titre eBay :
+
+- parser par span-masking des phrases finish explicites ;
+- conservation d’un finish spécial explicite compatible lorsque la metadata structurée reste générique ;
+- prévention des faux conflits provoqués par des tokens `holo` résiduels ;
+- pattern Poké Ball resserré ;
+- aucune relaxation fuzzy de l’identité.
+
+PR #8 reste draft et non mergée après cette intégration.
+
 ---
 
 # Workflows GitHub Actions à conserver
 
-1. `GCC Auction Watcher` — V4 production.
-2. `V4 Auction Discovery Validation` — CI + comparaison discovery read-only.
-3. `V4 GCC Coverage Audit` — audit couverture V4.
-4. `PSA Public API Diagnostic` — diagnostic PSA/APR historique.
-5. `V5 Live Raw Pipeline Diagnostic` — live V5 manuel.
-6. `V5 Catalog Identity Benchmark` — benchmark identité.
-7. `V5 GCC Catalog Refresh` — catalogue cumulatif GCC.
+1. `GCC Auction Watcher` — V4 production Main Scanner.
+2. `GCC Final Auction Check` — V4 Fast Lane finale, déclenchée extérieurement toutes les 3 min.
+3. `V4 Auction Discovery Validation` — CI + comparaison discovery read-only.
+4. `V4 GCC Coverage Audit` — audit couverture V4.
+5. `PSA Public API Diagnostic` — diagnostic PSA/APR historique.
+6. `V5 Live Raw Pipeline Diagnostic` — live V5 manuel.
+7. `V5 Catalog Identity Benchmark` — benchmark identité.
+8. `V5 GCC Catalog Refresh` — catalogue cumulatif GCC.
 
 Éviter les workflows temporaires/redondants lorsqu’un workflow existant suffit.
 
@@ -399,7 +543,8 @@ Avant merge vers `main` :
 - `git diff --check` ;
 - discovery/coverage inchangée sauf changement explicitement voulu ;
 - aucune action d’achat/bid/checkout ;
-- auditer les providers/caches et les effets prod.
+- auditer les providers/caches et les effets prod ;
+- pour tout changement Fast Lane, vérifier explicitement ownership de `state.json`, déduplication cross-lane et comportement safe-off.
 
 ## V5
 
