@@ -70,6 +70,7 @@ def _finish_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
         (
             "reverse holo",
             "reverse holographic",
+            "reverse holographique",
             "reverse holofoil",
             "reverse foil",
             "reverse",
@@ -78,10 +79,20 @@ def _finish_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
         return FINISH_REVERSE, None
     if _contains_any(
         text,
-        ("non holo", "non holographic", "non holofoil", "normal", "standard"),
+        (
+            "non holo",
+            "non holographic",
+            "non holographique",
+            "non holofoil",
+            "normal",
+            "standard",
+        ),
     ):
         return FINISH_STANDARD, None
-    if _contains_any(text, ("holo", "holographic", "holofoil", "foil")):
+    if _contains_any(
+        text,
+        ("holo", "holographic", "holographique", "holofoil", "foil"),
+    ):
         return FINISH_HOLO, None
     return None, None
 

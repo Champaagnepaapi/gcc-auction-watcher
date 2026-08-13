@@ -888,6 +888,122 @@ def canonicalize_chinese_card_number(
     return card_number
 
 
+_TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "masterball_reverse",
+        "Master Ball Reverse",
+        re.compile(
+            r"\bmaster[- ]?ball\s+reverse(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "pokeball_reverse",
+        "Poké Ball Reverse",
+        re.compile(
+            r"\bpok[eé][- ]?ball\s+reverse(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "cosmos_holo",
+        "Cosmos Holo",
+        re.compile(
+            r"\bcosmos\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "galaxy_holo",
+        "Galaxy Holo",
+        re.compile(
+            r"\bgalaxy\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "cracked_ice_holo",
+        "Cracked Ice Holo",
+        re.compile(
+            r"\bcracked\s+ice\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "stamped_holo",
+        "Stamped Holo",
+        re.compile(
+            r"\bstamped\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+_TITLE_NON_HOLO_PATTERN = re.compile(r"\b(?:non[- ]holo|nonholo)\b", re.IGNORECASE)
+_TITLE_REVERSE_HOLO_PATTERN = re.compile(r"\b(?:reverse[- ]holo(?:foil)?|reverse[- ]holofoil)\b", re.IGNORECASE)
+_TITLE_HOLOFOIL_PATTERN = re.compile(r"\b(?:holofoil|holographique|holographic)\b", re.IGNORECASE)
+_TITLE_STANDALONE_HOLO_PATTERN = re.compile(r"\bholo\b", re.IGNORECASE)
+
+
+def extract_title_finish(title: str) -> Tuple[Optional[str], bool]:
+    """Extract only explicit, unambiguous finish phrases using span masking.
+
+    Precedence order:
+    1. Special finishes (Master Ball Reverse, Poké Ball Reverse, Cosmos Holo, etc.)
+    2. Non-Holo / Non Holo / Nonholo -> "Non-Holo"
+    3. Reverse Holo / Reverse-Holo / Reverse Holofoil -> "Reverse Holo"
+    4. Holofoil / Holographic / Holographique -> "Holo"
+    5. Standalone Holo -> "Holo"
+
+    Words alone that are NOT accepted: foil, reverse, normal, standard.
+    Rarity labels (SAR, AR, SR, IR, SIR, UR, HR, CHR, CSR, TG, GG) alone
+    never produce finish evidence.
+    """
+    if not title:
+        return None, False
+
+    working = title
+    found: list[str] = []
+
+    def mask_span(match: re.Match[str]) -> str:
+        return " " * len(match.group(0))
+
+    # 1. Special finishes
+    for _canonical_special, display_name, pattern in _TITLE_SPECIAL_FINISH_PATTERNS:
+        for _match in pattern.finditer(working):
+            found.append(display_name)
+        working = pattern.sub(mask_span, working)
+
+    # 2. Non-Holo
+    for _match in _TITLE_NON_HOLO_PATTERN.finditer(working):
+        found.append("Non-Holo")
+    working = _TITLE_NON_HOLO_PATTERN.sub(mask_span, working)
+
+    # 3. Reverse Holo
+    for _match in _TITLE_REVERSE_HOLO_PATTERN.finditer(working):
+        found.append("Reverse Holo")
+    working = _TITLE_REVERSE_HOLO_PATTERN.sub(mask_span, working)
+
+    # 4. Holofoil / Holographic / Holographique
+    for _match in _TITLE_HOLOFOIL_PATTERN.finditer(working):
+        found.append("Holo")
+    working = _TITLE_HOLOFOIL_PATTERN.sub(mask_span, working)
+
+    # 5. Standalone Holo (on remaining unmasked text)
+    for _match in _TITLE_STANDALONE_HOLO_PATTERN.finditer(working):
+        found.append("Holo")
+    working = _TITLE_STANDALONE_HOLO_PATTERN.sub(mask_span, working)
+
+    if not found:
+        return None, False
+
+    distinct_semantics = tuple(dict.fromkeys(semantics_from_text(f) for f in found))
+    if len(distinct_semantics) > 1:
+        return None, True
+
+    return found[0], False
+
+
 def _title_fallbacks(title: str) -> Dict[str, object]:
     """Extrait seulement des signaux explicites ou des motifs tres bornes."""
 
@@ -975,6 +1091,10 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
     year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)
     if year_match:
         values["year"] = int(year_match.group(1))
+
+    title_finish, title_finish_contra = extract_title_finish(title)
+    if title_finish and not title_finish_contra:
+        values["finish"] = title_finish
 
     language_names = {
         "english": "English",
@@ -1099,9 +1219,11 @@ def _identity_score(identity: CardIdentity) -> Tuple[int, Tuple[str, ...]]:
 
 def resolve_card_identity(
     payload: Mapping[str, object],
-    aspects: Optional[Mapping[str, Tuple[str, ...]]] = None,
+    aspects: Optional[Mapping[str, Sequence[str]]] = None,
     set_number_resolver: Optional[SetNumberCardNameResolver] = None,
 ) -> IdentityResolution:
+    """Combine structured and title aspects with strict fallback rules."""
+
     structured = card_identity_from_aspects(
         aspects if aspects is not None else _aspects(payload)
     )
@@ -1152,8 +1274,62 @@ def resolve_card_identity(
     ):
         fields["set"] = fallback_set
 
+    title_finishes: list[str] = []
+    title_finish_contradictory = False
+    for title in titles:
+        t_finish, t_contra = extract_title_finish(title)
+        if t_contra:
+            title_finish_contradictory = True
+        if t_finish:
+            title_finishes.append(t_finish)
+
+    distinct_title_finishes = tuple(dict.fromkeys(title_finishes))
+    distinct_title_semantics = tuple(
+        dict.fromkeys(semantics_from_text(f) for f in title_finishes)
+    )
+    ambiguities = list(structured.ambiguities)
+    if title_finish_contradictory or len(distinct_title_semantics) > 1:
+        ambiguities.append("finish: valeurs contradictoires dans le titre")
+
+    structured_finish = structured.finish
+    if structured_finish is not None:
+        fields["finish"] = structured_finish
+        if distinct_title_finishes and not title_finish_contradictory:
+            structured_sem = semantics_from_text(structured_finish)
+            title_sem = distinct_title_semantics[0]
+            finish_conflict = bool(
+                structured_sem.finish
+                and title_sem.finish
+                and structured_sem.finish != title_sem.finish
+            )
+            special_conflict = bool(
+                structured_sem.special_finish
+                and title_sem.special_finish
+                and structured_sem.special_finish != title_sem.special_finish
+            )
+            if finish_conflict or special_conflict:
+                ambiguities.append(
+                    f"finish: conflit entre aspect ({structured_finish}) et titre ({distinct_title_finishes[0]})"
+                )
+            elif (
+                title_sem.special_finish
+                and not structured_sem.special_finish
+                and not finish_conflict
+            ):
+                # When title carries an explicit compatible special finish and structured
+                # aspect only provided the generic base finish (e.g. Holo for Cosmos Holo,
+                # or Reverse Holo for Master Ball Reverse), preserve the material special finish.
+                fields["finish"] = distinct_title_finishes[0]
+    elif len(distinct_title_semantics) == 1 and not title_finish_contradictory:
+        fields["finish"] = distinct_title_finishes[0]
+
     for name, value in fallback.items():
-        if name in fields and name != "card_name" and fields[name] is None:
+        if (
+            name in fields
+            and name != "card_name"
+            and name != "finish"
+            and fields[name] is None
+        ):
             fields[name] = value
 
     fields["card_number"] = canonicalize_chinese_card_number(
@@ -1164,7 +1340,6 @@ def resolve_card_identity(
     card_name_source = (
         CARD_NAME_SOURCE_LOCALIZED if structured.card_name is not None else None
     )
-    ambiguities = list(structured.ambiguities)
     resolver = set_number_resolver or NullSetNumberCardNameResolver()
     if fields["card_name"] is None and fields["set"] and fields["card_number"]:
         lookup = resolver.resolve(
