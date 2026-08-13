@@ -774,44 +774,64 @@ def _all_raw_centers(
     canonical: CanonicalCard,
     lot: Optional[watcher.Lot] = None,
 ) -> list[tuple[str, float, str]]:
-    """Return conservative marketplace centers across every exposed RAW variant."""
+    """Return conservative marketplace centers across every exposed RAW variant passing the compatibility gate."""
     pricing = canonical.pricing
     lot_lang = lot.language if lot is not None else "fr"
+    expected = watcher.expected_commercial_dimensions(lot) if lot is not None else {}
+    if lot is not None:
+        multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
+            " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
+        )
+        for dim, val in multi_dims.items():
+            if dim not in expected or not expected[dim]:
+                expected[dim] = val
+
+    catalog_proven = raw_consensus.get_catalog_proven_finish(canonical.variants or {})
     centers: list[tuple[str, float, str]] = []
+
     cardmarket = pricing.get("cardmarket")
     if isinstance(cardmarket, Mapping):
         for suffix, label in (("", "normal"), ("-holo", "holo")):
-            est = raw_consensus.estimate_cardmarket_raw(cardmarket, label, lot_lang)
-            if est and est.confidence != "REJECTED":
+            est = raw_consensus.estimate_cardmarket_raw(
+                cardmarket, label, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
+            )
+            if est and est.confidence != "REJECTED" and est.status != "REJECTED":
                 centers.append(("Cardmarket", est.central, label))
 
     tcgplayer = pricing.get("tcgplayer")
     if isinstance(tcgplayer, Mapping):
-        unit = str(tcgplayer.get("unit") or "USD")
         for key, tier in tcgplayer.items():
             if key in {"unit", "updated"} or not isinstance(tier, Mapping):
                 continue
-            est = raw_consensus.estimate_tcgplayer_raw(tcgplayer, str(key), lot_lang)
-            if est and est.confidence != "REJECTED":
+            est = raw_consensus.estimate_tcgplayer_raw(
+                tcgplayer, str(key), lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
+            )
+            if est and est.confidence != "REJECTED" and est.status != "REJECTED":
                 centers.append(("TCGplayer", est.central, str(key)))
 
     justtcg = pricing.get("justtcg")
     if isinstance(justtcg, Mapping):
         for label in ("normal", "holo", "reverse"):
-            est = raw_consensus.estimate_justtcg_raw(justtcg, label, lot_lang)
-            if est and est.confidence != "REJECTED":
+            est = raw_consensus.estimate_justtcg_raw(
+                justtcg, label, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
+            )
+            if est and est.confidence != "REJECTED" and est.status != "REJECTED":
                 centers.append(("JustTCG", est.central, label))
 
     pricecharting = pricing.get("pricecharting")
     if isinstance(pricecharting, Mapping):
-        est = raw_consensus.estimate_pricecharting_raw(pricecharting, lot_lang)
-        if est and est.confidence != "REJECTED":
+        est = raw_consensus.estimate_pricecharting_raw(
+            pricecharting, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
+        )
+        if est and est.confidence != "REJECTED" and est.status != "REJECTED":
             centers.append(("PriceCharting", est.central, "ungraded"))
 
     ebay_raw = pricing.get("ebay_raw")
     if isinstance(ebay_raw, Mapping):
-        est = raw_consensus.estimate_ebay_raw(ebay_raw, lot_lang)
-        if est and est.confidence != "REJECTED":
+        est = raw_consensus.estimate_ebay_raw(
+            ebay_raw, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
+        )
+        if est and est.confidence != "REJECTED" and est.status != "REJECTED":
             centers.append(("eBay RAW", est.central, "sales"))
 
     return centers
@@ -927,7 +947,7 @@ def raw_market_signal(
             sources=sources,
             variant="AMBIGUOUS_CONSERVATIVE_ENVELOPE",
             note="; ".join(f"{src}:{var} {val:.2f} €" for src, val, var in all_centers),
-            confidence="MODERATE" if len(sources) >= 2 else "WEAK",
+            confidence="WEAK",
             providers_used=sources,
         )
         _DIAGNOSTICS.raw_signal_found += 1

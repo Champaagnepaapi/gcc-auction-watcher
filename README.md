@@ -261,14 +261,21 @@ Le RAW :
 ### Pipeline de validation & Backport sélectif V5 → V4
 Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5 :
 1. **Parser multilingue déterministe** : Extraction stricte des éditions (1ère Édition, 1. Edition, Prima Edizione, Unlimited), finitions (Holo, Reverse Holo, Nicht-Holo, Olografica) et finitions spéciales (Poke Ball, Master Ball, Cosmos, Galaxy, Cracked Ice). Les contradictions de titre échouent immédiatement en `__conflict__` fail-closed.
-2. **Validateur de microvariantes (*Microvariant Gate*)** : Blocage systématique des comparables incompatibles (`FINISH_MISMATCH`, `EDITION_MISMATCH`, `PROMO_MISMATCH`, `LANGUAGE_MISMATCH`, `SET_MISMATCH`, `NUMBER_MISMATCH`).
+2. **Validateur de microvariantes (*Microvariant Gate*) & Normalisation sémantique** :
+   - Blocage systématique des comparables incompatibles (`FINISH_MISMATCH`, `EDITION_MISMATCH`, `PROMO_MISMATCH`, `LANGUAGE_MISMATCH`, `SET_MISMATCH`, `NUMBER_MISMATCH`).
+   - Validation symétrique des promos (rejet listing promo vs provider régulier ET listing régulier vs provider promo).
+   - Normalisation multi-tokens robuste des éditions (espaces, tirets, camelCase, compact, ordinaux multilingues : *1ère Édition, 1. Edition, 1a Edición, Prima Edizione, Unlimited, Shadowless*).
+   - Décomposition des labels composés (*1stEditionHolofoil, 1steditionreverseholo, unlimitedholofoil*) avec vérification indépendante de chaque dimension.
 3. **Preuve d'unicité catalogue (*Catalog Uniqueness*)** : Déduction de finition déterministe uniquement lorsque l'invariant TCGdex prouve mathématiquement qu'une seule variante existe (`variants = {"normal": False, "holo": True, "reverse": False}`).
 4. **Intégration JustTCG RAW** : Fournisseur indépendant de référence Near Mint avec validation linguistique exacte (FR).
 5. **Rejet des anomalies statistiques (*Anti-Outlier Engine*)** :
    - Déconnexion du plancher (*Floor Disconnect*) : détection des écarts anormaux entre trend/avg30 et `low`.
    - Rupture inter-périodes (*Period Divergence*) : détection des effondrements récents (`avg7 < 0.45 * avg30`).
    - Rejet de contamination (`OUTLIER_CONTAMINATION`) lorsque les fournisseurs indépendants concordent.
-6. **Observabilité & Codes de motifs** : Traçabilité complète du statut de chaque fournisseur (`ACCEPTED`, `DOWNWEIGHTED`, `REJECTED`) avec reason codes standardisés (`EXACT_COMPATIBLE`, `OUTLIER_CONTAMINATION`, `LANGUAGE_MISMATCH`, `FINISH_MISMATCH`, `PROVIDER_DISAGREEMENT`, etc.).
+6. **Observabilité, Filtrage des paliers & Consensus multi-sources** :
+   - Traçabilité complète du statut de chaque fournisseur (`ACCEPTED`, `DOWNWEIGHTED`, `REJECTED`) avec reason codes standardisés (`EXACT_COMPATIBLE`, `OUTLIER_CONTAMINATION`, `LANGUAGE_MISMATCH`, `FINISH_MISMATCH`, `PROVIDER_DISAGREEMENT`, etc.).
+   - Filtrage strict de compatibilité dimensionnelle sur chaque palier avant inclusion dans l'enveloppe de variantes ambiguës.
+   - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants compatibles (une source unique reste diagnostique / WEAK).
 
 Si le marché gradé exact reste indisponible et que la confiance RAW est `STRONG` ou `MODERATE` avec un écart $\ge 30\,\%$, V4 peut envoyer :
 

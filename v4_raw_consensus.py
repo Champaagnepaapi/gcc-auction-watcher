@@ -96,6 +96,119 @@ def parse_multilingual_commercial_dimensions(text: str) -> dict[str, str]:
     return result
 
 
+def clean_tokens(raw: object) -> str:
+    """Normalize and tokenize arbitrary variant strings by splitting camelCase, numbers, and glued keywords."""
+    if not raw:
+        return ""
+    plain = unicodedata.normalize("NFKD", str(raw))
+    plain = "".join(ch for ch in plain if not unicodedata.combining(ch))
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", plain)
+    s = re.sub(r"([0-9]+)([a-zA-Z]+)", r"\1 \2", s)
+    s = re.sub(r"([a-zA-Z]+)([0-9]+)", r"\1 \2", s)
+    for kw in [
+        "edition", "edicion", "edizione", "unlimited", "shadowless",
+        "reverse", "holofoil", "holo", "normal", "promo",
+        "pokeball", "masterball", "cosmos", "galaxy", "crackedice"
+    ]:
+        s = re.sub(rf"(?i)({kw})", r" \1 ", s)
+    s = re.sub(r"[-_.]+", " ", s).casefold().strip()
+    return " ".join(s.split())
+
+
+def normalize_edition_str(raw: Optional[str]) -> Optional[str]:
+    """Normalize arbitrary edition strings (spaced, hyphenated, compact, camelCase, multilingual)."""
+    s = clean_tokens(raw)
+    if not s:
+        return None
+
+    has_1st = bool(re.search(
+        r"\b(?:1\s*st\s*edition|1st\s*edition|first\s*edition|1\s*ere\s*edition|1ere\s*edition|1\s*er\s*edition|1er\s*edition|"
+        r"1\s*edition|erste\s*edition|prima\s*edizione|1\s*a\s*edicion|1a\s*edicion|1a\s*ed|1st\s*ed|1\s*st\s*ed|"
+        r"1\s*st|1st|1\s*ere|1ere|first)\b", s
+    ))
+    has_unl = bool(re.search(
+        r"\b(?:unlimited|illimitee|unbegrenzt|illimitata|ilimitada)\b", s
+    ))
+    has_shd = bool(re.search(
+        r"\b(?:shadowless|sans\s*ombre|ohne\s*schatten|senza\s*ombra|sin\s*sombra)\b", s
+    ))
+
+    if sum([has_1st, has_unl, has_shd]) > 1:
+        return "__conflict__"
+    if has_1st:
+        return "first_edition"
+    if has_shd:
+        return "shadowless"
+    if has_unl:
+        return "unlimited"
+    return None
+
+
+def normalize_finish_str(raw: Optional[str]) -> Optional[str]:
+    """Normalize arbitrary finish strings (spaced, hyphenated, compact, camelCase, multilingual)."""
+    s = clean_tokens(raw)
+    if not s:
+        return None
+
+    has_rev = bool(re.search(
+        r"\b(?:reverse|reverse\s*holo|holo\s*reverse|reverse\s*holofoil|holographique\s*reverse|reverse\s*holographisch|reverse\s*olografica)\b", s
+    ))
+    has_non = bool(re.search(
+        r"\b(?:non\s*holo|nicht\s*holo|nicht-holo|non\s*holographic|non\s*holographique|non\s*olografica|normal|regular)\b", s
+    ))
+    has_holo = bool(re.search(
+        r"\b(?:holo|holofoil|holographic|holographique|holographisch|olografica)\b", s
+    ))
+
+    if has_rev:
+        return "reverse"
+    if has_non:
+        return "non_holo"
+    if has_holo:
+        return "holo"
+    return None
+
+
+def normalize_promo_str(raw: Optional[str]) -> Optional[str]:
+    """Check if promo is indicated."""
+    s = clean_tokens(raw)
+    if not s:
+        return None
+    if re.search(r"\b(?:promo|promotional|carte\s*promo|promo\s*card|black\s*star\s*promo)\b", s):
+        return "promo"
+    return None
+
+
+def decompose_commercial_variant(variant_str: str) -> dict[str, Optional[str]]:
+    """Decompose a compound provider variant label (e.g. 1stEditionHolofoil, unlimited-reverse-holo) into independent dimensions."""
+    if not variant_str or not isinstance(variant_str, str):
+        return {"edition": None, "finish": None, "special_finish": None, "printing": None}
+
+    edition = normalize_edition_str(variant_str)
+    finish = normalize_finish_str(variant_str)
+    promo = normalize_promo_str(variant_str)
+
+    s = clean_tokens(variant_str)
+    special = None
+    if re.search(r"\b(?:poke\s*ball|pokeball)\b", s):
+        special = "poke_ball"
+    elif re.search(r"\b(?:master\s*ball|masterball)\b", s):
+        special = "master_ball"
+    elif re.search(r"\b(?:cosmos)\b", s):
+        special = "cosmos"
+    elif re.search(r"\b(?:galaxy)\b", s):
+        special = "galaxy"
+    elif re.search(r"\b(?:cracked\s*ice)\b", s):
+        special = "cracked_ice"
+
+    return {
+        "edition": edition,
+        "finish": finish,
+        "special_finish": special,
+        "printing": promo,
+    }
+
+
 @dataclass(frozen=True)
 class RobustStatistics:
     median: float
@@ -294,43 +407,67 @@ def validate_microvariant_compatibility(
             # Third-party non-matching language is rejected
             return False, RawReasonCode.LANGUAGE_MISMATCH, f"Language mismatch: {norm_prov_lang} vs {norm_lot_lang}"
 
-    # 3. Promo status
+    # Decompose provider variant into structured dimensions
+    prov_dims = decompose_commercial_variant(provider_variant)
+
+    # 3. Promo status (HIGH-1: SYMMETRIC & FAIL-CLOSED)
     listing_printing = listing_dimensions.get("printing", "")
-    is_listing_promo = "promo" in listing_printing or "promo" in listing_dimensions.get("special_finish", "")
-    is_prov_promo = "promo" in provider_variant.lower()
-    if is_listing_promo != is_prov_promo and is_listing_promo:
-        return False, RawReasonCode.PROMO_MISMATCH, "Listing is promo but provider candidate is regular/non-promo"
+    is_listing_promo = (
+        normalize_promo_str(listing_printing) is not None
+        or normalize_promo_str(listing_dimensions.get("special_finish", "")) is not None
+        or normalize_promo_str(listing_dimensions.get("edition", "")) is not None
+    )
+    is_prov_promo = (
+        prov_dims.get("printing") == "promo"
+        or normalize_promo_str(provider_variant) is not None
+    )
 
-    # 4. Edition validation
-    listing_edition = listing_dimensions.get("edition", "")
+    if is_listing_promo != is_prov_promo:
+        if is_listing_promo:
+            return False, RawReasonCode.PROMO_MISMATCH, "Listing is promo but provider candidate is regular/non-promo"
+        else:
+            return False, RawReasonCode.PROMO_MISMATCH, "Listing is regular/non-promo but provider candidate is promo"
+
+    # 4. Edition validation (HIGH-2: NORMALIZED SEMANTICS)
+    listing_edition = normalize_edition_str(listing_dimensions.get("edition", ""))
+    prov_edition = prov_dims.get("edition")
+
+    if listing_edition == "__conflict__":
+        return False, RawReasonCode.EDITION_MISMATCH, "Listing has conflicting edition metadata"
+
     if listing_edition == "first_edition":
-        if "unlimited" in provider_variant.lower():
-            return False, RawReasonCode.EDITION_MISMATCH, "Listing is 1st Edition but provider candidate is Unlimited"
+        if prov_edition in {"unlimited", "shadowless"}:
+            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is 1st Edition but provider candidate is {prov_edition}"
     elif listing_edition == "unlimited":
-        if "1st-edition" in provider_variant.lower() or "first" in provider_variant.lower():
-            return False, RawReasonCode.EDITION_MISMATCH, "Listing is Unlimited but provider candidate is 1st Edition"
+        if prov_edition in {"first_edition", "shadowless"}:
+            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is Unlimited but provider candidate is {prov_edition}"
+    elif listing_edition == "shadowless":
+        if prov_edition in {"first_edition", "unlimited"}:
+            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is Shadowless but provider candidate is {prov_edition}"
 
-    # 5. Finish validation
-    listing_finish = listing_dimensions.get("finish", "")
-    target_finish = listing_finish or catalog_proven_finish
+    # 5. Finish validation (MEDIUM-1: INDEPENDENT DIMENSIONS FROM COMPOUND LABELS)
+    listing_finish = normalize_finish_str(listing_dimensions.get("finish", ""))
+    cat_finish = normalize_finish_str(catalog_proven_finish)
+    target_finish = listing_finish or cat_finish
+    prov_finish = prov_dims.get("finish")
 
-    if target_finish:
-        norm_prov_var = provider_variant.lower()
+    if target_finish and prov_finish:
         if target_finish == "holo":
-            if norm_prov_var in {"normal", "reverse", "unlimited", "1st-edition"}:
+            if prov_finish in {"non_holo", "reverse"}:
                 return False, RawReasonCode.FINISH_MISMATCH, f"Finish mismatch: listing requires holo, provider has {provider_variant}"
         elif target_finish == "reverse":
-            if norm_prov_var in {"normal", "holo", "holofoil"}:
+            if prov_finish in {"non_holo", "holo"}:
                 return False, RawReasonCode.FINISH_MISMATCH, f"Finish mismatch: listing requires reverse, provider has {provider_variant}"
-        elif target_finish == "non_holo" or target_finish == "normal":
-            if "holo" in norm_prov_var or "reverse" in norm_prov_var:
-                return False, RawReasonCode.FINISH_MISMATCH, f"Finish mismatch: listing requires normal, provider has {provider_variant}"
+        elif target_finish == "non_holo":
+            if prov_finish in {"holo", "reverse"}:
+                return False, RawReasonCode.FINISH_MISMATCH, f"Finish mismatch: listing requires non_holo, provider has {provider_variant}"
 
     # 6. Special finish validation
     listing_spec = listing_dimensions.get("special_finish", "")
     if listing_spec and listing_spec not in {"", "__conflict__"}:
-        if listing_spec not in provider_variant.lower():
-            return False, RawReasonCode.FINISH_MISMATCH, f"Special finish {listing_spec} not confirmed in provider candidate"
+        prov_spec = prov_dims.get("special_finish")
+        if prov_spec != listing_spec:
+            return False, RawReasonCode.FINISH_MISMATCH, f"Special finish {listing_spec} not confirmed in provider candidate {provider_variant}"
 
     return True, RawReasonCode.EXACT_COMPATIBLE, "Exact compatible commercial variant"
 
@@ -513,7 +650,7 @@ def estimate_tcgplayer_raw(
         ),
         "unlimited": ("unlimited", "unlimitednormal"),
         "unlimited-holofoil": ("unlimitedholofoil", "unlimitedholo"),
-    }.get(variant, (variant,))
+    }.get(variant, (re.sub(r"[^a-z0-9]", "", str(variant).lower()), str(variant)))
 
     norm_tcgplayer = {
         re.sub(r"[^a-z0-9]", "", str(k).lower()): (k, v)
@@ -890,11 +1027,9 @@ def arbitrate_raw_consensus(
         else:
             confidence = "WEAK"
     elif len(accepted_estimates) == 1:
-        single = accepted_estimates[0]
-        if single.confidence == "STRONG" and single.is_exact_language:
-            confidence = "MODERATE"
-        else:
-            confidence = "WEAK"
+        # MEDIUM-3: A single provider (including single JustTCG, Cardmarket, etc.)
+        # remains purely diagnostic (WEAK) and must NOT reach notification-eligible MODERATE/STRONG confidence.
+        confidence = "WEAK"
     else:
         confidence = "REJECTED"
 
