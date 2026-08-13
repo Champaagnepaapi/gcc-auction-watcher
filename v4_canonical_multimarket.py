@@ -735,10 +735,23 @@ def _raw_variant_choice(
     if any(val == "__conflict__" for val in expected.values()):
         return "", False
 
-    edition = expected.get("edition", "")
+    listing_edition = raw_consensus.normalize_edition_str(expected.get("edition", ""))
     finish = expected.get("finish", "")
     variants = canonical.variants or {}
     catalog_finish = raw_consensus.get_catalog_proven_finish(variants)
+    catalog_edition = raw_consensus.get_catalog_proven_edition(variants)
+    edition_applicable = bool(
+        listing_edition
+        or catalog_edition
+        or variants.get("firstEdition") is True
+        or variants.get("editionApplicable") is True
+    )
+
+    if listing_edition and catalog_edition and listing_edition != catalog_edition:
+        return "", False
+    if edition_applicable and not (listing_edition or catalog_edition):
+        return "", False
+    edition = listing_edition or catalog_edition or ""
 
     if edition == "first_edition":
         if finish == "holo" or catalog_finish == "holo":
@@ -803,6 +816,9 @@ def _deterministic_catalog_proven_dimensions(
     finish = raw_consensus.get_catalog_proven_finish(canonical.variants or {})
     if finish:
         proven["finish"] = finish
+    edition = raw_consensus.get_catalog_proven_edition(canonical.variants or {})
+    if edition:
+        proven["edition"] = edition
     return proven
 
 
@@ -824,6 +840,13 @@ def _raw_target_dimensions(
         expected["number"] = str(lot.card_number)
 
     catalog_proven = _deterministic_catalog_proven_dimensions(canonical)
+    if (
+        expected.get("edition") not in {None, ""}
+        or catalog_proven.get("edition")
+        or (canonical.variants or {}).get("firstEdition") is True
+        or (canonical.variants or {}).get("editionApplicable") is True
+    ):
+        expected["edition_applicable"] = "true"
     if catalog_proven.get("set"):
         expected["set"] = canonical.set_name
     if catalog_proven.get("collector_number"):
@@ -892,24 +915,22 @@ def raw_market_signal(
     if deterministic:
         expected, catalog_dimensions = _raw_target_dimensions(lot, canonical)
 
-        edition_sensitive = expected.get("edition") not in {None, ""}
         catalog_proven = catalog_dimensions.get("finish")
 
         estimates: list[raw_consensus.RawProviderEstimate] = []
 
         cardmarket = pricing.get("cardmarket")
         if isinstance(cardmarket, Mapping):
-            if not edition_sensitive and variant in {"normal", "holo"}:
-                cm_est = raw_consensus.estimate_cardmarket_raw(
-                    cardmarket,
-                    variant,
-                    lot_lang,
-                    expected,
-                    catalog_proven,
-                    catalog_dimensions,
-                )
-                if cm_est is not None:
-                    estimates.append(cm_est)
+            cm_est = raw_consensus.estimate_cardmarket_raw(
+                cardmarket,
+                variant,
+                lot_lang,
+                expected,
+                catalog_proven,
+                catalog_dimensions,
+            )
+            if cm_est is not None:
+                estimates.append(cm_est)
 
         tcgplayer = pricing.get("tcgplayer")
         if isinstance(tcgplayer, Mapping):

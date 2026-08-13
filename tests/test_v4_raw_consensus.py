@@ -33,6 +33,37 @@ def make_lot(
     )
 
 
+def make_raw_estimate(
+    provider: str,
+    central: float,
+    *,
+    unknown: tuple[str, ...] = (),
+    edition=None,
+) -> raw_consensus.RawProviderEstimate:
+    required = list(raw_consensus.RAW_BASE_REQUIRED_DIMENSIONS)
+    provenance = {
+        dimension: raw_consensus.RawDimensionProvenance.PROVIDER_PROVEN
+        for dimension in required
+    }
+    if edition is not None:
+        required.append("edition")
+        provenance["edition"] = edition
+    for dimension in unknown:
+        provenance[dimension] = raw_consensus.RawDimensionProvenance.UNKNOWN
+    return raw_consensus.RawProviderEstimate(
+        provider=provider,
+        central=central,
+        low=central * 0.9,
+        high=central * 1.1,
+        language="en",
+        is_exact_language=True,
+        is_exact_variant=True,
+        is_exact_condition=True,
+        dimension_provenance=provenance,
+        required_dimensions=tuple(required),
+    )
+
+
 class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
     def setUp(self):
         mm._DIAGNOSTICS = mm.MultiMarketDiagnostics()
@@ -375,14 +406,18 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         should_review, _ = mm._should_manual_review(target_lot, signal)
         self.assertFalse(should_review)
 
-        # Also verify single JustTCG adapter estimate is arbitrated as WEAK
+        # A direct JustTCG adapter without set/number provenance stays observable
+        # but cannot enter the common quorum.
         justtcg_est = raw_consensus.estimate_justtcg_raw(
             {"currency": "EUR", "language": "fr", "condition": "NM", "variant": "holo", "marketPrice": 100.0},
             variant="holo",
             lot_language="fr",
         )
         consensus_res = raw_consensus.arbitrate_raw_consensus([justtcg_est], lot_language="fr")
-        self.assertEqual(consensus_res.confidence, "WEAK")
+        self.assertEqual(consensus_res.status, "INSUFFICIENT")
+        self.assertEqual(consensus_res.confidence, "REJECTED")
+        self.assertEqual(consensus_res.providers_used, ())
+        self.assertEqual(consensus_res.estimates, (justtcg_est,))
 
 
     def test_12_ambiguous_path_excludes_incompatible_tiers(self):
@@ -895,9 +930,270 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
                 )
             )
         consensus = raw_consensus.arbitrate_raw_consensus(incomplete, "en")
-        self.assertEqual(consensus.status, "REJECTED")
+        self.assertEqual(consensus.status, "INSUFFICIENT")
         self.assertEqual(consensus.confidence, "REJECTED")
         self.assertEqual(consensus.providers_used, ())
+
+    def test_25_applicable_first_edition_silent_providers_cannot_form_strong(self):
+        """Listing/request edition is a target, never proof for silent providers."""
+        target_lot = make_lot(
+            title="Charizard",
+            language="en",
+            variant="1st Edition Holo",
+            card_number="4/102",
+            card_set="Base Set",
+        )
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Charizard",
+            language_code="en",
+            pricing={
+                "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
+                    "trend-holo": 100.0,
+                    "avg7-holo": 98.0,
+                },
+                "tcgplayer": {
+                    "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
+                    "holofoil": {"marketPrice": 101.0},
+                },
+            },
+            variants={
+                "normal": False,
+                "holo": True,
+                "reverse": False,
+                "firstEdition": True,
+            },
+            reason="TCGDEX_EXACT_NAME_LOCALID",
+        )
+
+        variant, deterministic = mm._raw_variant_choice(target_lot, canonical)
+        self.assertTrue(deterministic)
+        self.assertEqual(variant, "1st-edition-holofoil")
+        self.assertIsNone(mm.raw_market_signal(target_lot, canonical))
+
+    def test_26_exact_catalog_edition_proof_keeps_silent_providers_eligible(self):
+        """Exact catalog edition proof can safely support generic provider pricing tiers."""
+        target_lot = make_lot(
+            title="Charizard",
+            language="en",
+            variant="1st Edition Holo",
+            card_number="4/102",
+            card_set="Base Set",
+        )
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Charizard",
+            language_code="en",
+            pricing={
+                "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
+                    "trend-holo": 100.0,
+                    "avg7-holo": 98.0,
+                },
+                "tcgplayer": {
+                    "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
+                    "holofoil": {"marketPrice": 101.0},
+                },
+            },
+            variants={
+                "normal": False,
+                "holo": True,
+                "reverse": False,
+                "firstEdition": True,
+                "edition": "First Edition",
+            },
+            reason="TCGDEX_EXACT_NAME_LOCALID",
+        )
+
+        with patch.object(raw_consensus, "_usd_per_eur", return_value=1.0):
+            signal = mm.raw_market_signal(target_lot, canonical)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.confidence, "STRONG")
+        self.assertEqual(set(signal.sources), {"Cardmarket", "TCGplayer"})
+        catalog = mm._deterministic_catalog_proven_dimensions(canonical)
+        self.assertEqual(catalog["edition"], "first_edition")
+
+    def test_27_provider_proven_correct_edition_is_eligible(self):
+        """Both providers may form STRONG when each explicitly proves the target edition."""
+        target_lot = make_lot(
+            title="Charizard",
+            language="en",
+            variant="1st Edition Holo",
+        )
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Charizard",
+            language_code="en",
+            pricing={
+                "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
+                    "edition": "1st Edition",
+                    "trend-holo": 100.0,
+                    "avg7-holo": 98.0,
+                },
+                "tcgplayer": {
+                    "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
+                    "1stEditionHolofoil": {"marketPrice": 101.0},
+                },
+            },
+            variants={
+                "normal": False,
+                "holo": True,
+                "reverse": False,
+                "firstEdition": True,
+            },
+            reason="TCGDEX_EXACT_NAME_LOCALID",
+        )
+
+        with patch.object(raw_consensus, "_usd_per_eur", return_value=1.0):
+            signal = mm.raw_market_signal(target_lot, canonical)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.confidence, "STRONG")
+        self.assertEqual(set(signal.sources), {"Cardmarket", "TCGplayer"})
+
+    def test_28_provider_proven_conflicting_edition_is_rejected(self):
+        """A provider's explicit conflicting edition cannot be rescued by request data."""
+        estimate = raw_consensus.estimate_cardmarket_raw(
+            {
+                "language": "en",
+                "condition": "NM",
+                "edition": "Unlimited",
+                "trend-holo": 100.0,
+                "avg7-holo": 98.0,
+            },
+            variant="1st-edition-holofoil",
+            lot_language="en",
+            listing_dimensions={
+                "edition": "first_edition",
+                "edition_applicable": "true",
+                "finish": "holo",
+            },
+            catalog_proven_finish="holo",
+            catalog_proven_dimensions={
+                "set": "Base Set",
+                "collector_number": "4/102",
+                "finish": "holo",
+            },
+        )
+        self.assertIsNotNone(estimate)
+        self.assertEqual(estimate.status, "REJECTED")
+        self.assertEqual(estimate.reason_code, RawReasonCode.EDITION_MISMATCH)
+
+    def test_29_non_applicable_edition_silence_remains_eligible(self):
+        """Provider edition omission is harmless when catalog says edition is inapplicable."""
+        target_lot = make_lot(title="Gengar", language="en", variant="Holo")
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="xy4-94",
+            set_id="xy4",
+            set_name="Phantom Forces",
+            local_id="94",
+            full_number="94/119",
+            name="Gengar EX",
+            language_code="en",
+            pricing={
+                "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
+                    "trend-holo": 100.0,
+                    "avg7-holo": 98.0,
+                },
+                "tcgplayer": {
+                    "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
+                    "holofoil": {"marketPrice": 101.0},
+                },
+            },
+            variants={
+                "normal": False,
+                "holo": True,
+                "reverse": False,
+                "firstEdition": False,
+            },
+            reason="TCGDEX_EXACT_NAME_LOCALID",
+        )
+
+        with patch.object(raw_consensus, "_usd_per_eur", return_value=1.0):
+            signal = mm.raw_market_signal(target_lot, canonical)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.confidence, "STRONG")
+
+    def test_30_two_direct_incomplete_adapters_never_create_strong(self):
+        """Default/common arbitration cannot be bypassed by omitting required_dimensions."""
+        first = make_raw_estimate("Adapter A", 100.0, unknown=("condition",))
+        second = make_raw_estimate("Adapter B", 101.0, unknown=("language",))
+        first = raw_consensus.RawProviderEstimate(
+            **{**first.__dict__, "required_dimensions": ()}
+        )
+        second = raw_consensus.RawProviderEstimate(
+            **{**second.__dict__, "required_dimensions": ()}
+        )
+
+        consensus = raw_consensus.arbitrate_raw_consensus([first, second], "en")
+        self.assertEqual(consensus.status, "INSUFFICIENT")
+        self.assertEqual(consensus.confidence, "REJECTED")
+        self.assertEqual(consensus.providers_used, ())
+
+    def test_31_two_fully_proven_independent_providers_still_form_strong(self):
+        """Complete independent proof preserves the intended STRONG consensus path."""
+        first = make_raw_estimate("Provider A", 100.0)
+        second = make_raw_estimate("Provider B", 102.0)
+
+        consensus = raw_consensus.arbitrate_raw_consensus([first, second], "en")
+        self.assertEqual(consensus.status, "MATCHED")
+        self.assertEqual(consensus.confidence, "STRONG")
+        self.assertEqual(consensus.providers_used, ("Provider A", "Provider B"))
+
+    def test_32_incomplete_provider_remains_observable_but_not_in_quorum(self):
+        """Diagnostic RAW data is retained without influencing confidence or central value."""
+        complete = make_raw_estimate("Complete", 100.0)
+        incomplete = make_raw_estimate("Diagnostic", 500.0, unknown=("edition",))
+        incomplete = raw_consensus.RawProviderEstimate(
+            **{
+                **incomplete.__dict__,
+                "required_dimensions": (
+                    *raw_consensus.RAW_BASE_REQUIRED_DIMENSIONS,
+                    "edition",
+                ),
+            }
+        )
+
+        consensus = raw_consensus.arbitrate_raw_consensus(
+            [complete, incomplete], "en"
+        )
+        self.assertEqual(consensus.confidence, "WEAK")
+        self.assertEqual(consensus.central, 100.0)
+        self.assertEqual(consensus.providers_used, ("Complete",))
+        self.assertEqual(len(consensus.estimates), 2)
+        self.assertTrue(
+            any("Diagnostic: DIAGNOSTIC_ONLY" in line for line in consensus.diagnostics)
+        )
 
 
 if __name__ == "__main__":

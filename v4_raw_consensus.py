@@ -259,7 +259,7 @@ class RawProviderEstimate:
     status: str = "ACCEPTED"  # "ACCEPTED", "DOWNWEIGHTED", "REJECTED"
     provenance: Mapping[str, Any] = field(default_factory=dict)
     dimension_provenance: Mapping[str, str] = field(default_factory=dict)
-    required_dimensions: tuple[str, ...] = ()
+    required_dimensions: tuple[str, ...] = RAW_BASE_REQUIRED_DIMENSIONS
     note: str = ""
 
 
@@ -369,17 +369,31 @@ def _required_identity_dimensions(
     for dimension in ("edition", "special_finish", "printing", "variant"):
         if listing_dimensions.get(dimension) not in {None, ""}:
             required.append(dimension)
+    if listing_dimensions.get("edition_applicable") not in {None, "", False}:
+        required.append("edition")
     return tuple(dict.fromkeys(required))
 
 
 def _unknown_required_dimensions(
     provenance: Mapping[str, str], required: Sequence[str]
 ) -> tuple[str, ...]:
+    proven_states = {
+        RawDimensionProvenance.PROVIDER_PROVEN,
+        RawDimensionProvenance.CATALOG_PROVEN,
+    }
     return tuple(
         dimension
-        for dimension in required
+        for dimension in (required or RAW_BASE_REQUIRED_DIMENSIONS)
         if provenance.get(dimension, RawDimensionProvenance.UNKNOWN)
-        == RawDimensionProvenance.UNKNOWN
+        not in proven_states
+    )
+
+
+def eligible_for_strong_consensus(estimate: RawProviderEstimate) -> bool:
+    """Require proof for every identity dimension before quorum eligibility."""
+    return not _unknown_required_dimensions(
+        estimate.dimension_provenance,
+        estimate.required_dimensions or RAW_BASE_REQUIRED_DIMENSIONS,
     )
 
 
@@ -461,6 +475,29 @@ def get_catalog_proven_finish(variants: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
+def get_catalog_proven_edition(variants: Mapping[str, Any]) -> Optional[str]:
+    """Return an edition only when catalog metadata states that exact edition."""
+    if not isinstance(variants, Mapping) or not variants:
+        return None
+
+    explicit_values = (
+        variants.get("edition"),
+        variants.get("editionOnly"),
+        variants.get("printingEdition"),
+    )
+    editions = {
+        normalized
+        for value in explicit_values
+        if (normalized := normalize_edition_str(str(value or "")))
+        not in {None, "__conflict__"}
+    }
+    if variants.get("firstEditionOnly") is True:
+        editions.add("first_edition")
+    if variants.get("unlimitedOnly") is True:
+        editions.add("unlimited")
+    return next(iter(editions)) if len(editions) == 1 else None
+
+
 def validate_microvariant_compatibility(
     listing_dimensions: Mapping[str, str],
     provider_variant: str,
@@ -520,22 +557,38 @@ def validate_microvariant_compatibility(
 
     # 4. Edition validation (HIGH-2: NORMALIZED SEMANTICS — FAIL CLOSED IF REQUIRED EDITION UNPROVEN)
     listing_edition = normalize_edition_str(listing_dimensions.get("edition", ""))
-    prov_edition = prov_dims.get("edition") or normalize_edition_str(
+    catalog_edition = normalize_edition_str(
         str(catalog_dimensions.get("edition") or "")
     )
+    provider_edition = prov_dims.get("edition")
+    edition_applicable = bool(
+        listing_dimensions.get("edition_applicable")
+        or listing_edition
+        or catalog_edition
+    )
+    target_edition = listing_edition or catalog_edition
 
     if listing_edition == "__conflict__":
         return False, RawReasonCode.EDITION_MISMATCH, "Listing has conflicting edition metadata"
-
-    if listing_edition == "first_edition":
-        if prov_edition != "first_edition":
-            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is 1st Edition but provider candidate is {prov_edition or 'unproven/unlimited'}"
-    elif listing_edition == "shadowless":
-        if prov_edition != "shadowless":
-            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is Shadowless but provider candidate is {prov_edition or 'unproven'}"
-    elif listing_edition == "unlimited":
-        if prov_edition in {"first_edition", "shadowless"}:
-            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is Unlimited but provider candidate is {prov_edition}"
+    if catalog_edition == "__conflict__":
+        return False, RawReasonCode.EDITION_MISMATCH, "Catalog has conflicting edition metadata"
+    if listing_edition and catalog_edition and listing_edition != catalog_edition:
+        return False, RawReasonCode.EDITION_MISMATCH, (
+            f"Listing edition {listing_edition} conflicts with catalog edition {catalog_edition}"
+        )
+    if edition_applicable and not target_edition:
+        return False, RawReasonCode.INSUFFICIENT_IDENTITY, (
+            "Edition applies to this card but the current listing edition is unknown"
+        )
+    if target_edition and provider_edition and provider_edition != target_edition:
+        return False, RawReasonCode.EDITION_MISMATCH, (
+            f"Edition mismatch: listing/catalog requires {target_edition}, "
+            f"provider has {provider_edition}"
+        )
+    if target_edition and not (provider_edition or catalog_edition):
+        return False, RawReasonCode.EDITION_MISMATCH, (
+            f"Edition {target_edition} is required but provider/catalog proof is missing"
+        )
 
     # 5. Finish validation (MEDIUM-1: INDEPENDENT DIMENSIONS FROM COMPOUND LABELS)
     listing_finish = normalize_finish_str(listing_dimensions.get("finish", ""))
@@ -599,17 +652,36 @@ def estimate_cardmarket_raw(
 
     has_holo_keys = any(cardmarket_data.get(k) is not None for k in ("trend-holo", "trendHolo", "avg-holo", "avgHolo", "avg1-holo", "avg7-holo", "avg7Holo", "avg30-holo", "avg30Holo", "low-holo", "lowHolo", "lowPrice-holo"))
     has_rev_keys = any(cardmarket_data.get(k) is not None for k in ("trend-reverse", "trendReverse", "avg-reverse", "avgReverse", "avg7-reverse", "avg30-reverse", "low-reverse", "lowPrice-reverse"))
-    explicit_variant = str(
-        cardmarket_data.get("variant")
-        or cardmarket_data.get("finish")
-        or cardmarket_data.get("edition")
-        or ""
-    ).strip()
+    explicit_variant = " ".join(
+        dict.fromkeys(
+            str(value).strip()
+            for value in (
+                cardmarket_data.get("variant"),
+                cardmarket_data.get("finish"),
+                cardmarket_data.get("edition"),
+            )
+            if value not in {None, ""}
+        )
+    )
+    requested_variant_dimensions = decompose_commercial_variant(variant)
+    requested_finish = requested_variant_dimensions.get("finish")
+    if variant == "normal":
+        requested_finish = "non_holo"
+    elif variant in {"reverse", "reverse-holo"}:
+        requested_finish = "reverse"
+    requested_finish = requested_finish or normalize_finish_str(
+        catalog_proven_finish
+    )
+
+    provider_finish = decompose_commercial_variant(explicit_variant).get("finish")
+    if requested_finish == "holo" and has_holo_keys:
+        provider_finish = "holo"
+    elif requested_finish == "reverse" and has_rev_keys:
+        provider_finish = "reverse"
+
     provider_variant = explicit_variant
-    if not provider_variant and variant == "holo" and has_holo_keys:
-        provider_variant = "holo"
-    elif not provider_variant and variant in {"reverse", "reverse-holo"} and has_rev_keys:
-        provider_variant = "reverse"
+    if provider_finish and not normalize_finish_str(provider_variant):
+        provider_variant = f"{provider_variant} {provider_finish}".strip()
     elif not provider_variant and catalog_proven_finish:
         provider_variant = catalog_proven_finish
 
@@ -621,13 +693,7 @@ def estimate_cardmarket_raw(
         "language": cm_prov_lang,
         "condition": cm_condition,
         "edition": provider_variant_dimensions.get("edition"),
-        "finish": (
-            "holo"
-            if variant == "holo" and has_holo_keys
-            else "reverse"
-            if variant in {"reverse", "reverse-holo"} and has_rev_keys
-            else provider_variant_dimensions.get("finish")
-        ),
+        "finish": provider_finish,
         "special_finish": provider_variant_dimensions.get("special_finish"),
         "printing": provider_variant_dimensions.get("printing"),
         "variant": explicit_variant or None,
@@ -679,7 +745,7 @@ def estimate_cardmarket_raw(
             note=f"Cardmarket rejected ({reason_msg})",
         )
 
-    if variant == "holo":
+    if requested_finish == "holo":
         if not has_holo_keys and catalog_proven_finish != "holo":
             return RawProviderEstimate(
                 provider="Cardmarket",
@@ -701,7 +767,7 @@ def estimate_cardmarket_raw(
         avg7 = _finite_positive(cardmarket_data.get("avg7-holo") or cardmarket_data.get("avg7Holo") or (cardmarket_data.get("avg7") if catalog_proven_finish == "holo" else None))
         avg30 = _finite_positive(cardmarket_data.get("avg30-holo") or cardmarket_data.get("avg30Holo") or (cardmarket_data.get("avg30") if catalog_proven_finish == "holo" else None))
         low = _finite_positive(cardmarket_data.get("low-holo") or cardmarket_data.get("lowHolo") or cardmarket_data.get("lowPrice-holo") or (cardmarket_data.get("low") if catalog_proven_finish == "holo" else None))
-    elif variant in {"reverse", "reverse-holo"}:
+    elif requested_finish == "reverse":
         if not has_rev_keys and catalog_proven_finish not in {"reverse", "reverse-holo"}:
             return RawProviderEstimate(
                 provider="Cardmarket",
@@ -938,6 +1004,27 @@ def estimate_tcgplayer_raw(
         if matched is not None:
             matched_tier_name, tier = matched
             break
+
+    # A generic pricing tier may be used only when the exact catalog identity
+    # independently proves the requested edition. The request itself is never proof.
+    if tier is None:
+        requested_dimensions = decompose_commercial_variant(variant)
+        requested_edition = requested_dimensions.get("edition")
+        catalog_edition = normalize_edition_str(
+            str(catalog_dimensions.get("edition") or "")
+        )
+        if requested_edition and requested_edition == catalog_edition:
+            requested_finish = requested_dimensions.get("finish")
+            fallback_patterns = {
+                "holo": ("holo", "holofoil"),
+                "reverse": ("reverse", "reverseholofoil", "reverseholo"),
+                "non_holo": ("normal",),
+            }.get(requested_finish, ("normal",))
+            for pat in fallback_patterns:
+                matched = norm_tcgplayer.get(pat)
+                if matched is not None:
+                    matched_tier_name, tier = matched
+                    break
 
     if tier is None:
         return None
@@ -1465,35 +1552,43 @@ def arbitrate_raw_consensus(
 
     diagnostics: list[str] = []
     rejected_providers: list[str] = []
+    has_diagnostic_only_provider = False
 
-    # First pass: check explicit rejections
+    # Only estimates with complete independent identity proof may enter quorum.
+    # Incomplete estimates remain in ``estimates`` for diagnostics.
     non_rejected = []
     for e in valid_estimates:
         provenance_gaps = _unknown_required_dimensions(
-            e.dimension_provenance, e.required_dimensions
+            e.dimension_provenance,
+            e.required_dimensions or RAW_BASE_REQUIRED_DIMENSIONS,
         )
-        if provenance_gaps:
+        if e.confidence == "REJECTED" or e.status == "REJECTED" or e.central <= 0:
+            rejected_providers.append(f"{e.provider} [{e.reason_code}]")
+            diagnostics.append(f"{e.provider}: REJECTED [{e.reason_code}] ({e.note})")
+        elif provenance_gaps or not eligible_for_strong_consensus(e):
+            has_diagnostic_only_provider = True
             rejected_providers.append(
                 f"{e.provider} [{RawReasonCode.INSUFFICIENT_IDENTITY}]"
             )
             diagnostics.append(
-                f"{e.provider}: REJECTED [{RawReasonCode.INSUFFICIENT_IDENTITY}] "
+                f"{e.provider}: DIAGNOSTIC_ONLY [{RawReasonCode.INSUFFICIENT_IDENTITY}] "
                 f"(unknown provenance: {', '.join(provenance_gaps)})"
             )
-        elif e.confidence == "REJECTED" or e.status == "REJECTED" or e.central <= 0:
-            rejected_providers.append(f"{e.provider} [{e.reason_code}]")
-            diagnostics.append(f"{e.provider}: REJECTED [{e.reason_code}] ({e.note})")
         else:
             non_rejected.append(e)
 
     if not non_rejected:
         return RawConsensusResult(
-            status="REJECTED",
+            status="INSUFFICIENT" if has_diagnostic_only_provider else "REJECTED",
             confidence="REJECTED",
             providers_rejected=tuple(rejected_providers),
             estimates=tuple(valid_estimates),
             diagnostics=tuple(diagnostics),
-            note="Toutes les sources RAW ont été rejetées",
+            note=(
+                "Sources RAW observables mais provenance insuffisante"
+                if has_diagnostic_only_provider
+                else "Toutes les sources RAW ont été rejetées"
+            ),
         )
 
     # Separate non-anomalous candidates from flagged candidates
