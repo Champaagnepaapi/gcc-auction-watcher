@@ -134,13 +134,14 @@ def hardened_candidate_exact_for_canonical(
     return True
 
 
+_ORIG_NOTIFY_MANUAL_REVIEW = getattr(mm, "_notify_manual_review", None)
+
+
 def safe_notify_manual_review(lead: mm.ManualReviewLead) -> None:
-    return mm._notify_manual_review(lead)
+    if _ORIG_NOTIFY_MANUAL_REVIEW is not None and _ORIG_NOTIFY_MANUAL_REVIEW is not safe_notify_manual_review:
+        return _ORIG_NOTIFY_MANUAL_REVIEW(lead)
+    return None
 
-
-
-
-_combine_retry_with_fallback = mm._combine_retry_with_fallback
 
 
 def hardened_multimarket_process_external_market_candidates(
@@ -200,8 +201,9 @@ def hardened_multimarket_process_external_market_candidates(
             run_diagnostics.external_market,
             fetch_now,
         )
-        combined = _combine_retry_with_fallback(poketrace, fallback)
+        combined = mm._combine_retry_with_fallback(poketrace, fallback)
         if not (
+
             combined.status == watcher.EXTERNAL_MATCHED
             and combined.strength == watcher.EVIDENCE_STRONG
             and combined.estimate is not None

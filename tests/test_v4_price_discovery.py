@@ -241,7 +241,8 @@ class V4PriceDiscoveryAndGraderSpreadTests(unittest.TestCase):
         )
 
         self.assertEqual(signal.category, pd.CATEGORY_CROSSGRADE_OPPORTUNITY)
-        self.assertTrue(signal.manual_review_recommended)
+        self.assertFalse(signal.manual_review_recommended)
+
 
     def test_8_secondary_grader_discount_on_liquid_market(self):
         """Classification: Liquid secondary grader market trading at discount yields SECONDARY_GRADER_DISCOUNT."""
@@ -807,10 +808,21 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
         candidate = watcher.ValuationCandidate(gcc=gcc_evidence)
         canonical = mm.CanonicalCard(status="EXACT", card_id="c1", name="Card", set_id="s1", set_name="Set", local_id="1", full_number="1", language_code="fr")
 
+        sig = pd.evaluate_price_discovery(
+            listing_identity="SGS 8",
+            gcc_price=50.0,
+            grader="SGS",
+            grade="8",
+            exact_grader_sales=gcc_sales,
+            language="fr",
+            now=now,
+        )
+        self.assertEqual(sig.exact_grader_liquidity, pd.LIQUIDITY_LOW)
+        self.assertEqual(sig.liquidity, pd.LIQUIDITY_LOW)
+
+        # Fail closed: mixed grader history alone without same-grade anchors cannot create lead
         lead = mm._collect_price_discovery_lead(candidate, canonical, raw=None, now=now)
-        self.assertIsNotNone(lead)
-        self.assertEqual(lead.discovery_signal.exact_grader_liquidity, pd.LIQUIDITY_LOW)
-        self.assertEqual(lead.discovery_signal.liquidity, pd.LIQUIDITY_LOW)
+        self.assertIsNone(lead)
 
     def test_9_mixed_grade_gcc_history_does_not_count_as_exact_liquidity(self):
         """
@@ -841,9 +853,21 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
         candidate = watcher.ValuationCandidate(gcc=gcc_evidence)
         canonical = mm.CanonicalCard(status="EXACT", card_id="c1", name="Card", set_id="s1", set_name="Set", local_id="1", full_number="1", language_code="fr")
 
+        sig = pd.evaluate_price_discovery(
+            listing_identity="SGS 8",
+            gcc_price=50.0,
+            grader="SGS",
+            grade="8",
+            exact_grader_sales=gcc_sales,
+            language="fr",
+            now=now,
+        )
+        self.assertEqual(sig.exact_grader_liquidity, pd.LIQUIDITY_LOW)
+
+        # Fail closed: mixed grade history alone without same-grade anchors cannot create lead
         lead = mm._collect_price_discovery_lead(candidate, canonical, raw=None, now=now)
-        self.assertIsNotNone(lead)
-        self.assertEqual(lead.discovery_signal.exact_grader_liquidity, pd.LIQUIDITY_LOW)
+        self.assertIsNone(lead)
+
 
     def test_10_current_psa_high_without_date_matched_historical_psa_fails_closed(self):
         """
@@ -979,6 +1003,28 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
         )
         self.assertEqual(sig.exact_grader_liquidity, pd.LIQUIDITY_LOW)
         self.assertEqual(sig.liquidity, pd.LIQUIDITY_LOW)
+
+    def test_15_psa_10_anchor_alone_cannot_create_bgs_9_5_opportunity(self):
+        """A PSA 10 anchor alone must NOT create a BGS 9.5 opportunity (wide-grade constraint)."""
+        anchor_psa10 = pd.AdjacentAnchor(
+            anchor_type="PSA_SAME_GRADE",
+            source="poketrace",
+            grader="PSA",
+            grade="10",
+            language="fr",
+            price=250.0,
+            price_type="SOLD",
+            sale_count=5,
+        )
+        sig = pd.evaluate_price_discovery(
+            listing_identity="Rayquaza BGS 9.5",
+            gcc_price=50.0,
+            grader="BGS",
+            grade="9.5",
+            language="fr",
+            adjacent_anchors=[anchor_psa10],
+        )
+        self.assertFalse(sig.manual_review_recommended)
 
 
 if __name__ == "__main__":

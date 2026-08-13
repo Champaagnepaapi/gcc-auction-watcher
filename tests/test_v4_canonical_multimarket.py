@@ -6,9 +6,13 @@ from unittest.mock import patch
 
 import watcher
 import v4_canonical_multimarket as mm
+import v4_multimarket_safety as mms
+import v4_price_discovery as pd
 
 
 NOW = datetime(2026, 8, 12, 8, 0, tzinfo=timezone.utc)
+
+
 
 
 def lot(
@@ -1017,6 +1021,34 @@ class MultiMarketIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(lead_with_pt.discovery_signal)
         for a in lead_with_pt.discovery_signal.credible_adjacent_anchors:
             self.assertNotEqual(a.anchor_type, "RAW_CONSENSUS")
+
+    def test_safe_notify_manual_review_installed_hardening_does_not_recurse(self):
+        """CRITICAL: After install_multimarket_safety_hardening(), notifying raw=None lead does not cause RecursionError."""
+        mms.install_multimarket_safety_hardening()
+        signal = pd.PriceDiscoverySignal(
+            listing_identity="Dracaufeu #4/102",
+            gcc_price=40.0,
+            grader="PCA",
+            grade="8",
+            exact_grader_liquidity=pd.LIQUIDITY_LOW,
+            category=pd.CATEGORY_ILLIQUID_PRICE_DISCOVERY,
+            liquidity=pd.LIQUIDITY_LOW,
+            evidence_quality=pd.EVIDENCE_QUALITY_MODERATE,
+            uncertainty=pd.UNCERTAINTY_HIGH,
+            grader_spread=pd.GRADER_SPREAD_LOW,
+            credible_high_reference=220.0,
+            asymmetric_upside_ratio=5.5,
+            main_thesis="Thèse de test",
+            credible_adjacent_anchors=(),
+            crossgrade_required=False,
+            manual_review_recommended=True,
+            diagnostics=(),
+        )
+        lead = mm.ManualReviewLead(
+            "key-rec-test", self.target, self.canonical, raw=None, gap_pct=0.0, graded_note="graded absent", discovery_signal=signal
+        )
+        # Calling mm._notify_manual_review (which is safe_notify_manual_review) must execute without RecursionError
+        mm._notify_manual_review(lead)
 
 
 if __name__ == "__main__":

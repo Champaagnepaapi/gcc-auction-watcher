@@ -275,15 +275,18 @@ def estimated_all_queue_backlog_runs(
     """Estimate runs needed to drain every queued item, including STALE and P4_EXTERNAL_PENDING.
 
     Coverage semantics separate first-evaluation coverage from external-market coverage.
-    This helper computes the realistic ETA accounting for the dedicated P4 bottleneck capacity.
+    This helper computes the realistic ETA accounting for both the dedicated P4 bottleneck
+    and the total shared scheduler capacity.
     """
     p4_backlog = queue.backlog_count(watcher.QUEUE_P4_EXTERNAL_PENDING)
     other_backlog = queue.first_evaluation_backlog + queue.stale_backlog
+    total_backlog = other_backlog + p4_backlog
     budget = max(1, int(queue.processing_budget))
     p4_budget = max(1, getattr(queue, "p4_processing_budget", watcher.MAX_EXTERNAL_PENDING_PER_RUN))
     p4_runs = ceil(p4_backlog / p4_budget) if p4_backlog > 0 else 0
-    other_runs = ceil(other_backlog / budget) if other_backlog > 0 else 0
-    return max(p4_runs, other_runs)
+    total_runs = ceil(total_backlog / budget) if total_backlog > 0 else 0
+    return max(p4_runs, total_runs)
+
 
 
 def install_fixed_queue_backlog_diagnostics() -> None:

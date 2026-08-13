@@ -915,8 +915,9 @@ class FixedEconomicQueueDiagnostics:
         """Called when an item's external evaluation remains PENDING or RETRY."""
         if item_id in self.processed_ids:
             self.processed_ids.remove(item_id)
+        for cat in (QUEUE_P0_NEW, QUEUE_P1_CHANGED, QUEUE_P2_NEVER_EVALUATED, QUEUE_P3_STALE, QUEUE_FRESH):
+            self.category_ids[cat].discard(item_id)
         self.category_ids[QUEUE_P4_EXTERNAL_PENDING].add(item_id)
-
 
     def count(self, category: str) -> int:
         return len(self.category_ids[category])
@@ -1010,10 +1011,15 @@ class FixedEconomicQueueDiagnostics:
 
     @property
     def estimated_backlog_runs(self) -> int:
+        p4_backlog = self.external_pending_backlog
         other_backlog = self.first_evaluation_backlog + self.stale_backlog
+        total_backlog = other_backlog + p4_backlog
         budget = max(1, self.processing_budget)
-        other_runs = (other_backlog + budget - 1) // budget if other_backlog > 0 else 0
-        return max(other_runs, self.estimated_external_backlog_runs)
+        p4_cap = max(1, getattr(self, "p4_processing_budget", MAX_EXTERNAL_PENDING_PER_RUN))
+        p4_runs = (p4_backlog + p4_cap - 1) // p4_cap if p4_backlog > 0 else 0
+        total_runs = (total_backlog + budget - 1) // budget if total_backlog > 0 else 0
+        return max(p4_runs, total_runs)
+
 
     @property
     def accounting_coherent(self) -> bool:
@@ -7337,14 +7343,11 @@ def _fixed_queue_category(
     ):
         return QUEUE_P2_NEVER_EVALUATED
 
-    # 3. External Pending / Retry with exponential cooldown
+    # 3. External Pending / Retry: always stays P4_EXTERNAL_PENDING to preserve backlog and coverage status
     if record.get("last_evaluation_status") in {
         REJECTION_EXTERNAL_PENDING,
         REJECTION_EXTERNAL_RETRY,
     }:
-        retry_after = _parse_state_datetime(record.get("retry_after"))
-        if retry_after is not None and now < retry_after:
-            return QUEUE_FRESH  # Cooldown active; skip this run
         return QUEUE_P4_EXTERNAL_PENDING
 
     # 4. Adaptive STALE re-evaluation
@@ -7380,20 +7383,15 @@ def _fixed_queue_sort_key(
             if ADAPTIVE_REFRESH_ENABLED
             else FIXED_REEVALUATION_TTL_HOURS
         )
-        return (
-            adaptive_ttl,
-            last_evaluated or earliest,
-            first_seen or earliest,
-            item_id,
-        )
+        age = (
+            datetime.now(timezone.utc) - (last_evaluated or earliest)
+        ).total_seconds() / 3600.0
+        urgency = age / max(1.0, float(adaptive_ttl))
+        return (-urgency, last_evaluated or earliest, item_id)
     if category == QUEUE_P4_EXTERNAL_PENDING:
-        retry_after = _parse_state_datetime(record.get("retry_after"))
-        return (
-            retry_after or last_evaluated or earliest,
-            first_seen or earliest,
-            item_id,
-        )
-    return (first_seen or earliest, item_id)
+        retry_count = int(record.get("retry_count") or 0)
+        return (retry_count, last_evaluated or earliest, item_id)
+    return (item_id,)
 
 
 def _prepare_fixed_economic_queue(
@@ -7515,10 +7513,17 @@ def _prepare_fixed_economic_queue(
     selected.extend(urgent_pool[:take_urgent])
     remaining_budget = valuation_cap - len(selected)
 
-    # 2. Tier 2: Hard-Capped External Pending Reservation
+    # 2. Tier 2: Hard-Capped External Pending Reservation (filter lots ready to retry)
+    p4_ready_lots = [
+        lot for lot in p4_lots
+        if (
+            _parse_state_datetime(records[fixed_listing_id(lot)].get("retry_after")) is None
+            or run_now >= _parse_state_datetime(records[fixed_listing_id(lot)].get("retry_after"))
+        )
+    ]
     reserved_pending_cap = min(MAX_EXTERNAL_PENDING_PER_RUN, remaining_budget)
-    take_pending = min(len(p4_lots), reserved_pending_cap)
-    selected.extend(p4_lots[:take_pending])
+    take_pending = min(len(p4_ready_lots), reserved_pending_cap)
+    selected.extend(p4_ready_lots[:take_pending])
     remaining_budget = valuation_cap - len(selected)
 
     # 3. Tier 3: Anti-Starvation Discovery Sharing (P2_NEVER_EVALUATED & P3_STALE)

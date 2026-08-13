@@ -51,13 +51,14 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         self.assertEqual(reason, RawReasonCode.LANGUAGE_MISMATCH)
 
         # Test JustTCG estimator with wrong language
-        jt_data = {"price": 50.0, "language": "de", "currency": "EUR"}
+        jt_data = {"price": 50.0, "language": "de", "currency": "EUR", "condition": "NM", "variant": "normal"}
         est = raw_consensus.estimate_justtcg_raw(
             jt_data, variant="normal", lot_language="ja", listing_dimensions=dims
         )
         self.assertIsNotNone(est)
         self.assertEqual(est.confidence, "REJECTED")
         self.assertEqual(est.reason_code, RawReasonCode.LANGUAGE_MISMATCH)
+
 
     def test_2_wrong_set_or_number_mismatch(self):
         """Mismatched set/number in TCGdex resolution fails-closed."""
@@ -314,6 +315,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             "lowPrice": 38.0,
             "highPrice": 52.0,
             "language": "fr",
+            "condition": "NM",
+            "variant": "holo",
             "currency": "EUR",
             "salesCount": 5,
         }
@@ -328,7 +331,7 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
 
     def test_10_justtcg_mismatch_rejected(self):
         """Mismatched variant in JustTCG is rejected with reason code."""
-        jt_data = {"marketPrice": 45.0, "language": "fr", "currency": "EUR"}
+        jt_data = {"marketPrice": 45.0, "language": "fr", "currency": "EUR", "condition": "NM", "variant": "normal"}
         est = raw_consensus.estimate_justtcg_raw(
             jt_data, variant="normal", lot_language="fr", listing_dimensions={"finish": "holo"}
         )
@@ -352,6 +355,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
                 "justtcg": {
                     "currency": "EUR",
                     "language": "fr",
+                    "condition": "NM",
+                    "variant": "holo",
                     "marketPrice": 100.0,
                     "lowPrice": 80.0,
                     "highPrice": 120.0,
@@ -359,6 +364,7 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             },
             variants={"normal": False, "holo": True, "reverse": False},
         )
+
 
         signal = mm.raw_market_signal(target_lot, canonical)
         self.assertIsNotNone(signal)
@@ -481,11 +487,14 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
                 "justtcg": {
                     "currency": "EUR",
                     "language": "fr",
+                    "condition": "NM",
+                    "variant": "holo",
                     "marketPrice": 32.00,
                     "lowPrice": 25.00,
                     "highPrice": 38.00,
                 },
             },
+
             variants={"normal": False, "holo": True, "reverse": False},
         )
 
@@ -552,12 +561,77 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             self.assertIsNotNone(est_pc)
             self.assertEqual(est_pc.status, "ACCEPTED")
 
-        ebay_data = {"sales": [35.0, 38.0, 40.0], "currency": "EUR"}
+        ebay_data = {"sales": [35.0, 38.0, 40.0], "currency": "EUR", "language": "fr"}
         est_ebay = raw_consensus.estimate_ebay_raw(
             ebay_data, lot_language="fr", catalog_proven_finish="holo"
         )
         self.assertIsNotNone(est_ebay)
         self.assertEqual(est_ebay.status, "ACCEPTED")
+
+    def test_18_justtcg_missing_condition_or_variant_fails_closed(self):
+        """JustTCG missing condition or unproven variant must fail closed."""
+        # Missing condition key completely
+        jt_no_cond = {"marketPrice": 50.0, "language": "fr", "variant": "normal"}
+        est_no_cond = raw_consensus.estimate_justtcg_raw(jt_no_cond, variant="normal", lot_language="fr")
+        self.assertIsNotNone(est_no_cond)
+        self.assertEqual(est_no_cond.confidence, "REJECTED")
+        self.assertEqual(est_no_cond.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
+
+        # Missing variant key when catalog does not prove unique finish
+        jt_no_var = {"marketPrice": 50.0, "language": "fr", "condition": "NM"}
+        est_no_var = raw_consensus.estimate_justtcg_raw(jt_no_var, variant="normal", lot_language="fr", catalog_proven_finish=None)
+        self.assertIsNotNone(est_no_var)
+        self.assertEqual(est_no_var.confidence, "REJECTED")
+        self.assertEqual(est_no_var.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
+
+    def test_19_ebay_and_pricecharting_missing_dimensions_fail_closed(self):
+        """eBay missing language and PriceCharting unproven finish must fail closed."""
+        # eBay missing language key
+        ebay_no_lang = {"sales": [40.0, 42.0], "currency": "EUR"}
+        est_eb_no_lang = raw_consensus.estimate_ebay_raw(ebay_no_lang, lot_language="fr")
+        self.assertIsNotNone(est_eb_no_lang)
+        self.assertEqual(est_eb_no_lang.confidence, "REJECTED")
+        self.assertEqual(est_eb_no_lang.reason_code, RawReasonCode.LANGUAGE_MISMATCH)
+
+        # PriceCharting required holo finish unproven
+        pc_data = {"loose": 50.0, "currency": "USD"}
+        est_pc_unproven = raw_consensus.estimate_pricecharting_raw(
+            pc_data, lot_language="en", listing_dimensions={"finish": "holo"}, catalog_proven_finish=None
+        )
+        self.assertIsNotNone(est_pc_unproven)
+        self.assertEqual(est_pc_unproven.confidence, "REJECTED")
+        self.assertEqual(est_pc_unproven.reason_code, RawReasonCode.FINISH_MISMATCH)
+
+    def test_20_ambiguous_envelope_through_all_raw_centers(self):
+        """Ambiguous variant envelope correctly queries PriceCharting and eBay adapters through _all_raw_centers."""
+        import v4_canonical_multimarket as mm
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Charizard",
+            language_code="en",
+            pricing={
+                "pricecharting": {"loose": 100.0, "currency": "USD"},
+                "ebay_raw": {"sales": [90.0, 95.0, 100.0], "currency": "USD", "language": "en"},
+            },
+            variants={"normal": True, "holo": True},
+            unique_name_number=True,
+        )
+        target_lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/1",
+            title="Charizard 4/102",
+            current_price=50.0,
+            source_type="auction",
+            language="en",
+        )
+        with patch.object(mm, "_usd_per_eur", return_value=1.08), patch.object(raw_consensus, "_usd_per_eur", return_value=1.08):
+            centers = mm._all_raw_centers(canonical, target_lot)
+            self.assertTrue(any(src == "PriceCharting" for src, _, _ in centers))
+            self.assertTrue(any(src == "eBay RAW" for src, _, _ in centers))
 
 
 if __name__ == "__main__":

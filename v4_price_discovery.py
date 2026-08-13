@@ -500,10 +500,17 @@ def evaluate_price_discovery(
     num_grade = _numeric_grade(norm_grade)
     norm_lang = (target_language or language or "fr").strip().lower()
 
-    # Determine actual recent exact sales (<= 90 days)
+    # Determine actual recent exact sales (<= 90 days) matching exact grader and grade
     filtered_recent_sales: list[Any] = list(recent_exact_sales)
     if not filtered_recent_sales and exact_grader_sales:
         for s in exact_grader_sales:
+            s_grader = getattr(s, "grader", None)
+            if s_grader is not None and str(s_grader or "").strip().upper() != norm_grader:
+                continue
+            s_grade = getattr(s, "grade", None)
+            if s_grade is not None and _numeric_grade(s_grade) != num_grade:
+                continue
+
             s_sold_at = getattr(s, "sold_at", None)
             s_age = getattr(s, "age_days", None)
             if s_sold_at is not None and now is not None:
@@ -517,6 +524,7 @@ def evaluate_price_discovery(
                     filtered_recent_sales.append(s)
             elif not hasattr(s, "sold_at") and not hasattr(s, "age_days"):
                 filtered_recent_sales.append(s)
+
 
 
     # If temporal adjustment is not precomputed but historical sales are supplied, compute it
@@ -571,7 +579,7 @@ def evaluate_price_discovery(
             )
         )
         has_active_ask_only = False
-    
+
     for anchor in adjacent_anchors:
         reasons = list(anchor.uncertainty_reasons)
         weight = float(anchor.weight)
@@ -618,8 +626,9 @@ def evaluate_price_discovery(
 
     # 2. Determine credible high reference from solid anchors (PSA, RAW, high sold comps)
     sold_anchors = [a for a in credible_anchors if not a.is_active_ask and a.price_type != "ASK"]
-    
+
     if not sold_anchors:
+
         # Negative regression: sparse market with only stale active asks or no anchors
         return PriceDiscoverySignal(
             listing_identity=listing_identity,
@@ -646,10 +655,10 @@ def evaluate_price_discovery(
     weighted_price = sum(a.price * a.weight for a in sold_anchors) / max(0.001, total_weight)
     credible_high_ref = round(weighted_price, 2)
 
-    # If PSA same-grade or top-grade sold anchor exists, compute robust benchmark with haircuts applied
+    # If PSA strict same-grade sold anchor exists, compute robust benchmark with haircuts applied
     psa_anchors = [
         a for a in sold_anchors
-        if (a.grader or "").upper() == "PSA" and (_numeric_grade(a.grade) == num_grade or ((num_grade or 0) >= 9.5 and _numeric_grade(a.grade) == 10.0))
+        if (a.grader or "").upper() == "PSA" and _numeric_grade(a.grade) == num_grade
     ]
     if psa_anchors:
         effective_psa_prices = [a.price * a.weight for a in psa_anchors if a.price > 0 and a.weight > 0]
@@ -736,11 +745,22 @@ def evaluate_price_discovery(
         for a in sold_anchors
     )
 
+    has_same_grade_or_raw = any(
+        (_numeric_grade(a.grade) == num_grade)
+        or a.anchor_type in {"RAW_CONSENSUS", "EXACT_GCC_SOLD", "TEMPORALLY_ADJUSTED_ESTIMATE"}
+        for a in sold_anchors
+    )
+
     # 5. Classify Category
     # Is it a crossgrade, secondary-grader discount, or illiquid price discovery?
-    if crossgrade_probability is not None and crossgrade_probability > 0.5 and psa_anchors and (num_grade or 0) >= 9.0:
+    has_psa_crossgrade_anchor = any(
+        (a.grader or "").upper() == "PSA" and (_numeric_grade(a.grade) == num_grade or _numeric_grade(a.grade) == 10.0)
+        for a in sold_anchors
+    )
+    if crossgrade_probability is not None and crossgrade_probability > 0.5 and has_psa_crossgrade_anchor and (num_grade or 0) >= 9.0:
         category = CATEGORY_CROSSGRADE_OPPORTUNITY
-        main_thesis = f"High-grade {norm_grader} {norm_grade} with strong PSA crossgrade upside ({upside_ratio:.1f}x)"
+        main_thesis = f"High-grade {norm_grader} {norm_grade} with potential PSA crossgrade ({upside_ratio:.1f}x) [DIAGNOSTIC]"
+
     elif norm_grader in {"PCA", "BGS", "CGC"} and (num_grade or 0) >= 9.5 and psa_anchors and exact_grader_liquidity in {LIQUIDITY_MODERATE, LIQUIDITY_HIGH}:
         category = CATEGORY_SECONDARY_GRADER_DISCOUNT
         main_thesis = f"Secondary grader {norm_grader} {norm_grade} priced at substantial discount vs PSA benchmark ({upside_ratio:.1f}x)"
@@ -755,7 +775,13 @@ def evaluate_price_discovery(
         main_thesis = f"Sparse exact {norm_grader} {norm_grade} liquidity rescued by {len(sold_anchors)} adjacent sold/consensus anchors ({upside_ratio:.1f}x upside)"
 
     # 6. Manual Review Recommendation Decision
-    if not has_same_lang_or_raw and len(sold_anchors) <= 1:
+    if not has_same_grade_or_raw:
+        # Wide-grade / higher-grade anchors alone cannot create an opportunity without same-grade/exact/raw proof
+        manual_review = False
+    elif not has_same_lang_or_raw and len(sold_anchors) <= 1:
+        manual_review = False
+    elif category == CATEGORY_CROSSGRADE_OPPORTUNITY:
+        # Crossgrade opportunities remain diagnostic without a dedicated live crossgrade pipeline
         manual_review = False
     elif gcc_price >= credible_high_ref * 0.85 or upside_ratio < 1.25:
         manual_review = False
@@ -769,6 +795,7 @@ def evaluate_price_discovery(
         manual_review = True
     else:
         manual_review = False
+
 
     t_res = temporal_adjustment
     return PriceDiscoverySignal(

@@ -322,11 +322,11 @@ def compute_robust_statistics(values: Sequence[float]) -> Optional[RobustStatist
     pts.sort()
     n = len(pts)
     med = float(median(pts))
-    
+
     # MAD (Median Absolute Deviation)
     abs_deviations = [abs(x - med) for x in pts]
     mad = float(median(abs_deviations))
-    
+
     # Quartiles & IQR
     if n >= 4:
         mid = n // 2
@@ -368,18 +368,19 @@ def compute_robust_statistics(values: Sequence[float]) -> Optional[RobustStatist
 
 def get_catalog_proven_finish(variants: Mapping[str, Any]) -> Optional[str]:
     """Deterministically prove if a card only exists in ONE finish based on TCGdex catalog metadata.
-    
+
     Returns 'normal', 'holo', or 'reverse' ONLY when mathematically proven by catalog invariants.
     Returns None if multiple finishes exist or if variants payload is empty/unproven.
     """
     if not isinstance(variants, Mapping) or not variants:
         return None
-    
+
     flags = {
         "normal": variants.get("normal") is True,
         "holo": variants.get("holo") is True,
         "reverse": variants.get("reverse") is True,
     }
+
     true_keys = [k for k, v in flags.items() if v]
     if len(true_keys) == 1:
         return true_keys[0]
@@ -801,7 +802,6 @@ def estimate_justtcg_raw(
 
     # Provider-proven language check
     raw_lang = justtcg_data.get("language")
-
     if not raw_lang:
         return RawProviderEstimate(
             provider="JustTCG",
@@ -816,9 +816,21 @@ def estimate_justtcg_raw(
         )
     data_lang = _normalize_lang(str(raw_lang))
 
-    # Provider-proven condition check
+    # Provider-proven condition check: missing condition must fail closed
     raw_cond = str(justtcg_data.get("condition") or "").strip().upper()
-    if raw_cond and raw_cond not in {"NM", "NEAR_MINT", "NEAR MINT", "MINT", "EX+", "EXCELLENT"}:
+    if not raw_cond:
+        return RawProviderEstimate(
+            provider="JustTCG",
+            central=0.0,
+            low=0.0,
+            high=0.0,
+            language=data_lang,
+            confidence="REJECTED",
+            reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+            status="REJECTED",
+            note="JustTCG rejected (condition not proven in provider response)",
+        )
+    if raw_cond not in {"NM", "NEAR_MINT", "NEAR MINT", "MINT"}:
         return RawProviderEstimate(
             provider="JustTCG",
             central=0.0,
@@ -831,9 +843,25 @@ def estimate_justtcg_raw(
             note=f"JustTCG rejected (condition {raw_cond} is not Near Mint/Mint)",
         )
 
-    # Provider-proven variant check
+    # Provider-proven variant check: missing variant fails closed unless catalog uniqueness proves it
     raw_variant = str(justtcg_data.get("variant") or justtcg_data.get("finish") or "").strip().lower()
-    prov_variant = raw_variant or (catalog_proven_finish if catalog_proven_finish else variant)
+    if not raw_variant:
+        if catalog_proven_finish:
+            prov_variant = catalog_proven_finish
+        else:
+            return RawProviderEstimate(
+                provider="JustTCG",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language=data_lang,
+                confidence="REJECTED",
+                reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+                status="REJECTED",
+                note="JustTCG rejected (variant/finish not proven in provider response)",
+            )
+    else:
+        prov_variant = raw_variant
 
     is_compat, reason_code, reason_msg = validate_microvariant_compatibility(
         dims, prov_variant, data_lang, lot_language, catalog_proven_finish
@@ -902,6 +930,26 @@ def estimate_pricecharting_raw(
     if not isinstance(pricecharting_data, Mapping):
         return None
 
+    dims = listing_dimensions or {}
+    norm_lot_lang = _normalize_lang(lot_language)
+
+    # Provider identity checks: finish/variant requirement
+    target_finish = dims.get("finish") or dims.get("variant")
+    if target_finish in {"holo", "reverse", "reverse-holo"} and catalog_proven_finish != target_finish:
+        prov_finish = str(pricecharting_data.get("finish") or pricecharting_data.get("variant") or "").strip().lower()
+        if not prov_finish or prov_finish != target_finish:
+            return RawProviderEstimate(
+                provider="PriceCharting",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language="en",
+                confidence="REJECTED",
+                reason_code=RawReasonCode.FINISH_MISMATCH,
+                status="REJECTED",
+                note=f"PriceCharting rejected (finish {target_finish} not proven in provider data)",
+            )
+
     loose_val = _finite_positive(
         pricecharting_data.get("ungraded")
         or pricecharting_data.get("loose")
@@ -915,7 +963,6 @@ def estimate_pricecharting_raw(
     if central_eur is None:
         return None
 
-    norm_lot_lang = _normalize_lang(lot_language)
     is_exact_lang = (norm_lot_lang == "en")
     confidence = "MODERATE" if is_exact_lang else "WEAK"
     status = "ACCEPTED" if is_exact_lang else "DOWNWEIGHTED"
@@ -947,10 +994,45 @@ def estimate_ebay_raw(
     listing_dimensions: Optional[Mapping[str, str]] = None,
     catalog_proven_finish: Optional[str] = None,
 ) -> Optional[RawProviderEstimate]:
-
     """Robust estimator for exact eBay sold raw comparables."""
     if not isinstance(ebay_data, Mapping):
         return None
+
+    dims = listing_dimensions or {}
+    norm_lot_lang = _normalize_lang(lot_language)
+
+    # Provider-proven language check: missing language fails closed
+    raw_lang = ebay_data.get("language")
+    if not raw_lang:
+        return RawProviderEstimate(
+            provider="eBay RAW",
+            central=0.0,
+            low=0.0,
+            high=0.0,
+            language="",
+            confidence="REJECTED",
+            reason_code=RawReasonCode.LANGUAGE_MISMATCH,
+            status="REJECTED",
+            note="eBay RAW rejected (language not proven in provider response)",
+        )
+    data_lang = _normalize_lang(str(raw_lang))
+
+    # Provider-proven variant check
+    target_finish = dims.get("finish") or dims.get("variant")
+    if target_finish in {"holo", "reverse", "reverse-holo"} and catalog_proven_finish != target_finish:
+        prov_finish = str(ebay_data.get("variant") or ebay_data.get("finish") or "").strip().lower()
+        if not prov_finish or prov_finish != target_finish:
+            return RawProviderEstimate(
+                provider="eBay RAW",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language=data_lang,
+                confidence="REJECTED",
+                reason_code=RawReasonCode.FINISH_MISMATCH,
+                status="REJECTED",
+                note=f"eBay RAW rejected (finish {target_finish} not proven in provider response)",
+            )
 
     sales = ebay_data.get("sales")
     if not isinstance(sales, Sequence) or not sales:
@@ -959,6 +1041,9 @@ def estimate_ebay_raw(
     eur_sales: list[float] = []
     for s in sales:
         if isinstance(s, Mapping):
+            cond = str(s.get("condition") or "").strip().upper()
+            if cond and cond not in {"NM", "NEAR_MINT", "NEAR MINT", "MINT", "UNGRADED", "RAW"}:
+                continue
             p = _finite_positive(s.get("price"))
             curr = str(s.get("currency") or "EUR")
             converted = _to_eur(p, curr)
@@ -981,10 +1066,7 @@ def estimate_ebay_raw(
     high_eur = max(stats.retained)
     count = len(eur_sales)
 
-    norm_lot_lang = _normalize_lang(lot_language)
-    data_lang = _normalize_lang(str(ebay_data.get("language") or norm_lot_lang))
     is_exact_lang = (data_lang == norm_lot_lang)
-
     confidence = "STRONG" if (count >= 3 and is_exact_lang) else "MODERATE"
     status = "ACCEPTED" if is_exact_lang else "DOWNWEIGHTED"
 
@@ -1000,13 +1082,14 @@ def estimate_ebay_raw(
         is_exact_variant=True,
         is_exact_condition=True,
         dispersion=stats.dispersion,
-        anomaly_flags=(),
+        anomaly_flags=() if is_exact_lang else ("PROXY_LANGUAGE",),
         confidence=confidence,
         reason_code=RawReasonCode.EXACT_COMPATIBLE if is_exact_lang else RawReasonCode.LANGUAGE_MISMATCH,
         status=status,
         provenance={"sales_count": count, "sales": eur_sales, "mad": stats.mad},
-        note=f"eBay RAW ({count} ventes: {central_eur:.2f} €)",
+        note=f"eBay RAW ({count} ventes: {central_eur:.2f} € | {data_lang})",
     )
+
 
 
 def arbitrate_raw_consensus(
@@ -1014,12 +1097,13 @@ def arbitrate_raw_consensus(
     lot_language: str = "fr",
 ) -> RawConsensusResult:
     """Arbitrate multi-provider estimates using statistical consensus and reason-coded diagnostics.
-    
+
     1. Rejects incompatible microvariants and anomalous outliers with precise reason codes.
     2. Prioritizes exact-language providers for non-English cards.
     3. Computes cross-provider dispersion & disagreement ratio.
     4. Produces rich observability audit logs for diagnostics and notifications.
     """
+
     valid_estimates = [e for e in estimates if e is not None]
     if not valid_estimates:
         return RawConsensusResult(

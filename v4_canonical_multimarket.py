@@ -897,7 +897,7 @@ def raw_market_signal(
         pricecharting = pricing.get("pricecharting")
         if isinstance(pricecharting, Mapping):
             pc_est = raw_consensus.estimate_pricecharting_raw(
-                pricecharting, lot_lang, expected
+                pricecharting, lot_lang, expected, catalog_proven_finish=catalog_proven
             )
             if pc_est is not None:
                 estimates.append(pc_est)
@@ -905,10 +905,11 @@ def raw_market_signal(
         ebay_raw = pricing.get("ebay_raw")
         if isinstance(ebay_raw, Mapping):
             eb_est = raw_consensus.estimate_ebay_raw(
-                ebay_raw, lot_lang, expected
+                ebay_raw, lot_lang, expected, catalog_proven_finish=catalog_proven
             )
             if eb_est is not None:
                 estimates.append(eb_est)
+
 
         consensus = raw_consensus.arbitrate_raw_consensus(estimates, lot_lang)
         if consensus.status == "REJECTED" or consensus.central <= 0:
