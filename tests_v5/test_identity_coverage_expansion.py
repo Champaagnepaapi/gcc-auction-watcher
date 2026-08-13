@@ -1393,6 +1393,62 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         )
         self.assertTrue(res_non_promo.blocks_economics)
 
+    def test_bidirectional_and_multilingual_title_finishes(self):
+        """Bidirectional phrases like 'Holo Reverse' or 'Reverse Pokeball' must be extracted safely."""
+        # 1. Holo Reverse -> Reverse Holo (never misclassified as lone Holo)
+        finish, contra = extract_title_finish("Pokemon Pikachu 025/165 Holo Reverse FR")
+        self.assertEqual(finish, "Reverse Holo")
+        self.assertFalse(contra)
+
+        finish_de, contra_de = extract_title_finish("Glurak 006/165 Holo-Reverse Deutsch")
+        self.assertEqual(finish_de, "Reverse Holo")
+        self.assertFalse(contra_de)
+
+        finish_fr, contra_fr = extract_title_finish("Dracaufeu Reverse Holographique 006/165")
+        self.assertEqual(finish_fr, "Reverse Holo")
+        self.assertFalse(contra_fr)
+
+        # 2. Reverse Poké Ball / Reverse Master Ball
+        finish_pb, contra_pb = extract_title_finish("Pikachu Reverse Pokeball 025/165")
+        self.assertEqual(finish_pb, "Poké Ball Reverse")
+        self.assertFalse(contra_pb)
+
+        finish_mb, contra_mb = extract_title_finish("Pikachu Reverse Master Ball 025/165")
+        self.assertEqual(finish_mb, "Master Ball Reverse")
+        self.assertFalse(contra_mb)
+
+        # 3. Multilingual Nicht-Holo / Holographisch / Olografica
+        finish_nh, contra_nh = extract_title_finish("Glurak Nicht-Holo 006/165")
+        self.assertEqual(finish_nh, "Non-Holo")
+        self.assertFalse(contra_nh)
+
+        finish_hg, contra_hg = extract_title_finish("Gengar Holographisch 094/165")
+        self.assertEqual(finish_hg, "Holo")
+        self.assertFalse(contra_hg)
+
+        finish_ol, contra_ol = extract_title_finish("Umbreon Olografica 133/165")
+        self.assertEqual(finish_ol, "Holo")
+        self.assertFalse(contra_ol)
+
+    def test_pure_wpromo_single_finish_applicability(self):
+        """TCGdex cards with wPromo=True and no normal/reverse/holo flags are single-variant finish."""
+        card_promo = {
+            "id": "svp-001",
+            "name": "Pikachu",
+            "variants": {
+                "firstEdition": False,
+                "holo": False,
+                "normal": False,
+                "reverse": False,
+                "wPromo": True,
+            },
+        }
+        app = tcgdex_microvariant_applicability(card_promo)
+        self.assertTrue(app.finish_proven_single)
+        self.assertFalse(app.finish_multiple_variants)
+        self.assertTrue(app.promo_proven_single)
+        self.assertTrue(app.single_promo)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -917,7 +917,7 @@ _TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "masterball_reverse",
         "Master Ball Reverse",
         re.compile(
-            r"\bmaster[- ]?ball\s+reverse(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
+            r"\b(?:master[- ]?ball\s+reverse|reverse\s+master[- ]?ball)(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
             re.IGNORECASE,
         ),
     ),
@@ -925,7 +925,7 @@ _TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "pokeball_reverse",
         "Poké Ball Reverse",
         re.compile(
-            r"\bpok[eé][- ]?ball\s+reverse(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
+            r"\b(?:pok[eé][- ]?ball\s+reverse|reverse\s+pok[eé][- ]?ball)(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
             re.IGNORECASE,
         ),
     ),
@@ -933,7 +933,7 @@ _TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "cosmos_holo",
         "Cosmos Holo",
         re.compile(
-            r"\bcosmos\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            r"\bcosmos\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
             re.IGNORECASE,
         ),
     ),
@@ -941,7 +941,7 @@ _TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "galaxy_holo",
         "Galaxy Holo",
         re.compile(
-            r"\bgalaxy\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            r"\bgalaxy\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
             re.IGNORECASE,
         ),
     ),
@@ -949,7 +949,7 @@ _TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "cracked_ice_holo",
         "Cracked Ice Holo",
         re.compile(
-            r"\bcracked\s+ice\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            r"\bcracked\s+ice\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
             re.IGNORECASE,
         ),
     ),
@@ -957,15 +957,24 @@ _TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
         "stamped_holo",
         "Stamped Holo",
         re.compile(
-            r"\bstamped\s+(?:holo(?:foil)?|holographic|holographique|foil)\b",
+            r"\bstamped\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
             re.IGNORECASE,
         ),
     ),
 )
 
-_TITLE_NON_HOLO_PATTERN = re.compile(r"\b(?:non[- ]holo|nonholo)\b", re.IGNORECASE)
-_TITLE_REVERSE_HOLO_PATTERN = re.compile(r"\b(?:reverse[- ]holo(?:foil)?|reverse[- ]holofoil)\b", re.IGNORECASE)
-_TITLE_HOLOFOIL_PATTERN = re.compile(r"\b(?:holofoil|holographique|holographic)\b", re.IGNORECASE)
+_TITLE_NON_HOLO_PATTERN = re.compile(
+    r"\b(?:non[- ]holo|nonholo|nicht[- ]holo|no[- ]holo|non[- ]holograph(?:ic|ique|isch)|non[- ]olografic[ao]|no[- ]hologr[aá]fic[ao])\b",
+    re.IGNORECASE,
+)
+_TITLE_REVERSE_HOLO_PATTERN = re.compile(
+    r"\b(?:reverse[- ]holo(?:foil)?|holo[- ]reverse|reverse[- ]holofoil|holofoil[- ]reverse|reverse[- ]holograph(?:ic|ique|isch)|holograph(?:ic|ique|isch)[- ]reverse|reverse[- ]olografic[ao]|olografic[ao][- ]reverse|reverse[- ]hologr[aá]fic[ao]|hologr[aá]fic[ao][- ]reverse)\b",
+    re.IGNORECASE,
+)
+_TITLE_HOLOFOIL_PATTERN = re.compile(
+    r"\b(?:holofoil|holographique|holographic|holographisch|holografisch|olografica|olografico|hologr[aá]fica|hologr[aá]fico)\b",
+    re.IGNORECASE,
+)
 _TITLE_STANDALONE_HOLO_PATTERN = re.compile(r"\bholo\b", re.IGNORECASE)
 
 

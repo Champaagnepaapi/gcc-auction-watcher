@@ -180,6 +180,9 @@ def tcgdex_microvariant_applicability(
     if w_promo is True:
         single_promo = True
         promo_proven_single = True
+        if len(true_finishes) == 0:
+            finish_proven_single = True
+            finish_multiple = False
     elif w_promo is False:
         single_promo = False
         promo_proven_single = True

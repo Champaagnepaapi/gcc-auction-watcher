@@ -56,8 +56,8 @@ def _finish_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
         ("galaxy_holo", ("galaxy holo", "galaxy holofoil")),
         ("cracked_ice_holo", ("cracked ice holo", "cracked ice holofoil")),
         ("stamped_holo", ("stamped holo", "stamped holofoil")),
-        ("pokeball_reverse", ("pokeball reverse", "poke ball reverse")),
-        ("masterball_reverse", ("masterball reverse", "master ball reverse")),
+        ("pokeball_reverse", ("pokeball reverse", "poke ball reverse", "reverse pokeball", "reverse poke ball")),
+        ("masterball_reverse", ("masterball reverse", "master ball reverse", "reverse masterball", "reverse master ball")),
     )
     for canonical, aliases in special_aliases:
         if any(alias in text for alias in aliases):
@@ -69,10 +69,21 @@ def _finish_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
         text,
         (
             "reverse holo",
+            "holo reverse",
             "reverse holographic",
+            "holographic reverse",
             "reverse holographique",
+            "holographique reverse",
+            "reverse holographisch",
+            "holographisch reverse",
+            "reverse olografica",
+            "olografica reverse",
+            "reverse holografica",
+            "holografica reverse",
             "reverse holofoil",
+            "holofoil reverse",
             "reverse foil",
+            "foil reverse",
             "reverse",
         ),
     ):
@@ -81,8 +92,14 @@ def _finish_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
         text,
         (
             "non holo",
+            "nonholo",
+            "nicht holo",
+            "no holo",
             "non holographic",
             "non holographique",
+            "non holographisch",
+            "non olografica",
+            "no holografica",
             "non holofoil",
             "normal",
             "standard",
@@ -91,7 +108,19 @@ def _finish_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
         return FINISH_STANDARD, None
     if _contains_any(
         text,
-        ("holo", "holographic", "holographique", "holofoil", "foil"),
+        (
+            "holo",
+            "holographic",
+            "holographique",
+            "holographisch",
+            "holografisch",
+            "olografica",
+            "olografico",
+            "holografica",
+            "holografico",
+            "holofoil",
+            "foil",
+        ),
     ):
         return FINISH_HOLO, None
     return None, None
