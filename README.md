@@ -260,14 +260,16 @@ Le RAW :
 
 ### Pipeline de validation & Backport sélectif V5 → V4
 Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5 :
-1. **Parser multilingue déterministe** : Extraction stricte des éditions (1ère Édition, 1. Edition, Prima Edizione, Unlimited), finitions (Holo, Reverse Holo, Nicht-Holo, Olografica) et finitions spéciales (Poke Ball, Master Ball, Cosmos, Galaxy, Cracked Ice). Les contradictions de titre échouent immédiatement en `__conflict__` fail-closed.
-2. **Validateur de microvariantes (*Microvariant Gate*) & Normalisation sémantique** :
+1. **Fournisseurs de production live vs adaptateurs spécialisés** :
+   - **Production live** : TCGdex (données de catalogue Cardmarket et TCGplayer intégrées de façon synchrone via requêtes déterministes).
+   - **Adaptateurs spécialisés** : JustTCG, PriceCharting et eBay RAW sont implémentés sous forme d'adaptateurs stricts avec validation des dimensions déterministes (langue, condition NM/Mint, finish prouvé par le provider ou le catalogue). Ils ne prétendent pas être des flux temps réel non bornés.
+2. **Parser multilingue déterministe** : Extraction stricte des éditions (1ère Édition, 1. Edition, Prima Edizione, Unlimited), finitions (Holo, Reverse Holo, Nicht-Holo, Olografica) et finitions spéciales (Poke Ball, Master Ball, Cosmos, Galaxy, Cracked Ice). Les contradictions de titre échouent immédiatement en `__conflict__` fail-closed.
+3. **Validateur de microvariantes (*Microvariant Gate*) & Normalisation sémantique** :
    - Blocage systématique des comparables incompatibles (`FINISH_MISMATCH`, `EDITION_MISMATCH`, `PROMO_MISMATCH`, `LANGUAGE_MISMATCH`, `SET_MISMATCH`, `NUMBER_MISMATCH`).
    - Validation symétrique des promos (rejet listing promo vs provider régulier ET listing régulier vs provider promo).
    - Normalisation multi-tokens robuste des éditions (espaces, tirets, camelCase, compact, ordinaux multilingues : *1ère Édition, 1. Edition, 1a Edición, Prima Edizione, Unlimited, Shadowless*).
    - Décomposition des labels composés (*1stEditionHolofoil, 1steditionreverseholo, unlimitedholofoil*) avec vérification indépendante de chaque dimension.
-3. **Preuve d'unicité catalogue (*Catalog Uniqueness*)** : Déduction de finition déterministe uniquement lorsque l'invariant TCGdex prouve mathématiquement qu'une seule variante existe (`variants = {"normal": False, "holo": True, "reverse": False}`).
-4. **Intégration JustTCG RAW** : Fournisseur indépendant de référence Near Mint avec validation linguistique exacte (FR).
+4. **Preuve d'unicité catalogue (*Catalog Uniqueness*)** : Déduction de finition déterministe uniquement lorsque l'invariant TCGdex prouve mathématiquement qu'une seule variante existe (`variants = {"normal": False, "holo": True, "reverse": False}`).
 5. **Rejet des anomalies statistiques (*Anti-Outlier Engine*)** :
    - Déconnexion du plancher (*Floor Disconnect*) : détection des écarts anormaux entre trend/avg30 et `low`.
    - Rupture inter-périodes (*Period Divergence*) : détection des effondrements récents (`avg7 < 0.45 * avg30`).
@@ -276,6 +278,8 @@ Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5
    - Traçabilité complète du statut de chaque fournisseur (`ACCEPTED`, `DOWNWEIGHTED`, `REJECTED`) avec reason codes standardisés (`EXACT_COMPATIBLE`, `OUTLIER_CONTAMINATION`, `LANGUAGE_MISMATCH`, `FINISH_MISMATCH`, `PROVIDER_DISAGREEMENT`, etc.).
    - Filtrage strict de compatibilité dimensionnelle sur chaque palier avant inclusion dans l'enveloppe de variantes ambiguës.
    - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants compatibles (une source unique reste diagnostique / WEAK).
+   - Les conflits ou désaccords inter-fournisseurs (`disagreement_ratio > 1.30`) bloquent strictement l'utilisation de l'ancre RAW dans le price-discovery.
+
 
 ### Observabilité du Backlog Externe & ETA Réaliste
 La couverture économique sépare strictement :

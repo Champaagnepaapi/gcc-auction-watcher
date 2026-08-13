@@ -432,5 +432,62 @@ class FixedQueueFourTierSchedulingTests(unittest.TestCase):
         self.assertEqual(category, watcher.QUEUE_P4_EXTERNAL_PENDING)
 
 
+    def test_external_arbitration_selected_pending_remains_in_backlog(self):
+        """Selected P4 items that remain EXTERNAL_PENDING during arbitration must remain in external backlog."""
+        lot = make_lot("p4-item-1", price=50.0)
+        item_id = watcher.fixed_listing_id(lot)
+        candidate = watcher.ValuationCandidate(
+            gcc=watcher.GccMarketEvidence(
+                lot=lot,
+                sales=[],
+                estimate=None,
+                opportunity=None,
+                branch=watcher.GCC_BRANCH_UNAVAILABLE,
+                strength=watcher.EVIDENCE_UNAVAILABLE,
+                rejection="historique vide",
+                rejection_category=watcher.REJECTION_EMPTY_HISTORY,
+            )
+        )
+        candidate.fixed_queue_category = watcher.QUEUE_P4_EXTERNAL_PENDING
+
+        queue_diag = watcher.FixedEconomicQueueDiagnostics(processing_budget=120, p4_processing_budget=10)
+        queue_diag.initialized = True
+        queue_diag.register(item_id, watcher.QUEUE_P4_EXTERNAL_PENDING)
+        queue_diag.record_selected(item_id)
+        queue_diag.record_processed(item_id)
+
+        diagnostics = watcher.RunDiagnostics()
+        diagnostics.fixed_queue = queue_diag
+        diagnostics.fixed_economic_coverage = queue_diag
+
+        # External evidence returns EXTERNAL_PENDING
+        def mock_pending_provider(cand, budgets, now):
+            return watcher.ExternalMarketEvidence(
+                watcher.external_commercial_identity_key(cand.lot),
+                watcher.EXTERNAL_PENDING,
+                watcher.EVIDENCE_UNAVAILABLE,
+                "poketrace",
+                note="budget exhausted",
+            )
+
+        budgets = watcher.ValidationBudgets()
+        state = {watcher.FIXED_QUEUE_STATE_KEY: {"items": {item_id: {}}}}
+
+        watcher.process_external_market_candidates(
+            None,
+            [candidate],
+            state,
+            budgets,
+            diagnostics,
+            NOW,
+            provider=mock_pending_provider,
+        )
+
+        # After arbitration, candidate remains in external pending backlog and coverage is INCOMPLETE
+        self.assertEqual(queue_diag.external_pending_backlog, 1)
+        self.assertEqual(queue_diag.external_market_coverage_status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(queue_diag.status, watcher.COVERAGE_INCOMPLETE)
+
+
 if __name__ == "__main__":
     unittest.main()

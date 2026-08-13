@@ -914,5 +914,72 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
         self.assertAlmostEqual(robust_ref, 100.0, delta=2.0)
 
 
+    def test_12_psa_benchmark_applies_language_haircuts_and_does_not_take_max(self):
+        """PSA benchmark applies language haircuts directly to the benchmark price calculation."""
+        anchor_en = pd.AdjacentAnchor(
+            anchor_type="PSA_SAME_GRADE",
+            source="ebay_sold",
+            grader="PSA",
+            grade="10",
+            language="en",
+            price=200.0,
+            price_type="SOLD",
+            sale_count=1,
+            weight=1.0,
+        )
+        sig = pd.evaluate_price_discovery(
+            listing_identity="Mew EN",
+            gcc_price=40.0,
+            grader="PCA",
+            grade="10",
+            target_language="fr",
+            adjacent_anchors=[anchor_en],
+        )
+        # English anchor weight is halved (0.50), robust ref becomes ~100.0, not raw 200.0
+        self.assertAlmostEqual(sig.credible_high_reference, 100.0, delta=5.0)
+
+    def test_13_cross_language_anchor_alone_fails_closed_manual_review(self):
+        """Cross-language anchor alone without same-language / raw support cannot trigger manual review."""
+        anchor_en = pd.AdjacentAnchor(
+            anchor_type="PSA_SAME_GRADE",
+            source="ebay_sold",
+            grader="PSA",
+            grade="10",
+            language="en",
+            price=200.0,
+            price_type="SOLD",
+            sale_count=1,
+            weight=1.0,
+        )
+        sig = pd.evaluate_price_discovery(
+            listing_identity="Mew EN",
+            gcc_price=40.0,
+            grader="PCA",
+            grade="10",
+            target_language="fr",
+            adjacent_anchors=[anchor_en],
+        )
+        self.assertFalse(sig.manual_review_recommended)
+
+    def test_14_liquidity_based_on_recent_sales_only(self):
+        """Target grader with 5 exact sales older than 90 days remains LIQUIDITY_LOW."""
+        now = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
+        exact_sales = [
+            watcher.ComparableSale(price=50.0, grader="PCA", grade=10.0, sold_at=now - timedelta(days=120), exact_card=True)
+            for _ in range(5)
+        ]
+        sig = pd.evaluate_price_discovery(
+            listing_identity="Mew PCA 10",
+            gcc_price=40.0,
+            grader="PCA",
+            grade="10",
+            exact_grader_sales=exact_sales,
+            target_language="fr",
+            now=now,
+        )
+        self.assertEqual(sig.exact_grader_liquidity, pd.LIQUIDITY_LOW)
+        self.assertEqual(sig.liquidity, pd.LIQUIDITY_LOW)
+
+
 if __name__ == "__main__":
     unittest.main()

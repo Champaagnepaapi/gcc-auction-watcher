@@ -503,12 +503,68 @@ def estimate_cardmarket_raw(
             note=f"Cardmarket rejected ({reason_msg})",
         )
 
-    suffix = "-holo" if variant == "holo" else ""
-    trend = _finite_positive(cardmarket_data.get(f"trend{suffix}") or cardmarket_data.get("trend"))
-    avg1 = _finite_positive(cardmarket_data.get(f"avg{suffix}") or cardmarket_data.get("avg") or cardmarket_data.get(f"avg1{suffix}") or cardmarket_data.get("avg1"))
-    avg7 = _finite_positive(cardmarket_data.get(f"avg7{suffix}") or cardmarket_data.get("avg7"))
-    avg30 = _finite_positive(cardmarket_data.get(f"avg30{suffix}") or cardmarket_data.get("avg30"))
-    low = _finite_positive(cardmarket_data.get(f"low{suffix}") or cardmarket_data.get("low") or cardmarket_data.get(f"lowPrice{suffix}") or cardmarket_data.get("lowPrice"))
+    suffix = "-holo" if variant == "holo" else ("-reverse" if variant in {"reverse", "reverse-holo"} else "")
+    has_holo_keys = any(cardmarket_data.get(k) is not None for k in ("trend-holo", "trendHolo", "avg-holo", "avgHolo", "avg1-holo", "avg7-holo", "avg7Holo", "avg30-holo", "avg30Holo", "low-holo", "lowHolo", "lowPrice-holo"))
+    has_rev_keys = any(cardmarket_data.get(k) is not None for k in ("trend-reverse", "trendReverse", "avg-reverse", "avgReverse", "avg7-reverse", "avg30-reverse", "low-reverse", "lowPrice-reverse"))
+
+    if variant == "holo":
+        if not has_holo_keys and catalog_proven_finish != "holo":
+            return RawProviderEstimate(
+                provider="Cardmarket",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language=cm_lang,
+                is_exact_language=(cm_lang == norm_lot_lang),
+                confidence="REJECTED",
+                reason_code=RawReasonCode.FINISH_MISMATCH,
+                status="REJECTED",
+                note="Cardmarket holo variant data not provided (cannot fallback to generic normal price)",
+            )
+        trend = _finite_positive(cardmarket_data.get("trend-holo") or cardmarket_data.get("trendHolo") or (cardmarket_data.get("trend") if catalog_proven_finish == "holo" else None))
+        avg1 = _finite_positive(cardmarket_data.get("avg-holo") or cardmarket_data.get("avgHolo") or cardmarket_data.get("avg1-holo") or (cardmarket_data.get("avg") if catalog_proven_finish == "holo" else None))
+        avg7 = _finite_positive(cardmarket_data.get("avg7-holo") or cardmarket_data.get("avg7Holo") or (cardmarket_data.get("avg7") if catalog_proven_finish == "holo" else None))
+        avg30 = _finite_positive(cardmarket_data.get("avg30-holo") or cardmarket_data.get("avg30Holo") or (cardmarket_data.get("avg30") if catalog_proven_finish == "holo" else None))
+        low = _finite_positive(cardmarket_data.get("low-holo") or cardmarket_data.get("lowHolo") or cardmarket_data.get("lowPrice-holo") or (cardmarket_data.get("low") if catalog_proven_finish == "holo" else None))
+    elif variant in {"reverse", "reverse-holo"}:
+        if not has_rev_keys and catalog_proven_finish not in {"reverse", "reverse-holo"}:
+            return RawProviderEstimate(
+                provider="Cardmarket",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language=cm_lang,
+                is_exact_language=(cm_lang == norm_lot_lang),
+                confidence="REJECTED",
+                reason_code=RawReasonCode.FINISH_MISMATCH,
+                status="REJECTED",
+                note="Cardmarket reverse variant data not provided",
+            )
+        trend = _finite_positive(cardmarket_data.get("trend-reverse") or cardmarket_data.get("trendReverse") or (cardmarket_data.get("trend") if catalog_proven_finish in {"reverse", "reverse-holo"} else None))
+        avg1 = _finite_positive(cardmarket_data.get("avg-reverse") or cardmarket_data.get("avgReverse") or (cardmarket_data.get("avg") if catalog_proven_finish in {"reverse", "reverse-holo"} else None))
+        avg7 = _finite_positive(cardmarket_data.get("avg7-reverse") or cardmarket_data.get("avg7Reverse") or (cardmarket_data.get("avg7") if catalog_proven_finish in {"reverse", "reverse-holo"} else None))
+        avg30 = _finite_positive(cardmarket_data.get("avg30-reverse") or cardmarket_data.get("avg30Reverse") or (cardmarket_data.get("avg30") if catalog_proven_finish in {"reverse", "reverse-holo"} else None))
+        low = _finite_positive(cardmarket_data.get("low-reverse") or cardmarket_data.get("lowPrice-reverse") or (cardmarket_data.get("low") if catalog_proven_finish in {"reverse", "reverse-holo"} else None))
+    else:
+        if catalog_proven_finish in {"holo", "reverse", "reverse-holo"}:
+            return RawProviderEstimate(
+                provider="Cardmarket",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language=cm_lang,
+                is_exact_language=(cm_lang == norm_lot_lang),
+                confidence="REJECTED",
+                reason_code=RawReasonCode.FINISH_MISMATCH,
+                status="REJECTED",
+                note="Card only exists in holo/reverse in set catalog",
+            )
+        trend = _finite_positive(cardmarket_data.get("trend"))
+        avg1 = _finite_positive(cardmarket_data.get("avg") or cardmarket_data.get("avg1"))
+        avg7 = _finite_positive(cardmarket_data.get("avg7"))
+        avg30 = _finite_positive(cardmarket_data.get("avg30"))
+        low = _finite_positive(cardmarket_data.get("low") or cardmarket_data.get("lowPrice"))
+
 
     history_points: list[float] = []
     history = cardmarket_data.get("history") or cardmarket_data.get("sales") or cardmarket_data.get("points")
@@ -742,11 +798,47 @@ def estimate_justtcg_raw(
     dims = listing_dimensions or {}
     unit = str(justtcg_data.get("currency") or "EUR")
     norm_lot_lang = _normalize_lang(lot_language)
-    data_lang = _normalize_lang(str(justtcg_data.get("language") or "fr"))
+
+    # Provider-proven language check
+    raw_lang = justtcg_data.get("language")
+
+    if not raw_lang:
+        return RawProviderEstimate(
+            provider="JustTCG",
+            central=0.0,
+            low=0.0,
+            high=0.0,
+            language="",
+            confidence="REJECTED",
+            reason_code=RawReasonCode.LANGUAGE_MISMATCH,
+            status="REJECTED",
+            note="JustTCG rejected (language not proven in provider response)",
+        )
+    data_lang = _normalize_lang(str(raw_lang))
+
+    # Provider-proven condition check
+    raw_cond = str(justtcg_data.get("condition") or "").strip().upper()
+    if raw_cond and raw_cond not in {"NM", "NEAR_MINT", "NEAR MINT", "MINT", "EX+", "EXCELLENT"}:
+        return RawProviderEstimate(
+            provider="JustTCG",
+            central=0.0,
+            low=0.0,
+            high=0.0,
+            language=data_lang,
+            confidence="REJECTED",
+            reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+            status="REJECTED",
+            note=f"JustTCG rejected (condition {raw_cond} is not Near Mint/Mint)",
+        )
+
+    # Provider-proven variant check
+    raw_variant = str(justtcg_data.get("variant") or justtcg_data.get("finish") or "").strip().lower()
+    prov_variant = raw_variant or (catalog_proven_finish if catalog_proven_finish else variant)
 
     is_compat, reason_code, reason_msg = validate_microvariant_compatibility(
-        dims, variant, data_lang, lot_language, catalog_proven_finish
+        dims, prov_variant, data_lang, lot_language, catalog_proven_finish
     )
+
     if not is_compat:
         return RawProviderEstimate(
             provider="JustTCG",
@@ -804,6 +896,7 @@ def estimate_pricecharting_raw(
     pricecharting_data: Mapping[str, Any],
     lot_language: str = "fr",
     listing_dimensions: Optional[Mapping[str, str]] = None,
+    catalog_proven_finish: Optional[str] = None,
 ) -> Optional[RawProviderEstimate]:
     """Robust estimator for PriceCharting loose/ungraded reference."""
     if not isinstance(pricecharting_data, Mapping):
@@ -852,7 +945,9 @@ def estimate_ebay_raw(
     ebay_data: Mapping[str, Any],
     lot_language: str = "fr",
     listing_dimensions: Optional[Mapping[str, str]] = None,
+    catalog_proven_finish: Optional[str] = None,
 ) -> Optional[RawProviderEstimate]:
+
     """Robust estimator for exact eBay sold raw comparables."""
     if not isinstance(ebay_data, Mapping):
         return None

@@ -481,6 +481,7 @@ def evaluate_price_discovery(
     grader: str,
     grade: str,
     language: str = "fr",
+    target_language: Optional[str] = None,
     exact_grader_sales: Sequence[Any] = (),
     recent_exact_sales: Sequence[Any] = (),
     adjacent_anchors: Sequence[AdjacentAnchor] = (),
@@ -497,7 +498,7 @@ def evaluate_price_discovery(
     norm_grader = (grader or "").strip().upper()
     norm_grade = (grade or "").strip()
     num_grade = _numeric_grade(norm_grade)
-    norm_lang = (language or "fr").strip().lower()
+    norm_lang = (target_language or language or "fr").strip().lower()
 
     # Determine actual recent exact sales (<= 90 days)
     filtered_recent_sales: list[Any] = list(recent_exact_sales)
@@ -514,6 +515,9 @@ def evaluate_price_discovery(
             elif s_age is not None:
                 if s_age <= 90:
                     filtered_recent_sales.append(s)
+            elif not hasattr(s, "sold_at") and not hasattr(s, "age_days"):
+                filtered_recent_sales.append(s)
+
 
     # If temporal adjustment is not precomputed but historical sales are supplied, compute it
     if temporal_adjustment is None and historical_target_sales:
@@ -538,10 +542,10 @@ def evaluate_price_discovery(
 
 
 
-    exact_sales_count = len(exact_grader_sales)
-    if exact_sales_count == 0:
+    recent_sales_count = len(filtered_recent_sales)
+    if recent_sales_count == 0:
         exact_grader_liquidity = LIQUIDITY_LOW
-    elif exact_sales_count < 4:
+    elif recent_sales_count < 4:
         exact_grader_liquidity = LIQUIDITY_MODERATE
     else:
         exact_grader_liquidity = LIQUIDITY_HIGH
@@ -642,19 +646,24 @@ def evaluate_price_discovery(
     weighted_price = sum(a.price * a.weight for a in sold_anchors) / max(0.001, total_weight)
     credible_high_ref = round(weighted_price, 2)
 
-    # If PSA same-grade or top-grade (PSA 10) sold anchor exists, use it as benchmark reference
+    # If PSA same-grade or top-grade sold anchor exists, compute robust benchmark with haircuts applied
     psa_anchors = [
         a for a in sold_anchors
         if (a.grader or "").upper() == "PSA" and (_numeric_grade(a.grade) == num_grade or ((num_grade or 0) >= 9.5 and _numeric_grade(a.grade) == 10.0))
     ]
     if psa_anchors:
-        credible_high_ref = round(max(a.price for a in psa_anchors), 2)
+        effective_psa_prices = [a.price * a.weight for a in psa_anchors if a.price > 0 and a.weight > 0]
+        if effective_psa_prices:
+            robust_psa_val = compute_robust_reference_value(effective_psa_prices)
+            if robust_psa_val and robust_psa_val > 0:
+                credible_high_ref = round(robust_psa_val, 2)
 
     upside_ratio = round(credible_high_ref / max(0.01, gcc_price), 2) if gcc_price > 0 else 1.0
 
     # 3. Calculate Grader Spread
     if psa_anchors:
-        psa_ref = max(a.price for a in psa_anchors)
+        effective_psa_prices = [a.price * a.weight for a in psa_anchors if a.price > 0 and a.weight > 0]
+        psa_ref = compute_robust_reference_value(effective_psa_prices) or credible_high_ref
         ratio_to_psa = psa_ref / max(0.01, gcc_price)
         if ratio_to_psa >= 3.0:
             grader_spread = GRADER_SPREAD_VERY_HIGH
@@ -720,6 +729,13 @@ def evaluate_price_discovery(
         else:
             evidence_quality = EVIDENCE_QUALITY_LOW
 
+    # Check if ONLY cross-language or wide-grade anchors exist without same-language / raw support
+    has_same_lang_or_raw = any(
+        (a.language == norm_lang and not any("LANGUAGE_DIFFERENCE" in r for r in a.uncertainty_reasons))
+        or a.anchor_type in {"RAW_CONSENSUS", "EXACT_GCC_SOLD", "TEMPORALLY_ADJUSTED_ESTIMATE"}
+        for a in sold_anchors
+    )
+
     # 5. Classify Category
     # Is it a crossgrade, secondary-grader discount, or illiquid price discovery?
     if crossgrade_probability is not None and crossgrade_probability > 0.5 and psa_anchors and (num_grade or 0) >= 9.0:
@@ -739,14 +755,15 @@ def evaluate_price_discovery(
         main_thesis = f"Sparse exact {norm_grader} {norm_grade} liquidity rescued by {len(sold_anchors)} adjacent sold/consensus anchors ({upside_ratio:.1f}x upside)"
 
     # 6. Manual Review Recommendation Decision
-    # Negative regression check: Liquid secondary market where ask >= fair market => no discount signal
-    if gcc_price >= credible_high_ref * 0.85 or upside_ratio < 1.25:
+    if not has_same_lang_or_raw and len(sold_anchors) <= 1:
+        manual_review = False
+    elif gcc_price >= credible_high_ref * 0.85 or upside_ratio < 1.25:
         manual_review = False
     elif evidence_quality == EVIDENCE_QUALITY_LOW and uncertainty in {UNCERTAINTY_VERY_HIGH}:
         manual_review = False
     elif upside_ratio >= 1.50 and len(sold_anchors) >= 1 and evidence_quality in {EVIDENCE_QUALITY_MODERATE, EVIDENCE_QUALITY_STRONG}:
         manual_review = True
-    elif upside_ratio >= 1.30 and len(sold_anchors) >= 2:
+    elif upside_ratio >= 1.30 and len(sold_anchors) >= 2 and has_same_lang_or_raw:
         manual_review = True
     elif temporal_adjustment is not None and temporal_adjustment.applied and (temporal_adjustment.implicit_discount_pct or 0) >= 25.0:
         manual_review = True
@@ -782,5 +799,5 @@ def evaluate_price_discovery(
         implicit_discount_pct=t_res.implicit_discount_pct if t_res else None,
         is_extrapolated=t_res.is_extrapolated if t_res else False,
         extrapolation_type=t_res.extrapolation_type if t_res else None,
-        evidence_level=t_res.evidence_level if t_res else (EVIDENCE_LEVEL_EXACT_RECENT if exact_sales_count >= 1 else EVIDENCE_LEVEL_CROSS_GRADER_ONLY if len(sold_anchors) >= 1 else EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE),
+        evidence_level=t_res.evidence_level if t_res else (EVIDENCE_LEVEL_EXACT_RECENT if recent_sales_count >= 1 else EVIDENCE_LEVEL_CROSS_GRADER_ONLY if len(sold_anchors) >= 1 else EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE),
     )

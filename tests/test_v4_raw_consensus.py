@@ -506,5 +506,59 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         self.assertLess(gap, 0.0)
 
 
+    def test_15_cardmarket_holo_without_holo_keys_rejects_unless_catalog_proven(self):
+        """Cardmarket data with generic keys cannot masquerade as holo unless catalog proves single holo finish."""
+        cm_data = {"trend": 100.0, "avg": 95.0, "avg7": 90.0, "avg30": 92.0}
+
+        # When catalog does not prove single finish: must reject
+        est_unproven = raw_consensus.estimate_cardmarket_raw(
+            cm_data, variant="holo", lot_language="fr", catalog_proven_finish=None
+        )
+        self.assertIsNotNone(est_unproven)
+        self.assertEqual(est_unproven.confidence, "REJECTED")
+        self.assertEqual(est_unproven.reason_code, RawReasonCode.FINISH_MISMATCH)
+
+        # When catalog proves card only exists in holo: accept generic
+        est_proven = raw_consensus.estimate_cardmarket_raw(
+            cm_data, variant="holo", lot_language="fr", catalog_proven_finish="holo"
+        )
+        self.assertIsNotNone(est_proven)
+        self.assertEqual(est_proven.status, "ACCEPTED")
+        self.assertEqual(est_proven.central, 93.5)
+
+    def test_16_justtcg_missing_dimensions_fails_closed(self):
+        """JustTCG responses missing explicit language or condition fail closed."""
+        # Missing language
+        jt_no_lang = {"marketPrice": 50.0, "condition": "NM"}
+        est_no_lang = raw_consensus.estimate_justtcg_raw(jt_no_lang, variant="normal", lot_language="fr")
+        self.assertIsNotNone(est_no_lang)
+        self.assertEqual(est_no_lang.confidence, "REJECTED")
+        self.assertEqual(est_no_lang.reason_code, RawReasonCode.LANGUAGE_MISMATCH)
+
+        # Poor condition
+        jt_poor = {"marketPrice": 20.0, "language": "fr", "condition": "POOR"}
+        est_poor = raw_consensus.estimate_justtcg_raw(jt_poor, variant="normal", lot_language="fr")
+        self.assertIsNotNone(est_poor)
+        self.assertEqual(est_poor.confidence, "REJECTED")
+        self.assertEqual(est_poor.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
+
+    def test_17_pricecharting_and_ebay_accept_catalog_proven_finish_kwarg(self):
+        """PriceCharting and eBay estimators must accept catalog_proven_finish kwarg without TypeError."""
+        pc_data = {"loose": 45.0, "currency": "USD"}
+        with patch.object(raw_consensus, "_usd_per_eur", return_value=1.1):
+            est_pc = raw_consensus.estimate_pricecharting_raw(
+                pc_data, lot_language="en", catalog_proven_finish="holo"
+            )
+            self.assertIsNotNone(est_pc)
+            self.assertEqual(est_pc.status, "ACCEPTED")
+
+        ebay_data = {"sales": [35.0, 38.0, 40.0], "currency": "EUR"}
+        est_ebay = raw_consensus.estimate_ebay_raw(
+            ebay_data, lot_language="fr", catalog_proven_finish="holo"
+        )
+        self.assertIsNotNone(est_ebay)
+        self.assertEqual(est_ebay.status, "ACCEPTED")
+
+
 if __name__ == "__main__":
     unittest.main()

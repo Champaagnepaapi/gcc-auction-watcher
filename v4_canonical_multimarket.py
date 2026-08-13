@@ -7,6 +7,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.header import Header
 from statistics import median
 from typing import Any, Mapping, Optional
 from urllib.parse import quote
@@ -15,6 +16,7 @@ import requests
 
 import watcher
 import v4_raw_consensus as raw_consensus
+
 
 
 
@@ -1401,21 +1403,31 @@ def _collect_price_discovery_lead(
     target_num_grade = pd._numeric_grade(target_grade)
     effective_now = now or getattr(candidate.lot, "fetched_at", None)
 
-    # 1. RAW consensus anchor
-    if raw is not None and raw.central > 0 and raw.confidence in {"STRONG", "MODERATE", "WEAK"}:
-        if not any(flag in raw.anomaly_flags for flag in ("FLOOR_DISCONNECT", "OUTLIER_SPIKE", "OUTLIER_CONTAMINATION")):
-            anchors.append(
-                pd.AdjacentAnchor(
-                    anchor_type="RAW_CONSENSUS",
-                    source="raw_consensus",
-                    grader=None,
-                    grade=None,
-                    language=canonical.language_code or "fr",
-                    price=raw.central,
-                    price_type="CONSENSUS",
-                    sale_count=len(raw.sources),
+    # 1. RAW consensus anchor: only robust, non-conflicting, multi-source or strong consensus
+    if raw is not None and raw.central > 0 and raw.confidence in {"STRONG", "MODERATE"}:
+        blocked_flags = {
+            "CONFLICT",
+            "PROVIDER_DISAGREEMENT",
+            "FLOOR_DISCONNECT",
+            "OUTLIER_SPIKE",
+            "OUTLIER_CONTAMINATION",
+            "HIGH_DISPERSION",
+        }
+        if not any(flag in raw.anomaly_flags for flag in blocked_flags) and getattr(raw, "disagreement_ratio", 1.0) <= 1.30:
+            if len(raw.sources) >= 2 or raw.confidence == "STRONG":
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="RAW_CONSENSUS",
+                        source="raw_consensus",
+                        grader=None,
+                        grade=None,
+                        language=canonical.language_code or "fr",
+                        price=raw.central,
+                        price_type="CONSENSUS",
+                        sale_count=len(raw.sources),
+                    )
                 )
-            )
+
 
     # 2. PokeTrace exact and adjacent graded evidence
     if poketrace is not None:
@@ -1429,8 +1441,9 @@ def _collect_price_discovery_lead(
                     language=canonical.language_code or "fr",
                     price=poketrace.estimate.central,
                     price_type="SOLD",
-                    sale_count=poketrace.estimate.exact_grade_count or 1,
+                    sale_count=getattr(poketrace.estimate, "exact_grade_count", 1) or 1,
                 )
+
             )
         for comp in poketrace.comparables:
             if comp.price > 0:
@@ -1747,10 +1760,11 @@ def _notify_manual_review(lead: ManualReviewLead) -> None:
                 f"{watcher.NTFY_SERVER}/{watcher.NTFY_TOPIC}",
                 data=message.encode("utf-8"),
                 headers={
-                    "Title": title,
+                    "Title": Header(title, "utf-8").encode(),
                     "Priority": "3",
                     "Tags": "mag,card_index",
                 },
+
                 timeout=10,
             ).raise_for_status()
         except Exception as error:
@@ -1768,16 +1782,11 @@ def _fallback_external(
     now: datetime,
 ) -> watcher.ExternalMarketEvidence:
     """Conserve l'arbre strict existant (APR/eBay) sans budget supplémentaire."""
-    lot = candidate.lot
-    if lot.grader == "PSA":
-        _DIAGNOSTICS.fallback_apr_ebay += 1
-        apr_evidence = watcher.fetch_psa_apr_evidence(
-            page, lot, budgets, diagnostics, now
-        )
-        if apr_evidence.status == watcher.EXTERNAL_MATCHED:
-            return apr_evidence
-        return watcher.fetch_ebay_evidence(page, lot, budgets, diagnostics, now)
-    return watcher.fetch_ebay_evidence(page, lot, budgets, diagnostics, now)
+    _DIAGNOSTICS.fallback_apr_ebay += 1
+    return watcher.fetch_external_market_evidence(
+        page, candidate, budgets, diagnostics, now
+    )
+
 
 
 def _combine_retry_with_fallback(

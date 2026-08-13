@@ -135,45 +135,8 @@ def hardened_candidate_exact_for_canonical(
 
 
 def safe_notify_manual_review(lead: mm.ManualReviewLead) -> None:
-    title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
-    grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
-    extra_sources = f"Sources RAW : {', '.join(lead.raw.sources)}"
-    if lead.raw.providers_rejected:
-        extra_sources += f" [Rejetés: {', '.join(lead.raw.providers_rejected)}]"
+    return mm._notify_manual_review(lead)
 
-    message = (
-        f"{title}\n\n"
-        f"{lead.canonical.name} #{lead.canonical.full_number}\n"
-        f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
-        f"{grade}\n\n"
-        f"Prix GCC : {lead.lot.current_price:.2f} €\n"
-        f"Marché RAW consensus : {lead.raw.low:.2f}–{lead.raw.high:.2f} € (confiance {lead.raw.confidence})\n"
-        f"RAW central : {lead.raw.central:.2f} €\n"
-        f"{extra_sources}\n"
-        f"Écart prudent vs plancher RAW : {lead.gap_pct:.1f}%\n"
-        f"Marché gradé : {lead.graded_note or 'non confirmé'}\n\n"
-        "RAW ≠ valeur du slab gradé. Aucun prix max conseillé n'est "
-        "calculé depuis le RAW; revue manuelle uniquement.\n"
-        f"{lead.lot.url}"
-    )
-    watcher.log("*** MANUAL REVIEW: graded market pending ***")
-    print(message, flush=True)
-    if watcher.NTFY_TOPIC:
-        try:
-            requests.post(
-                f"{watcher.NTFY_SERVER}/{watcher.NTFY_TOPIC}",
-                data=message.encode("utf-8"),
-                headers={
-                    "Title": Header(title, "utf-8").encode(),
-                    "Priority": "3",
-                    "Tags": "mag,card_index",
-                },
-                timeout=10,
-            ).raise_for_status()
-        except Exception as error:
-            watcher.log(
-                f"Notification manual review échouée: {type(error).__name__}"
-            )
 
 
 

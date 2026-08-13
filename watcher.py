@@ -911,6 +911,13 @@ class FixedEconomicQueueDiagnostics:
     def record_budget_skipped(self, item_id: str) -> None:
         self.budget_skipped_ids.add(item_id)
 
+    def record_external_pending_unresolved(self, item_id: str) -> None:
+        """Called when an item's external evaluation remains PENDING or RETRY."""
+        if item_id in self.processed_ids:
+            self.processed_ids.remove(item_id)
+        self.category_ids[QUEUE_P4_EXTERNAL_PENDING].add(item_id)
+
+
     def count(self, category: str) -> int:
         return len(self.category_ids[category])
 
@@ -6858,11 +6865,18 @@ def process_external_market_candidates(
             run_diagnostics.record_external_rejection(candidate.lot)
         elif result.path == PATH_EXTERNAL_PENDING:
             rejection = REJECTION_EXTERNAL_PENDING
+            run_diagnostics.fixed_queue.record_external_pending_unresolved(
+                fixed_listing_id(candidate.lot)
+            )
         elif evidence.status in EXTERNAL_RETRY_STATUSES:
             rejection = REJECTION_EXTERNAL_RETRY
+            run_diagnostics.fixed_queue.record_external_pending_unresolved(
+                fixed_listing_id(candidate.lot)
+            )
         else:
             rejection = candidate.gcc.rejection_category or REJECTION_OTHER
         run_diagnostics.record_valuation(candidate.lot, rejection)
+
         log(
             f"Arbitrage {result.path}: {candidate.lot.title} | {result.reason}"
         )
