@@ -78,6 +78,16 @@ EXTERNAL_EVIDENCE_TTL_HOURS = max(
 )
 EXTERNAL_CACHE_SCHEMA_VERSION = 2
 EXTERNAL_CACHE_STATE_KEY = "external_market_cache"
+ADAPTIVE_REFRESH_ENABLED = (
+    os.getenv("V4_ADAPTIVE_MARKET_REFRESH_ENABLED", "true").strip().lower()
+    == "true"
+)
+ADAPTIVE_REFRESH_TIERS = (
+    (3.0, 1),
+    (6.0, 2),
+    (10.0, 3),
+    (15.0, 6),
+)
 MARKET_AGREEMENT_MIN_CENTRAL_RATIO = 0.80
 MARKET_AGREEMENT_MAX_CENTRAL_RATIO = 1.25
 FIXED_REEVALUATION_TTL_HOURS = max(
@@ -6144,11 +6154,64 @@ def _deserialize_external_evidence(
     )
 
 
+def adaptive_ttl_hours_for_estimate(
+    price: Optional[float],
+    estimate: Optional[MarketEstimate],
+    default_ttl_hours: int = EXTERNAL_EVIDENCE_TTL_HOURS,
+) -> int:
+    if (
+        not ADAPTIVE_REFRESH_ENABLED
+        or price is None
+        or price <= 0
+        or estimate is None
+        or estimate.central <= 0
+    ):
+        return default_ttl_hours
+
+    if estimate.grade_arbitrage:
+        if estimate.low <= 0:
+            return default_ttl_hours
+        if price <= estimate.low:
+            return 1
+        overhang_pct = (price - estimate.low) / estimate.low * 100
+        if overhang_pct <= 3.0:
+            return 1
+        if overhang_pct <= 6.0:
+            return 2
+        if overhang_pct <= 10.0:
+            return 3
+        if overhang_pct <= 15.0:
+            return 6
+        return default_ttl_hours
+
+    required_discount = float(
+        estimate.adaptive_discount_pct
+        if estimate.adaptive_discount_pct is not None
+        else MIN_DISCOUNT
+    )
+    discount_central = (estimate.central - price) / estimate.central * 100
+    if estimate.low > 0:
+        discount_low = (estimate.low - price) / estimate.low * 100
+        effective_discount = min(discount_central, discount_low)
+    else:
+        effective_discount = discount_central
+
+    discount_gap = max(0.0, required_discount - effective_discount)
+
+    for max_gap, tier_ttl in ADAPTIVE_REFRESH_TIERS:
+        if discount_gap <= max_gap:
+            return tier_ttl
+
+    return default_ttl_hours
+
+
 def cached_external_evidence(
     state: dict,
     identity_key: str,
     now: datetime,
     ttl_hours: int = EXTERNAL_EVIDENCE_TTL_HOURS,
+    *,
+    candidate_prices: Optional[list[float]] = None,
 ) -> tuple[Optional[ExternalMarketEvidence], str]:
     cache = state.get(EXTERNAL_CACHE_STATE_KEY)
     if not isinstance(cache, dict):
@@ -6161,7 +6224,18 @@ def cached_external_evidence(
     evidence = _deserialize_external_evidence(entries[identity_key], identity_key)
     if evidence is None:
         return None, "MISS"
-    if now - evidence.fetched_at >= timedelta(hours=max(1, ttl_hours)):
+
+    effective_ttl = max(1, ttl_hours)
+    if candidate_prices and evidence.estimate is not None and ADAPTIVE_REFRESH_ENABLED:
+        adaptive_ttls = [
+            adaptive_ttl_hours_for_estimate(price, evidence.estimate, effective_ttl)
+            for price in candidate_prices
+            if price is not None and price > 0
+        ]
+        if adaptive_ttls:
+            effective_ttl = min(adaptive_ttls)
+
+    if now - evidence.fetched_at >= timedelta(hours=effective_ttl):
         return evidence, "STALE"
     return evidence, "HIT"
 
@@ -6542,7 +6616,11 @@ def _external_queue_sort_key(
 
 
 def _record_fixed_external_status(
-    state: dict, lot: Lot, status: str, run_now: Optional[datetime] = None
+    state: dict,
+    lot: Lot,
+    status: str,
+    run_now: Optional[datetime] = None,
+    adaptive_ttl_hours: Optional[int] = None,
 ) -> None:
     if lot.source_type != "fixed":
         return
@@ -6552,6 +6630,8 @@ def _record_fixed_external_status(
     if isinstance(entries, dict) and isinstance(entries.get(item_id), dict):
         record = entries[item_id]
         record["last_evaluation_status"] = status
+        if adaptive_ttl_hours is not None:
+            record["adaptive_ttl_hours"] = int(adaptive_ttl_hours)
         if run_now is not None:
             if status in {REJECTION_EXTERNAL_PENDING, REJECTION_EXTERNAL_RETRY}:
                 retry_count = int(record.get("retry_count") or 0) + 1
@@ -6594,8 +6674,15 @@ def process_external_market_candidates(
     queued: list[tuple[ValuationCandidate, str]] = []
 
     for key, grouped in groups.items():
+        candidate_prices = [
+            c.lot.current_price
+            for c in grouped
+            if c.lot.source_type == "fixed"
+            and c.lot.current_price is not None
+            and c.lot.current_price > 0
+        ]
         cached, cache_status = cached_external_evidence(
-            state, key, now, ttl_hours
+            state, key, now, ttl_hours, candidate_prices=candidate_prices
         )
         if cache_status == "HIT" and cached is not None:
             external_diagnostics.cache_hits += 1
@@ -6642,6 +6729,24 @@ def process_external_market_candidates(
         external_diagnostics.record_external(evidence)
         result = arbitrate_market_evidence(candidate.gcc, evidence)
         external_diagnostics.record_path(result.path)
+        chosen_estimate = (
+            evidence.estimate
+            if (
+                evidence.status == EXTERNAL_MATCHED
+                and evidence.strength == EVIDENCE_STRONG
+                and evidence.estimate is not None
+            )
+            else candidate.gcc.estimate
+        )
+        adaptive_ttl = (
+            adaptive_ttl_hours_for_estimate(
+                candidate.lot.current_price,
+                chosen_estimate,
+                default_ttl_hours=FIXED_REEVALUATION_TTL_HOURS,
+            )
+            if chosen_estimate is not None
+            else FIXED_REEVALUATION_TTL_HOURS
+        )
         _record_fixed_external_status(
             state,
             candidate.lot,
@@ -6655,6 +6760,7 @@ def process_external_market_candidates(
                 )
             ),
             run_now=now,
+            adaptive_ttl_hours=adaptive_ttl,
         )
         if result.opportunity is not None:
             run_diagnostics.record_valuation(candidate.lot)
@@ -7140,9 +7246,14 @@ def _fixed_queue_category(
             return QUEUE_FRESH  # Cooldown active; skip this run
         return QUEUE_P4_EXTERNAL_PENDING
 
-    # 4. Standard STALE re-evaluation
+    # 4. Adaptive STALE re-evaluation
+    ttl_hours = (
+        int(record.get("adaptive_ttl_hours") or FIXED_REEVALUATION_TTL_HOURS)
+        if ADAPTIVE_REFRESH_ENABLED
+        else FIXED_REEVALUATION_TTL_HOURS
+    )
     age = now - last_evaluated
-    if age >= timedelta(hours=FIXED_REEVALUATION_TTL_HOURS):
+    if age >= timedelta(hours=max(1, ttl_hours)):
         return QUEUE_P3_STALE
 
     return QUEUE_FRESH
@@ -7160,8 +7271,20 @@ def _fixed_queue_sort_key(
     earliest = datetime.min.replace(tzinfo=timezone.utc)
     if category == QUEUE_P2_NEVER_EVALUATED:
         return (first_seen or earliest, item_id)
-    if category in {QUEUE_P1_CHANGED, QUEUE_P3_STALE}:
+    if category == QUEUE_P1_CHANGED:
         return (last_evaluated or earliest, first_seen or earliest, item_id)
+    if category == QUEUE_P3_STALE:
+        adaptive_ttl = (
+            int(record.get("adaptive_ttl_hours") or FIXED_REEVALUATION_TTL_HOURS)
+            if ADAPTIVE_REFRESH_ENABLED
+            else FIXED_REEVALUATION_TTL_HOURS
+        )
+        return (
+            adaptive_ttl,
+            last_evaluated or earliest,
+            first_seen or earliest,
+            item_id,
+        )
     if category == QUEUE_P4_EXTERNAL_PENDING:
         retry_after = _parse_state_datetime(record.get("retry_after"))
         return (
@@ -7216,6 +7339,7 @@ def _prepare_fixed_economic_queue(
                 "evaluated_fingerprint": None,
                 "evaluation_version": None,
                 "last_evaluation_status": None,
+                "adaptive_ttl_hours": FIXED_REEVALUATION_TTL_HOURS,
                 "retry_count": 0,
                 "retry_after": None,
                 "active": True,
@@ -7426,6 +7550,25 @@ def evaluate_fixed_candidates(
             record["last_evaluated_at"] = run_now.isoformat()
             record["evaluated_fingerprint"] = record["metadata_fingerprint"]
             record["evaluation_version"] = ECONOMIC_EVALUATION_VERSION
+            if isinstance(opportunity, Opportunity):
+                record["adaptive_ttl_hours"] = adaptive_ttl_hours_for_estimate(
+                    lot.current_price,
+                    opportunity.estimate,
+                    default_ttl_hours=FIXED_REEVALUATION_TTL_HOURS,
+                )
+            elif isinstance(opportunity, ValuationCandidate):
+                record.setdefault(
+                    "adaptive_ttl_hours",
+                    adaptive_ttl_hours_for_estimate(
+                        lot.current_price,
+                        opportunity.gcc.estimate,
+                        default_ttl_hours=FIXED_REEVALUATION_TTL_HOURS,
+                    ),
+                )
+            else:
+                record.setdefault(
+                    "adaptive_ttl_hours", FIXED_REEVALUATION_TTL_HOURS
+                )
             run_diagnostics.fixed_queue.record_processed(item_id)
         else:
             economic.record_failure(lot)

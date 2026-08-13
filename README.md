@@ -231,10 +231,17 @@ Concordance forte GCC/externe :
 - intervalles prudents `low/high` qui se chevauchent ;
 - ratio des centres dans `0.80–1.25`.
 
-## Cache externe
+## Cache externe et rafraîchissement adaptatif
 
 - clé hashée d’identité commerciale stricte ;
-- TTL 24 h ;
+- TTL par défaut 24 h ;
+- rafraîchissement adaptatif (TTL 1–6 h) pour les annonces proches du seuil d’opportunité :
+  - gap ≤ 3 % du seuil requis → TTL 1 h ;
+  - gap ≤ 6 % du seuil requis → TTL 2 h ;
+  - gap ≤ 10 % du seuil requis → TTL 3 h ;
+  - gap ≤ 15 % du seuil requis → TTL 6 h ;
+  - gap > 15 % ou sans estimation → TTL standard 24 h ;
+- réévaluation prioritaire dans la file fixed `P3_STALE` sans famine des files `P0_NEW`, `P1_CHANGED`, `P2_NEVER_EVALUATED` ;
 - schéma versionné ;
 - `MATCHED`, `CLEAN_NO_MATCH`, `CLEAN_INSUFFICIENT` cachables ;
 - `PROVIDER_ERROR`, `TRANSIENT_UNAVAILABLE`, `RATE_LIMIT` jamais cachés comme résultat propre ;
