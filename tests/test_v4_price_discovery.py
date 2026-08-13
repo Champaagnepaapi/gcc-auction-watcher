@@ -1026,6 +1026,46 @@ class TemporalCrossGraderAdjustmentTests(unittest.TestCase):
         )
         self.assertFalse(sig.manual_review_recommended)
 
+    def test_16_stale_reference_anchor_cannot_create_temporal_adjustment(self):
+        """Stale PSA reference sales (age > 90d) cannot become the current PSA benchmark."""
+        stale_anchor = pd.AdjacentAnchor(
+            anchor_type="PSA_SAME_GRADE",
+            source="gcc",
+            grader="PSA",
+            grade="8",
+            language="fr",
+            price=200.0,
+            price_type="SOLD",
+            age_days=300,
+            is_recent=False,
+        )
+        sig = pd.evaluate_price_discovery(
+            listing_identity="Charizard SGS 8",
+            gcc_price=40.0,
+            grader="SGS",
+            grade="8",
+            language="fr",
+            adjacent_anchors=[stale_anchor],
+            historical_target_sales=[(20.0, 100.0, 300)],
+        )
+        self.assertFalse(sig.manual_review_recommended)
+        self.assertIsNone(sig.temporally_adjusted_central)
+
+    def test_17_no_recent_same_grade_benchmark_fails_closed_to_no_estimate(self):
+        """Temporal adjustment returns MANUAL_REVIEW_NO_ESTIMATE when reference is not recent."""
+        res = pd.evaluate_temporal_cross_grader_adjustment(
+            target_grader="SGS",
+            target_grade="8",
+            gcc_price=40.0,
+            historical_target_sales=[(20.0, 100.0, 300)],
+            current_robust_reference_value=200.0,
+            reference_is_recent=False,
+        )
+        self.assertFalse(res.applied)
+        self.assertEqual(res.evidence_level, pd.EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE)
+        self.assertIn("NO_RECENT_REFERENCE_BENCHMARK", res.uncertainty_reasons)
+
 
 if __name__ == "__main__":
     unittest.main()
+

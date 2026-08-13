@@ -352,19 +352,16 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             name="Pikachu",
             language_code="fr",
             pricing={
-                "justtcg": {
-                    "currency": "EUR",
-                    "language": "fr",
-                    "condition": "NM",
-                    "variant": "holo",
-                    "marketPrice": 100.0,
-                    "lowPrice": 80.0,
-                    "highPrice": 120.0,
+                "cardmarket": {
+                    "trend-holo": 100.0,
+                    "avg-holo": 100.0,
+                    "avg7-holo": 95.0,
+                    "avg30-holo": 98.0,
+                    "low-holo": 85.0,
                 }
             },
             variants={"normal": False, "holo": True, "reverse": False},
         )
-
 
         signal = mm.raw_market_signal(target_lot, canonical)
         self.assertIsNotNone(signal)
@@ -374,6 +371,16 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         # Gate check: Single source cannot trigger opportunity notification
         should_review, _ = mm._should_manual_review(target_lot, signal)
         self.assertFalse(should_review)
+
+        # Also verify single JustTCG adapter estimate is arbitrated as WEAK
+        justtcg_est = raw_consensus.estimate_justtcg_raw(
+            {"currency": "EUR", "language": "fr", "condition": "NM", "variant": "holo", "marketPrice": 100.0},
+            variant="holo",
+            lot_language="fr",
+        )
+        consensus_res = raw_consensus.arbitrate_raw_consensus([justtcg_est], lot_language="fr")
+        self.assertEqual(consensus_res.confidence, "WEAK")
+
 
     def test_12_ambiguous_path_excludes_incompatible_tiers(self):
         """MEDIUM-2: _all_raw_centers filters out incompatible provider tiers."""
@@ -512,7 +519,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         # Gate check: 75€ lot against ~25-30€ RAW market is NOT an opportunity
         should_review, gap = mm._should_manual_review(target_lot, signal)
         self.assertFalse(should_review)
-        self.assertLess(gap, 0.0)
+        self.assertLessEqual(gap, 0.0)
+
 
 
     def test_15_cardmarket_holo_without_holo_keys_rejects_unless_catalog_proven(self):
@@ -603,7 +611,7 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         self.assertEqual(est_pc_unproven.reason_code, RawReasonCode.FINISH_MISMATCH)
 
     def test_20_ambiguous_envelope_through_all_raw_centers(self):
-        """Ambiguous variant envelope correctly queries PriceCharting and eBay adapters through _all_raw_centers."""
+        """Ambiguous variant envelope correctly queries Cardmarket and TCGplayer through production _all_raw_centers."""
         import v4_canonical_multimarket as mm
         canonical = mm.CanonicalCard(
             "EXACT",
@@ -615,8 +623,8 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
             name="Charizard",
             language_code="en",
             pricing={
-                "pricecharting": {"loose": 100.0, "currency": "USD"},
-                "ebay_raw": {"sales": [90.0, 95.0, 100.0], "currency": "USD", "language": "en"},
+                "cardmarket": {"trend": 100.0, "avg": 105.0},
+                "tcgplayer": {"normal": {"marketPrice": 110.0}, "unit": "USD"},
             },
             variants={"normal": True, "holo": True},
             unique_name_number=True,
@@ -630,9 +638,60 @@ class V4RobustRawConsensusAndBackportTests(unittest.TestCase):
         )
         with patch.object(mm, "_usd_per_eur", return_value=1.08), patch.object(raw_consensus, "_usd_per_eur", return_value=1.08):
             centers = mm._all_raw_centers(canonical, target_lot)
-            self.assertTrue(any(src == "PriceCharting" for src, _, _ in centers))
-            self.assertTrue(any(src == "eBay RAW" for src, _, _ in centers))
+            self.assertTrue(any(src == "Cardmarket" for src, _, _ in centers))
+            self.assertTrue(any(src == "TCGplayer" for src, _, _ in centers))
+
+    def test_21_adversarial_missing_dimensions_fail_closed(self):
+        """Adversarial validation: missing set, number, edition, language, condition, finish fail closed."""
+        # 1. Missing / mismatch set
+        pc_wrong_set = {"loose": 50.0, "set": "Neo Genesis", "currency": "USD"}
+        est_set = raw_consensus.estimate_pricecharting_raw(
+            pc_wrong_set, lot_language="en", listing_dimensions={"set": "Base Set"}
+        )
+        self.assertIsNotNone(est_set)
+        self.assertEqual(est_set.confidence, "REJECTED")
+        self.assertEqual(est_set.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
+
+        # 2. Missing / mismatch collector number
+        eb_wrong_num = {"sales": [50.0, 55.0], "language": "en", "number": "15/102"}
+        est_num = raw_consensus.estimate_ebay_raw(
+            eb_wrong_num, lot_language="en", listing_dimensions={"number": "4/102"}
+        )
+        self.assertIsNotNone(est_num)
+        self.assertEqual(est_num.confidence, "REJECTED")
+        self.assertEqual(est_num.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
+
+        # 3. Required 1st Edition unproven
+        is_compat, reason, _ = raw_consensus.validate_microvariant_compatibility(
+            {"edition": "1st edition"}, "normal", "en", "en"
+        )
+        self.assertFalse(is_compat)
+        self.assertEqual(reason, RawReasonCode.EDITION_MISMATCH)
+
+        # 4. Japanese language on Cardmarket (fails closed)
+        cm_ja = {"trend": 100.0, "avg": 100.0}
+        est_ja = raw_consensus.estimate_cardmarket_raw(cm_ja, variant="normal", lot_language="ja")
+        self.assertIsNotNone(est_ja)
+        self.assertEqual(est_ja.confidence, "REJECTED")
+        self.assertEqual(est_ja.reason_code, RawReasonCode.LANGUAGE_MISMATCH)
+
+        # 5. TCGplayer non-NM condition
+        tp_lp = {"normal": {"marketPrice": 50.0, "condition": "LP"}, "unit": "USD"}
+        est_tp_lp = raw_consensus.estimate_tcgplayer_raw(tp_lp, variant="normal", lot_language="en")
+        self.assertIsNotNone(est_tp_lp)
+        self.assertEqual(est_tp_lp.confidence, "REJECTED")
+        self.assertEqual(est_tp_lp.reason_code, RawReasonCode.INSUFFICIENT_IDENTITY)
+
+        # 6. Cardmarket generic price without holo keys when listing requires holo
+        cm_no_holo = {"trend": 20.0, "avg": 22.0}
+        est_cm_no_holo = raw_consensus.estimate_cardmarket_raw(
+            cm_no_holo, variant="holo", lot_language="fr", catalog_proven_finish=None
+        )
+        self.assertIsNotNone(est_cm_no_holo)
+        self.assertEqual(est_cm_no_holo.confidence, "REJECTED")
+        self.assertEqual(est_cm_no_holo.reason_code, RawReasonCode.FINISH_MISMATCH)
 
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -402,6 +402,17 @@ def validate_microvariant_compatibility(
     if any(v == "__conflict__" for v in listing_dimensions.values()):
         return False, RawReasonCode.INSUFFICIENT_IDENTITY, "Listing metadata has conflicting commercial dimensions"
 
+    # 1b. Set and Number / Collector number validation if present
+    listing_set = clean_tokens(listing_dimensions.get("set", ""))
+    prov_set = clean_tokens(listing_dimensions.get("prov_set", ""))
+    if listing_set and prov_set and listing_set != prov_set:
+        return False, RawReasonCode.INSUFFICIENT_IDENTITY, f"Set mismatch: {listing_set} vs {prov_set}"
+
+    listing_num = clean_tokens(listing_dimensions.get("number", "") or listing_dimensions.get("collector_number", ""))
+    prov_num = clean_tokens(listing_dimensions.get("prov_number", ""))
+    if listing_num and prov_num and listing_num != prov_num:
+        return False, RawReasonCode.INSUFFICIENT_IDENTITY, f"Collector number mismatch: {listing_num} vs {prov_num}"
+
     # 2. Language validation
     if norm_prov_lang and norm_prov_lang != norm_lot_lang:
         if norm_prov_lang != "en":
@@ -429,7 +440,7 @@ def validate_microvariant_compatibility(
         else:
             return False, RawReasonCode.PROMO_MISMATCH, "Listing is regular/non-promo but provider candidate is promo"
 
-    # 4. Edition validation (HIGH-2: NORMALIZED SEMANTICS)
+    # 4. Edition validation (HIGH-2: NORMALIZED SEMANTICS — FAIL CLOSED IF REQUIRED EDITION UNPROVEN)
     listing_edition = normalize_edition_str(listing_dimensions.get("edition", ""))
     prov_edition = prov_dims.get("edition")
 
@@ -437,14 +448,14 @@ def validate_microvariant_compatibility(
         return False, RawReasonCode.EDITION_MISMATCH, "Listing has conflicting edition metadata"
 
     if listing_edition == "first_edition":
-        if prov_edition in {"unlimited", "shadowless"}:
-            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is 1st Edition but provider candidate is {prov_edition}"
+        if prov_edition != "first_edition":
+            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is 1st Edition but provider candidate is {prov_edition or 'unproven/unlimited'}"
+    elif listing_edition == "shadowless":
+        if prov_edition != "shadowless":
+            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is Shadowless but provider candidate is {prov_edition or 'unproven'}"
     elif listing_edition == "unlimited":
         if prov_edition in {"first_edition", "shadowless"}:
             return False, RawReasonCode.EDITION_MISMATCH, f"Listing is Unlimited but provider candidate is {prov_edition}"
-    elif listing_edition == "shadowless":
-        if prov_edition in {"first_edition", "unlimited"}:
-            return False, RawReasonCode.EDITION_MISMATCH, f"Listing is Shadowless but provider candidate is {prov_edition}"
 
     # 5. Finish validation (MEDIUM-1: INDEPENDENT DIMENSIONS FROM COMPOUND LABELS)
     listing_finish = normalize_finish_str(listing_dimensions.get("finish", ""))
@@ -484,9 +495,34 @@ def estimate_cardmarket_raw(
     if not isinstance(cardmarket_data, Mapping):
         return None
 
-    dims = listing_dimensions or {}
+    dims = dict(listing_dimensions or {})
     norm_lot_lang = _normalize_lang(lot_language)
-    cm_lang = norm_lot_lang if norm_lot_lang in {"en", "fr", "de", "it", "es"} else "en"
+
+    # Provider identity dimensions: do not manufacture language from listing
+    cm_prov_lang = cardmarket_data.get("language")
+    cm_lang = _normalize_lang(str(cm_prov_lang)) if cm_prov_lang else "en"
+
+    # Set and number checks if present in cardmarket_data
+    if cardmarket_data.get("set") and "prov_set" not in dims:
+        dims["prov_set"] = str(cardmarket_data["set"])
+    if (cardmarket_data.get("number") or cardmarket_data.get("collector_number")) and "prov_number" not in dims:
+        dims["prov_number"] = str(cardmarket_data.get("number") or cardmarket_data.get("collector_number"))
+
+    # Japanese cards are not covered by Cardmarket
+    if norm_lot_lang == "ja" and cm_lang != "ja":
+        return RawProviderEstimate(
+            provider="Cardmarket",
+            central=0.0,
+            low=0.0,
+            high=0.0,
+            language=cm_lang,
+            is_exact_language=False,
+            confidence="REJECTED",
+            reason_code=RawReasonCode.LANGUAGE_MISMATCH,
+            status="REJECTED",
+            note="Cardmarket does not cover Japanese cards",
+        )
+
     is_compat, reason_code, reason_msg = validate_microvariant_compatibility(
         dims, variant, cm_lang, lot_language, catalog_proven_finish
     )
@@ -522,6 +558,7 @@ def estimate_cardmarket_raw(
                 status="REJECTED",
                 note="Cardmarket holo variant data not provided (cannot fallback to generic normal price)",
             )
+
         trend = _finite_positive(cardmarket_data.get("trend-holo") or cardmarket_data.get("trendHolo") or (cardmarket_data.get("trend") if catalog_proven_finish == "holo" else None))
         avg1 = _finite_positive(cardmarket_data.get("avg-holo") or cardmarket_data.get("avgHolo") or cardmarket_data.get("avg1-holo") or (cardmarket_data.get("avg") if catalog_proven_finish == "holo" else None))
         avg7 = _finite_positive(cardmarket_data.get("avg7-holo") or cardmarket_data.get("avg7Holo") or (cardmarket_data.get("avg7") if catalog_proven_finish == "holo" else None))
@@ -647,7 +684,7 @@ def estimate_cardmarket_raw(
         status = "ACCEPTED"
 
     norm_lot_lang = _normalize_lang(lot_language)
-    is_exact_lang = norm_lot_lang in {"fr", "en", "de", "it", "es"}
+    is_exact_lang = (cm_lang == norm_lot_lang)
 
     note_parts = [
         f"trend={trend}€" if trend else "",
@@ -666,7 +703,7 @@ def estimate_cardmarket_raw(
         high=round(robust_high, 2),
         currency="EUR",
         sample_size=len(all_points),
-        language=norm_lot_lang,
+        language=cm_lang,
         is_exact_language=is_exact_lang,
         is_exact_variant=True,
         is_exact_condition=True,
@@ -691,9 +728,15 @@ def estimate_tcgplayer_raw(
     if not isinstance(tcgplayer_data, Mapping):
         return None
 
-    dims = listing_dimensions or {}
+    dims = dict(listing_dimensions or {})
     unit = str(tcgplayer_data.get("unit") or "USD")
     norm_lot_lang = _normalize_lang(lot_language)
+
+    # Set and number checks if present in tcgplayer_data
+    if tcgplayer_data.get("set") and "prov_set" not in dims:
+        dims["prov_set"] = str(tcgplayer_data["set"])
+    if (tcgplayer_data.get("number") or tcgplayer_data.get("collector_number")) and "prov_number" not in dims:
+        dims["prov_number"] = str(tcgplayer_data.get("number") or tcgplayer_data.get("collector_number"))
 
     key_patterns = {
         "normal": ("normal",),
@@ -725,6 +768,25 @@ def estimate_tcgplayer_raw(
 
     if tier is None:
         return None
+
+    # Condition verification: if explicitly provided, must be Near Mint
+    tier_cond = tier.get("condition") or tcgplayer_data.get("condition")
+    if tier_cond:
+        norm_cond = str(tier_cond).strip().upper()
+        if norm_cond not in {"NM", "NEAR_MINT", "NEAR MINT", "MINT"}:
+            return RawProviderEstimate(
+                provider="TCGplayer",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language="en",
+                is_exact_language=(norm_lot_lang == "en"),
+                confidence="REJECTED",
+                reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+                status="REJECTED",
+                note=f"TCGplayer non-NM condition: {tier_cond}",
+            )
+
 
     is_compat, reason_code, reason_msg = validate_microvariant_compatibility(
         dims, matched_tier_name or variant, "en", lot_language, catalog_proven_finish
@@ -930,13 +992,43 @@ def estimate_pricecharting_raw(
     if not isinstance(pricecharting_data, Mapping):
         return None
 
-    dims = listing_dimensions or {}
+    dims = dict(listing_dimensions or {})
     norm_lot_lang = _normalize_lang(lot_language)
+
+    # Set and number checks if present in pricecharting_data
+    if pricecharting_data.get("set") and dims.get("set"):
+        if clean_tokens(pricecharting_data["set"]) != clean_tokens(dims["set"]):
+            return RawProviderEstimate(
+                provider="PriceCharting",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language="en",
+                confidence="REJECTED",
+                reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+                status="REJECTED",
+                note=f"PriceCharting rejected (set mismatch: {pricecharting_data['set']} vs {dims['set']})",
+            )
+    prov_num = pricecharting_data.get("number") or pricecharting_data.get("collector_number")
+    exp_num = dims.get("number") or dims.get("collector_number")
+    if prov_num and exp_num:
+        if clean_tokens(prov_num) != clean_tokens(exp_num):
+            return RawProviderEstimate(
+                provider="PriceCharting",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language="en",
+                confidence="REJECTED",
+                reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+                status="REJECTED",
+                note=f"PriceCharting rejected (number mismatch: {prov_num} vs {exp_num})",
+            )
 
     # Provider identity checks: finish/variant requirement
     target_finish = dims.get("finish") or dims.get("variant")
+    prov_finish = str(pricecharting_data.get("finish") or pricecharting_data.get("variant") or "").strip().lower()
     if target_finish in {"holo", "reverse", "reverse-holo"} and catalog_proven_finish != target_finish:
-        prov_finish = str(pricecharting_data.get("finish") or pricecharting_data.get("variant") or "").strip().lower()
         if not prov_finish or prov_finish != target_finish:
             return RawProviderEstimate(
                 provider="PriceCharting",
@@ -967,6 +1059,8 @@ def estimate_pricecharting_raw(
     confidence = "MODERATE" if is_exact_lang else "WEAK"
     status = "ACCEPTED" if is_exact_lang else "DOWNWEIGHTED"
 
+    is_exact_var = bool(catalog_proven_finish or (prov_finish and prov_finish == target_finish) or not target_finish)
+
     return RawProviderEstimate(
         provider="PriceCharting",
         central=round(central_eur, 2),
@@ -976,8 +1070,8 @@ def estimate_pricecharting_raw(
         sample_size=1,
         language="en",
         is_exact_language=is_exact_lang,
-        is_exact_variant=True,
-        is_exact_condition=True,
+        is_exact_variant=is_exact_var,
+        is_exact_condition=False,
         dispersion=0.0,
         anomaly_flags=() if is_exact_lang else ("ENGLISH_PROXY",),
         confidence=confidence,
@@ -998,8 +1092,38 @@ def estimate_ebay_raw(
     if not isinstance(ebay_data, Mapping):
         return None
 
-    dims = listing_dimensions or {}
+    dims = dict(listing_dimensions or {})
     norm_lot_lang = _normalize_lang(lot_language)
+
+    # Set and number checks if present in ebay_data
+    if ebay_data.get("set") and dims.get("set"):
+        if clean_tokens(ebay_data["set"]) != clean_tokens(dims["set"]):
+            return RawProviderEstimate(
+                provider="eBay RAW",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language="",
+                confidence="REJECTED",
+                reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+                status="REJECTED",
+                note=f"eBay RAW rejected (set mismatch: {ebay_data['set']} vs {dims['set']})",
+            )
+    prov_num = ebay_data.get("number") or ebay_data.get("collector_number")
+    exp_num = dims.get("number") or dims.get("collector_number")
+    if prov_num and exp_num:
+        if clean_tokens(prov_num) != clean_tokens(exp_num):
+            return RawProviderEstimate(
+                provider="eBay RAW",
+                central=0.0,
+                low=0.0,
+                high=0.0,
+                language="",
+                confidence="REJECTED",
+                reason_code=RawReasonCode.INSUFFICIENT_IDENTITY,
+                status="REJECTED",
+                note=f"eBay RAW rejected (number mismatch: {prov_num} vs {exp_num})",
+            )
 
     # Provider-proven language check: missing language fails closed
     raw_lang = ebay_data.get("language")
@@ -1019,8 +1143,8 @@ def estimate_ebay_raw(
 
     # Provider-proven variant check
     target_finish = dims.get("finish") or dims.get("variant")
+    prov_finish = str(ebay_data.get("variant") or ebay_data.get("finish") or "").strip().lower()
     if target_finish in {"holo", "reverse", "reverse-holo"} and catalog_proven_finish != target_finish:
-        prov_finish = str(ebay_data.get("variant") or ebay_data.get("finish") or "").strip().lower()
         if not prov_finish or prov_finish != target_finish:
             return RawProviderEstimate(
                 provider="eBay RAW",
@@ -1033,6 +1157,7 @@ def estimate_ebay_raw(
                 status="REJECTED",
                 note=f"eBay RAW rejected (finish {target_finish} not proven in provider response)",
             )
+
 
     sales = ebay_data.get("sales")
     if not isinstance(sales, Sequence) or not sales:
@@ -1070,6 +1195,8 @@ def estimate_ebay_raw(
     confidence = "STRONG" if (count >= 3 and is_exact_lang) else "MODERATE"
     status = "ACCEPTED" if is_exact_lang else "DOWNWEIGHTED"
 
+    is_exact_var = bool(catalog_proven_finish or (prov_finish and prov_finish == target_finish) or not target_finish)
+
     return RawProviderEstimate(
         provider="eBay RAW",
         central=round(central_eur, 2),
@@ -1079,8 +1206,8 @@ def estimate_ebay_raw(
         sample_size=count,
         language=data_lang,
         is_exact_language=is_exact_lang,
-        is_exact_variant=True,
-        is_exact_condition=True,
+        is_exact_variant=is_exact_var,
+        is_exact_condition=False,
         dispersion=stats.dispersion,
         anomaly_flags=() if is_exact_lang else ("PROXY_LANGUAGE",),
         confidence=confidence,

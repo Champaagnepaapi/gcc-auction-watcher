@@ -104,6 +104,8 @@ class AdjacentAnchor:
     sale_count: int = 1
     is_active_ask: bool = False
     weight: float = 1.0
+    age_days: Optional[int] = None
+    is_recent: bool = True
     uncertainty_reasons: tuple[str, ...] = ()
 
 
@@ -289,6 +291,7 @@ def evaluate_temporal_cross_grader_adjustment(
     reference_language: str = "fr",
     reference_volatility: str = "LOW",
     recent_exact_sales: Sequence[Any] = (),
+    reference_is_recent: bool = True,
     now: Optional[Any] = None,
 ) -> TemporalAdjustmentResult:
     """
@@ -300,6 +303,16 @@ def evaluate_temporal_cross_grader_adjustment(
     norm_ref_grader = (reference_grader or "PSA").strip().upper()
     norm_target_lang = (target_language or "fr").strip().lower()
     norm_ref_lang = (reference_language or "fr").strip().lower()
+
+    if not reference_is_recent:
+        return TemporalAdjustmentResult(
+            applied=False,
+            is_extrapolated=False,
+            evidence_level=EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE,
+            uncertainty=UNCERTAINTY_VERY_HIGH,
+            confidence=EVIDENCE_QUALITY_LOW,
+            uncertainty_reasons=("NO_RECENT_REFERENCE_BENCHMARK",),
+        )
 
     # 1. Check if recent exact sales exist (within 90 days)
     if recent_exact_sales:
@@ -529,11 +542,17 @@ def evaluate_price_discovery(
 
     # If temporal adjustment is not precomputed but historical sales are supplied, compute it
     if temporal_adjustment is None and historical_target_sales:
-        # Find current PSA / reference value from adjacent anchors robustly
-        ref_prices = [
-            a.price for a in adjacent_anchors
-            if (a.grader or "").upper() in {"PSA", "BGS", "CGC"} and (_numeric_grade(a.grade) == num_grade or ((num_grade or 0) >= 9.5 and _numeric_grade(a.grade) == 10.0)) and a.price_type == "SOLD"
+        # Find current PSA / reference value from adjacent anchors robustly (strictly same grade and recent <= 90d)
+        ref_anchors = [
+            a for a in adjacent_anchors
+            if (a.grader or "").upper() in {"PSA", "BGS", "CGC"}
+            and _numeric_grade(a.grade) == num_grade
+            and a.price_type == "SOLD"
+            and not a.is_active_ask
+            and (a.age_days is None or a.age_days <= 90)
+            and getattr(a, "is_recent", True)
         ]
+        ref_prices = [a.price for a in ref_anchors]
         curr_ref = compute_robust_reference_value(ref_prices)
         if curr_ref and curr_ref > 0:
             temporal_adjustment = evaluate_temporal_cross_grader_adjustment(
@@ -545,8 +564,19 @@ def evaluate_price_discovery(
                 current_robust_reference_value=curr_ref,
                 target_language=norm_lang,
                 recent_exact_sales=filtered_recent_sales,
+                reference_is_recent=True,
                 now=now,
             )
+        else:
+            temporal_adjustment = TemporalAdjustmentResult(
+                applied=False,
+                is_extrapolated=False,
+                evidence_level=EVIDENCE_LEVEL_MANUAL_REVIEW_NO_ESTIMATE,
+                uncertainty=UNCERTAINTY_VERY_HIGH,
+                confidence=EVIDENCE_QUALITY_LOW,
+                uncertainty_reasons=("NO_RECENT_REFERENCE_BENCHMARK",),
+            )
+
 
 
 

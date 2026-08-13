@@ -28,6 +28,12 @@ def make_lot(
 
 
 class FixedQueueBacklogDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_estimated_backlog_runs = watcher.FixedEconomicQueueDiagnostics.estimated_backlog_runs
+
+    def tearDown(self):
+        watcher.FixedEconomicQueueDiagnostics.estimated_backlog_runs = self._orig_estimated_backlog_runs
+
     def test_stale_backlog_is_counted_without_downgrading_coverage(self):
         queue = watcher.FixedEconomicQueueDiagnostics(processing_budget=120)
         queue.initialized = True
@@ -42,6 +48,7 @@ class FixedQueueBacklogDiagnosticTests(unittest.TestCase):
         self.assertEqual(queue.status, watcher.COVERAGE_COMPLETE)
 
         run_watcher_safe.install_fixed_queue_backlog_diagnostics()
+
 
         self.assertEqual(queue.estimated_backlog_runs, 1)
         summary = watcher.format_fixed_economic_queue(queue)
@@ -552,6 +559,24 @@ class FixedQueueFourTierSchedulingTests(unittest.TestCase):
         # p4_runs = ceil(20/10) = 2, total_runs = ceil(260/120) = 3 -> ETA is max(2, 3) = 3 runs
         self.assertEqual(queue.estimated_backlog_runs, 3)
 
+    def test_eta_preemption_125_p1_and_20_p4_requires_3_runs(self):
+        """125 P1 + 20 P4 with processing_budget=120 and p4_budget=10 must report 3 runs, not 2 (P1 preemption)."""
+        queue = watcher.FixedEconomicQueueDiagnostics(processing_budget=120, p4_processing_budget=10)
+        queue.initialized = True
+        for i in range(125):
+            queue.register(f"p1-{i}", watcher.QUEUE_P1_CHANGED)
+        for i in range(20):
+            queue.register(f"p4-{i}", watcher.QUEUE_P4_EXTERNAL_PENDING)
+
+        run_watcher_safe.install_fixed_queue_backlog_diagnostics()
+
+        # Run 1: 120 P1 processed (5 P1 + 20 P4 remain; P4 got 0 capacity due to P1 budget consumption)
+        # Run 2: 5 P1 + 10 P4 processed (10 P4 remain)
+        # Run 3: 10 P4 processed (0 remain)
+        # Total runs required = 3
+        self.assertEqual(queue.estimated_backlog_runs, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -277,6 +277,7 @@ Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5
 6. **Observabilité, Filtrage des paliers & Consensus multi-sources** :
    - Traçabilité complète du statut de chaque fournisseur (`ACCEPTED`, `DOWNWEIGHTED`, `REJECTED`) avec reason codes standardisés (`EXACT_COMPATIBLE`, `OUTLIER_CONTAMINATION`, `LANGUAGE_MISMATCH`, `FINISH_MISMATCH`, `PROVIDER_DISAGREEMENT`, etc.).
    - Filtrage strict de compatibilité dimensionnelle sur chaque palier avant inclusion dans l'enveloppe de variantes ambiguës.
+   - En production V4, le consensus RAW s'appuie exclusivement sur les fournisseurs disposant d'une ingestion réelle (`Cardmarket` et `TCGplayer` via l'API TCGdex), les adaptateurs JustTCG/PriceCharting/eBay RAW restant isolés pour les tests et diagnostics hors-ligne.
    - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants compatibles (une source unique reste diagnostique / WEAK).
    - Les conflits ou désaccords inter-fournisseurs (`disagreement_ratio > 1.30`) bloquent strictement l'utilisation de l'ancre RAW dans le price-discovery.
 
@@ -286,33 +287,34 @@ La couverture économique sépare strictement :
 - `FIRST_EVALUATION_COVERAGE` : achèvement du premier passage d'évaluation interne (lots `P0_NEW`, `P1_CHANGED`, `P2_NEVER_EVALUATED`) ;
 - `EXTERNAL_MARKET_COVERAGE` : achèvement de la file externe `P4_EXTERNAL_PENDING` ;
 - `EXTERNAL_PENDING_BACKLOG` : nombre exact de lots en attente de validation externe ;
-- `realistic backlog ETA` : estimation réaliste du nombre de runs restants basée sur le débit effectif de la file P4 (10 lots/run max), et non sur le budget global de 120 cartes.
+- `realistic backlog ETA` : simulation exacte du drainage de file tenant compte de la priorité stricte des lots urgents (P0/P1) préemptant la capacité et du plafond dédié P4 (10 lots/run max), garantissant l'absence de sous-estimation de l'ETA.
 
 Un run ne peut plus déclarer une couverture globale complète ni un résultat digne de confiance (`economic result trustworthy = YES`) tant qu'un backlog P4 subsiste.
 
 ### Écart de Grader & Découverte de Prix Asymétrique (*Grader Spread & Price Discovery*)
-Le module `v4_price_discovery.py` permet d'exploiter la valeur asymétrique de slabs secondaires ou peu liquides à travers trois catégories d'opportunités de revue manuelle :
-1. `CROSSGRADE_OPPORTUNITY` : Slabs secondaires de très haut grade (PCA 10 / BGS 9.5 / CGC 10) bénéficiant d'un spread massif face au benchmark PSA.
+Le module `v4_price_discovery.py` permet d'exploiter la valeur asymétrique de slabs secondaires ou peu liquides :
+1. `CROSSGRADE_OPPORTUNITY` : Slabs secondaires de très haut grade (PCA 10 / BGS 9.5 / CGC 10) bénéficiant d'un spread face au benchmark PSA [DIAGNOSTIC / NON-LIVE en production V4 tant qu'aucun flux crossgrade réel n'est injecté].
 2. `SECONDARY_GRADER_DISCOUNT` : Marché secondaire liquide mais décoté significativement par rapport à la valeur équitable.
-3. `ILLIQUID_PRICE_DISCOVERY` : Liquidité exacte faible sur le slab considéré, mais multiples ancres adjacentes solides (PSA 10 vendu, consensus RAW français, ventes historiques GCC) prouvant une décote asymétrique majeure.
+3. `ILLIQUID_PRICE_DISCOVERY` : Liquidité exacte faible sur le slab considéré, mais multiples ancres adjacentes solides (PSA 10 vendu récent, consensus RAW, ventes historiques GCC) prouvant une décote asymétrique majeure.
 
 ### Ajustement Temporel Multi-Grader (*Temporal Cross-Grader Adjustment*)
 Pour éviter qu'une vente ancienne sur un grader secondaire (ex: SGS 8 vendu 18 € il y a un an) n'ancre artificiellement à la baisse l'estimation actuelle lorsque le marché global (PSA 8) a fortement progressé :
 - **Calcul du ratio historique** : $\text{ratio} = \frac{\text{prix historique grader cible}}{\text{prix historique référence PSA}}$.
-- **Rebasement actuel** : $\text{estimation ajustée} = \text{valeur robuste PSA actuelle} \times \text{ratio historique}$.
+- **Rebasement actuel** : $\text{estimation ajustée} = \text{valeur robuste PSA actuelle récente} \times \text{ratio historique}$.
 - **Filtrage robuste des anomalies** : Médiane robuste sur les ratios historiques observés pour neutraliser tout outlier isolé.
 - **Préservation de la décote spécifique** : Aucun postulat d'égalité naïve SGS = PSA ; le spread de grader est préservé de manière explicite.
-- **Fail-closed sans extrapolation aveugle** : Si aucune référence historique appariable n'existe, le pipeline bascule en revue manuelle sans inventer d'estimation chiffrée (`MANUAL_REVIEW_NO_ESTIMATE`).
+- **Fail-closed sans extrapolation aveugle** : Si aucune référence récente de même grade n'existe, le pipeline bascule en revue manuelle sans inventer d'estimation chiffrée (`MANUAL_REVIEW_NO_ESTIMATE`).
 - **Hiérarchie stricte des preuves** :
   $$\text{EXACT\_RECENT\_COMP} > \text{EXACT\_OLD\_COMP\_TEMPORALLY\_ADJUSTED} > \text{CROSS\_GRADER\_ESTIMATE\_ONLY} > \text{MANUAL\_REVIEW\_NO\_ESTIMATE}$$
 - **Surfaçage exclusif en Revue Manuelle** : Aucune décision d'achat, d'enchère ou de paiement automatique.
 
 **Principes de sécurité :**
 - `LOW_LIQUIDITY` est une caractéristique d'incertitude (`uncertainty = HIGH`), jamais un rejet automatique.
-- La probabilité de crossgrade est facultative (`crossgrade_required = false`).
+- La probabilité de crossgrade est facultative (`crossgrade_required = false`) et purement diagnostique.
 - Les annonces actives seules (*active asks*) ne créent jamais d'opportunité.
 - Les ancres trans-linguistiques (ex. PSA 10 anglais vs slab français) sont explicitement décotées et augmentent l'incertitude.
 - Les slabs de bas grade (ex. note $\le 7$) ne peuvent pas utiliser d'ancre PSA 10 sans échelon intermédiaire.
+
 
 
 

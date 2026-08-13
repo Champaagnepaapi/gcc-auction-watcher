@@ -871,8 +871,69 @@ class EconomicCoverageAudit:
         return COVERAGE_COMPLETE
 
 
+def simulate_backlog_drain_runs(
+    p0: int = 0,
+    p1: int = 0,
+    p2: int = 0,
+    p3: int = 0,
+    p4: int = 0,
+    valuation_cap: int = 120,
+    p4_cap: int = 10,
+    min_stale_cap: int = 5,
+) -> int:
+    """Simulate exact scheduler dispatch to determine realistic number of runs to drain all queues."""
+    total = p0 + p1 + p2 + p3 + p4
+    if total <= 0:
+        return 0
+    budget_cap = max(1, valuation_cap)
+    p4_limit = max(1, p4_cap)
+    stale_floor_limit = max(1, min_stale_cap)
+
+    runs = 0
+    rem_p0, rem_p1, rem_p2, rem_p3, rem_p4 = p0, p1, p2, p3, p4
+    while (rem_p0 + rem_p1 + rem_p2 + rem_p3 + rem_p4) > 0:
+        runs += 1
+        budget = budget_cap
+
+        # 1. Tier 1: Urgent Pool (P0 + P1)
+        urgent = rem_p0 + rem_p1
+        take_urgent = min(urgent, budget)
+        budget -= take_urgent
+        if rem_p0 >= take_urgent:
+            rem_p0 -= take_urgent
+        else:
+            take_p1 = take_urgent - rem_p0
+            rem_p0 = 0
+            rem_p1 -= take_p1
+
+        # 2. Tier 2: P4 Reservation
+        take_p4 = min(rem_p4, min(p4_limit, budget))
+        rem_p4 -= take_p4
+        budget -= take_p4
+
+        # 3. Tier 3: Discovery Pool (P2 + P3)
+        if budget > 0:
+            stale_floor = min(rem_p3, min(stale_floor_limit, budget))
+            rem_p3 -= stale_floor
+            budget -= stale_floor
+
+            take_p2 = min(rem_p2, budget)
+            rem_p2 -= take_p2
+            budget -= take_p2
+
+            extra_p3 = min(rem_p3, budget)
+            rem_p3 -= extra_p3
+            budget -= extra_p3
+
+        if runs > 10000:
+            break
+
+    return runs
+
+
 @dataclass
 class FixedEconomicQueueDiagnostics:
+
     """Comptabilité de la file fixed; aucune donnée ne modifie la valorisation."""
 
     processing_budget: int = MAX_FIXED_CANDIDATES
@@ -1011,18 +1072,18 @@ class FixedEconomicQueueDiagnostics:
 
     @property
     def estimated_backlog_runs(self) -> int:
-        p4_backlog = self.external_pending_backlog
-        other_backlog = self.first_evaluation_backlog + self.stale_backlog
-        total_backlog = other_backlog + p4_backlog
+        p0 = self.backlog_count(QUEUE_P0_NEW)
+        p1 = self.backlog_count(QUEUE_P1_CHANGED)
+        p2 = self.backlog_count(QUEUE_P2_NEVER_EVALUATED)
+        p3 = self.backlog_count(QUEUE_P3_STALE)
+        p4 = self.backlog_count(QUEUE_P4_EXTERNAL_PENDING)
         budget = max(1, self.processing_budget)
         p4_cap = max(1, getattr(self, "p4_processing_budget", MAX_EXTERNAL_PENDING_PER_RUN))
-        p4_runs = (p4_backlog + p4_cap - 1) // p4_cap if p4_backlog > 0 else 0
-        total_runs = (total_backlog + budget - 1) // budget if total_backlog > 0 else 0
-        return max(p4_runs, total_runs)
-
+        return simulate_backlog_drain_runs(p0, p1, p2, p3, p4, budget, p4_cap)
 
     @property
     def accounting_coherent(self) -> bool:
+
         return (
             self.eligible_candidates
             == self.processed_this_run

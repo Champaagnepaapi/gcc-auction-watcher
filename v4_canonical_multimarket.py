@@ -816,31 +816,6 @@ def _all_raw_centers(
             if est and est.confidence != "REJECTED" and est.status != "REJECTED":
                 centers.append(("TCGplayer", est.central, str(key)))
 
-    justtcg = pricing.get("justtcg")
-    if isinstance(justtcg, Mapping):
-        for label in ("normal", "holo", "reverse"):
-            est = raw_consensus.estimate_justtcg_raw(
-                justtcg, label, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
-            )
-            if est and est.confidence != "REJECTED" and est.status != "REJECTED":
-                centers.append(("JustTCG", est.central, label))
-
-    pricecharting = pricing.get("pricecharting")
-    if isinstance(pricecharting, Mapping):
-        est = raw_consensus.estimate_pricecharting_raw(
-            pricecharting, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
-        )
-        if est and est.confidence != "REJECTED" and est.status != "REJECTED":
-            centers.append(("PriceCharting", est.central, "ungraded"))
-
-    ebay_raw = pricing.get("ebay_raw")
-    if isinstance(ebay_raw, Mapping):
-        est = raw_consensus.estimate_ebay_raw(
-            ebay_raw, lot_lang, listing_dimensions=expected, catalog_proven_finish=catalog_proven
-        )
-        if est and est.confidence != "REJECTED" and est.status != "REJECTED":
-            centers.append(("eBay RAW", est.central, "sales"))
-
     return centers
 
 
@@ -886,34 +861,10 @@ def raw_market_signal(
             if tp_est is not None:
                 estimates.append(tp_est)
 
-        justtcg = pricing.get("justtcg")
-        if isinstance(justtcg, Mapping):
-            jt_est = raw_consensus.estimate_justtcg_raw(
-                justtcg, variant, lot_lang, expected, catalog_proven
-            )
-            if jt_est is not None:
-                estimates.append(jt_est)
-
-        pricecharting = pricing.get("pricecharting")
-        if isinstance(pricecharting, Mapping):
-            pc_est = raw_consensus.estimate_pricecharting_raw(
-                pricecharting, lot_lang, expected, catalog_proven_finish=catalog_proven
-            )
-            if pc_est is not None:
-                estimates.append(pc_est)
-
-        ebay_raw = pricing.get("ebay_raw")
-        if isinstance(ebay_raw, Mapping):
-            eb_est = raw_consensus.estimate_ebay_raw(
-                ebay_raw, lot_lang, expected, catalog_proven_finish=catalog_proven
-            )
-            if eb_est is not None:
-                estimates.append(eb_est)
-
-
         consensus = raw_consensus.arbitrate_raw_consensus(estimates, lot_lang)
         if consensus.status == "REJECTED" or consensus.central <= 0:
             return None
+
 
         signal = RawMarketSignal(
             low=max(0.01, consensus.low),

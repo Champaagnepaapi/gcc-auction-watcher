@@ -1050,6 +1050,37 @@ class MultiMarketIntegrationTests(unittest.TestCase):
         # Calling mm._notify_manual_review (which is safe_notify_manual_review) must execute without RecursionError
         mm._notify_manual_review(lead)
 
+    def test_synthetic_pricing_keys_are_not_consumed_in_production_raw_signal(self):
+        """Production raw_market_signal ignores synthetic justtcg/pricecharting/ebay_raw keys."""
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Charizard",
+            language_code="en",
+            pricing={
+                "justtcg": {"marketPrice": 100.0, "currency": "USD", "condition": "NM", "language": "en"},
+                "pricecharting": {"loose": 100.0, "currency": "USD"},
+                "ebay_raw": {"sales": [90.0, 95.0, 100.0], "currency": "USD", "language": "en"},
+            },
+            variants={"normal": True, "holo": True},
+            unique_name_number=True,
+        )
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/1",
+            title="Charizard 4/102",
+            current_price=50.0,
+            source_type="auction",
+            language="en",
+        )
+        # With only synthetic keys in pricing, production raw_market_signal returns None
+        sig = mm.raw_market_signal(lot, canonical)
+        self.assertIsNone(sig)
+
 
 if __name__ == "__main__":
     unittest.main()
+
