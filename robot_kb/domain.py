@@ -138,6 +138,21 @@ def classify_opportunity(
         return OpportunityState.IDENTITY_CONFLICT
     if not identity_bounded:
         return OpportunityState.IDENTITY_UNBOUNDED
+
+    if exact_variant_profile_id is not None:
+        if len(scenarios) != 1:
+            raise ValueError(
+                "exact_variant_profile_id requires exactly one candidate scenario"
+            )
+        if scenarios[0].variant_profile_id != exact_variant_profile_id:
+            raise ValueError(
+                "exact_variant_profile_id must identify the sole candidate scenario"
+            )
+    elif len(scenarios) == 1:
+        raise ValueError(
+            "a single candidate scenario requires proven exact variant identity"
+        )
+
     if not scenarios:
         return OpportunityState.MARKET_UNCONFIRMED
 
@@ -153,11 +168,10 @@ def classify_opportunity(
 
     passing = [scenario for scenario in scenarios if scenario.passes_threshold]
     if len(passing) == len(scenarios):
-        if (
-            len(scenarios) == 1
-            and exact_variant_profile_id == scenarios[0].variant_profile_id
-        ):
+        if len(scenarios) == 1:
             return OpportunityState.EXACT_VARIANT_OPPORTUNITY
+        if len(scenarios) < 2:
+            raise ValueError("robust opportunity requires multiple plausible variants")
         return OpportunityState.ROBUST_VARIANT_OPPORTUNITY
     if passing:
         return OpportunityState.MICROVARIANT_DEPENDENT_OPPORTUNITY

@@ -611,7 +611,10 @@ class ScenarioContractTests(unittest.TestCase):
         )
         unbounded = classify_opportunity([], identity_bounded=False)
         unconfirmed = classify_opportunity(
-            [self.scenario("first", None, False)]
+            [
+                self.scenario("first", None, False),
+                self.scenario("no-stamp", None, False),
+            ]
         )
         self.assertEqual(exact, OpportunityState.EXACT_VARIANT_OPPORTUNITY)
         self.assertEqual(unbounded, OpportunityState.IDENTITY_UNBOUNDED)
@@ -643,12 +646,12 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gcc-kb-test-") as directory:
             path = Path(directory) / "knowledge.sqlite3"
             with KnowledgeBase.open(path) as first:
-                self.assertEqual(first.schema_versions(), [1])
+                self.assertEqual(first.schema_versions(), [1, 2])
                 dimension_count = first.connection.execute(
                     "SELECT COUNT(*) FROM variant_dimension"
                 ).fetchone()[0]
             with KnowledgeBase.open(path) as second:
-                self.assertEqual(second.schema_versions(), [1])
+                self.assertEqual(second.schema_versions(), [1, 2])
                 self.assertEqual(
                     second.connection.execute(
                         "SELECT COUNT(*) FROM variant_dimension"

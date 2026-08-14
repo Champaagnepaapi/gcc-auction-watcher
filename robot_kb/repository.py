@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple, Union
 
@@ -24,7 +24,7 @@ from .domain import (
     ResolutionState,
     SourceKind,
 )
-from .migrations import apply_migrations, connect_database
+from .migrations import apply_migrations, connect_database, ensure_foreign_keys
 
 
 class KnowledgeBaseError(RuntimeError):
@@ -80,10 +80,32 @@ class PriceComponent:
         }
         if self.component_type not in allowed:
             raise ValueError(f"unsupported price component: {self.component_type}")
-        is_known = self.knowledge_state == PriceKnowledge.KNOWN
-        if is_known != (self.amount_minor is not None and self.currency is not None):
+        if self.knowledge_state == PriceKnowledge.KNOWN:
+            valid_state = (
+                self.amount_minor is not None
+                and self.currency is not None
+                and self.inclusion_state
+                in {
+                    InclusionState.INCLUDED,
+                    InclusionState.EXCLUDED,
+                    InclusionState.UNKNOWN,
+                }
+            )
+        elif self.knowledge_state == PriceKnowledge.UNKNOWN:
+            valid_state = (
+                self.amount_minor is None
+                and self.currency is None
+                and self.inclusion_state == InclusionState.UNKNOWN
+            )
+        else:
+            valid_state = (
+                self.amount_minor is None
+                and self.currency is None
+                and self.inclusion_state == InclusionState.NOT_APPLICABLE
+            )
+        if not valid_state:
             raise ValueError(
-                "known prices require amount/currency; unknown prices preserve neither"
+                "illegal price knowledge/inclusion state"
             )
         if self.amount_minor is not None and self.amount_minor < 0:
             raise ValueError("price amounts cannot be negative")
@@ -110,8 +132,26 @@ class FXNormalization:
             raise ValueError("currency must be a three-letter code")
         if self.original_amount_minor < 0 or self.target_amount_minor < 0:
             raise ValueError("FX amounts cannot be negative")
-        if Decimal(self.fx_rate_decimal) <= 0:
+        try:
+            rate = Decimal(self.fx_rate_decimal)
+        except InvalidOperation as exc:
+            raise ValueError("FX rate must be a decimal") from exc
+        if not rate.is_finite() or rate <= 0:
             raise ValueError("FX rate must be positive")
+        try:
+            expected_target = int(
+                (Decimal(self.original_amount_minor) * rate).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
+        except (InvalidOperation, OverflowError) as exc:
+            raise ValueError("FX rate is outside the supported decimal range") from exc
+        if self.target_amount_minor != expected_target:
+            raise ValueError(
+                "target amount does not match original amount and decimal FX rate"
+            )
+        if not self.rate_source or not self.rate_effective_date:
+            raise ValueError("FX source and effective date are required")
 
 
 _FACT_COLUMNS: Dict[ObservationType, Tuple[str, Tuple[str, ...], Mapping[str, Any]]] = {
@@ -224,6 +264,8 @@ class KnowledgeBase:
     """Explicit, local repository boundary for P0 knowledge-base data."""
 
     def __init__(self, connection: sqlite3.Connection):
+        connection.row_factory = sqlite3.Row
+        ensure_foreign_keys(connection)
         self.connection = connection
 
     @classmethod
@@ -248,16 +290,24 @@ class KnowledgeBase:
     @contextmanager
     def _transaction(self) -> Iterator[None]:
         nested = self.connection.in_transaction
-        if not nested:
+        savepoint = f"kb_{uuid.uuid4().hex}"
+        if nested:
+            self.connection.execute(f"SAVEPOINT {savepoint}")
+        else:
             self.connection.execute("BEGIN IMMEDIATE")
         try:
             yield
         except Exception:
-            if not nested and self.connection.in_transaction:
+            if nested:
+                self.connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self.connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            elif self.connection.in_transaction:
                 self.connection.execute("ROLLBACK")
             raise
         else:
-            if not nested:
+            if nested:
+                self.connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            else:
                 self.connection.execute("COMMIT")
 
     def schema_versions(self) -> Sequence[int]:
@@ -360,6 +410,42 @@ class KnowledgeBase:
         *,
         canonical_card_id: Optional[str] = None,
     ) -> str:
+        if resolution_state == ResolutionState.PROVEN and canonical_card_id is None:
+            raise ProvenanceError("proven identifier mapping requires a canonical card")
+        if resolution_state in {ResolutionState.UNKNOWN, ResolutionState.CONFLICT}:
+            if canonical_card_id is not None:
+                raise ProvenanceError(
+                    "unknown/conflicting identifier mapping cannot select a card"
+                )
+        # SUPPORTED may name a non-exact candidate, but it never competes with
+        # the single authoritative PROVEN mapping enforced below and in SQL.
+        duplicate = self.connection.execute(
+            """
+            SELECT id FROM identifier_link
+            WHERE external_identifier_id = ?
+              AND resolution_state = ?
+              AND canonical_card_id IS ?
+            """,
+            (
+                external_identifier_id,
+                resolution_state.value,
+                canonical_card_id,
+            ),
+        ).fetchone()
+        if duplicate:
+            return duplicate["id"]
+        if resolution_state == ResolutionState.PROVEN:
+            proven = self.connection.execute(
+                """
+                SELECT canonical_card_id FROM identifier_link
+                WHERE external_identifier_id = ? AND resolution_state = 'PROVEN'
+                """,
+                (external_identifier_id,),
+            ).fetchone()
+            if proven is not None:
+                raise IdempotencyConflict(
+                    "external identifier already has a different proven mapping"
+                )
         link_id = _new_id("idlink")
         self.connection.execute(
             """
@@ -389,6 +475,10 @@ class KnowledgeBase:
         external_object_id: Optional[str] = None,
     ) -> str:
         payload_sha256 = _payload_hash(payload)
+        retrieved = _timestamp(retrieved_at, field="retrieved_at")
+        source_updated = _optional_timestamp(
+            source_updated_at, field="source_updated_at"
+        )
         existing = self.connection.execute(
             """
             SELECT id FROM source_record
@@ -398,30 +488,100 @@ class KnowledgeBase:
             """,
             (source_system_id, source_native_record_id, payload_sha256),
         ).fetchone()
-        if existing:
-            return existing["id"]
-        record_id = _new_id("srecord")
-        created_at = _now()
-        self.connection.execute(
+        with self._transaction():
+            if existing:
+                record_id = existing["id"]
+            else:
+                record_id = _new_id("srecord")
+                created_at = _now()
+                self.connection.execute(
+                    """
+                    INSERT INTO source_record(
+                        id, source_system_id, external_object_id,
+                        source_native_record_id, payload_sha256, retrieved_at,
+                        source_updated_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record_id,
+                        source_system_id,
+                        external_object_id,
+                        source_native_record_id,
+                        payload_sha256,
+                        retrieved,
+                        source_updated,
+                        created_at,
+                    ),
+                )
+            self._append_source_record_retrieval(
+                record_id,
+                external_object_id=external_object_id,
+                retrieved_at=retrieved,
+                source_updated_at=source_updated,
+            )
+        return record_id
+
+    def _append_source_record_retrieval(
+        self,
+        source_record_id: str,
+        *,
+        external_object_id: Optional[str],
+        retrieved_at: str,
+        source_updated_at: Optional[str],
+    ) -> str:
+        existing = self.connection.execute(
             """
-            INSERT INTO source_record(
-                id, source_system_id, external_object_id,
-                source_native_record_id, payload_sha256, retrieved_at,
-                source_updated_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT id FROM source_record_retrieval
+            WHERE source_record_id = ?
+              AND external_object_id IS ?
+              AND retrieved_at = ?
+              AND source_updated_at IS ?
             """,
             (
-                record_id,
-                source_system_id,
+                source_record_id,
                 external_object_id,
-                source_native_record_id,
-                payload_sha256,
-                _timestamp(retrieved_at, field="retrieved_at"),
-                _optional_timestamp(source_updated_at, field="source_updated_at"),
-                created_at,
+                retrieved_at,
+                source_updated_at,
+            ),
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        retrieval_id = _new_id("sretrieval")
+        lineage_key = "sretrievalkey_" + _sha256(
+            {
+                "source_record_id": source_record_id,
+                "external_object_id": external_object_id,
+                "retrieved_at": retrieved_at,
+                "source_updated_at": source_updated_at,
+            }
+        )
+        self.connection.execute(
+            """
+            INSERT INTO source_record_retrieval(
+                id, source_record_id, external_object_id, retrieved_at,
+                source_updated_at, lineage_key, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                retrieval_id,
+                source_record_id,
+                external_object_id,
+                retrieved_at,
+                source_updated_at,
+                lineage_key,
+                _now(),
             ),
         )
-        return record_id
+        return retrieval_id
+
+    def source_record_retrievals(self, source_record_id: str) -> Sequence[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT * FROM source_record_retrieval
+            WHERE source_record_id = ? ORDER BY retrieved_at, id
+            """,
+            (source_record_id,),
+        ).fetchall()
 
     def create_canonical_set(
         self, canonical_key: str, name: str, *, release_date: Optional[str] = None
@@ -518,12 +678,16 @@ class KnowledgeBase:
         if len({key for key, _ in normalized}) != len(normalized):
             raise VariantError("a variant dimension may be assigned only once")
         fingerprint = _sha256(normalized)
+        semantic_key = "|".join(
+            f"{dimension_code}={value_code}"
+            for dimension_code, value_code in normalized
+        )
         existing = self.connection.execute(
             """
             SELECT id, locked_at FROM variant_profile
-            WHERE fingerprint_sha256 = ?
+            WHERE semantic_key = ?
             """,
-            (fingerprint,),
+            (semantic_key,),
         ).fetchone()
         if existing:
             if existing["locked_at"] is None:
@@ -568,8 +732,12 @@ class KnowledgeBase:
                     (profile_id, dimension_id, value_id, created_at),
                 )
             self.connection.execute(
-                "UPDATE variant_profile SET locked_at = ? WHERE id = ?",
-                (_now(), profile_id),
+                """
+                UPDATE variant_profile
+                SET semantic_key = ?, locked_at = ?
+                WHERE id = ?
+                """,
+                (semantic_key, _now(), profile_id),
             )
         return profile_id
 
@@ -638,10 +806,10 @@ class KnowledgeBase:
     ) -> str:
         row = self.connection.execute(
             """
-            SELECT l.card_family_id, p.fingerprint_sha256
+            SELECT l.card_family_id, p.semantic_key
             FROM localized_card l
             JOIN variant_profile p ON p.id = ?
-            WHERE l.id = ? AND p.locked_at IS NOT NULL
+            WHERE l.id = ? AND p.locked_at IS NOT NULL AND p.semantic_key IS NOT NULL
             """,
             (variant_profile_id, localized_card_id),
         ).fetchone()
@@ -656,6 +824,44 @@ class KnowledgeBase:
         ).fetchone()
         if allowed is None:
             raise VariantError("variant profile is not allowed for this card family")
+        missing_applicable = self.connection.execute(
+            """
+            SELECT d.code
+            FROM family_variant_applicability AS a
+            JOIN variant_dimension AS d ON d.id = a.dimension_id
+            WHERE a.card_family_id = ?
+              AND a.applicability_state = 'APPLICABLE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM variant_assignment AS va
+                  WHERE va.profile_id = ? AND va.dimension_id = a.dimension_id
+              )
+            ORDER BY d.code
+            """,
+            (row["card_family_id"], variant_profile_id),
+        ).fetchall()
+        if missing_applicable:
+            raise VariantError(
+                "variant profile is missing applicable dimensions: "
+                + ", ".join(item["code"] for item in missing_applicable)
+            )
+        forbidden = self.connection.execute(
+            """
+            SELECT d.code
+            FROM family_variant_applicability AS a
+            JOIN variant_dimension AS d ON d.id = a.dimension_id
+            JOIN variant_assignment AS va
+              ON va.profile_id = ? AND va.dimension_id = a.dimension_id
+            WHERE a.card_family_id = ?
+              AND a.applicability_state = 'NOT_APPLICABLE'
+            ORDER BY d.code
+            """,
+            (variant_profile_id, row["card_family_id"]),
+        ).fetchall()
+        if forbidden:
+            raise VariantError(
+                "variant profile assigns non-applicable dimensions: "
+                + ", ".join(item["code"] for item in forbidden)
+            )
         existing = self.connection.execute(
             """
             SELECT id FROM canonical_card
@@ -665,8 +871,8 @@ class KnowledgeBase:
         ).fetchone()
         if existing:
             return existing["id"]
-        comparison_key = "cardcmp_" + _sha256(
-            [localized_card_id, row["fingerprint_sha256"]]
+        comparison_key = (
+            f"cardcmp|{localized_card_id}|{row['semantic_key']}"
         )
         card_id = _new_id("card")
         self.connection.execute(
@@ -754,6 +960,32 @@ class KnowledgeBase:
         subgrades: Optional[Mapping[str, Any]] = None,
         certification_identifier_id: Optional[str] = None,
     ) -> str:
+        if (grader is None) != (grade is None):
+            raise ValueError("grader and grade must be supplied together")
+        subgrades_json = (
+            _canonical_json(subgrades) if subgrades is not None else None
+        )
+        if certification_identifier_id is not None:
+            existing = self.connection.execute(
+                """
+                SELECT * FROM collectible_instance
+                WHERE certification_identifier_id = ?
+                """,
+                (certification_identifier_id,),
+            ).fetchone()
+            if existing is not None:
+                same_instance = (
+                    existing["canonical_card_id"] == canonical_card_id
+                    and existing["grader"] == grader
+                    and existing["grade"] == grade
+                    and existing["qualifier"] == qualifier
+                    and existing["subgrades_json"] == subgrades_json
+                )
+                if same_instance:
+                    return existing["id"]
+                raise IdempotencyConflict(
+                    "certification identifier already identifies another instance"
+                )
         instance_id = _new_id("instance")
         self.connection.execute(
             """
@@ -768,7 +1000,7 @@ class KnowledgeBase:
                 grader,
                 grade,
                 qualifier,
-                _canonical_json(subgrades) if subgrades is not None else None,
+                subgrades_json,
                 certification_identifier_id,
                 _now(),
             ),
@@ -877,6 +1109,11 @@ class KnowledgeBase:
     ) -> str:
         if claim_role == ClaimRole.REQUEST_TARGET and resolution_state != ResolutionState.UNKNOWN:
             raise ProvenanceError("a request target cannot become proof")
+        if resolution_state in {ResolutionState.PROVEN, ResolutionState.SUPPORTED}:
+            if claim_role != ClaimRole.EVIDENCE or value is None:
+                raise ProvenanceError(
+                    "positive claim requires non-null evidence, not a request target"
+                )
         claim_id = _new_id("claim")
         self.connection.execute(
             """
@@ -891,7 +1128,7 @@ class KnowledgeBase:
                 source_record_id,
                 identity_subject_id,
                 field_name,
-                _canonical_json(value),
+                None if value is None else _canonical_json(value),
                 source_kind.value,
                 evidence_method.value,
                 directness.value,
@@ -912,12 +1149,14 @@ class KnowledgeBase:
         based_on_claim_id: Optional[str] = None,
         supersedes_resolution_id: Optional[str] = None,
     ) -> str:
+        resolved_json = None if value is None else _canonical_json(value)
         if resolution_state in {ResolutionState.PROVEN, ResolutionState.SUPPORTED}:
-            if based_on_claim_id is None:
+            if based_on_claim_id is None or resolved_json is None:
                 raise ProvenanceError("positive field resolution requires evidence")
             claim = self.connection.execute(
                 """
-                SELECT claim_role, identity_subject_id, field_name
+                SELECT claim_role, identity_subject_id, field_name,
+                       claimed_value_json, resolution_state
                 FROM field_claim WHERE id = ?
                 """,
                 (based_on_claim_id,),
@@ -931,8 +1170,42 @@ class KnowledgeBase:
                 or claim["field_name"] != field_name
             ):
                 raise ProvenanceError("evidence must match the subject and field")
-        if resolution_state == ResolutionState.UNKNOWN and value is not None:
-            raise ProvenanceError("an unknown field cannot have a resolved default")
+            positive_claim_states = (
+                {ResolutionState.PROVEN.value}
+                if resolution_state == ResolutionState.PROVEN
+                else {ResolutionState.PROVEN.value, ResolutionState.SUPPORTED.value}
+            )
+            if claim["resolution_state"] not in positive_claim_states:
+                raise ProvenanceError(
+                    "unknown/conflicting claim cannot support a positive resolution"
+                )
+            if (
+                claim["claimed_value_json"] is None
+                or claim["claimed_value_json"] != resolved_json
+            ):
+                raise ProvenanceError(
+                    "resolved value must exactly match the supporting claim"
+                )
+        if resolution_state in {ResolutionState.UNKNOWN, ResolutionState.CONFLICT}:
+            if value is not None:
+                raise ProvenanceError(
+                    "unknown/conflicting field cannot select a resolved truth value"
+                )
+        if supersedes_resolution_id is not None:
+            superseded = self.connection.execute(
+                """
+                SELECT identity_subject_id, field_name
+                FROM field_resolution WHERE id = ?
+                """,
+                (supersedes_resolution_id,),
+            ).fetchone()
+            if superseded is None or (
+                superseded["identity_subject_id"] != identity_subject_id
+                or superseded["field_name"] != field_name
+            ):
+                raise ProvenanceError(
+                    "field supersession must stay within the same subject and field"
+                )
         resolution_id = _new_id("fres")
         self.connection.execute(
             """
@@ -946,7 +1219,7 @@ class KnowledgeBase:
                 resolution_id,
                 identity_subject_id,
                 field_name,
-                None if value is None else _canonical_json(value),
+                resolved_json,
                 resolution_state.value,
                 based_on_claim_id,
                 supersedes_resolution_id,
@@ -982,6 +1255,57 @@ class KnowledgeBase:
             resolution_id=row["id"],
         )
 
+    def _validate_upstream_lineage(
+        self,
+        upstream_market_system_id: Optional[str],
+        upstream_event_object_id: Optional[str],
+    ) -> None:
+        if upstream_event_object_id is None:
+            return
+        lineage = self.connection.execute(
+            """
+            SELECT e.source_system_id, s.system_role
+            FROM external_object AS e
+            JOIN source_system AS s ON s.id = e.source_system_id
+            WHERE e.id = ?
+            """,
+            (upstream_event_object_id,),
+        ).fetchone()
+        if lineage is None or (
+            lineage["source_system_id"] != upstream_market_system_id
+            or lineage["system_role"] not in {"MARKET", "LISTING_PLATFORM"}
+        ):
+            raise KnowledgeBaseError(
+                "upstream event object must belong to the declared marketplace"
+            )
+
+    def _validate_revision_target(
+        self,
+        revision_of_observation_id: Optional[str],
+        *,
+        observation_type: ObservationType,
+        source_system_id: str,
+        source_native_record_id: str,
+        upstream_market_system_id: Optional[str],
+        upstream_event_object_id: Optional[str],
+    ) -> None:
+        if revision_of_observation_id is None:
+            return
+        target = self.connection.execute(
+            "SELECT * FROM market_observation WHERE id = ?",
+            (revision_of_observation_id,),
+        ).fetchone()
+        compatible = target is not None and (
+            target["lifecycle_state"] == "SEALED"
+            and target["observation_type"] == observation_type.value
+            and target["source_system_id"] == source_system_id
+            and target["source_native_record_id"] == source_native_record_id
+            and target["upstream_market_system_id"] == upstream_market_system_id
+            and target["upstream_event_object_id"] == upstream_event_object_id
+        )
+        if not compatible:
+            raise KnowledgeBaseError("revision target is incompatible or incomplete")
+
     def append_market_observation(
         self,
         observation_type: ObservationType,
@@ -1003,6 +1327,61 @@ class KnowledgeBase:
         prices: Sequence[PriceComponent] = (),
         fx_normalizations: Sequence[FXNormalization] = (),
     ) -> str:
+        self._validate_upstream_lineage(
+            upstream_market_system_id, upstream_event_object_id
+        )
+        self._validate_revision_target(
+            revision_of_observation_id,
+            observation_type=observation_type,
+            source_system_id=source_system_id,
+            source_native_record_id=source_native_record_id,
+            upstream_market_system_id=upstream_market_system_id,
+            upstream_event_object_id=upstream_event_object_id,
+        )
+        price_types = [component.component_type for component in prices]
+        if len(set(price_types)) != len(price_types):
+            raise KnowledgeBaseError("price component types must be unique per observation")
+        if prices and observation_type not in {
+            ObservationType.SALE_TRANSACTION,
+            ObservationType.LISTING_SNAPSHOT,
+            ObservationType.PROVIDER_METRIC_OBSERVATION,
+        }:
+            raise KnowledgeBaseError(
+                f"{observation_type.value} cannot carry price components"
+            )
+        price_by_type = {component.component_type: component for component in prices}
+        for normalization in fx_normalizations:
+            component = price_by_type.get(normalization.component_type)
+            if component is None or (
+                component.knowledge_state != PriceKnowledge.KNOWN
+                or component.amount_minor != normalization.original_amount_minor
+                or component.currency != normalization.original_currency
+            ):
+                raise KnowledgeBaseError(
+                    "FX normalization must match an exact known price component"
+                )
+            if normalization.rate_observation_id is not None:
+                rate = self.connection.execute(
+                    """
+                    SELECT o.lifecycle_state, f.*
+                    FROM market_observation AS o
+                    JOIN fx_rate_observation AS f ON f.observation_id = o.id
+                    WHERE o.id = ?
+                    """,
+                    (normalization.rate_observation_id,),
+                ).fetchone()
+                rate_matches = rate is not None and (
+                    rate["lifecycle_state"] == "SEALED"
+                    and rate["base_currency"] == normalization.original_currency
+                    and rate["quote_currency"] == normalization.target_currency
+                    and rate["rate_decimal"] == normalization.fx_rate_decimal
+                    and rate["effective_date"] == normalization.rate_effective_date
+                    and rate["rate_source"] == normalization.rate_source
+                )
+                if not rate_matches:
+                    raise KnowledgeBaseError(
+                        "FX rate observation does not match normalization lineage"
+                    )
         observed = _timestamp(observed_at, field="observed_at")
         event = _optional_timestamp(event_at, field="event_at")
         source_updated = _optional_timestamp(
@@ -1064,7 +1443,7 @@ class KnowledgeBase:
             )
         existing = self.connection.execute(
             """
-            SELECT id, content_sha256 FROM market_observation
+            SELECT id, content_sha256, lifecycle_state FROM market_observation
             WHERE idempotency_key = ?
             """,
             (idempotency_key,),
@@ -1073,6 +1452,10 @@ class KnowledgeBase:
             if existing["content_sha256"] != content_hash:
                 raise IdempotencyConflict(
                     "idempotency key already represents different observation facts"
+                )
+            if existing["lifecycle_state"] != "SEALED":
+                raise IdempotencyConflict(
+                    "idempotency key represents an incomplete draft observation"
                 )
             return existing["id"]
 
@@ -1110,7 +1493,9 @@ class KnowledgeBase:
                 ),
             )
             self._insert_fact(observation_id, observation_type, normalized_fact)
+            price_component_ids: Dict[str, str] = {}
             for component in prices:
+                price_component_id = _new_id("price")
                 self.connection.execute(
                     """
                     INSERT INTO price_component(
@@ -1119,7 +1504,7 @@ class KnowledgeBase:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        _new_id("price"),
+                        price_component_id,
                         observation_id,
                         component.component_type,
                         component.amount_minor,
@@ -1129,20 +1514,8 @@ class KnowledgeBase:
                         _now(),
                     ),
                 )
+                price_component_ids[component.component_type] = price_component_id
             for normalization in fx_normalizations:
-                if normalization.rate_observation_id is not None:
-                    rate = self.connection.execute(
-                        "SELECT observation_type FROM market_observation WHERE id = ?",
-                        (normalization.rate_observation_id,),
-                    ).fetchone()
-                    if (
-                        rate is None
-                        or rate["observation_type"]
-                        != ObservationType.FX_RATE_OBSERVATION.value
-                    ):
-                        raise KnowledgeBaseError(
-                            "rate_observation_id must reference an FX rate observation"
-                        )
                 self.connection.execute(
                     """
                     INSERT INTO fx_normalization(
@@ -1150,8 +1523,8 @@ class KnowledgeBase:
                         original_amount_minor, original_currency,
                         fx_rate_decimal, rate_observation_id, rate_source,
                         rate_effective_date, target_currency,
-                        target_amount_minor, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        target_amount_minor, created_at, price_component_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _new_id("fxnorm"),
@@ -1166,6 +1539,7 @@ class KnowledgeBase:
                         normalization.target_currency,
                         normalization.target_amount_minor,
                         _now(),
+                        price_component_ids[normalization.component_type],
                     ),
                 )
             if revision_of_observation_id is not None:
@@ -1174,7 +1548,20 @@ class KnowledgeBase:
                     revision_of_observation_id,
                     ObservationRelationshipType.REVISION_OF,
                 )
+            self._seal_observation(observation_id)
         return observation_id
+
+    def _seal_observation(self, observation_id: str) -> None:
+        cursor = self.connection.execute(
+            """
+            UPDATE market_observation
+            SET lifecycle_state = 'SEALED', sealed_at = ?
+            WHERE id = ? AND lifecycle_state = 'DRAFT'
+            """,
+            (_now(), observation_id),
+        )
+        if cursor.rowcount != 1:
+            raise KnowledgeBaseError("observation could not be sealed exactly once")
 
     def _normalize_fact(
         self, observation_type: ObservationType, fact: Mapping[str, Any]
@@ -1219,6 +1606,46 @@ class KnowledgeBase:
         to_observation_id: str,
         relationship_type: ObservationRelationshipType,
     ) -> str:
+        if relationship_type == ObservationRelationshipType.REVISION_OF:
+            current = self.connection.execute(
+                """
+                SELECT lifecycle_state, revision_of_observation_id
+                FROM market_observation WHERE id = ?
+                """,
+                (from_observation_id,),
+            ).fetchone()
+            if current is None or (
+                current["lifecycle_state"] != "DRAFT"
+                or current["revision_of_observation_id"] != to_observation_id
+            ):
+                raise KnowledgeBaseError(
+                    "REVISION_OF must project a draft observation revision target"
+                )
+        if relationship_type in {
+            ObservationRelationshipType.CANCELS,
+            ObservationRelationshipType.VOIDS,
+        }:
+            compatible = self.connection.execute(
+                """
+                SELECT 1
+                FROM market_observation AS action
+                JOIN market_observation AS target ON target.id = ?
+                WHERE action.id = ?
+                  AND action.lifecycle_state = 'SEALED'
+                  AND target.lifecycle_state = 'SEALED'
+                  AND action.observation_type = target.observation_type
+                  AND action.source_system_id = target.source_system_id
+                  AND action.source_native_record_id = target.source_native_record_id
+                  AND action.upstream_market_system_id IS target.upstream_market_system_id
+                  AND action.upstream_event_object_id IS target.upstream_event_object_id
+                  AND action.canonical_card_id IS target.canonical_card_id
+                """,
+                (to_observation_id, from_observation_id),
+            ).fetchone()
+            if compatible is None:
+                raise KnowledgeBaseError(
+                    "cancel/void relationship targets an unrelated market event"
+                )
         existing = self.connection.execute(
             """
             SELECT id FROM observation_relationship
@@ -1266,15 +1693,46 @@ class KnowledgeBase:
         canonical_card_id: Optional[str] = None,
         link_role: str = "SUBJECT",
     ) -> str:
+        if link_role == "SUBJECT":
+            if canonical_card_id is not None:
+                raise ProvenanceError(
+                    "subject observation link cannot select a canonical card"
+                )
+        elif link_role == "RESOLVED_AS":
+            coherent = self.connection.execute(
+                """
+                SELECT 1
+                FROM identity_resolution AS r
+                JOIN market_observation AS o ON o.id = ?
+                WHERE r.id = ?
+                  AND r.resolution_state IN ('PROVEN', 'SUPPORTED')
+                  AND r.canonical_card_id IS NOT NULL
+                  AND r.canonical_card_id = ?
+                  AND o.canonical_card_id IS NOT NULL
+                  AND o.canonical_card_id = ?
+                """,
+                (
+                    observation_id,
+                    identity_resolution_id,
+                    canonical_card_id,
+                    canonical_card_id,
+                ),
+            ).fetchone()
+            if coherent is None:
+                raise ProvenanceError("resolved observation identity is inconsistent")
+        else:
+            raise ProvenanceError(f"unsupported observation identity role: {link_role}")
         existing = self.connection.execute(
             """
-            SELECT id FROM observation_identity_link
+            SELECT id, canonical_card_id FROM observation_identity_link
             WHERE observation_id = ? AND identity_resolution_id = ?
               AND link_role = ?
             """,
             (observation_id, identity_resolution_id, link_role),
         ).fetchone()
         if existing:
+            if existing["canonical_card_id"] != canonical_card_id:
+                raise IdempotencyConflict("observation identity link already differs")
             return existing["id"]
         link_id = _new_id("oilink")
         self.connection.execute(
@@ -1314,5 +1772,5 @@ class KnowledgeBase:
 
     def observation_count(self) -> int:
         return self.connection.execute(
-            "SELECT COUNT(*) FROM market_observation"
+            "SELECT COUNT(*) FROM market_observation WHERE lifecycle_state = 'SEALED'"
         ).fetchone()[0]

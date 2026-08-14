@@ -6,7 +6,7 @@ import hashlib
 import re
 import sqlite3
 from pathlib import Path
-from typing import Iterator, Union
+from typing import Dict, Iterator, Tuple, Union
 
 
 MIGRATION_PATTERN = re.compile(r"^(?P<version>\d{4})_[a-z0-9_]+\.sql$")
@@ -17,13 +17,24 @@ class MigrationError(RuntimeError):
     pass
 
 
+def ensure_foreign_keys(connection: sqlite3.Connection) -> None:
+    """Enable and verify SQLite FK enforcement on every connection path."""
+
+    connection.execute("PRAGMA foreign_keys = ON")
+    if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        raise MigrationError(
+            "SQLite foreign keys must be enabled before constructing the knowledge base"
+        )
+
+
 def connect_database(path: Union[str, Path] = ":memory:") -> sqlite3.Connection:
     connection = sqlite3.connect(str(path), isolation_level=None)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+    try:
+        ensure_foreign_keys(connection)
+    except Exception:
         connection.close()
-        raise MigrationError("SQLite foreign key enforcement is unavailable")
+        raise
     return connection
 
 
@@ -40,7 +51,38 @@ def _sql_statements(script: str) -> Iterator[str]:
         raise MigrationError("incomplete SQL statement in migration")
 
 
+def _migration_catalog() -> Dict[int, Tuple[Path, str]]:
+    catalog: Dict[int, Tuple[Path, str]] = {}
+    migration_files = sorted(MIGRATION_DIRECTORY.glob("*.sql"))
+    if not migration_files:
+        raise MigrationError("no knowledge-base migrations were found")
+
+    for path in migration_files:
+        match = MIGRATION_PATTERN.match(path.name)
+        if not match:
+            raise MigrationError(f"invalid migration filename: {path.name}")
+        version = int(match.group("version"))
+        if version in catalog:
+            raise MigrationError(f"duplicate migration version: {version}")
+        script = path.read_text(encoding="utf-8")
+        checksum = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        catalog[version] = (path, checksum)
+
+    versions = sorted(catalog)
+    if versions != list(range(1, versions[-1] + 1)):
+        raise MigrationError("migration versions must be contiguous from 0001")
+    return catalog
+
+
 def apply_migrations(connection: sqlite3.Connection) -> None:
+    connection.row_factory = sqlite3.Row
+    ensure_foreign_keys(connection)
+    foreign_key_violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if foreign_key_violation is not None:
+        raise MigrationError(
+            "existing SQLite data violates foreign-key integrity: "
+            f"{tuple(foreign_key_violation)}"
+        )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migration (
@@ -58,26 +100,24 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
         )
     }
 
-    migration_files = sorted(MIGRATION_DIRECTORY.glob("*.sql"))
-    if not migration_files:
-        raise MigrationError("no knowledge-base migrations were found")
+    catalog = _migration_catalog()
+    for version, row in applied.items():
+        migration = catalog.get(version)
+        if migration is None:
+            raise MigrationError(
+                f"applied migration {version} has no repository migration file"
+            )
+        path, checksum = migration
+        if row["filename"] != path.name or row["checksum_sha256"] != checksum:
+            raise MigrationError(
+                f"migration {version} differs from the applied migration"
+            )
 
-    for path in migration_files:
-        match = MIGRATION_PATTERN.match(path.name)
-        if not match:
-            raise MigrationError(f"invalid migration filename: {path.name}")
-        version = int(match.group("version"))
+    for version in sorted(catalog):
+        path, checksum = catalog[version]
         script = path.read_text(encoding="utf-8")
-        checksum = hashlib.sha256(script.encode("utf-8")).hexdigest()
         existing = applied.get(version)
         if existing is not None:
-            if (
-                existing["filename"] != path.name
-                or existing["checksum_sha256"] != checksum
-            ):
-                raise MigrationError(
-                    f"migration {version} differs from the applied migration"
-                )
             continue
 
         try:

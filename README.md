@@ -36,6 +36,8 @@ Principes du socle :
 - lineage séparant le système source du marché upstream afin de pouvoir relier plusieurs observations provider au même événement sans les compter comme ventes indépendantes ;
 - montants originaux conservés par composant (item/hammer/accepted offer/premium/shipping/tax/total), avec état connu/inclus/inconnu et normalisation FX traçable.
 
+Le hardening Red Team est appliqué par la migration forward `0002_integrity_hardening.sql` (sans réécrire `0001`) : une observation passe explicitement de `DRAFT` à `SEALED` seulement lorsque son fait typé est complet, puis son enveloppe, ses prix et ses normalisations FX deviennent immuables. La migration rend aussi le ledger de migrations tamper-evident, impose les foreign keys sur chaque chemin de connexion, lie les normalisations FX à leur composant exact, conserve chaque occurrence de retrieval d’un même payload, verrouille les profils par clé sémantique dérivée et interdit les résolutions positives sans claim `EVIDENCE` positif, non nul et exactement concordant.
+
 Le contrat de scénarios valorise chaque variante plausible indépendamment, sans mélanger les comparables incompatibles, puis expose : `EXACT_VARIANT_OPPORTUNITY`, `ROBUST_VARIANT_OPPORTUNITY`, `MICROVARIANT_DEPENDENT_OPPORTUNITY`, `SCENARIO_DATA_INCOMPLETE_REVIEW`, `NO_OPPORTUNITY`, `IDENTITY_CONFLICT`, `IDENTITY_UNBOUNDED` et `MARKET_UNCONFIRMED`.
 
 Il n’existe encore **aucune ingestion live**, migration de `state.json`, intégration watcher, prévision ou notification KB. La prochaine phase recommandée est un sidecar d’observation shadow, sans effet sur les décisions V4. **PR #8 reste V5 expérimentale et non mergée.**
