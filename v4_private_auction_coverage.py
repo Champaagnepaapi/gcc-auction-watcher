@@ -28,38 +28,43 @@ def discover_private_auction_lots(
 ) -> PrivateAuctionAugmentResult:
     """Read only the private-sale pages that the generic auction API can omit.
 
-    This reuses V4's pre-API legacy collectors and all their existing Pokemon,
-    single-card, price and timer filters. It is deliberately an additive safety
-    net rather than a second economic pipeline.
+    The legacy safety net uses an isolated diagnostics object so its page totals
+    cannot corrupt the primary API coverage ledger. Only real private-page
+    failures are propagated to the production coverage object.
     """
 
     previous_horizon = watcher.MAX_AUCTION_MINUTES
+    private_diagnostics = watcher.RunDiagnostics()
     if max_minutes is not None:
         watcher.MAX_AUCTION_MINUTES = max(0, int(max_minutes))
     try:
         sales = item_discovery._ORIGINAL_COLLECT_LIVE_AUCTION_URLS(
-            page, run_diagnostics
+            page, private_diagnostics
         )
         private_sales = [
             sale for sale in sales if PRIVATE_AUCTION_PATH in str(sale)
         ]
         lots: dict[str, watcher.Lot] = {}
-        failures = 0
+        explicit_failures = 0
         for sale in private_sales:
             try:
                 for lot in item_discovery._ORIGINAL_COLLECT_LOTS_FROM_LISTING(
-                    page, sale, "auction", run_diagnostics
+                    page, sale, "auction", private_diagnostics
                 ):
                     lots.setdefault(lot.url, lot)
             except Exception as error:
-                failures += 1
+                explicit_failures += 1
                 watcher.log(
                     f"Private auction safety-net error {type(error).__name__}: {sale}"
                 )
-                if run_diagnostics is not None:
-                    run_diagnostics.auction_coverage.record_page_failure(
-                        f"private auction safety-net exception: {type(error).__name__}"
-                    )
+
+        recorded_failures = private_diagnostics.auction_coverage.pages_failed
+        failures = max(explicit_failures, recorded_failures)
+        if failures and run_diagnostics is not None:
+            run_diagnostics.auction_coverage.record_page_failure(
+                f"private auction safety-net page failures: {failures}"
+            )
+
         return PrivateAuctionAugmentResult(
             list(lots.values()), len(sales), len(private_sales), failures
         )
