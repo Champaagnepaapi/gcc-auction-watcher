@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import run_watcher_multimarket
 import watcher
+import v4_mislisted_cert_router as cert_router
 import v4_mislisted_slab_hunter as hunter
 
 
@@ -58,9 +59,9 @@ class MislistedSlabHunterTests(unittest.TestCase):
         self.assertTrue(positive.manual_verification_required)
 
     def test_ocr_parser_requires_unambiguous_grade(self) -> None:
-        grade, status = hunter.parse_grade_from_ocr_text("CCC GRADING\n9\nNEUF", "CCC")
+        grade, status = cert_router.parse_grade_from_ocr_text("CCC GRADING\n9\nNEUF", "CCC")
         self.assertEqual((grade, status), (9.0, "OK"))
-        grade, status = hunter.parse_grade_from_ocr_text("CCC 9.5\nSURFACE 8.5", "CCC")
+        grade, status = cert_router.parse_grade_from_ocr_text("CCC 9.5\nSURFACE 8.5", "CCC")
         self.assertIsNone(grade)
         self.assertEqual(status, hunter.IMAGE_GRADE_AMBIGUOUS)
 
@@ -148,6 +149,14 @@ class MislistedSlabHunterTests(unittest.TestCase):
         mismatch = alert.call_args.args[1]
         self.assertEqual(mismatch.resolved_grade, 9.0)
         self.assertEqual(mismatch.evidence_source, "OFFICIAL_CERT")
+
+    def test_router_uses_ccc_official_adapter_before_ocr(self) -> None:
+        page = object()
+        ccc = hunter.GraderCertificate("544340143", 9.0, status="OK", grader="CCC")
+        with patch.object(cert_router, "resolve_ccc_certificate", return_value=ccc) as resolver:
+            result = cert_router.resolve_grader_certificate(page, "ccc", "544340143")
+        resolver.assert_called_once_with(page, "544340143")
+        self.assertEqual(result.grade, 9.0)
 
 
 if __name__ == "__main__":
