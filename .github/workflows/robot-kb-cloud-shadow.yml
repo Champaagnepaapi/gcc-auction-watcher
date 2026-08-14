@@ -15,6 +15,8 @@ on:
         description: "Optional third TCGdex LANG:CARD_ID"
         required: false
         type: string
+  schedule:
+    - cron: "17 */2 * * *"
 
 permissions:
   contents: read
@@ -66,7 +68,7 @@ jobs:
           --max-records 25
 
       - name: Collect optional bounded TCGdex cards (GET only)
-        if: ${{ inputs.tcgdex_card_1 != '' || inputs.tcgdex_card_2 != '' || inputs.tcgdex_card_3 != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.tcgdex_card_1 != '' || inputs.tcgdex_card_2 != '' || inputs.tcgdex_card_3 != '') }}
         run: |
           arguments=()
           if [ -n "$TCGDEX_CARD_1" ]; then arguments+=(--live-tcgdex-card "$TCGDEX_CARD_1"); fi
