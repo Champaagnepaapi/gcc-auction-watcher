@@ -21,6 +21,27 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ---
 
+# P0 — Card Knowledge Base Foundation (expérimental, hors production)
+
+La branche `agent/p0-card-knowledge-base-foundation` contient désormais le socle isolé `robot_kb/`. Il n’est importé ni par le watcher V4 ni par ses entrypoints : **aucune décision, valorisation, notification, Fast Lane ou feature flag V4 ne change**. Ce P0 reste expérimental ; SQLite est utilisé uniquement en local, en test ou pour un futur mode shadow, sans service de base de données déployé.
+
+Principes du socle :
+
+- identité canonique interne (`canonical_set` → `card_family` → `localized_card` → `canonical_card`) ; les IDs TCGdex/GCC/eBay/Cardmarket/TCGplayer/PokeTrace/PSA restent des alias externes ;
+- identité inconnue laissée nullable, avec candidats finis, dimensions non résolues, preuves et conflits conservés ;
+- provenance par claim et par champ, séparant source, méthode de preuve, directness et état de résolution ; une cible de requête n’est pas une preuve et le silence provider ne crée aucun défaut (`Unlimited`, non-promo, finish standard, etc.) ;
+- microvariantes génériques par dimensions/valeurs/profils/assignments et combinaisons autorisées ; Base Set sépare notamment `edition_stamp` de `shadow_treatment` ;
+- grader, grade, qualifier, subgrades et certification portés par l’instance/segment gradé, jamais par l’identité du print commercial ;
+- ledger marché append-only : ventes, snapshots de listings, agrégats providers, populations et taux FX restent des faits distincts ; une correction insère une nouvelle observation reliée par `REVISION_OF`, sans écraser l’historique ;
+- lineage séparant le système source du marché upstream afin de pouvoir relier plusieurs observations provider au même événement sans les compter comme ventes indépendantes ;
+- montants originaux conservés par composant (item/hammer/accepted offer/premium/shipping/tax/total), avec état connu/inclus/inconnu et normalisation FX traçable.
+
+Le contrat de scénarios valorise chaque variante plausible indépendamment, sans mélanger les comparables incompatibles, puis expose : `EXACT_VARIANT_OPPORTUNITY`, `ROBUST_VARIANT_OPPORTUNITY`, `MICROVARIANT_DEPENDENT_OPPORTUNITY`, `SCENARIO_DATA_INCOMPLETE_REVIEW`, `NO_OPPORTUNITY`, `IDENTITY_CONFLICT`, `IDENTITY_UNBOUNDED` et `MARKET_UNCONFIRMED`.
+
+Il n’existe encore **aucune ingestion live**, migration de `state.json`, intégration watcher, prévision ou notification KB. La prochaine phase recommandée est un sidecar d’observation shadow, sans effet sur les décisions V4. **PR #8 reste V5 expérimentale et non mergée.**
+
+---
+
 # V4 — production canonique
 
 ## Scheduler / état
