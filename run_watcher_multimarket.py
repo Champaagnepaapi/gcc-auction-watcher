@@ -17,6 +17,7 @@ from v4_kb_shadow_bridge import (
     install_v4_kb_shadow_capture,
 )
 from v4_multimarket_safety import install_multimarket_safety_hardening
+from v4_notification_semantics import install_v4_notification_semantics
 from v4_private_auction_coverage import install_v4_private_auction_coverage
 
 
@@ -34,6 +35,8 @@ if __name__ == "__main__":
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
     install_fast_lane_notification_guard()
+    # Only changes user-facing opportunity labels; economics and decisions stay intact.
+    install_v4_notification_semantics()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
     exit_code = 1
