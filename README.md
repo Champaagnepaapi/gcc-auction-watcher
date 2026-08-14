@@ -396,7 +396,6 @@ Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5
    - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants, compatibles et entièrement prouvés. Une source unique complète reste diagnostique / `WEAK` ; une source incomplète reste `DIAGNOSTIC_ONLY` et ne compte jamais vers ce seuil.
    - Les conflits ou désaccords inter-fournisseurs (`disagreement_ratio > 1.30`) bloquent strictement l'utilisation de l'ancre RAW dans le price-discovery.
 
-
 ### Observabilité du Backlog Externe & ETA Réaliste
 La couverture économique sépare strictement :
 - `FIRST_EVALUATION_COVERAGE` : achèvement du premier passage d'évaluation interne (lots `P0_NEW`, `P1_CHANGED`, `P2_NEVER_EVALUATED`) ;
@@ -429,10 +428,6 @@ Pour éviter qu'une vente ancienne sur un grader secondaire (ex: SGS 8 vendu 18 
 - Les annonces actives seules (*active asks*) ne créent jamais d'opportunité.
 - Les ancres trans-linguistiques (ex. PSA 10 anglais vs slab français) sont explicitement décotées et augmentent l'incertitude.
 - Les slabs de bas grade (ex. note $\le 7$) ne peuvent pas utiliser d'ancre PSA 10 sans échelon intermédiaire.
-
-
-
-
 
 ---
 
@@ -717,3 +712,40 @@ Avant toute intégration de PR #8 :
 - live contrôlé manuel avant toute décision de merge.
 
 **PR #8 reste expérimentale et non mergée par défaut.**
+
+---
+
+# Déploiement V4 du 14 août 2026 — Edge Hunter P0 / PR #53
+
+Merge production :
+
+```text
+1d29cbfaa7b17c5a08e6450813f956573cf9ec12
+```
+
+Le durcissement `v4_edge_hunter_safety.py` est actif dans `run_watcher_multimarket.py` après l'installation du pipeline canonique/multimarché.
+
+Corrections de sûreté :
+
+- canonicalisation de langue avant raisonnement Edge Hunter : `French`, `FR`, `fr`, `français`, `FRA` et `fr-FR` convergent vers `fr`; `LANGUAGE_DIFFERENCE_FRENCH_VS_FR` ne doit plus exister ;
+- un comparable Edge Hunter ne peut être qualifié `EXACT_*` que si l'identité canonique minimale est résolue de façon déterministe : carte TCGdex exacte, set, numéro, langue, grader et grade ; sinon la branche échoue fermée avec diagnostic `IDENTITY_INCOMPLETE | EXACT_COMPS_UNVERIFIED` et ne fabrique pas d'alerte économique exacte ;
+- quand une décote est prouvée par des ventes `SOLD` même grader + même grade, la catégorie est `SAME_GRADER_MARKET_DISCOUNT`, et non `SECONDARY_GRADER_DISCOUNT` ; ce dernier reste réservé aux thèses réellement fondées sur un spread/benchmark de grader secondaire ;
+- les notifications de couverture séparent désormais explicitement le **scope de discovery**, l'**évaluation économique des candidats découverts** et la **couverture globale** ; le total GCC `ON_SALE` plus large n'est jamais utilisé comme dénominateur du scope auction `ENDING_SOON <=60 min` lorsqu'il est `DIFFERENT_SCOPE_DIAGNOSTIC` ;
+- invariant production : **discovery GCC n'est jamais plafonné par les budgets de valorisation ou de providers**. Fixed pagine le scope filtré complet ; auction parcourt `ENDING_SOON` jusqu'à preuve du franchissement de l'horizon ou épuisement puis ajoute le safety-net private. Les caps concernent uniquement les évaluations/enrichissements coûteux en aval.
+
+Validation PR #53 :
+
+```text
+CI run 31827054528
+validation job 94854209726
+```
+
+- **449/449 tests V4 : PASS** ;
+- compilation des entrypoints/modules V4 concernés : PASS ;
+- `git diff --check` : PASS ;
+- comparaison live read-only à horizon diagnostic 720 min : API + private safety-net **55** candidats vs legacy **54**, `primary_only=1`, `legacy_only=0`, `private safety-net failures=0` ; PASS ;
+- aucune action d'achat, bid, checkout, grading payant ou mutation économique ajoutée.
+
+Contrôle production de la correction de couverture auction précédente : run `31826408879`, job `94851490641` : fixed discovery `3000/3000 COMPLETE`; auction API `120/120` timers, private safety-net `+9`, `69` candidats `<=60 min`, `pages_failed=0`, `incomplete_reasons=NONE`, `coverage status=COMPLETE`, `expected_total_scope=DIFFERENT_SCOPE_DIAGNOSTIC`. L'ancien affichage trompeur du type `133/14568 | INCOMPLETE` n'est donc plus la sémantique production.
+
+Le futur détecteur visuel de **mislisted slab** (metadata vs image/certificat, scénarios positif/négatif) reste une phase séparée : il ne doit pas être simulé par les correctifs P0 ci-dessus et devra conserver une file/coverage dédiée, fail-closed, sans achat/bid/checkout automatique.
