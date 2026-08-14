@@ -107,6 +107,10 @@ jobs:
 
           STATE_FILE: state.json
 
+          # Passive data mirror only. V4 itself never connects to Neon.
+          V4_KB_SHADOW_SPOOL_PATH: v4_kb_shadow_spool.json
+          V4_KB_AUCTION_NEAR_FINAL_MINUTES: "12"
+
           V4_TCGDEX_ENABLED: "true"
           V4_TCGDEX_REQUEST_TIMEOUT: "6"
           V4_TCGDEX_CACHE_TTL_HOURS: "24"
@@ -152,6 +156,16 @@ jobs:
         with:
           path: state.json
           key: gcc-state-${{ github.run_id }}
+
+      - name: Upload passive KB discovery spool
+        if: ${{ steps.scan.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-kb-shadow-spool
+          path: v4_kb_shadow_spool.json
+          if-no-files-found: error
+          retention-days: 2
 
       - name: "Register V4 run in issue #1"
         if: always()
