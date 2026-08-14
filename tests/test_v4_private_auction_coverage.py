@@ -83,6 +83,59 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
         self.assertEqual(result.failures, 1)
         self.assertEqual(len(result.lots), 1)
 
+    def test_private_legacy_accounting_does_not_mutate_primary_api_ledger(self):
+        primary = watcher.RunDiagnostics()
+        primary.auction_coverage.expected_total = 14338
+        primary.auction_coverage.expected_total_scope = watcher.EXPECTED_TOTAL_SAME_QUERY
+        primary.auction_coverage.pages_requested = 5
+        primary.auction_coverage.pages_successful = 5
+        primary.auction_coverage.rows_received = 120
+
+        def collect_sales(_page, diagnostics):
+            diagnostics.auction_coverage.record_page_success(
+                "legacy-home",
+                ["private-sale"],
+                expected_total=7,
+                expected_total_scope=watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE,
+            )
+            return ["https://gradedcardcenter.com/filtres/auction/private/private-sale"]
+
+        def collect_sale(_page, _sale, _source_type, diagnostics):
+            diagnostics.auction_coverage.record_page_success(
+                "private-sale",
+                ["private-card"],
+                expected_total=1,
+                expected_total_scope=watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE,
+            )
+            return [self.lot("private-card")]
+
+        with patch.object(
+            private_coverage.item_discovery,
+            "_ORIGINAL_COLLECT_LIVE_AUCTION_URLS",
+            side_effect=collect_sales,
+        ), patch.object(
+            private_coverage.item_discovery,
+            "_ORIGINAL_COLLECT_LOTS_FROM_LISTING",
+            side_effect=collect_sale,
+        ):
+            result = private_coverage.discover_private_auction_lots(
+                object(), run_diagnostics=primary
+            )
+
+        self.assertEqual(result.failures, 0)
+        self.assertEqual(primary.auction_coverage.expected_total, 14338)
+        self.assertEqual(
+            primary.auction_coverage.expected_total_scope,
+            watcher.EXPECTED_TOTAL_SAME_QUERY,
+        )
+        self.assertEqual(primary.auction_coverage.pages_requested, 5)
+        self.assertEqual(primary.auction_coverage.pages_successful, 5)
+        self.assertEqual(primary.auction_coverage.rows_received, 120)
+        self.assertNotIn(
+            "conflicting expected_total scopes",
+            primary.auction_coverage.incomplete_reasons,
+        )
+
     def test_temporary_diagnostic_horizon_is_restored(self):
         old = watcher.MAX_AUCTION_MINUTES
         with patch.object(
