@@ -51,6 +51,7 @@ jobs:
             v5/source_scout_language_entrypoint.py \
             v5/source_scout_paid_entrypoint.py \
             v5/source_scout_paid_v2_entrypoint.py \
+            v5/source_scout_paid_v3_entrypoint.py \
             v5/neon_source_scout_ingest.py \
             v5/neon_source_scout_ingest_v2.py \
             tests_v5/test_source_scout_benchmark.py \
@@ -60,7 +61,7 @@ jobs:
         run: python -m unittest tests_v5.test_source_scout_benchmark tests_v5.test_source_scout_entrypoint -v
 
       - name: Run language-stratified read-only Source Scout benchmark
-        run: python -m v5.source_scout_paid_v2_entrypoint
+        run: python -m v5.source_scout_paid_v3_entrypoint
 
       - name: Persist PokemonPriceTracker evidence to Neon
         if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
@@ -80,6 +81,6 @@ jobs:
             source_scout_report.json
             source_scout_report.md
             pokemonpricetracker_evidence.json
-            pokemonpricetracker_jp_probe.json
+            pokemonpricetracker_probe.json
           if-no-files-found: error
           retention-days: 14
