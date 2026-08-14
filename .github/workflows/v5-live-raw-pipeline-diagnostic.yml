@@ -7,12 +7,11 @@ permissions:
   contents: read
 
 # Branch-local Source Scout override.
-# Dedicated one-call CMAPI endpoint diagnostic only.
-# main and PR #8 remain untouched.
+# Bounded CMAPI benchmark only; main and PR #8 remain untouched.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
       PYTHONDONTWRITEBYTECODE: "1"
@@ -32,32 +31,37 @@ jobs:
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Compile one-call CMAPI probe
+      - name: Compile bounded CMAPI benchmark
         run: |
           python -m py_compile \
             v5/source_scout_benchmark.py \
             v5/source_scout_language_entrypoint.py \
             v5/source_scout_cmapi_v2_entrypoint.py \
-            tests_v5/test_source_scout_benchmark.py
+            v5/source_scout_cmapi_v3_entrypoint.py \
+            tests_v5/test_source_scout_benchmark.py \
+            tests_v5/test_source_scout_cmapi_v3.py
 
-      - name: Run Source Scout safety tests
-        run: python -m unittest tests_v5.test_source_scout_benchmark -v
+      - name: Run Source Scout and CMAPI focused safety tests
+        run: |
+          python -m unittest \
+            tests_v5.test_source_scout_benchmark \
+            tests_v5.test_source_scout_cmapi_v3 -v
 
-      - name: Run exactly one CMAPI Search for Cards request
-        run: python -m v5.source_scout_cmapi_v2_entrypoint
+      - name: Run bounded CMAPI EN FR JP history and sold benchmark
+        run: python -m v5.source_scout_cmapi_v3_entrypoint
 
-      - name: Publish CMAPI probe summary
-        if: always() && hashFiles('cmapi_probe.md') != ''
+      - name: Publish CMAPI benchmark summary
+        if: always() && hashFiles('cmapi_benchmark.md') != ''
         shell: bash
-        run: cat cmapi_probe.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat cmapi_benchmark.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload sanitized CMAPI probe
-        if: always() && hashFiles('cmapi_probe.json') != ''
+      - name: Upload CMAPI benchmark evidence
+        if: always() && hashFiles('cmapi_benchmark.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: cmapi-one-call-probe-${{ github.run_id }}
+          name: cmapi-benchmark-${{ github.run_id }}
           path: |
-            cmapi_probe.json
-            cmapi_probe.md
+            cmapi_benchmark.json
+            cmapi_benchmark.md
           if-no-files-found: error
           retention-days: 14
