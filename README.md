@@ -116,10 +116,14 @@ Les anciens compteurs ci-dessous décrivent le premier run historique et ne doiv
 
 - **Statut : ENABLED**
 - Déploiement du collecteur SOLD sur `main` : **`78dd3cb72d42647dc996a9fcbe1e8afe21f10348`** (PR #60).
+- Pin Robot KB shadow : **`1d06fe33b6fc640657255e15a8d17251aa02b6ce`**.
 - Cron GitHub Actions actuel : **`17 * * * *`**, donc toutes les heures à `:17` UTC.
 - Biais et bornes de chaque exécution :
-  * scopes GCC `fixed` + `auction` + **`sold`** ;
-  * maximum 100 records par scope dans l’invocation courante, pagination bornée ;
+  * Rotation durable fixed (`v4_kb_fixed_rotation.py`) : 4 pages de 100 annonces par run (400 annonces fixed/run) avec filtres `sellingTypes=FIXED_PRICE`, `categories=Pokemon`, `itemTypes=CARDS` ;
+  * Curseur indépendant persisté (`v4_kb_fixed_rotation_state.json`), avancé uniquement après succès confirmé de l'ingestion Neon ;
+  * Wrap sécurisé à la page 1 lorsque l'inventaire est épuisé ;
+  * Backup auction (`--live-gcc auction`) : démarre systématiquement à la page 1 `ENDING_SOON` ;
+  * Moissonneur de ventes réelles (`--live-gcc sold`) : conserve le contrat validé `SOLD + soldAt` -> `SALE_TRANSACTION` ;
   * requêtes réseau HTTP GET uniquement (`--allow-live-read-only`) ;
   * aucun input automatique de cartes TCGdex en cron (réservé aux déclenchements manuels) ;
   * concurrency sérialisée (`group: robot-kb-cloud-shadow`, `cancel-in-progress: false`) ;
