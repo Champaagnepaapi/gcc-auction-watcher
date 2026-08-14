@@ -23,7 +23,7 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 # P0 — Card Knowledge Base Foundation (expérimental, hors production)
 
-La branche `agent/p0-card-knowledge-base-foundation` contient désormais le socle isolé `robot_kb/`. Il n’est importé ni par le watcher V4 ni par ses entrypoints : **aucune décision, valorisation, notification, Fast Lane ou feature flag V4 ne change**. Ce P0 reste expérimental ; SQLite est utilisé uniquement en local, en test ou pour un futur mode shadow, sans service de base de données déployé.
+La branche `agent/p0-card-knowledge-base-foundation` contient le socle isolé `robot_kb/`, désormais gelé GREEN au SHA `946f4b7511f966c00b215a34178b183d01712c3e`. Il n’est importé ni par le watcher V4 ni par ses entrypoints : **aucune décision, valorisation, notification, Fast Lane ou feature flag V4 ne change**. Ce P0 reste expérimental ; SQLite est utilisé uniquement en local, en test ou pour un futur mode shadow, sans service de base de données déployé.
 
 Principes du socle :
 
@@ -44,7 +44,43 @@ Compatibilité sidecar future : les agrégats Cardmarket et TCGplayer embarqués
 
 Le contrat de scénarios valorise chaque variante plausible indépendamment, sans mélanger les comparables incompatibles, puis expose : `EXACT_VARIANT_OPPORTUNITY`, `ROBUST_VARIANT_OPPORTUNITY`, `MICROVARIANT_DEPENDENT_OPPORTUNITY`, `SCENARIO_DATA_INCOMPLETE_REVIEW`, `NO_OPPORTUNITY`, `IDENTITY_CONFLICT`, `IDENTITY_UNBOUNDED` et `MARKET_UNCONFIRMED`.
 
-Il n’existe encore **aucune ingestion live**, migration de `state.json`, intégration watcher, prévision ou notification KB. La prochaine phase recommandée est un sidecar d’observation shadow, sans effet sur les décisions V4. **PR #8 reste V5 expérimentale et non mergée.**
+Le socle P0 ne migre pas `state.json`, ne s’intègre pas au watcher et ne produit ni prévision ni notification. **PR #8 reste V5 expérimentale et non mergée.**
+
+---
+
+# P1 — Shadow Observation Sidecar (manuel, live non activé)
+
+Branche : `agent/p1-shadow-observation-sidecar`, créée exactement depuis le P0 GREEN `946f4b7511f966c00b215a34178b183d01712c3e`.
+
+Le package isolé `robot_kb.sidecar` suit la chaîne suivante :
+
+```text
+collector read-only
+  → payload source brut immuable
+  → normalizer typé et conservateur
+  → repository P0 append-only
+  → diagnostics shadow uniquement
+```
+
+Couverture implémentée :
+
+- GCC Marketplace : inventaire public fixed-price et auction, avec listing ID/URL, timestamps d’observation et de mise à jour réellement exposés, statut et mode, prix courant/final explicite, devise, shipping explicite, seller ID, texte/titre source, grader/grade, langue, set, numéro, édition/finish/variant/stamp/shadow uniquement lorsqu’ils sont présents, certification, fin d’auction et bid count ;
+- TCGdex : métriques Cardmarket `avg`, `low`, `trend`, `avg1`, `avg7`, `avg30` et buckets réellement retournés, plus métriques TCGplayer `low`, `mid`, `high`, `market`, `direct low` par segment retourné ; chaque mesure est une `PROVIDER_METRIC_OBSERVATION`, avec TCGdex comme source et Cardmarket/TCGplayer comme upstream ;
+- historique : chaque snapshot/fait est scellé et immuable ; un changement 30 € → 25 € crée deux observations, tandis qu’un replay strict du même événement est idempotent et qu’une récupération identique ultérieure reste enregistrable séparément ; le premier observed timestamp reste dérivable sans mutation par le minimum des observations du listing ;
+- identité : une absence provider ne crée jamais `Unlimited`, non-promo, finish normal, sans stamp, édition, shadow ou langue. Un bucket marché TCGdex est conservé comme preuve `market_segment`, pas comme finish exact. Sans lien d’identifiant externe déjà `PROVEN` dans le P0, le record, les claims et la résolution `UNKNOWN` sont conservés sans forcer de `canonical_card` ; un bundle/multi-item reste non exact même si un mapping listing erroné existe ;
+- ventes : un `SALE_TRANSACTION` GCC exige simultanément un statut explicitement completed/sold, un prix final explicite et un timestamp de vente explicite. Un ask actif, une disparition, un `endTime`, une estimation ou un snapshot stale ne deviennent jamais une vente ;
+- isolation : aucun fichier/entrypoint V4 n’importe le sidecar. Une panne collector/normalizer est arrêtée à la frontière de sa source et n’a aucun chemin synchrone vers scoring, alertes, Fast Lane, achat, bid, checkout, grading ou état V4.
+
+Entrée manuelle :
+
+```text
+python -m robot_kb.sidecar --database /chemin/local.sqlite --gcc-fixture replay.json
+python -m robot_kb.sidecar --database /chemin/local.sqlite --tcgdex-fixture replay.json
+```
+
+Les GET live existent uniquement derrière une intention explicite `--allow-live-read-only` combinée à `--live-gcc ...` ou `--live-tcgdex-card ...`. Aucun workflow, cron, scheduler ou dispatch live n’est ajouté. Les fichiers SQLite runtime (`.db`, `.sqlite`, `.sqlite3` et journaux associés) sont ignorés par Git. SQLite reste local/test/replay ; le chemin de base est configurable via `--database`/`ROBOT_KB_DATABASE`, et un backend durable PostgreSQL devra être autorisé et ajouté à la frontière repository avant déploiement durable.
+
+**Statut live : NOT ENABLED.** Aucun appel provider live ni collecte automatique n’a été lancé pendant P1. Prochaine étape obligatoire : Red Team ciblée, corrections jusqu’à GREEN, autorisation utilisateur explicite, puis seulement déploiement shadow durable et activation de collecte read-only.
 
 ---
 
