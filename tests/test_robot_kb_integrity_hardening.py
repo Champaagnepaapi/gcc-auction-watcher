@@ -963,6 +963,157 @@ class PriceFXAndCertificationTests(IntegrityTestCase):
             )
 
 
+class EmbeddedProviderMetricCompatibilityTests(IntegrityTestCase):
+    def test_tcgdex_embedded_market_aggregates_remain_provider_metrics(self):
+        tcgdex = self.source("tcgdex", "PROVIDER")
+        cardmarket = self.source("cardmarket", "MARKET")
+        tcgplayer = self.source("tcgplayer", "MARKET")
+        canonical_card_id, variant_profile_id = self.card(
+            {
+                "edition_stamp": "NO_FIRST_EDITION_STAMP",
+                "shadow_treatment": "SHADOWED",
+                "finish": "HOLO",
+            }
+        )
+        segment = self.kb.create_external_object(
+            tcgdex, "MARKET_SEGMENT", "base1-4:holo"
+        )
+        source_record = self.kb.append_source_record(
+            tcgdex,
+            "base1-4",
+            {"card_id": "base1-4", "market_segment": "holo"},
+            retrieved_at=T1,
+            source_updated_at=T0,
+            external_object_id=segment,
+        )
+        metrics = {
+            cardmarket: (
+                "CARDMARKET_AVG",
+                "CARDMARKET_LOW",
+                "CARDMARKET_TREND",
+                "CARDMARKET_AVG_1D",
+                "CARDMARKET_AVG_7D",
+                "CARDMARKET_AVG_30D",
+            ),
+            tcgplayer: (
+                "TCGPLAYER_LOW",
+                "TCGPLAYER_MID",
+                "TCGPLAYER_HIGH",
+                "TCGPLAYER_MARKET",
+                "TCGPLAYER_DIRECT_LOW",
+            ),
+        }
+        window_starts = {
+            "CARDMARKET_AVG_1D": "2026-08-13T09:00:00+02:00",
+            "CARDMARKET_AVG_7D": "2026-08-07T09:00:00+02:00",
+            "CARDMARKET_AVG_30D": "2026-07-15T09:00:00+02:00",
+        }
+
+        observation_ids = []
+        for upstream_market, metric_names in metrics.items():
+            for offset, metric_name in enumerate(metric_names):
+                observation_ids.append(
+                    self.kb.append_market_observation(
+                        ObservationType.PROVIDER_METRIC_OBSERVATION,
+                        tcgdex,
+                        "base1-4",
+                        source_record_id=source_record,
+                        canonical_card_id=canonical_card_id,
+                        upstream_market_system_id=upstream_market,
+                        observed_at=T1,
+                        ingested_at=T2,
+                        source_updated_at=T0,
+                        fact={
+                            "metric_name": metric_name,
+                            "metric_value_minor": 10_000 + offset,
+                            "currency": "EUR" if upstream_market == cardmarket else "USD",
+                            "window_started_at": window_starts.get(metric_name),
+                            "window_ended_at": T0
+                            if metric_name in window_starts
+                            else None,
+                        },
+                    )
+                )
+
+        self.assertEqual(len(set(observation_ids)), 11)
+        rows = self.kb.connection.execute(
+            """
+            SELECT o.observation_type, source.code AS source_code,
+                   upstream.code AS upstream_code, o.canonical_card_id,
+                   o.observed_at, o.ingested_at, o.source_updated_at,
+                   metric.metric_name, metric.currency,
+                   metric.window_started_at, metric.window_ended_at
+            FROM market_observation AS o
+            JOIN source_system AS source ON source.id = o.source_system_id
+            JOIN source_system AS upstream
+              ON upstream.id = o.upstream_market_system_id
+            JOIN provider_metric_observation AS metric
+              ON metric.observation_id = o.id
+            ORDER BY metric.metric_name
+            """
+        ).fetchall()
+        self.assertEqual(len(rows), 11)
+        self.assertEqual({row["source_code"] for row in rows}, {"tcgdex"})
+        self.assertEqual(
+            {row["upstream_code"] for row in rows}, {"cardmarket", "tcgplayer"}
+        )
+        self.assertEqual(
+            {row["observation_type"] for row in rows},
+            {ObservationType.PROVIDER_METRIC_OBSERVATION.value},
+        )
+        self.assertEqual(
+            {row["canonical_card_id"] for row in rows}, {canonical_card_id}
+        )
+        self.assertEqual({row["observed_at"] for row in rows}, {T1})
+        self.assertEqual({row["ingested_at"] for row in rows}, {T2})
+        self.assertEqual({row["source_updated_at"] for row in rows}, {T0})
+        self.assertEqual(
+            {row["metric_name"] for row in rows},
+            {metric_name for names in metrics.values() for metric_name in names},
+        )
+        self.assertEqual(
+            {
+                row["metric_name"]: row["window_started_at"]
+                for row in rows
+                if row["window_started_at"] is not None
+            },
+            window_starts,
+        )
+        self.assertEqual(
+            self.kb.connection.execute(
+                "SELECT COUNT(*) FROM sale_transaction"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.kb.connection.execute(
+                """
+                SELECT variant_profile_id FROM canonical_card WHERE id = ?
+                """,
+                (canonical_card_id,),
+            ).fetchone()[0],
+            variant_profile_id,
+        )
+        replay = self.kb.append_market_observation(
+            ObservationType.PROVIDER_METRIC_OBSERVATION,
+            tcgdex,
+            "base1-4",
+            source_record_id=source_record,
+            canonical_card_id=canonical_card_id,
+            upstream_market_system_id=cardmarket,
+            observed_at=T1,
+            ingested_at=T2,
+            source_updated_at=T0,
+            fact={
+                "metric_name": "CARDMARKET_AVG",
+                "metric_value_minor": 10_000,
+                "currency": "EUR",
+            },
+        )
+        self.assertEqual(replay, observation_ids[0])
+        self.assertEqual(self.kb.observation_count(), 11)
+
+
 class ScenarioExactnessTests(unittest.TestCase):
     def scenario(self, profile, passes=True, confirmed=True):
         return VariantValuationScenario(profile, confirmed, passes)

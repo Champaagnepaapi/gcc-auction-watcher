@@ -1430,17 +1430,25 @@ class KnowledgeBase:
         }
         content_hash = _sha256(content)
         if idempotency_key is None:
-            idempotency_key = "obskey_" + _sha256(
-                {
-                    "source_system_id": source_system_id,
-                    "source_native_record_id": source_native_record_id,
-                    "source_record_id": source_record_id,
-                    "observation_type": observation_type.value,
-                    "observed_at": observed,
-                    "source_updated_at": source_updated,
-                    "revision_of_observation_id": revision_of_observation_id,
-                }
-            )
+            idempotency_identity = {
+                "source_system_id": source_system_id,
+                "source_native_record_id": source_native_record_id,
+                "source_record_id": source_record_id,
+                "observation_type": observation_type.value,
+                "observed_at": observed,
+                "source_updated_at": source_updated,
+                "revision_of_observation_id": revision_of_observation_id,
+            }
+            if observation_type == ObservationType.PROVIDER_METRIC_OBSERVATION:
+                idempotency_identity.update(
+                    {
+                        "upstream_market_system_id": upstream_market_system_id,
+                        "upstream_event_object_id": upstream_event_object_id,
+                        "canonical_card_id": canonical_card_id,
+                        "provider_metric_name": normalized_fact["metric_name"],
+                    }
+                )
+            idempotency_key = "obskey_" + _sha256(idempotency_identity)
         existing = self.connection.execute(
             """
             SELECT id, content_sha256, lifecycle_state FROM market_observation
