@@ -833,4 +833,3 @@ Règles :
 Runtime production proposé : `V4_MISLISTED_SLAB_HUNTER_ENABLED=true`, `V4_MISLISTED_IMAGE_OCR_ENABLED=true`, Tesseract installé par le workflow si absent.
 
 Validation PR #63 : run **`31836557339`**, job **`94884024784`** — **466/466 tests V4 PASS**, compilation PASS, `git diff --check` PASS, comparaison discovery live PASS (`legacy_only=0`, `private safety-net failures=0`).
-
