@@ -10,16 +10,31 @@ from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 from robot_kb.domain import InclusionState, ObservationType, SourceKind
 from robot_kb.repository import PriceComponent
 
-from .models import IdentityClaim, NormalizedObservation, RawSourceRecord
+from .models import (
+    IdentityClaim,
+    NormalizationBatch,
+    NormalizedObservation,
+    RawSourceRecord,
+)
 
 
-_COMPLETED_SALE_STATUSES = frozenset(
-    {"SOLD", "COMPLETED", "ENDED_SOLD", "SUCCESSFUL"}
+_UNEQUIVOCAL_SOLD_STATUSES = frozenset({"SOLD"})
+_AMBIGUOUS_COMPLETION_STATUSES = frozenset(
+    {"COMPLETED", "SUCCESSFUL", "ENDED", "ENDED_SOLD", "ENDED_UNSOLD"}
 )
 _BUNDLE_RE = re.compile(
-    r"\b(?:bundle|lot|set of|collection of|pair|duo|trio|[2-9]\s*[x×])\b",
+    r"\b(?:bundle|lot|set of|collection|complete(?:\s+\w+){0,3}\s+set|"
+    r"pair|duo|trio|menu|"
+    r"choose one|choose your|au choix|sealed|booster|display|box|pack|case|"
+    r"mystery|oripa|break|spot|multi(?:ple)?|[2-9]\s*[x×])\b",
     re.IGNORECASE,
 )
+_MULTIPLE_NAMES_RE = re.compile(
+    r"\b[\wÀ-ÿ'-]+(?:\s+[\wÀ-ÿ'-]+){0,2}\s*(?:&|\+|\band\b|\bet\b)\s*"
+    r"[\wÀ-ÿ'-]+",
+    re.IGNORECASE,
+)
+_SUPPORTED_CURRENCIES = frozenset({"EUR", "USD", "CHF"})
 
 
 def _nonempty(value: Any) -> bool:
@@ -98,17 +113,27 @@ def _money(
     return None
 
 
-def _currency(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    value = _first(
-        payload.get("currency"),
-        payload.get("currencyCode"),
-        item.get("currency"),
-        item.get("currencyCode"),
-    )
-    if isinstance(value, str) and re.fullmatch(r"[A-Za-z]{3}", value):
-        return value.upper()
-    # GCC's public marketplace price contract is denominated in EUR.
-    return "EUR"
+def _contract_currency(
+    containers: Sequence[Mapping[str, Any]],
+    fields: Sequence[str],
+    *,
+    default: str,
+) -> tuple[Optional[str], bool]:
+    explicit = []
+    for container in containers:
+        for field in fields:
+            if field not in container:
+                continue
+            value = container.get(field)
+            if not isinstance(value, str):
+                return None, True
+            normalized = value.strip().upper()
+            if normalized not in _SUPPORTED_CURRENCIES:
+                return None, True
+            explicit.append(normalized)
+    if len(set(explicit)) > 1:
+        return None, True
+    return (explicit[0] if explicit else default), False
 
 
 def _claim(field_name: str, value: Any, source_kind: SourceKind) -> Optional[IdentityClaim]:
@@ -122,16 +147,17 @@ def _claims(values: Iterable[Optional[IdentityClaim]]) -> Tuple[IdentityClaim, .
 
 
 def _explicit_final_price(payload: Mapping[str, Any]) -> tuple[Optional[int], str]:
+    """Only fields whose names explicitly assert a consummated sale."""
+
     field_groups = (
-        (("hammerPriceInCents",), ("hammerPrice",), "HAMMER_PRICE"),
         (
             ("acceptedOfferPriceInCents",),
             ("acceptedOfferPrice",),
             "ACCEPTED_OFFER",
         ),
         (
-            ("soldPriceInCents", "finalPriceInCents"),
-            ("soldPrice", "finalPrice"),
+            ("soldPriceInCents",),
+            ("soldPrice",),
             "ITEM_PRICE",
         ),
     )
@@ -142,7 +168,61 @@ def _explicit_final_price(payload: Mapping[str, Any]) -> tuple[Optional[int], st
     return None, "ITEM_PRICE"
 
 
-def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
+def _quantity(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 and value.is_integer() else None
+    if isinstance(value, str) and re.fullmatch(r"\s*\d+\s*", value):
+        return int(value.strip())
+    return None
+
+
+def _single_card_scope(
+    payload: Mapping[str, Any],
+    item: Mapping[str, Any],
+    collectible: Mapping[str, Any],
+    title: Any,
+    quantity: Optional[int],
+) -> tuple[str, bool]:
+    text_values = (
+        title,
+        payload.get("body"),
+        payload.get("description"),
+        payload.get("listingText"),
+        item.get("body"),
+        item.get("description"),
+    )
+    evidence_text = "\n".join(
+        str(value) for value in text_values if _nonempty(value)
+    )
+    item_type = str(_first(collectible.get("type"), item.get("type"), "")).strip().upper()
+    category = str(_first(collectible.get("category"), item.get("category"), "")).strip().upper()
+    negative_text = bool(
+        _BUNDLE_RE.search(evidence_text) or _MULTIPLE_NAMES_RE.search(evidence_text)
+    )
+    if negative_text or (quantity is not None and quantity != 1):
+        return "BUNDLE_OR_MULTI", False
+    positive = bool(
+        quantity == 1
+        and item_type in {"CARD", "CARDS"}
+        and category == "POKEMON"
+        and isinstance(title, str)
+        and bool(title.strip())
+    )
+    if positive:
+        return "SINGLE_CARD", True
+    return "AMBIGUOUS_ITEM_SCOPE", False
+
+
+def _timestamp_value(value: str) -> datetime:
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    return datetime.fromisoformat(candidate)
+
+
+def normalize_gcc(record: RawSourceRecord) -> NormalizationBatch:
     """Normalize one GCC row without inferring a sale or print microvariant."""
 
     payload = record.payload
@@ -160,22 +240,9 @@ def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
         mode = "UNKNOWN"
 
     title = _first(item.get("title"), payload.get("title"))
-    quantity_raw = _first(payload.get("quantity"), item.get("quantity"))
-    quantity = (
-        int(quantity_raw)
-        if isinstance(quantity_raw, int)
-        and not isinstance(quantity_raw, bool)
-        and quantity_raw >= 0
-        else None
-    )
-    item_type = str(_first(collectible.get("type"), item.get("type"), "")).upper()
-    non_single = bool(
-        (quantity is not None and quantity > 1)
-        or (isinstance(title, str) and _BUNDLE_RE.search(title))
-        or (item_type and item_type not in {"CARD", "CARDS"})
-    )
-    explicit_single = bool(
-        not non_single and quantity == 1 and item_type in {"CARD", "CARDS"}
+    quantity = _quantity(_first(payload.get("quantity"), item.get("quantity")))
+    item_scope, explicit_single = _single_card_scope(
+        payload, item, collectible, title, quantity
     )
 
     language = _first(collectible.get("language"), item.get("language"))
@@ -206,9 +273,6 @@ def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
         payload.get("url"),
         payload.get("listingUrl"),
         f"https://gradedcardcenter.com/item/{record.source_native_record_id}",
-    )
-    item_scope = "BUNDLE_OR_MULTI" if non_single else (
-        "SINGLE_CARD" if explicit_single else None
     )
     claims = _claims(
         (
@@ -250,34 +314,94 @@ def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
         for field_name, value in dimension_values.items()
         if not _nonempty(value)
     ]
-    if non_single:
+    if not explicit_single:
         unresolved.append("single_card_scope")
 
+    observed_at = _aware_timestamp(record.retrieved_at)
+    if observed_at is None:
+        raise ValueError("GCC retrieved_at must be a timezone-aware timestamp")
+    source_updated_raw = _first(payload.get("updatedAt"), payload.get("sourceUpdatedAt"))
     source_updated_at = _aware_timestamp(
-        _first(payload.get("updatedAt"), payload.get("sourceUpdatedAt"))
+        source_updated_raw
     )
     listing_started_at = _aware_timestamp(
         _first(payload.get("listedAt"), payload.get("startTime"), payload.get("createdAt"))
     )
     sale_occurred_at = _aware_timestamp(
-        _first(
-            payload.get("soldAt"),
-            payload.get("saleOccurredAt"),
-            payload.get("completedAt"),
-        )
+        _first(payload.get("soldAt"), payload.get("saleOccurredAt"))
     )
     final_price_minor, final_component_type = _explicit_final_price(payload)
+    currency, invalid_currency = _contract_currency(
+        (payload, item),
+        ("currency", "currencyCode"),
+        default="EUR",
+    )
+    chronology_valid = bool(
+        sale_occurred_at is not None
+        and _timestamp_value(sale_occurred_at) <= _timestamp_value(observed_at)
+        and (
+            source_updated_raw is None
+            or (
+                source_updated_at is not None
+                and _timestamp_value(sale_occurred_at)
+                <= _timestamp_value(source_updated_at)
+                <= _timestamp_value(observed_at)
+            )
+        )
+    )
     genuine_sale = bool(
-        status in _COMPLETED_SALE_STATUSES
-        and sale_occurred_at is not None
+        status in _UNEQUIVOCAL_SOLD_STATUSES
         and final_price_minor is not None
+        and currency is not None
+        and chronology_valid
+    )
+    sale_candidate = bool(
+        status in _UNEQUIVOCAL_SOLD_STATUSES
+        or status in _AMBIGUOUS_COMPLETION_STATUSES
+        or any(
+            field in payload
+            for field in (
+                "soldAt",
+                "saleOccurredAt",
+                "completedAt",
+                "soldPriceInCents",
+                "soldPrice",
+                "finalPriceInCents",
+                "finalPrice",
+            )
+        )
+    )
+    sale_candidates_rejected = int(sale_candidate and not genuine_sale)
+    ambiguous_sale_records = int(
+        sale_candidate and status in _AMBIGUOUS_COMPLETION_STATUSES
     )
 
-    currency = _currency(payload, item)
     shipping_minor = _money(
         payload,
         cents_fields=("shippingInCents", "shippingPriceInCents"),
         major_fields=("shipping", "shippingPrice"),
+    )
+    current_price_minor = _money(
+        payload,
+        cents_fields=("priceInCents", "currentPriceInCents"),
+        major_fields=("price", "currentPrice"),
+    )
+    money_fields = (
+        "priceInCents",
+        "currentPriceInCents",
+        "price",
+        "currentPrice",
+        "shippingInCents",
+        "shippingPriceInCents",
+        "shipping",
+        "shippingPrice",
+        "soldPriceInCents",
+        "soldPrice",
+        "acceptedOfferPriceInCents",
+        "acceptedOfferPrice",
+    )
+    monetary_facts_rejected = int(
+        invalid_currency and any(field in payload for field in money_fields)
     )
     prices = []
     if genuine_sale:
@@ -290,12 +414,7 @@ def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
             )
         )
     else:
-        current_price_minor = _money(
-            payload,
-            cents_fields=("priceInCents", "currentPriceInCents"),
-            major_fields=("price", "currentPrice"),
-        )
-        if current_price_minor is not None:
+        if current_price_minor is not None and currency is not None:
             prices.append(
                 PriceComponent(
                     "ITEM_PRICE",
@@ -304,7 +423,7 @@ def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
                     inclusion_state=InclusionState.UNKNOWN,
                 )
             )
-    if shipping_minor is not None:
+    if shipping_minor is not None and currency is not None:
         prices.append(
             PriceComponent(
                 "SHIPPING",
@@ -333,11 +452,11 @@ def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
         event_at = None
         event_time_precision = "UNKNOWN"
 
-    return (
+    observations = (
         NormalizedObservation(
             observation_type=observation_type,
             source_native_record_id=record.source_native_record_id,
-            observed_at=record.retrieved_at,
+            observed_at=observed_at,
             fact=fact,
             source_updated_at=source_updated_at,
             event_at=event_at,
@@ -349,9 +468,15 @@ def normalize_gcc(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
             identity_identifier_value=record.source_native_record_id,
             unresolved_dimensions=tuple(sorted(set(unresolved))),
             claims=claims,
-            exact_identity_eligible=not non_single,
+            exact_identity_eligible=explicit_single,
             genuine_sale_evidence=genuine_sale,
         ),
+    )
+    return NormalizationBatch(
+        observations,
+        sale_candidates_rejected=sale_candidates_rejected,
+        ambiguous_sale_records=ambiguous_sale_records,
+        monetary_facts_rejected=monetary_facts_rejected,
     )
 
 
@@ -440,11 +565,16 @@ def _provider_timestamp(provider_payload: Mapping[str, Any]) -> Optional[str]:
     )
 
 
-def _provider_currency(provider_payload: Mapping[str, Any]) -> Optional[str]:
-    value = _first(provider_payload.get("unit"), provider_payload.get("currency"))
-    if isinstance(value, str) and re.fullmatch(r"[A-Za-z]{3}", value):
-        return value.upper()
-    return None
+def _provider_currency(
+    provider_payload: Mapping[str, Any], market: str
+) -> tuple[Optional[str], bool]:
+    # These defaults are limited to the exact provider contracts represented by
+    # TCGdex's Cardmarket (EUR) and TCGplayer (USD) pricing containers.
+    return _contract_currency(
+        (provider_payload,),
+        ("unit", "currency"),
+        default="EUR" if market == "cardmarket" else "USD",
+    )
 
 
 def _tcgdex_claims(
@@ -467,18 +597,23 @@ def _tcgdex_claims(
     return _claims(values)
 
 
-def normalize_tcgdex(record: RawSourceRecord) -> Sequence[NormalizedObservation]:
+def normalize_tcgdex(record: RawSourceRecord) -> NormalizationBatch:
     """Flatten embedded Cardmarket/TCGplayer prices into provider metrics."""
 
     payload = record.payload
     pricing = payload.get("pricing")
     if not isinstance(pricing, Mapping):
-        return ()
+        return NormalizationBatch((), rejected_record=True)
     card_id = payload.get("id")
     if not isinstance(card_id, str) or not card_id.strip():
-        return ()
+        return NormalizationBatch((), rejected_record=True)
+    observed_at = _aware_timestamp(record.retrieved_at)
+    if observed_at is None:
+        raise ValueError("TCGdex retrieved_at must be a timezone-aware timestamp")
 
     normalized = []
+    metric_alias_conflicts = 0
+    monetary_facts_rejected = 0
     for market, market_name in (
         ("cardmarket", "Cardmarket"),
         ("tcgplayer", "TCGplayer"),
@@ -486,16 +621,37 @@ def normalize_tcgdex(record: RawSourceRecord) -> Sequence[NormalizedObservation]
         provider_payload = pricing.get(market)
         if not isinstance(provider_payload, Mapping):
             continue
-        currency = _provider_currency(provider_payload)
+        currency, invalid_currency = _provider_currency(provider_payload, market)
         source_updated_at = _provider_timestamp(provider_payload)
+        candidates: dict[
+            tuple[str, str, Optional[int]], list[tuple[Tuple[str, ...], int]]
+        ] = {}
         for path, value in _numeric_leaves(provider_payload):
             definition = _metric_definition(market, path)
-            if definition is None or currency is None:
+            if definition is None:
                 continue
             metric_name, segment, window_days = definition
             metric_value_minor = _minor_from_major(value)
             if metric_value_minor is None:
                 continue
+            candidates.setdefault(
+                (metric_name, segment, window_days), []
+            ).append((path, metric_value_minor))
+
+        if invalid_currency:
+            monetary_facts_rejected += len(candidates)
+            continue
+
+        for (metric_name, segment, window_days), aliases in sorted(
+            candidates.items()
+        ):
+            distinct_values = {value for _, value in aliases}
+            if len(distinct_values) != 1:
+                metric_alias_conflicts += 1
+                continue
+            path, metric_value_minor = min(
+                aliases, key=lambda candidate: "/".join(candidate[0]).casefold()
+            )
             window_started_at = None
             window_ended_at = None
             if window_days is not None and source_updated_at is not None:
@@ -517,7 +673,7 @@ def normalize_tcgdex(record: RawSourceRecord) -> Sequence[NormalizedObservation]
                     source_native_record_id=(
                         f"{card_id.strip()}:{market}:{'/'.join(path)}"
                     ),
-                    observed_at=record.retrieved_at,
+                    observed_at=observed_at,
                     source_updated_at=source_updated_at,
                     event_at=source_updated_at,
                     event_time_precision=(
@@ -549,4 +705,8 @@ def normalize_tcgdex(record: RawSourceRecord) -> Sequence[NormalizedObservation]
                     claims=_tcgdex_claims(payload, market, segment),
                 )
             )
-    return tuple(normalized)
+    return NormalizationBatch(
+        tuple(normalized),
+        metric_alias_conflicts=metric_alias_conflicts,
+        monetary_facts_rejected=monetary_facts_rejected,
+    )

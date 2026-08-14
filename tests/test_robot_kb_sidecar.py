@@ -246,7 +246,9 @@ class GCCShadowTests(SidecarTestCase):
         )
 
         completed = gcc_payload(status="SOLD", price=2500)
-        completed.update({"soldPriceInCents": 2400, "soldAt": T3})
+        completed.update(
+            {"soldPriceInCents": 2400, "soldAt": T3, "updatedAt": T3}
+        )
         self.ingest(gcc_record(completed, "2026-08-14T10:00:00Z"))
         sale = self.kb.connection.execute(
             """
@@ -259,7 +261,7 @@ class GCCShadowTests(SidecarTestCase):
         self.assertEqual(sale["event_at"], T3)
         self.assertEqual(sale["transaction_status"], "COMPLETED")
         self.assertEqual(sale["amount_minor"], 2400)
-        self.assertEqual(self.sidecar.diagnostics.fabricated_sales, 0)
+        self.assertEqual(self.sidecar.diagnostics.sale_candidates_rejected, 1)
 
     def test_bundle_sale_cannot_masquerade_as_an_exact_single_card(self):
         listing_id = "22222222-2222-2222-2222-222222222222"
@@ -286,7 +288,14 @@ class GCCShadowTests(SidecarTestCase):
             price=5000,
             status="SOLD",
         )
-        sold.update({"quantity": 2, "soldPriceInCents": 4800, "soldAt": T3})
+        sold.update(
+            {
+                "quantity": 2,
+                "soldPriceInCents": 4800,
+                "soldAt": T3,
+                "updatedAt": T3,
+            }
+        )
         self.ingest(gcc_record(sold, T3))
         sale = self.kb.connection.execute(
             """
@@ -392,7 +401,6 @@ class TCGdexMetricTests(SidecarTestCase):
             0,
         )
         self.assertEqual(self.sidecar.diagnostics.provider_metrics_stored, 14)
-        self.assertEqual(self.sidecar.diagnostics.fabricated_sales, 0)
 
     def test_provider_observed_and_ingested_times_and_windows_stay_separate(self):
         self.ingest(tcgdex_record(self.pricing_payload()))

@@ -279,13 +279,16 @@ def _sha256(value: Any) -> str:
 
 
 def _payload_hash(payload: Any) -> str:
-    if isinstance(payload, bytes):
-        content = payload
-    elif isinstance(payload, str):
-        content = payload.encode("utf-8")
-    else:
-        content = _canonical_json(payload).encode("utf-8")
+    content, _ = _payload_content(payload)
     return hashlib.sha256(content).hexdigest()
+
+
+def _payload_content(payload: Any) -> Tuple[bytes, str]:
+    if isinstance(payload, bytes):
+        return payload, "BINARY"
+    if isinstance(payload, str):
+        return payload.encode("utf-8"), "UTF8_TEXT"
+    return _canonical_json(payload).encode("utf-8"), "CANONICAL_JSON"
 
 
 class KnowledgeBase:
@@ -518,7 +521,8 @@ class KnowledgeBase:
         source_updated_at: Optional[Union[str, datetime]] = None,
         external_object_id: Optional[str] = None,
     ) -> str:
-        payload_sha256 = _payload_hash(payload)
+        payload_content, payload_format = _payload_content(payload)
+        payload_sha256 = hashlib.sha256(payload_content).hexdigest()
         retrieved = _timestamp(retrieved_at, field="retrieved_at")
         source_updated = _optional_timestamp(
             source_updated_at, field="source_updated_at"
@@ -533,6 +537,37 @@ class KnowledgeBase:
             (source_system_id, source_native_record_id, payload_sha256),
         ).fetchone()
         with self._transaction():
+            stored_payload = self.connection.execute(
+                """
+                SELECT payload_bytes, payload_format, byte_length
+                FROM source_payload WHERE payload_sha256 = ?
+                """,
+                (payload_sha256,),
+            ).fetchone()
+            if stored_payload is None:
+                self.connection.execute(
+                    """
+                    INSERT INTO source_payload(
+                        payload_sha256, payload_bytes, payload_format,
+                        byte_length, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload_sha256,
+                        sqlite3.Binary(payload_content),
+                        payload_format,
+                        len(payload_content),
+                        _now(),
+                    ),
+                )
+            elif (
+                bytes(stored_payload["payload_bytes"]) != payload_content
+                or stored_payload["payload_format"] != payload_format
+                or stored_payload["byte_length"] != len(payload_content)
+            ):
+                raise IdempotencyConflict(
+                    "source payload checksum already represents different bytes"
+                )
             if existing:
                 record_id = existing["id"]
             else:
@@ -557,6 +592,26 @@ class KnowledgeBase:
                         created_at,
                     ),
                 )
+            payload_reference = self.connection.execute(
+                """
+                SELECT payload_sha256 FROM source_record_payload
+                WHERE source_record_id = ?
+                """,
+                (record_id,),
+            ).fetchone()
+            if payload_reference is None:
+                self.connection.execute(
+                    """
+                    INSERT INTO source_record_payload(
+                        source_record_id, payload_sha256, created_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (record_id, payload_sha256, _now()),
+                )
+            elif payload_reference["payload_sha256"] != payload_sha256:
+                raise IdempotencyConflict(
+                    "source record already references different payload bytes"
+                )
             self._append_source_record_retrieval(
                 record_id,
                 external_object_id=external_object_id,
@@ -564,6 +619,39 @@ class KnowledgeBase:
                 source_updated_at=source_updated,
             )
         return record_id
+
+    def raw_source_payload(self, source_record_id: str) -> Any:
+        """Recover and verify one immutable canonical source payload."""
+
+        row = self.connection.execute(
+            """
+            SELECT record.payload_sha256, payload.payload_bytes,
+                   payload.payload_format, payload.byte_length
+            FROM source_record AS record
+            JOIN source_record_payload AS reference
+              ON reference.source_record_id = record.id
+            JOIN source_payload AS payload
+              ON payload.payload_sha256 = reference.payload_sha256
+            WHERE record.id = ?
+              AND reference.payload_sha256 = record.payload_sha256
+            """,
+            (source_record_id,),
+        ).fetchone()
+        if row is None:
+            raise KnowledgeBaseError(
+                "source record has no reconstructable retained payload"
+            )
+        payload_bytes = bytes(row["payload_bytes"])
+        if len(payload_bytes) != row["byte_length"] or hashlib.sha256(
+            payload_bytes
+        ).hexdigest() != row["payload_sha256"]:
+            raise KnowledgeBaseError("retained source payload checksum is invalid")
+        if row["payload_format"] == "BINARY":
+            return payload_bytes
+        text = payload_bytes.decode("utf-8")
+        if row["payload_format"] == "UTF8_TEXT":
+            return text
+        return json.loads(text)
 
     def _append_source_record_retrieval(
         self,

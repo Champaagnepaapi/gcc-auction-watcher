@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Sequence, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 from robot_kb.domain import (
     ClaimRole,
@@ -69,11 +69,24 @@ class NormalizedObservation:
 
 
 @dataclass(frozen=True)
+class NormalizationBatch:
+    """Normalized facts plus evidence-rejection diagnostics for one payload."""
+
+    observations: Tuple[NormalizedObservation, ...]
+    sale_candidates_rejected: int = 0
+    ambiguous_sale_records: int = 0
+    metric_alias_conflicts: int = 0
+    monetary_facts_rejected: int = 0
+    rejected_record: bool = False
+
+
+@dataclass(frozen=True)
 class CollectionResult:
     """Records fetched from one independently isolated source request."""
 
     records: Tuple[RawSourceRecord, ...]
     rejected_malformed_records: int = 0
+    crawl_truncated: bool = False
 
 
 @dataclass
@@ -87,15 +100,15 @@ class ShadowDiagnostics:
     exact_identities_linked: int = 0
     provider_metrics_stored: int = 0
     sale_transactions_stored: int = 0
+    sale_candidates_rejected: int = 0
+    ambiguous_sale_records: int = 0
+    duplicate_sale_replays: int = 0
+    metric_alias_conflicts: int = 0
+    monetary_facts_rejected: int = 0
+    crawl_batches_truncated: int = 0
     rejected_malformed_records: int = 0
     source_failures: int = 0
     failure_messages: list[str] = field(default_factory=list)
-
-    @property
-    def fabricated_sales(self) -> int:
-        """The sidecar has no inference path capable of creating a sale."""
-
-        return 0
 
     def record_failure(self, source_name: str, error: BaseException) -> None:
         self.source_failures += 1
@@ -112,11 +125,16 @@ class ShadowDiagnostics:
             "exact_identities_linked": self.exact_identities_linked,
             "provider_metrics_stored": self.provider_metrics_stored,
             "sale_transactions_stored": self.sale_transactions_stored,
+            "sale_candidates_rejected": self.sale_candidates_rejected,
+            "ambiguous_sale_records": self.ambiguous_sale_records,
+            "duplicate_sale_replays": self.duplicate_sale_replays,
+            "metric_alias_conflicts": self.metric_alias_conflicts,
+            "monetary_facts_rejected": self.monetary_facts_rejected,
+            "crawl_batches_truncated": self.crawl_batches_truncated,
             "rejected_malformed_records": self.rejected_malformed_records,
             "source_failures": self.source_failures,
-            "fabricated_sales": self.fabricated_sales,
             "failure_messages": list(self.failure_messages),
         }
 
 
-NormalizerResult = Sequence[NormalizedObservation]
+NormalizerResult = NormalizationBatch

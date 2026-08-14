@@ -11,6 +11,9 @@ from typing import Callable, List, Optional
 from robot_kb.repository import KnowledgeBase
 
 from .collectors import (
+    GCC_MAX_PAGES,
+    GCC_MAX_PAGE_SIZE,
+    GCC_MAX_RECORDS,
     GCCMarketplaceCollector,
     TCGdexCollector,
     load_gcc_fixture,
@@ -72,14 +75,22 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="required guard for explicit live GET requests; never enables scheduling",
     )
-    parser.add_argument("--page-size", type=int, default=100)
-    parser.add_argument("--max-pages", type=int, default=500)
+    parser.add_argument("--page-size", type=int, default=50)
+    parser.add_argument("--max-pages", type=int, default=10)
+    parser.add_argument("--max-records", type=int, default=500)
     return parser
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    for name, value, ceiling in (
+        ("--page-size", args.page_size, GCC_MAX_PAGE_SIZE),
+        ("--max-pages", args.max_pages, GCC_MAX_PAGES),
+        ("--max-records", args.max_records, GCC_MAX_RECORDS),
+    ):
+        if not 1 <= value <= ceiling:
+            parser.error(f"{name} must be between 1 and {ceiling}")
     live_requested = bool(args.live_gcc or args.live_tcgdex_card)
     if live_requested and not args.allow_live_read_only:
         parser.error("live GET requests require --allow-live-read-only")
@@ -118,7 +129,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             (
                 f"gcc-live:{mode}",
                 lambda mode=mode: gcc_collector.collect(
-                    mode, page_size=args.page_size, max_pages=args.max_pages
+                    mode,
+                    page_size=args.page_size,
+                    max_pages=args.max_pages,
+                    max_records=args.max_records,
                 ),
             )
         )

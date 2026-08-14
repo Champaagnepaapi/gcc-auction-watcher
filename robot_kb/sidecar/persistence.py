@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from robot_kb.domain import ObservationType, ResolutionState
@@ -31,19 +32,63 @@ def _observation_key(
     source_record_id: str,
     observation: NormalizedObservation,
 ) -> str:
-    identity = {
-        "sidecar_version": 1,
-        "source_system_id": source_system_id,
-        "source_record_id": source_record_id,
-        "source_native_record_id": observation.source_native_record_id,
-        "observation_type": observation.observation_type.value,
-        "observed_at": observation.observed_at,
-        "source_updated_at": observation.source_updated_at,
-        "upstream_market_code": observation.upstream_market_code,
-        "metric_name": observation.fact.get("metric_name"),
-    }
+    if observation.observation_type == ObservationType.SALE_TRANSACTION:
+        identity = {
+            "sidecar_version": 2,
+            "source_system_id": source_system_id,
+            "source_native_record_id": observation.source_native_record_id,
+            "observation_type": observation.observation_type.value,
+            "economic_sale": _sale_signature(observation),
+        }
+    else:
+        identity = {
+            "sidecar_version": 1,
+            "source_system_id": source_system_id,
+            "source_record_id": source_record_id,
+            "source_native_record_id": observation.source_native_record_id,
+            "observation_type": observation.observation_type.value,
+            "observed_at": observation.observed_at,
+            "source_updated_at": observation.source_updated_at,
+            "upstream_market_code": observation.upstream_market_code,
+            "metric_name": observation.fact.get("metric_name"),
+        }
     digest = hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
     return f"obskey_{digest}"
+
+
+def _instant(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise KnowledgeBaseError(f"{field} must be a timezone-aware timestamp")
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as error:
+        raise KnowledgeBaseError(f"{field} must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise KnowledgeBaseError(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _sale_signature(observation: NormalizedObservation) -> Mapping[str, Any]:
+    if observation.event_at is None:
+        raise KnowledgeBaseError("completed sale requires an explicit event timestamp")
+    final_prices = tuple(
+        sorted(
+            (
+                component.component_type,
+                component.amount_minor,
+                component.currency,
+            )
+            for component in observation.prices
+            if component.component_type != "SHIPPING"
+        )
+    )
+    if len(final_prices) != 1 or any(value is None for value in final_prices[0]):
+        raise KnowledgeBaseError("completed sale requires one explicit final price")
+    return {
+        "event_at": _instant(observation.event_at, field="sale event_at"),
+        "final_prices": final_prices,
+    }
 
 
 class ShadowKnowledgePersistence:
@@ -203,6 +248,81 @@ class ShadowKnowledgePersistence:
             supersedes_resolution_id=(None if previous is None else previous["id"]),
         )
 
+    def _checkpoint(
+        self, name: str, observation: NormalizedObservation
+    ) -> None:
+        """Failure-injection seam used to prove the outer ingest savepoint."""
+
+    def _validate_sale(self, observation: NormalizedObservation) -> None:
+        if not observation.genuine_sale_evidence:
+            raise KnowledgeBaseError(
+                "sidecar sale transactions require explicit completed-sale evidence"
+            )
+        sale_at = _instant(observation.event_at, field="sale event_at")
+        observed_at = _instant(observation.observed_at, field="observed_at")
+        if sale_at > observed_at:
+            raise KnowledgeBaseError("sale event cannot be later than observation")
+        fact_sale_at = observation.fact.get("sale_occurred_at")
+        if _instant(fact_sale_at, field="sale_occurred_at") != sale_at:
+            raise KnowledgeBaseError("sale fact timestamp contradicts event timestamp")
+        if observation.source_updated_at is not None:
+            updated_at = _instant(
+                observation.source_updated_at, field="source_updated_at"
+            )
+            if not sale_at <= updated_at <= observed_at:
+                raise KnowledgeBaseError("sale event contradicts source chronology")
+        _sale_signature(observation)
+
+    def _existing_finalized_sale(
+        self,
+        source_system_id: str,
+        observation: NormalizedObservation,
+    ) -> Optional[Mapping[str, Any]]:
+        rows = self.knowledge_base.connection.execute(
+            """
+            SELECT observation.id, observation.event_at,
+                   observation.canonical_card_id
+            FROM market_observation AS observation
+            JOIN sale_transaction AS sale
+              ON sale.observation_id = observation.id
+            WHERE observation.source_system_id = ?
+              AND observation.source_native_record_id = ?
+              AND observation.observation_type = 'SALE_TRANSACTION'
+              AND observation.lifecycle_state = 'SEALED'
+            ORDER BY observation.created_at, observation.id
+            """,
+            (source_system_id, observation.source_native_record_id),
+        ).fetchall()
+        if not rows:
+            return None
+        expected = _sale_signature(observation)
+        matches = []
+        for row in rows:
+            prices = self.knowledge_base.connection.execute(
+                """
+                SELECT component_type, amount_minor, currency
+                FROM price_component
+                WHERE observation_id = ?
+                  AND component_type <> 'SHIPPING'
+                ORDER BY component_type
+                """,
+                (row["id"],),
+            ).fetchall()
+            existing = {
+                "event_at": _instant(row["event_at"], field="stored sale event_at"),
+                "final_prices": tuple(
+                    (price["component_type"], price["amount_minor"], price["currency"])
+                    for price in prices
+                ),
+            }
+            if existing == expected:
+                matches.append(row)
+        if len(rows) == 1 and len(matches) == 1:
+            return matches[0]
+        raise IdempotencyConflict(
+            "finalized listing already has a contradictory or duplicate economic sale"
+        )
+
     def ingest(
         self,
         record: RawSourceRecord,
@@ -210,6 +330,28 @@ class ShadowKnowledgePersistence:
         diagnostics: ShadowDiagnostics,
     ) -> None:
         """Persist a raw record and every independently sealed typed fact."""
+
+        deltas = {
+            "observations_replayed": 0,
+            "duplicate_sale_replays": 0,
+            "observations_accepted": 0,
+            "exact_identities_linked": 0,
+            "unresolved_identities_retained": 0,
+            "provider_metrics_stored": 0,
+            "sale_transactions_stored": 0,
+        }
+        with self.knowledge_base._transaction():
+            self._ingest_atomic(record, observations, deltas)
+        for field_name, value in deltas.items():
+            setattr(diagnostics, field_name, getattr(diagnostics, field_name) + value)
+
+    def _ingest_atomic(
+        self,
+        record: RawSourceRecord,
+        observations: Sequence[NormalizedObservation],
+        deltas: dict[str, int],
+    ) -> None:
+        """Run one record and all derived facts under the caller's savepoint."""
 
         source_system_id = self.knowledge_base.create_source_system(
             record.source_code, record.source_name, record.source_role
@@ -229,13 +371,8 @@ class ShadowKnowledgePersistence:
         )
 
         for observation in observations:
-            if (
-                observation.observation_type == ObservationType.SALE_TRANSACTION
-                and not observation.genuine_sale_evidence
-            ):
-                raise KnowledgeBaseError(
-                    "sidecar sale transactions require explicit completed-sale evidence"
-                )
+            if observation.observation_type == ObservationType.SALE_TRANSACTION:
+                self._validate_sale(observation)
             upstream_market_system_id = None
             if observation.upstream_market_code is not None:
                 upstream_market_system_id = self.knowledge_base.create_source_system(
@@ -262,10 +399,16 @@ class ShadowKnowledgePersistence:
                 identity_subject_id, observation, proven_card_id
             )
 
+            existing_sale = None
+            if observation.observation_type == ObservationType.SALE_TRANSACTION:
+                existing_sale = self._existing_finalized_sale(
+                    source_system_id, observation
+                )
+
             idempotency_key = _observation_key(
                 source_system_id, source_record_id, observation
             )
-            existing = self.knowledge_base.connection.execute(
+            existing = existing_sale or self.knowledge_base.connection.execute(
                 """
                 SELECT id, canonical_card_id FROM market_observation
                 WHERE idempotency_key = ?
@@ -286,27 +429,32 @@ class ShadowKnowledgePersistence:
                 if existing is not None
                 else proven_card_id
             )
-            observation_id = self.knowledge_base.append_market_observation(
-                observation.observation_type,
-                source_system_id,
-                observation.source_native_record_id,
-                observed_at=observation.observed_at,
-                ingested_at=self.clock(),
-                source_updated_at=observation.source_updated_at,
-                source_record_id=source_record_id,
-                upstream_market_system_id=upstream_market_system_id,
-                canonical_card_id=canonical_for_observation,
-                event_at=observation.event_at,
-                event_time_precision=observation.event_time_precision,
-                fact=observation.fact,
-                prices=observation.prices,
-                idempotency_key=idempotency_key,
-            )
+            if existing_sale is not None:
+                observation_id = existing_sale["id"]
+            else:
+                observation_id = self.knowledge_base.append_market_observation(
+                    observation.observation_type,
+                    source_system_id,
+                    observation.source_native_record_id,
+                    observed_at=observation.observed_at,
+                    ingested_at=self.clock(),
+                    source_updated_at=observation.source_updated_at,
+                    source_record_id=source_record_id,
+                    upstream_market_system_id=upstream_market_system_id,
+                    canonical_card_id=canonical_for_observation,
+                    event_at=observation.event_at,
+                    event_time_precision=observation.event_time_precision,
+                    fact=observation.fact,
+                    prices=observation.prices,
+                    idempotency_key=idempotency_key,
+                )
+            self._checkpoint("after_observation_seal", observation)
 
             exact_link = bool(
                 proven_card_id is not None
                 and canonical_for_observation == proven_card_id
             )
+            self._checkpoint("before_identity_link", observation)
             self.knowledge_base.link_observation_identity(
                 observation_id,
                 identity_resolution_id,
@@ -314,14 +462,16 @@ class ShadowKnowledgePersistence:
                 link_role=("RESOLVED_AS" if exact_link else "SUBJECT"),
             )
             if existing is not None:
-                diagnostics.observations_replayed += 1
+                deltas["observations_replayed"] += 1
+                if existing_sale is not None:
+                    deltas["duplicate_sale_replays"] += 1
                 continue
-            diagnostics.observations_accepted += 1
+            deltas["observations_accepted"] += 1
             if exact_link:
-                diagnostics.exact_identities_linked += 1
+                deltas["exact_identities_linked"] += 1
             else:
-                diagnostics.unresolved_identities_retained += 1
+                deltas["unresolved_identities_retained"] += 1
             if observation.observation_type == ObservationType.PROVIDER_METRIC_OBSERVATION:
-                diagnostics.provider_metrics_stored += 1
+                deltas["provider_metrics_stored"] += 1
             elif observation.observation_type == ObservationType.SALE_TRANSACTION:
-                diagnostics.sale_transactions_stored += 1
+                deltas["sale_transactions_stored"] += 1

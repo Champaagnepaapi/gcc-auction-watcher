@@ -6,7 +6,7 @@ from typing import Callable, Mapping, Optional, Sequence
 
 from .models import (
     CollectionResult,
-    NormalizedObservation,
+    NormalizationBatch,
     RawSourceRecord,
     ShadowDiagnostics,
 )
@@ -24,7 +24,7 @@ class ShadowSidecar:
         normalizers: Optional[
             Mapping[
                 str,
-                Callable[[RawSourceRecord], Sequence[NormalizedObservation]],
+                Callable[[RawSourceRecord], NormalizationBatch],
             ]
         ] = None,
     ) -> None:
@@ -54,13 +54,29 @@ class ShadowSidecar:
             result.rejected_malformed_records
         )
         self.diagnostics.source_records_fetched += len(result.records)
+        if result.crawl_truncated:
+            self.diagnostics.crawl_batches_truncated += 1
 
         for record in result.records:
             try:
                 normalizer = self.normalizers[record.source_code]
-                observations = normalizer(record)
-                self.persistence.ingest(record, observations, self.diagnostics)
-                if not observations:
+                batch = normalizer(record)
+                self.persistence.ingest(
+                    record, batch.observations, self.diagnostics
+                )
+                self.diagnostics.sale_candidates_rejected += (
+                    batch.sale_candidates_rejected
+                )
+                self.diagnostics.ambiguous_sale_records += (
+                    batch.ambiguous_sale_records
+                )
+                self.diagnostics.metric_alias_conflicts += (
+                    batch.metric_alias_conflicts
+                )
+                self.diagnostics.monetary_facts_rejected += (
+                    batch.monetary_facts_rejected
+                )
+                if batch.rejected_record:
                     self.diagnostics.rejected_malformed_records += 1
             except Exception as error:
                 self.diagnostics.record_failure(source_name, error)

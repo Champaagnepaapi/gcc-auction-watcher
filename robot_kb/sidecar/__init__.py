@@ -13,6 +13,7 @@ from .collectors import (
 from .models import (
     CollectionResult,
     IdentityClaim,
+    NormalizationBatch,
     NormalizedObservation,
     RawSourceRecord,
     ShadowDiagnostics,
@@ -25,6 +26,7 @@ __all__ = [
     "CollectionResult",
     "GCCMarketplaceCollector",
     "IdentityClaim",
+    "NormalizationBatch",
     "NormalizedObservation",
     "RawSourceRecord",
     "ShadowDiagnostics",

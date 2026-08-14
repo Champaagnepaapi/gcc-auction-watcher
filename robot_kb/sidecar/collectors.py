@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib.parse import quote
@@ -15,6 +17,14 @@ from .models import CollectionResult, RawSourceRecord
 
 GCC_ON_SALE_ITEMS_API_URL = "https://api.gradedcardcenter.com/on-sale-items"
 TCGDEX_BASE_URL = "https://api.tcgdex.net/v2"
+GCC_MAX_PAGE_SIZE = 100
+GCC_MAX_PAGES = 20
+GCC_MAX_RECORDS = 2_000
+GCC_MAX_TIMEOUT_SECONDS = 30.0
+GCC_MIN_REQUEST_INTERVAL_SECONDS = 0.25
+GCC_MAX_RETRIES = 2
+GCC_MAX_RETRY_AFTER_SECONDS = 30.0
+_TRANSIENT_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 class SourceCollectionError(RuntimeError):
@@ -67,23 +77,115 @@ class GCCMarketplaceCollector:
         http_get: Optional[Callable[..., Any]] = None,
         timeout_seconds: float = 15.0,
         clock: Callable[[], str] = utc_now,
+        sleeper: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+        min_request_interval_seconds: float = 0.5,
+        max_retries: int = 2,
     ) -> None:
+        if not 0 < timeout_seconds <= GCC_MAX_TIMEOUT_SECONDS:
+            raise ValueError("GCC timeout must be greater than 0 and at most 30 seconds")
+        if min_request_interval_seconds < GCC_MIN_REQUEST_INTERVAL_SECONDS:
+            raise ValueError("GCC request interval must be at least 0.25 seconds")
+        if (
+            isinstance(max_retries, bool)
+            or not isinstance(max_retries, int)
+            or not 0 <= max_retries <= GCC_MAX_RETRIES
+        ):
+            raise ValueError("GCC retries must be between 0 and 2")
         self.http_get = http_get or requests.get
         self.timeout_seconds = timeout_seconds
         self.clock = clock
+        self.sleeper = sleeper
+        self.monotonic = monotonic
+        self.min_request_interval_seconds = min_request_interval_seconds
+        self.max_retries = max_retries
+        self._last_request_started: Optional[float] = None
+
+    def _pace(self) -> None:
+        now = self.monotonic()
+        if self._last_request_started is not None:
+            remaining = self.min_request_interval_seconds - (
+                now - self._last_request_started
+            )
+            if remaining > 0:
+                self.sleeper(remaining)
+        self._last_request_started = self.monotonic()
+
+    @staticmethod
+    def _retry_after_seconds(response: Any) -> Optional[float]:
+        headers = getattr(response, "headers", None)
+        if not isinstance(headers, Mapping):
+            return None
+        value = headers.get("Retry-After") or headers.get("retry-after")
+        try:
+            delay = float(value)
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(str(value))
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if retry_at.tzinfo is None or retry_at.utcoffset() is None:
+                return None
+            delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, min(delay, GCC_MAX_RETRY_AFTER_SECONDS))
+
+    def _request_page(self, params: Mapping[str, Any]) -> Any:
+        for attempt in range(self.max_retries + 1):
+            self._pace()
+            try:
+                response = self.http_get(
+                    GCC_ON_SALE_ITEMS_API_URL,
+                    params=params,
+                    headers={
+                        "Accept": "application/json",
+                        "x-device-platform": "web",
+                    },
+                    timeout=self.timeout_seconds,
+                )
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt >= self.max_retries:
+                    raise
+                self.sleeper(min(0.5 * (2**attempt), 2.0))
+                continue
+            status = getattr(response, "status_code", None)
+            if status in _TRANSIENT_HTTP_STATUSES and attempt < self.max_retries:
+                delay = (
+                    self._retry_after_seconds(response)
+                    if status == 429
+                    else None
+                )
+                self.sleeper(
+                    delay
+                    if delay is not None
+                    else min(0.5 * (2**attempt), 2.0)
+                )
+                continue
+            return _payload_from_response(response)
+        raise AssertionError("bounded GCC retry loop exhausted unexpectedly")
 
     def collect(
         self,
         mode: str,
         *,
-        page_size: int = 100,
-        max_pages: int = 500,
+        page_size: int = 50,
+        max_pages: int = 10,
+        max_records: int = 500,
     ) -> CollectionResult:
         normalized_mode = mode.strip().lower()
         if normalized_mode not in {"fixed", "auction"}:
             raise ValueError("GCC mode must be 'fixed' or 'auction'")
-        if page_size <= 0 or max_pages <= 0:
-            raise ValueError("GCC page_size and max_pages must be positive")
+        limits = (
+            ("page_size", page_size, GCC_MAX_PAGE_SIZE),
+            ("max_pages", max_pages, GCC_MAX_PAGES),
+            ("max_records", max_records, GCC_MAX_RECORDS),
+        )
+        for name, value, ceiling in limits:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 1 <= value <= ceiling
+            ):
+                raise ValueError(f"GCC {name} must be between 1 and {ceiling}")
 
         records = []
         rejected = 0
@@ -113,16 +215,7 @@ class GCCMarketplaceCollector:
                     }
                 )
             try:
-                response = self.http_get(
-                    GCC_ON_SALE_ITEMS_API_URL,
-                    params=params,
-                    headers={
-                        "Accept": "application/json",
-                        "x-device-platform": "web",
-                    },
-                    timeout=self.timeout_seconds,
-                )
-                payload = _payload_from_response(response)
+                payload = self._request_page(params)
             except Exception as error:
                 raise SourceCollectionError(
                     f"GCC {normalized_mode} page {page} failed"
@@ -155,6 +248,8 @@ class GCCMarketplaceCollector:
                     continue
                 if native_id in seen_ids:
                     continue
+                if len(records) >= max_records:
+                    return CollectionResult(tuple(records), rejected, True)
                 seen_ids.add(native_id)
                 new_ids += 1
                 records.append(
@@ -178,6 +273,8 @@ class GCCMarketplaceCollector:
             next_page = info.get("nextPage")
             if next_page is None:
                 break
+            if len(records) >= max_records:
+                return CollectionResult(tuple(records), rejected, True)
             if (
                 not isinstance(next_page, int)
                 or isinstance(next_page, bool)
@@ -188,9 +285,7 @@ class GCCMarketplaceCollector:
                 )
             page = next_page
         else:
-            raise SourceCollectionError(
-                f"GCC {normalized_mode} reached the {max_pages}-page safety limit"
-            )
+            return CollectionResult(tuple(records), rejected, True)
         return CollectionResult(tuple(records), rejected)
 
 

@@ -685,7 +685,7 @@ class FinalMigrationTests(unittest.TestCase):
                     [row[0] for row in connection.execute(
                         "SELECT version FROM schema_migration ORDER BY version"
                     )],
-                    [1, 2, 3],
+                    [1, 2, 3, 4],
                 )
             finally:
                 connection.close()
