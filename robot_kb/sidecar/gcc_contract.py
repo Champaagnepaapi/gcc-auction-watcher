@@ -48,6 +48,7 @@ def normalize_gcc_source_contract(record: RawSourceRecord) -> NormalizationBatch
 
     Safety invariant: `price` is NEVER upgraded to a sale merely because an
     auction ended. The adapter requires status exactly SOLD + explicit soldAt.
+    The original raw record remains immutable/auditable in persistence.
     """
     payload = record.payload
     if (
@@ -64,14 +65,4 @@ def normalize_gcc_source_contract(record: RawSourceRecord) -> NormalizationBatch
     adapted_payload = dict(payload)
     adapted_payload["soldPriceInCents"] = price_minor
     adapted_record = replace(record, payload=adapted_payload)
-    batch = normalizers.normalize_gcc(adapted_record)
-
-    observations = []
-    for observation in batch.observations:
-        if observation.genuine_sale_evidence:
-            fact = dict(observation.fact)
-            fact["final_price_evidence_method"] = GCC_SOLD_PRICE_CONTRACT
-            observations.append(replace(observation, fact=fact))
-        else:
-            observations.append(observation)
-    return replace(batch, observations=tuple(observations))
+    return normalizers.normalize_gcc(adapted_record)
