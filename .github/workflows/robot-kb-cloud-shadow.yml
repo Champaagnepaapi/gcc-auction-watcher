@@ -38,7 +38,7 @@ jobs:
       - name: Checkout validated P3 shadow candidate
         uses: actions/checkout@v4
         with:
-          ref: 35f550c2006fd8a143b92151e1c7c5dea5f7b86d
+          ref: 1d06fe33b6fc640657255e15a8d17251aa02b6ce
           fetch-depth: 1
 
       - uses: actions/setup-python@v5
@@ -57,12 +57,13 @@ jobs:
             exit 1
           fi
 
-      - name: Collect bounded GCC listings (GET only)
+      - name: Collect bounded GCC listings + proven SOLD transactions (GET only)
         run: >-
           python -m robot_kb.sidecar
           --allow-live-read-only
           --live-gcc fixed
           --live-gcc auction
+          --live-gcc sold
           --page-size 100
           --max-pages 2
           --max-records 100
