@@ -80,5 +80,6 @@ jobs:
             source_scout_report.json
             source_scout_report.md
             pokemonpricetracker_evidence.json
+            pokemonpricetracker_jp_probe.json
           if-no-files-found: error
           retention-days: 14
