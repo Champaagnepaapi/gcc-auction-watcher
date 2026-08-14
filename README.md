@@ -806,3 +806,31 @@ Déploiement workflow cloud shadow sur `main` :
 - aucune modification de V4/V5, aucun achat/bid/checkout.
 
 **V5 PR #8 reste expérimentale, draft et non mergée.**
+
+---
+
+# PR #63 — Mislisted Slab Hunter cert-first + OCR fallback
+
+État candidat V4 validé au SHA **`c59ddc09bc4913c045b2112bd74931478a88fa89`**.
+
+Ordre de preuve :
+
+1. lire grader + numéro de certificat GCC ;
+2. interroger le vérificateur officiel du grader lorsqu’un adaptateur robuste existe (**PSA + CCC** dans ce batch) ;
+3. comparer grade officiel ↔ grade metadata GCC ;
+4. seulement si le certificat est indisponible/non lisible, tenter l’OCR de l’étiquette du slab ;
+5. une preuve OCR seule reste `IMAGE_ONLY`, non confirmée et **MANUAL REVIEW**.
+
+Règles :
+
+- certificat officiel > OCR image ;
+- `POSITIVE_GRADE_MISMATCH` : alerte manuelle, mais la valorisation V4 normale reste basée sur la metadata tant qu’un humain n’a pas confirmé ;
+- `NEGATIVE_GRADE_MISMATCH` : alerte manuelle + blocage de l’opportunité économique normale afin de ne jamais valoriser au grade GCC surestimé ;
+- OCR ambigu (ex. note globale + subgrades différents) → aucune conclusion automatique ;
+- grader sans vérificateur officiel supporté → fallback OCR uniquement ;
+- aucun achat, bid, checkout, paiement ou grading automatique.
+
+Runtime production proposé : `V4_MISLISTED_SLAB_HUNTER_ENABLED=true`, `V4_MISLISTED_IMAGE_OCR_ENABLED=true`, Tesseract installé par le workflow si absent.
+
+Validation PR #63 : run **`31836557339`**, job **`94884024784`** — **466/466 tests V4 PASS**, compilation PASS, `git diff --check` PASS, comparaison discovery live PASS (`legacy_only=0`, `private safety-net failures=0`).
+
