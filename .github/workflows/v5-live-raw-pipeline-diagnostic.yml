@@ -49,7 +49,7 @@ jobs:
             v5/source_scout_entrypoint.py \
             v5/source_scout_language_entrypoint.py \
             v5/source_scout_paid_entrypoint.py \
-            v5/ppt_schema_probe.py \
+            v5/source_scout_paid_v2_entrypoint.py \
             tests_v5/test_source_scout_benchmark.py \
             tests_v5/test_source_scout_entrypoint.py
 
@@ -57,10 +57,7 @@ jobs:
         run: python -m unittest tests_v5.test_source_scout_benchmark tests_v5.test_source_scout_entrypoint -v
 
       - name: Run language-stratified read-only Source Scout benchmark
-        run: python -m v5.source_scout_paid_entrypoint
-
-      - name: Probe PokemonPriceTracker response schema safely
-        run: python -m v5.ppt_schema_probe
+        run: python -m v5.source_scout_paid_v2_entrypoint
 
       - name: Publish report in workflow summary
         if: always() && hashFiles('source_scout_report.md') != ''
