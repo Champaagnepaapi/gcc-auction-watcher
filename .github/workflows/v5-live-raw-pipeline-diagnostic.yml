@@ -6,127 +6,64 @@ on:
 permissions:
   contents: read
 
+# Branch-local Source Scout override.
+# main and PR #8 keep their existing V5 live diagnostic unchanged.
 jobs:
-  diagnose-live-raw-pipeline-v5:
+  source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     env:
       EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
       EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-      GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
-      POKETRACE_ENABLED: "true"
-      POKETRACE_PLAN: "pro"
-      POKETRACE_RESULT_LIMIT: "20"
-      # Pro documents a 30 requests / 10s burst. Keep a conservative margin.
-      POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "0.40"
-      POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
-      POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
-      V5_PROGRESS_LOGS: "true"
-      # One global sample: at most 20 unique listings across all marketplaces.
-      V5_LIVE_RAW_RESULT_LIMIT: "20"
-      V5_LIVE_EBAY_MARKETPLACES: "EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES"
-      # Optional repository variable. When absent, no postcode is invented and
-      # shipping diagnostics remain explicitly limited.
-      V5_EBAY_DELIVERY_POSTAL_CODE: ${{ vars.V5_EBAY_DELIVERY_POSTAL_CODE }}
-      # Only ambiguous/insufficient RAW identities are sent through this local
-      # image matcher. Images stay in memory and no model API is called.
-      V5_VISUAL_IDENTITY_ENABLED: "true"
-      V5_VISUAL_IDENTITY_MAX_CANDIDATES: "8"
-      V5_VISUAL_IDENTITY_MAX_EBAY_IMAGES: "3"
-      V5_VISUAL_IDENTITY_MAX_LISTINGS_PER_RUN: "20"
-      V5_VISUAL_IDENTITY_MIN_SCORE: "0.74"
-      V5_VISUAL_IDENTITY_MIN_MARGIN: "0.08"
-      # Overriding a structured eBay card number requires stronger evidence.
-      V5_VISUAL_IDENTITY_OVERRIDE_NUMBER_MIN_SCORE: "0.82"
-      V5_VISUAL_IDENTITY_OVERRIDE_NUMBER_MIN_MARGIN: "0.12"
-      # After a non-US visual/OCR rescue, permit one bounded EU lookup. EU is
-      # diagnostic only and must pass exact core + strict variant/scan checks.
-      V5_VISUAL_IDENTITY_EU_ENRICHMENT_ENABLED: "true"
-      # Third local arbiter after visual scan matching fails. Tesseract only
-      # reads lower-card strips; accepted numbers must already exist in the
-      # current PokeTrace candidate pool. No OCR text/image is persisted.
-      V5_CARD_NUMBER_OCR_ENABLED: "true"
-      V5_CARD_NUMBER_OCR_MIN_VOTES: "2"
-      V5_CARD_NUMBER_OCR_OVERRIDE_MIN_VOTES: "3"
-      V5_CARD_NUMBER_OCR_TIMEOUT_SECONDS: "4"
-      PRICECHARTING_ENABLED: "false"
-      MARKETPLACE_INSIGHTS_ENABLED: "false"
-      GCC_HISTORY_ENABLED: "true"
-      # Temporary validation switch: keep the existing GCC workflow contract
-      # and cumulative cache, but do not execute the expensive Playwright
-      # representative/history fallback while measuring identity quality.
-      V5_SKIP_GCC_LIVE_FOR_POKETRACE_VALIDATION: "true"
-      GCC_HISTORY_CURRENCY: USD
-      GCC_CATALOG_INDEX_FILE: gcc_catalog_index.json
-      PRODUCT_RESEARCH_MODE: "MANUAL_VALIDATION_ONLY"
-      RAW_MAX_PAID_GRADINGS_PER_RUN: "0"
-      CARDGRADER_V5_ALLOW_PAID_CALLS: "false"
-      BUYER_FEES: ${{ vars.V5_BUYER_FEES_USD }}
-      DOMESTIC_SHIPPING: ${{ vars.V5_DOMESTIC_SHIPPING_USD }}
-      INTERNATIONAL_SHIPPING: ${{ vars.V5_INTERNATIONAL_SHIPPING_USD }}
-      GRADING_FEE: ${{ vars.V5_GRADING_FEE_USD }}
-      GRADING_SHIPPING: ${{ vars.V5_GRADING_SHIPPING_USD }}
-      VAULT_FEE: ${{ vars.V5_VAULT_FEE_USD }}
-      SELLING_FEE_PCT: ${{ vars.V5_SELLING_FEE_PCT }}
-      SELLING_FIXED_FEE: ${{ vars.V5_SELLING_FIXED_FEE_USD }}
-      FX_BUFFER_PCT: ${{ vars.V5_FX_BUFFER_PCT }}
-      OTHER_COSTS: ${{ vars.V5_OTHER_COSTS_USD }}
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      JUSTTCG_API_KEY: ${{ secrets.JUSTTCG_API_KEY }}
+      POKEWALLET_API_KEY: ${{ secrets.POKEWALLET_API_KEY }}
+      TCGAPI_DEV_API_KEY: ${{ secrets.TCGAPI_DEV_API_KEY }}
+      TCG_CARDMARKET_API_KEY: ${{ secrets.TCG_CARDMARKET_API_KEY }}
+      CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
+      CARDTRADER_API_TOKEN: ${{ secrets.CARDTRADER_API_TOKEN }}
+      SOURCE_SCOUT_PANEL_SIZE: "20"
+      # CMAPI Basic has paid overage. First benchmark is deliberately disabled.
+      SOURCE_SCOUT_ENABLE_CMAPI: "false"
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
-      - name: Checkout repository without persisted credentials
+      - name: Checkout selected benchmark branch without persisted credentials
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Restore cumulative GCC catalogue
-        uses: actions/cache/restore@v4
-        with:
-          path: gcc_catalog_index.json
-          key: v5-gcc-catalog-${{ github.run_id }}
-          restore-keys: |
-            v5-gcc-catalog-
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Install read-only diagnostic dependencies
-        run: |
-          python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
-          if [ "${V5_CARD_NUMBER_OCR_ENABLED}" = "true" ]; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends tesseract-ocr
-          fi
-          if [ "${V5_SKIP_GCC_LIVE_FOR_POKETRACE_VALIDATION}" != "true" ]; then
-            playwright install --with-deps chromium
-          fi
+      - name: Install read-only benchmark dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Verify PokeTrace Pro plan without exposing account data
-        run: python -m v5.poketrace_preflight
+      - name: Compile Source Scout benchmark
+        run: python -m py_compile v5/source_scout_benchmark.py tests_v5/test_source_scout_benchmark.py
 
-      - name: Prepare existing authenticated GCC session
+      - name: Run Source Scout focused tests
+        run: python -m unittest tests_v5.test_source_scout_benchmark -v
+
+      - name: Run read-only same-panel Source Scout benchmark
+        run: python -m v5.source_scout_benchmark
+
+      - name: Publish report in workflow summary
+        if: always() && hashFiles('source_scout_report.md') != ''
         shell: bash
-        run: |
-          if [ -z "${GCC_SESSION_B64:-}" ]; then
-            echo "GCC authenticated session: MISSING"
-            exit 1
-          fi
-          printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
-          echo "GCC authenticated session: READY"
+        run: cat source_scout_report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run fast V5 hybrid identity + deterministic uniqueness + local visual/OCR diagnostic
-        run: python -m v5.live_raw_pipeline_uniqueness
-
-      - name: Save cumulative GCC catalogue even after diagnostic failure
-        if: ${{ always() && hashFiles('gcc_catalog_index.json') != '' }}
-        uses: actions/cache/save@v4
+      - name: Upload Source Scout reports
+        if: always() && hashFiles('source_scout_report.json') != ''
+        uses: actions/upload-artifact@v4
         with:
-          path: gcc_catalog_index.json
-          key: v5-gcc-catalog-${{ github.run_id }}
-
-      - name: Remove ephemeral GCC session
-        if: always()
-        run: rm -f gcc_session.json
+          name: source-scout-report-${{ github.run_id }}
+          path: |
+            source_scout_report.json
+            source_scout_report.md
+          if-no-files-found: error
+          retention-days: 14
