@@ -150,7 +150,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         )
 
-    with KnowledgeBase.open(args.database) as knowledge_base:
+    database_target = os.getenv("ROBOT_KB_DATABASE_URL") or args.database
+    with KnowledgeBase.open(database_target) as knowledge_base:
         sidecar = ShadowSidecar(ShadowKnowledgePersistence(knowledge_base))
         diagnostics = sidecar.run_sources(jobs)
     print(json.dumps(diagnostics.as_dict(), indent=2, sort_keys=True))

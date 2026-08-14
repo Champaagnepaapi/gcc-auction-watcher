@@ -1,0 +1,71 @@
+name: Robot KB cloud shadow (manual only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tcgdex_card_1:
+        description: "Optional TCGdex LANG:CARD_ID"
+        required: false
+        type: string
+      tcgdex_card_2:
+        description: "Optional second TCGdex LANG:CARD_ID"
+        required: false
+        type: string
+      tcgdex_card_3:
+        description: "Optional third TCGdex LANG:CARD_ID"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: robot-kb-cloud-shadow
+  cancel-in-progress: false
+
+jobs:
+  collect-read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
+      TCGDEX_CARD_1: ${{ inputs.tcgdex_card_1 }}
+      TCGDEX_CARD_2: ${{ inputs.tcgdex_card_2 }}
+      TCGDEX_CARD_3: ${{ inputs.tcgdex_card_3 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-postgres.txt
+
+      - name: Install sidecar dependencies
+        run: python -m pip install -r requirements-postgres.txt
+
+      - name: Validate database secret presence
+        run: |
+          if [ -z "$ROBOT_KB_DATABASE_URL" ]; then
+            echo "Required repository secret ROBOT_KB_DATABASE_URL is absent." >&2
+            exit 1
+          fi
+
+      - name: Collect bounded GCC listings (GET only)
+        run: >-
+          python -m robot_kb.sidecar
+          --allow-live-read-only
+          --live-gcc fixed
+          --live-gcc auction
+          --page-size 25
+          --max-pages 1
+          --max-records 25
+
+      - name: Collect optional bounded TCGdex cards (GET only)
+        if: ${{ inputs.tcgdex_card_1 != '' || inputs.tcgdex_card_2 != '' || inputs.tcgdex_card_3 != '' }}
+        run: |
+          arguments=()
+          if [ -n "$TCGDEX_CARD_1" ]; then arguments+=(--live-tcgdex-card "$TCGDEX_CARD_1"); fi
+          if [ -n "$TCGDEX_CARD_2" ]; then arguments+=(--live-tcgdex-card "$TCGDEX_CARD_2"); fi
+          if [ -n "$TCGDEX_CARD_3" ]; then arguments+=(--live-tcgdex-card "$TCGDEX_CARD_3"); fi
+          python -m robot_kb.sidecar --allow-live-read-only "${arguments[@]}"

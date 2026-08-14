@@ -278,6 +278,14 @@ class ShadowKnowledgePersistence:
         source_system_id: str,
         observation: NormalizedObservation,
     ) -> Optional[Mapping[str, Any]]:
+        if self.knowledge_base.backend_name == "postgresql":
+            # Serialize finalized-sale checks for one source/listing.  The
+            # idempotency key protects identical concurrent replays; this lock
+            # also closes the race between contradictory economic signatures.
+            self.knowledge_base.connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?::text, 0))",
+                (f"{source_system_id}|{observation.source_native_record_id}",),
+            )
         rows = self.knowledge_base.connection.execute(
             """
             SELECT observation.id, observation.event_at,

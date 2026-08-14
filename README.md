@@ -3,7 +3,7 @@
 > **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
 > Après tout changement important de production, d’architecture V5, de provider, de benchmark ou de workflow, mettre ce README à jour avant de considérer la phase terminée.
 
-## État canonique — 13 août 2026
+## État canonique — 14 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -95,6 +95,76 @@ python -m robot_kb.sidecar --database /chemin/local.sqlite --tcgdex-fixture repl
 Les GET live existent uniquement derrière une intention explicite `--allow-live-read-only` combinée à `--live-gcc ...` ou `--live-tcgdex-card ...`. Le crawl GCC utilise des défauts conservateurs de 50 rows/page, 10 pages et 500 records, avec plafonds stricts de 100/20/2 000, timeout maximal 30 s, intervalle minimal 0,25 s et au plus deux retries sur erreurs transitoires sûres ; un `429 Retry-After` est respecté dans une attente bornée à 30 s. Les valeurs CLI nulles, négatives ou démesurées sont rejetées avant tout réseau. Aucun workflow, cron, scheduler ou dispatch live n’est ajouté. La base pilote réelle reste hors du repository et n'est utilisée qu'en lecture seule pour le replay hors ligne. Les fichiers SQLite runtime (`.db`, `.sqlite`, `.sqlite3` et journaux associés) sont ignorés par Git. SQLite reste local/test/replay ; le chemin de base est configurable via `--database`/`ROBOT_KB_DATABASE`.
 
 **Statut final P1 : GREEN. Collecte manuelle contrôlée read-only : VALIDATED. Collecte automatique durable/schedulée : NOT YET DEPLOYED.** La phase suivante est l'ajout d'un backend durable PostgreSQL, la migration contrôlée du pilote, puis l'installation d'un scheduler contrôlé. V4 reste isolé. V5 / PR #8 reste draft et non mergée. Le sidecar ne possède aucun chemin d'achat, bid ou checkout.
+
+---
+
+# P3 — Cloud PostgreSQL Durable Shadow Backend
+
+Branche : `agent/p3-postgres-durable-shadow`, créée exactement depuis le handoff P1 `b340d61fded158feb91902a8602dba1e4b82e11d`. Déploiement préféré : **Neon PostgreSQL**, utilisé uniquement comme hébergeur d’un PostgreSQL standard ; aucun SQL ou service propriétaire Neon/Supabase n’est requis. Le Mac local n’héberge aucun service PostgreSQL et peut être éteint lorsque l’exécution cloud sera activée.
+
+Architecture préparée :
+
+```text
+GCC / TCGdex collectors GET-only
+  → robot_kb.sidecar
+  → KnowledgeBase repository transactionnel
+  → SQLite (--database / ROBOT_KB_DATABASE) pour test/replay
+     ou PostgreSQL (ROBOT_KB_DATABASE_URL) pour le durable shadow
+```
+
+Le backend `psycopg` est chargé seulement pour une URL `postgres://`/`postgresql://`; SQLite et ses migrations gelées `0001`–`0004` restent inchangés et entièrement supportés. Le PostgreSQL durable utilise sa migration native `robot_kb/postgres_migrations/0001_durable_shadow.sql` et un ledger de checksum distinct. Le schéma final conserve les mêmes tables, IDs textuels, timestamps exacts, JSON de preuve et clés d’idempotence ; les payloads bruts deviennent des `BYTEA` contrôlés par SHA-256/longueur. Les foreign keys, index uniques partiels et triggers PL/pgSQL imposent l’append-only, l’unique transition `DRAFT` → `SEALED`, le fait typé complet, les scopes source/upstream, la cohérence sujet/résolution, la clôture des variantes, les relations revision/cancel/void, les normalisations FX exactes et l’absence de faits orphelins. Un record sidecar complet reste une seule transaction/savepoint sur les deux backends.
+
+Installation applicative PostgreSQL :
+
+```text
+python -m pip install -r requirements-postgres.txt
+export ROBOT_KB_DATABASE_URL='postgresql://...'
+python -m robot_kb.sidecar --gcc-fixture replay.json
+```
+
+La valeur réelle de `ROBOT_KB_DATABASE_URL` doit rester dans l’environnement local ou dans le secret GitHub du même nom : ne jamais la mettre dans une commande enregistrée, un log, le README ou Git. Le sidecar lit PostgreSQL uniquement depuis cet environnement/secret ; `--database` reste réservé au chemin SQLite compatible.
+
+## Migration pilote et vérification
+
+Source autoritative, ouverte avec `mode=ro` et `PRAGMA query_only=ON` : `~/robot-pokemon-data/shadow-pilot-2026-08-14.sqlite`. SHA-256 du fichier au handoff P3 : `15f8d165219f2995ec593c7c6a7aeaf42f3fe2029a75c566f8828b56e06ac80a`. L’outil `python -m robot_kb.pilot_migration migrate` applique le schéma PostgreSQL, compare chaque clé avant insertion, préserve les IDs/octet/timestamps, reconstruit les transitions légales de lock/seal, échoue sur toute différence et rollback toute la migration. Une relance compare les lignes existantes et ne duplique aucun fait. `verify` recalcule les counts/fingerprints et compare chaque payload brut octet par octet et par SHA-256.
+
+État réel de ce batch : aucune URL Neon n’était disponible, donc le pilote n’a **pas encore été écrit dans Neon**. L’algorithme complet a toutefois transféré le vrai pilote vers un miroir SQLite éphémère : 1 068 lignes insérées, 0 à la relance, 34/34 payloads identiques (31 GCC, 3 TCGdex), 0 fait orphelin et 0 observation non scellée. Un replay offline rollback-only des 34 payloads a laissé les tables économiques/retrieval strictement inchangées et TCGdex à 0 vente ; le normalizer GCC courant aurait ajouté 93 claims, 31 résolutions et 31 liens non économiques plus précis (`single_card_scope`), évolution volontairement annulée pour préserver le pilote historique. Le miroir temporaire a ensuite été détruit, sans modifier le pilote. Baseline SQLite mesurée, jamais hard-codée par l’outil :
+
+| Table | Rows | SHA-256 du flux déterministe |
+|---|---:|---|
+| `source_payload` | 34 | `2d2b10e6ba977b41c5962655905cc0cf1467652dbf9082c51931e04eddc943d5` |
+| `source_record` | 34 | `c0cf21792f0dcc5a6debd3ce5a8498d53e93b87f60d171514df3b2ef2f0ec73d` |
+| `source_record_retrieval` | 53 | `4f61de4550055c3da51de93ddb0b1fdd01df66f952a3da43ed2dc98e0de2e900` |
+| `external_object` | 28 | `138d91b64dabfde5f7342d37c893f76998ff71f24f4b2a91dd308dd9d2eb0acc` |
+| `market_observation` | 95 | `fce3b56b383ac9667f35a0f4234adc3a7d9501647fef55569e8aaf4865d64698` |
+| `listing_snapshot` | 50 | `61df3044cf2503a7c1e9c61961aa978c4d7ee54e7827e548554cf06be4feb893` |
+| `sale_transaction` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `provider_metric_observation` | 45 | `81fad4b1123baa4d7e5c59fa74f64e3d5ee7efc9fcee792c2e4d65b5b110c9d5` |
+| `field_claim` | 432 | `c23e5a2e5a39b6eaa0c17a2322d8cc646efcbeb047d2c535e871226b2232c078` |
+| `identity_resolution` | 40 | `4ffa39403b2cf5698ebff767299441521c8921c806bdeb74ba3a34572de0ec6d` |
+| `observation_identity_link` | 95 | `5282fbd72b0cdaef6523c89e4a266b278b8b9665ddfef43ec72eec7fed727546` |
+
+Activation migration, sans afficher le secret :
+
+```text
+export ROBOT_KB_DATABASE_URL='valeur Neon fournie hors chat'
+python -m robot_kb.pilot_migration migrate
+python -m robot_kb.pilot_migration migrate   # preuve de rerun idempotent
+python -m robot_kb.pilot_migration replay    # preuve offline, transaction toujours rollback
+python -m robot_kb.pilot_migration verify
+```
+
+## Backups et restore
+
+`python -m robot_kb.postgres_backup dump` appelle `pg_dump` en custom format, `--no-owner --no-privileges`, écrit d’abord un `.tmp`, fixe les permissions à `0600`, puis effectue un rename atomique vers `~/robot-pokemon-data/backups/postgres/robot-kb-<UTC>.dump` (ou `ROBOT_KB_BACKUP_DIR`). Les paramètres de connexion sont transmis par environnement libpq, jamais dans `argv` ou la sortie d’erreur. Aucun dump n’est versionné. Après activation, conserver au minimum 14 dumps journaliers et 8 points hebdomadaires ; ne supprimer un ancien point qu’après un nouveau dump réussi et une restauration vérifiée.
+
+Pour vérifier une restauration, créer d’abord une base/branche Neon temporaire vide, définir sa URL dans `ROBOT_KB_RESTORE_DATABASE_URL`, puis lancer `python -m robot_kb.postgres_backup restore-verify /chemin/backup.dump`. L’outil restaure avec `pg_restore --exit-on-error`, puis compare les counts et fingerprints de toutes les tables. Supprimer uniquement la base/branche temporaire après succès. Aucun dump/restore réel n’a été effectué dans ce batch, faute de connexion Neon et de binaires client PostgreSQL locaux.
+
+## Exécution cloud préparée — non activée
+
+`.github/workflows/robot-kb-cloud-shadow-manual.yml` est limité à `workflow_dispatch`, `permissions: contents: read`, un groupe `concurrency` non chevauchant et un timeout de 15 minutes. Il exige le secret `ROBOT_KB_DATABASE_URL`, passe le guard `--allow-live-read-only`, limite GCC à une page de 25 records par mode et accepte au plus trois cartes TCGdex explicites. Il ne lance que le sidecar isolé, ne lit/écrit aucun état V4 et ne possède aucun chemin purchase/bid/checkout.
+
+**AUTO SCHEDULER NOT ENABLED.** Il n’existe aucun `schedule:` dans ce workflow et aucun dispatch n’a été lancé. L’ajout d’un cron cloud, l’exécution du pilote sur Neon, le dump/restore réel et toute collecte manuelle restent suspendus à la connexion Neon puis à l’approbation Red Team ciblée. V4 et ses workflows de production sont inchangés. V5 / PR #8 reste draft, non touchée et non mergée.
 
 ---
 

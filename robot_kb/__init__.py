@@ -1,7 +1,7 @@
 """Isolated P0 card knowledge-base foundation.
 
 This package is intentionally not imported by the production V4 watcher.  It
-contains local SQLite/domain contracts for future shadow collection phases.
+contains SQLite/PostgreSQL domain contracts for isolated shadow collection.
 """
 
 from .domain import (

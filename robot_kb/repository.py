@@ -1,4 +1,4 @@
-"""Repository API for the isolated SQLite card knowledge base."""
+"""Repository API for the isolated SQLite/PostgreSQL card knowledge base."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from .domain import (
     SourceKind,
 )
 from .migrations import apply_migrations, connect_database, ensure_foreign_keys
+from .postgres import apply_postgres_migrations, connect_postgres, is_postgres_url
 
 
 _SQLITE_INTEGER_MAX = 9_223_372_036_854_775_807
@@ -292,15 +293,25 @@ def _payload_content(payload: Any) -> Tuple[bytes, str]:
 
 
 class KnowledgeBase:
-    """Explicit, local repository boundary for P0 knowledge-base data."""
+    """Explicit repository boundary for SQLite or durable PostgreSQL data."""
 
-    def __init__(self, connection: sqlite3.Connection):
-        connection.row_factory = sqlite3.Row
-        ensure_foreign_keys(connection)
+    def __init__(self, connection: Any):
+        if isinstance(connection, sqlite3.Connection):
+            connection.row_factory = sqlite3.Row
+            ensure_foreign_keys(connection)
         self.connection = connection
+        self.backend_name = getattr(connection, "backend_name", "sqlite")
 
     @classmethod
     def open(cls, path: Union[str, Path] = ":memory:") -> "KnowledgeBase":
+        if is_postgres_url(str(path)):
+            connection = connect_postgres(str(path))
+            try:
+                apply_postgres_migrations(connection)
+            except Exception:
+                connection.close()
+                raise
+            return cls(connection)
         connection = connect_database(path)
         try:
             apply_migrations(connection)
@@ -325,7 +336,9 @@ class KnowledgeBase:
         if nested:
             self.connection.execute(f"SAVEPOINT {savepoint}")
         else:
-            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(
+                "BEGIN" if self.backend_name == "postgresql" else "BEGIN IMMEDIATE"
+            )
         try:
             yield
         except Exception:
@@ -343,7 +356,7 @@ class KnowledgeBase:
 
     def schema_versions(self) -> Sequence[int]:
         return [
-            row[0]
+            row["version"]
             for row in self.connection.execute(
                 "SELECT version FROM schema_migration ORDER BY version"
             )
@@ -554,7 +567,7 @@ class KnowledgeBase:
                     """,
                     (
                         payload_sha256,
-                        sqlite3.Binary(payload_content),
+                        payload_content,
                         payload_format,
                         len(payload_content),
                         _now(),
@@ -706,7 +719,7 @@ class KnowledgeBase:
         )
         return retrieval_id
 
-    def source_record_retrievals(self, source_record_id: str) -> Sequence[sqlite3.Row]:
+    def source_record_retrievals(self, source_record_id: str) -> Sequence[Any]:
         return self.connection.execute(
             """
             SELECT * FROM source_record_retrieval
@@ -2042,7 +2055,7 @@ class KnowledgeBase:
         )
         return link_id
 
-    def fetch_observation(self, observation_id: str) -> sqlite3.Row:
+    def fetch_observation(self, observation_id: str) -> Any:
         row = self.connection.execute(
             "SELECT * FROM market_observation WHERE id = ?", (observation_id,)
         ).fetchone()
@@ -2050,7 +2063,7 @@ class KnowledgeBase:
             raise KnowledgeBaseError("observation does not exist")
         return row
 
-    def price_components(self, observation_id: str) -> Sequence[sqlite3.Row]:
+    def price_components(self, observation_id: str) -> Sequence[Any]:
         return self.connection.execute(
             """
             SELECT * FROM price_component
@@ -2061,5 +2074,8 @@ class KnowledgeBase:
 
     def observation_count(self) -> int:
         return self.connection.execute(
-            "SELECT COUNT(*) FROM market_observation WHERE lifecycle_state = 'SEALED'"
-        ).fetchone()[0]
+            """
+            SELECT COUNT(*) AS observation_count FROM market_observation
+            WHERE lifecycle_state = 'SEALED'
+            """
+        ).fetchone()["observation_count"]
