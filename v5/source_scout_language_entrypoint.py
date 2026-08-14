@@ -3,19 +3,19 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections import defaultdict
 from typing import Mapping, Sequence
 from urllib.parse import quote
 
 from . import source_scout_benchmark as scout
 from .models import CardIdentity
 
-LANGUAGES: Sequence[str] = ("en", "fr", "de", "it", "es", "ja")
-CARDS_PER_LANGUAGE = 3
+# Robot Pokémon purchase scope: only English, French, and Japanese cards matter.
+LANGUAGES: Sequence[str] = ("en", "fr", "ja")
+CARDS_PER_LANGUAGE = 6
 PANEL_SIZE = len(LANGUAGES) * CARDS_PER_LANGUAGE
 
 
-def _spread_indices(length: int, count: int = 10) -> tuple[int, ...]:
+def _spread_indices(length: int, count: int = 14) -> tuple[int, ...]:
     if length <= 0:
         return ()
     if length <= count:
@@ -38,13 +38,17 @@ def build_language_panel(_client_id: str, _client_secret: str, size: int):
     target = min(size, PANEL_SIZE)
     client = scout.SafeClient(
         "tcgdex_language_seed",
-        call_cap=100,
+        call_cap=120,
         interval=0.04,
         response_cap=2_000_000,
-        total_cap=60_000_000,
+        total_cap=70_000_000,
     )
     panel: list[scout.PanelCard] = []
-    diagnostics: dict[str, object] = {"mode": "LANGUAGE_STRATIFIED_TCGDEX", "languages": {}}
+    diagnostics: dict[str, object] = {
+        "mode": "LANGUAGE_STRATIFIED_TCGDEX_EN_FR_JA",
+        "purchase_scope_languages": list(LANGUAGES),
+        "languages": {},
+    }
 
     for language in LANGUAGES:
         if len(panel) >= target or client.runtime.blocked:
@@ -138,22 +142,14 @@ def _skip_pokemonpricetracker(panel, _key):
     )
 
 
-def _cmapi_one_per_language_factory(original):
-    def wrapped(panel, key):
-        first_indices: list[int] = []
-        seen: set[str] = set()
-        for index, card in enumerate(panel):
-            language = scout.lang(card.identity.language)
-            if language not in seen:
-                seen.add(language)
-                first_indices.append(index)
-        sampled = [panel[index] for index in first_indices]
-        sampled_rows, runtime = original(sampled, key)
-        expanded = [scout.Observation("cmapi", card.label, error="SKIPPED_LANGUAGE_SAMPLE") for card in panel]
-        for index, row in zip(first_indices, sampled_rows):
-            expanded[index] = row
-        return expanded, runtime
-    return wrapped
+def _skip_cmapi_until_usage_confirmed(panel, _key):
+    # RapidAPI Basic has paid overage. A local per-run cap cannot account for
+    # requests made outside this workflow, so fail closed until current daily
+    # usage is explicitly confirmed before a dedicated CMAPI run.
+    return (
+        [scout.Observation("cmapi", card.label, error="SKIPPED_PAID_OVERAGE_SAFETY") for card in panel],
+        scout.Runtime(blocked=True),
+    )
 
 
 def _language_summary(report: Mapping[str, object]) -> dict[str, object]:
@@ -168,7 +164,7 @@ def _language_summary(report: Mapping[str, object]) -> dict[str, object]:
             subset = [rows[i] for i in indices if i < len(rows) and isinstance(rows[i], Mapping)]
             provider_out[language] = {
                 "cards": len(indices),
-                "tested": sum(row.get("error") not in {"SKIPPED_LANGUAGE_SAMPLE", "SKIPPED_DAILY_QUOTA_PRESERVATION"} for row in subset),
+                "tested": sum(row.get("error") not in {"SKIPPED_DAILY_QUOTA_PRESERVATION", "SKIPPED_PAID_OVERAGE_SAFETY"} for row in subset),
                 "identity_exact": sum(row.get("identity") == "EXACT" for row in subset),
                 "variant_exact": sum(row.get("variant") == "EXACT" for row in subset),
                 "language_exact": sum(row.get("language") == "EXACT" for row in subset),
@@ -181,7 +177,7 @@ def _language_summary(report: Mapping[str, object]) -> dict[str, object]:
 
 
 def _language_markdown(report: Mapping[str, object]) -> str:
-    lines = [scout.markdown(report).rstrip(), "", "## By language", ""]
+    lines = [scout.markdown(report).rstrip(), "", "## By purchase-scope language", ""]
     summary = report.get("language_summary") if isinstance(report.get("language_summary"), Mapping) else {}
     for language in LANGUAGES:
         lines += [f"### {language.upper()}", "", "| Provider | Exact ID | RAW USD | RAW EUR | Graded |", "|---|---:|---:|---:|---:|"]
@@ -201,18 +197,12 @@ def main() -> int:
     scout.PANEL_SIZE = PANEL_SIZE
     os.environ["SOURCE_SCOUT_PANEL_SIZE"] = str(PANEL_SIZE)
 
-    # PokemonPriceTracker Free was already close to its daily credit ceiling in
-    # the prior benchmark. Preserve the remaining free quota today.
+    # Preserve PokemonPriceTracker Free credits for today.
     scout.pokemonpricetracker = _skip_pokemonpricetracker
 
-    # CMAPI Basic can bill beyond its free allowance. Test only one card per
-    # language (6 calls max) and stop with at least a 94-request header buffer.
-    scout.CMAPI_CALL_CAP = 6
-    scout.CMAPI_RESPONSE_CAP = 1_000_000
-    scout.CMAPI_TOTAL_CAP = 6_000_000
-    scout.CMAPI_REMAINING_BUFFER = 94
-    scout.cmapi = _cmapi_one_per_language_factory(scout.cmapi)
-    os.environ["SOURCE_SCOUT_ENABLE_CMAPI"] = "true"
+    # CMAPI remains fail-closed until RapidAPI current-day usage is confirmed.
+    scout.cmapi = _skip_cmapi_until_usage_confirmed
+    os.environ["SOURCE_SCOUT_ENABLE_CMAPI"] = "false"
 
     try:
         report = scout.run()
