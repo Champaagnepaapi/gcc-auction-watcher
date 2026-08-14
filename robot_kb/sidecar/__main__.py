@@ -21,7 +21,9 @@ from .collectors import (
     utc_now,
 )
 from .final_sales import GCCCompletedSalesCollector
+from .gcc_contract import normalize_gcc_source_contract
 from .models import CollectionResult
+from .normalizers import normalize_tcgdex
 from .persistence import ShadowKnowledgePersistence
 from .runner import ShadowSidecar
 
@@ -169,7 +171,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     database_target = os.getenv("ROBOT_KB_DATABASE_URL") or args.database
     with KnowledgeBase.open(database_target) as knowledge_base:
-        sidecar = ShadowSidecar(ShadowKnowledgePersistence(knowledge_base))
+        sidecar = ShadowSidecar(
+            ShadowKnowledgePersistence(knowledge_base),
+            normalizers={
+                "gcc": normalize_gcc_source_contract,
+                "tcgdex": normalize_tcgdex,
+            },
+        )
         diagnostics = sidecar.run_sources(jobs)
     print(json.dumps(diagnostics.as_dict(), indent=2, sort_keys=True))
     return 1 if diagnostics.source_failures else 0
