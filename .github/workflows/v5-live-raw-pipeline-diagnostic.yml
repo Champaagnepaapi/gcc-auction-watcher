@@ -23,6 +23,7 @@ jobs:
       TCG_CARDMARKET_API_KEY: ${{ secrets.TCG_CARDMARKET_API_KEY }}
       CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
       CARDTRADER_API_TOKEN: ${{ secrets.CARDTRADER_API_TOKEN }}
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
       SOURCE_SCOUT_PANEL_SIZE: "18"
       SOURCE_SCOUT_ENABLE_CMAPI: "false"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -50,6 +51,7 @@ jobs:
             v5/source_scout_language_entrypoint.py \
             v5/source_scout_paid_entrypoint.py \
             v5/source_scout_paid_v2_entrypoint.py \
+            v5/neon_source_scout_ingest.py \
             tests_v5/test_source_scout_benchmark.py \
             tests_v5/test_source_scout_entrypoint.py
 
@@ -59,12 +61,16 @@ jobs:
       - name: Run language-stratified read-only Source Scout benchmark
         run: python -m v5.source_scout_paid_v2_entrypoint
 
+      - name: Persist PokemonPriceTracker evidence to Neon
+        if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
+        run: python -m v5.neon_source_scout_ingest
+
       - name: Publish report in workflow summary
         if: always() && hashFiles('source_scout_report.md') != ''
         shell: bash
         run: cat source_scout_report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Source Scout reports
+      - name: Upload Source Scout reports and provider evidence
         if: always() && hashFiles('source_scout_report.json') != ''
         uses: actions/upload-artifact@v4
         with:
@@ -72,5 +78,6 @@ jobs:
           path: |
             source_scout_report.json
             source_scout_report.md
+            pokemonpricetracker_evidence.json
           if-no-files-found: error
           retention-days: 14
