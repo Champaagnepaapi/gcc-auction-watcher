@@ -10,20 +10,20 @@ class CmapiLiquidSentinelTests(unittest.TestCase):
         self.assertEqual(sentinel.MAX_CMAPI_CALLS, 4)
         self.assertGreaterEqual(sentinel.STOP_IF_REMAINING_AT_OR_BELOW, 10)
 
-    def test_strict_identity_accepts_exact_base_set_charizard(self) -> None:
+    def test_strict_identity_accepts_exact_evolving_skies_umbreon(self) -> None:
         row = {
-            "name": "Charizard",
-            "set_name": "Base Set",
-            "card_number": "4/102",
+            "name": "Umbreon VMAX",
+            "set_name": "Evolving Skies",
+            "card_number": 215,
             "id": 123,
         }
         self.assertTrue(sentinel._strict_match(row))
 
     def test_strict_identity_rejects_wrong_set(self) -> None:
         row = {
-            "name": "Charizard",
-            "set_name": "Base Set 2",
-            "card_number": "4/130",
+            "name": "Umbreon VMAX",
+            "set_name": "Brilliant Stars",
+            "card_number": 215,
             "id": 456,
         }
         self.assertFalse(sentinel._strict_match(row))
