@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from robot_kb import ObservationType, ResolutionState
 from robot_kb.pilot_migration import (
     PilotMigrationConflict,
     TABLE_KEYS,
@@ -12,7 +13,11 @@ from robot_kb.pilot_migration import (
     replay_retained_payloads,
     verify_sqlite_against_database,
 )
-from robot_kb.postgres import _adapt_query, is_postgres_url
+from robot_kb.postgres import (
+    _adapt_query,
+    apply_postgres_migrations,
+    is_postgres_url,
+)
 from robot_kb.postgres import POSTGRES_MIGRATION_DIRECTORY, _migration_catalog
 from robot_kb.postgres_backup import (
     _command_environment,
@@ -37,7 +42,11 @@ class PostgresBoundaryUnitTests(unittest.TestCase):
 
     def test_native_schema_covers_every_transfer_table_and_protection(self):
         catalog = _migration_catalog()
-        self.assertEqual(list(catalog), [1])
+        self.assertEqual(list(catalog), [1, 2])
+        self.assertEqual(
+            catalog[1][1],
+            "c5357dc1dcfa99121c993c4d4567aae886990bf52ddcfb7ca93fe9266c04dffd",
+        )
         script = (POSTGRES_MIGRATION_DIRECTORY / "0001_durable_shadow.sql").read_text()
         for table in TABLE_KEYS:
             self.assertIn(f"CREATE TABLE {table} (", script)
@@ -52,6 +61,44 @@ class PostgresBoundaryUnitTests(unittest.TestCase):
             self.assertIn(invariant, script)
         for sqlite_only in ("RAISE(ABORT", " BLOB ", " GLOB ", "BEGIN IMMEDIATE", "PRAGMA"):
             self.assertNotIn(sqlite_only, script)
+
+    def test_forward_migration_replaces_every_trigger_alias_collision(self):
+        script = (
+            POSTGRES_MIGRATION_DIRECTORY / "0002_trigger_alias_safety.sql"
+        ).read_text()
+        for function in (
+            "kb_field_resolution_insert_guard",
+            "kb_market_observation_insert_guard",
+            "kb_observation_relationship_insert_guard",
+        ):
+            self.assertIn(f"CREATE OR REPLACE FUNCTION {function}", script)
+        self.assertNotRegex(script, r"(?i)\b(?:AS|JOIN)\s+(?:old|new)\b")
+
+    def test_migration_application_handles_empty_existing_and_rerun_ledgers(self):
+        catalog = _migration_catalog()
+
+        empty = _FakePostgresMigrationConnection()
+        apply_postgres_migrations(empty)
+        self.assertEqual([version for version, _ in empty.scripts], [1, 2])
+        self.assertEqual(sorted(empty.applied), [1, 2])
+        apply_postgres_migrations(empty)
+        self.assertEqual([version for version, _ in empty.scripts], [1, 2])
+
+        version_1_path, version_1_checksum = catalog[1]
+        existing = _FakePostgresMigrationConnection(
+            {
+                1: {
+                    "version": 1,
+                    "filename": version_1_path.name,
+                    "checksum_sha256": version_1_checksum,
+                }
+            }
+        )
+        apply_postgres_migrations(existing)
+        self.assertEqual([version for version, _ in existing.scripts], [2])
+        self.assertEqual(sorted(existing.applied), [1, 2])
+        apply_postgres_migrations(existing)
+        self.assertEqual([version for version, _ in existing.scripts], [2])
 
     def test_backup_environment_keeps_password_out_of_database_name(self):
         url = (
@@ -233,12 +280,15 @@ class PostgresIntegrationTests(unittest.TestCase):
 
     def setUp(self):
         self.kb = KnowledgeBase.open(os.environ["ROBOT_KB_TEST_DATABASE_URL"])
+        self.kb.connection.execute("BEGIN")
 
     def tearDown(self):
+        if self.kb.connection.in_transaction:
+            self.kb.connection.execute("ROLLBACK")
         self.kb.close()
 
     def test_empty_schema_migration_and_raw_payload_round_trip(self):
-        self.assertEqual(self.kb.schema_versions(), [1])
+        self.assertEqual(self.kb.schema_versions(), [1, 2])
         source_id = self.kb.create_source_system(
             "pg-test-" + os.urandom(8).hex(), "PG test", "PROVIDER"
         )
@@ -270,6 +320,208 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "SELECT id FROM source_system WHERE code = ?", (code,)
             ).fetchone()
         )
+
+    def test_0001_and_0002_apply_from_empty_schema_transactionally(self):
+        schema = "kb_pgtest_" + os.urandom(8).hex()
+        with self.assertRaises(_RollbackFixture):
+            with self.kb._transaction():
+                self.kb.connection.execute(f'CREATE SCHEMA "{schema}"')
+                self.kb.connection.execute(
+                    f'SET LOCAL search_path TO "{schema}"'
+                )
+                self.kb.connection.execute(
+                    """
+                    CREATE TABLE schema_migration (
+                        version INTEGER PRIMARY KEY,
+                        filename TEXT NOT NULL UNIQUE,
+                        checksum_sha256 TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                for version, (path, checksum) in _migration_catalog().items():
+                    self.kb.connection.executescript(path.read_text(encoding="utf-8"))
+                    self.kb.connection.execute(
+                        """
+                        INSERT INTO schema_migration(
+                            version, filename, checksum_sha256, applied_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (version, path.name, checksum, "2026-08-14T00:00:00Z"),
+                    )
+                self.assertEqual(self.kb.schema_versions(), [1, 2])
+                functions = self.kb.connection.execute(
+                    """
+                    SELECT p.proname
+                    FROM pg_proc AS p
+                    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+                    WHERE n.nspname = ? AND p.proname IN (
+                        'kb_field_resolution_insert_guard',
+                        'kb_market_observation_insert_guard',
+                        'kb_observation_relationship_insert_guard'
+                    )
+                    """,
+                    (schema,),
+                ).fetchall()
+                self.assertEqual(len(functions), 3)
+                raise _RollbackFixture()
+
+    def test_trigger_alias_remediation_paths_and_rejections(self):
+        suffix = os.urandom(8).hex()
+        source_id = self.kb.create_source_system(
+            "pg-alias-" + suffix, "PG alias test", "PROVIDER"
+        )
+        record_id = self.kb.append_source_record(
+            source_id,
+            "record-" + suffix,
+            {"fixture": suffix},
+            retrieved_at="2026-08-14T08:00:00Z",
+        )
+        subject_a = self.kb.create_identity_subject(
+            "PROVIDER_RESPONSE", source_record_id=record_id
+        )
+        subject_b = self.kb.create_identity_subject(
+            "PROVIDER_RESPONSE", source_record_id=record_id
+        )
+        first_resolution = self.kb.resolve_field(
+            subject_a, "finish", ResolutionState.UNKNOWN
+        )
+        second_resolution = self.kb.resolve_field(
+            subject_a,
+            "finish",
+            ResolutionState.UNKNOWN,
+            supersedes_resolution_id=first_resolution,
+        )
+        self.assertIsNotNone(second_resolution)
+
+        with self.assertRaises(Exception):
+            with self.kb._transaction():
+                self.kb.connection.execute(
+                    """
+                    INSERT INTO field_resolution(
+                        id, identity_subject_id, field_name, resolution_state,
+                        supersedes_resolution_id, created_at
+                    ) VALUES (?, ?, 'finish', 'UNKNOWN', ?, ?)
+                    """,
+                    (
+                        "fres_" + os.urandom(16).hex(),
+                        subject_b,
+                        first_resolution,
+                        "2026-08-14T08:00:00Z",
+                    ),
+                )
+
+        first_observation = self.kb.append_market_observation(
+            ObservationType.LISTING_SNAPSHOT,
+            source_id,
+            "listing-" + suffix,
+            observed_at="2026-08-14T08:00:00Z",
+            fact={"snapshot_status": "ACTIVE"},
+        )
+        second_observation = self.kb.append_market_observation(
+            ObservationType.LISTING_SNAPSHOT,
+            source_id,
+            "listing-" + suffix,
+            observed_at="2026-08-14T09:00:00Z",
+            revision_of_observation_id=first_observation,
+            fact={"snapshot_status": "ENDED"},
+        )
+        relation = self.kb.connection.execute(
+            """
+            SELECT relationship_type FROM observation_relationship
+            WHERE from_observation_id = ? AND to_observation_id = ?
+            """,
+            (second_observation, first_observation),
+        ).fetchone()
+        self.assertEqual(relation["relationship_type"], "REVISION_OF")
+
+        with self.assertRaises(Exception):
+            with self.kb._transaction():
+                self.kb.connection.execute(
+                    """
+                    INSERT INTO market_observation(
+                        id, observation_type, source_system_id,
+                        source_native_record_id, idempotency_key,
+                        content_sha256, event_time_precision, observed_at,
+                        ingested_at, revision_of_observation_id, created_at
+                    ) VALUES (?, 'LISTING_SNAPSHOT', ?, ?, ?, ?, 'UNKNOWN', ?, ?, ?, ?)
+                    """,
+                    (
+                        "observation_" + os.urandom(16).hex(),
+                        source_id,
+                        "incompatible-" + suffix,
+                        "obskey_" + os.urandom(16).hex(),
+                        os.urandom(32).hex(),
+                        "2026-08-14T10:00:00Z",
+                        "2026-08-14T10:00:00Z",
+                        first_observation,
+                        "2026-08-14T10:00:00Z",
+                    ),
+                )
+
+        with self.assertRaises(Exception):
+            with self.kb._transaction():
+                self.kb.connection.execute(
+                    """
+                    INSERT INTO observation_relationship(
+                        id, from_observation_id, to_observation_id,
+                        relationship_type, created_at
+                    ) VALUES (?, ?, ?, 'REVISION_OF', ?)
+                    """,
+                    (
+                        "orel_" + os.urandom(16).hex(),
+                        first_observation,
+                        second_observation,
+                        "2026-08-14T10:00:00Z",
+                    ),
+                )
+
+
+class _RollbackFixture(RuntimeError):
+    pass
+
+
+class _Rows:
+    def __init__(self, rows=()):
+        self._rows = list(rows)
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakePostgresMigrationConnection:
+    def __init__(self, applied=None):
+        self.applied = dict(applied or {})
+        self.scripts = []
+        self.in_transaction = False
+
+    def execute(self, query, parameters=None):
+        normalized = " ".join(query.split())
+        if normalized == "BEGIN":
+            self.in_transaction = True
+        elif normalized == "COMMIT":
+            self.in_transaction = False
+        elif normalized == "ROLLBACK":
+            self.in_transaction = False
+        elif normalized.startswith(
+            "SELECT version, filename, checksum_sha256 FROM schema_migration"
+        ):
+            return _Rows(self.applied[version] for version in sorted(self.applied))
+        elif normalized.startswith("INSERT INTO schema_migration"):
+            version, filename, checksum, _ = parameters
+            self.applied[version] = {
+                "version": version,
+                "filename": filename,
+                "checksum_sha256": checksum,
+            }
+        return _Rows()
+
+    def executescript(self, script):
+        for version, (path, _) in _migration_catalog().items():
+            if path.read_text(encoding="utf-8") == script:
+                self.scripts.append((version, script))
+                return
+        raise AssertionError("migration script is not in the repository catalog")
 
 
 if __name__ == "__main__":
