@@ -38,6 +38,7 @@ jobs:
             v5/source_scout_language_entrypoint.py \
             v5/source_scout_cmapi_v2_entrypoint.py \
             v5/source_scout_cmapi_v3_entrypoint.py \
+            v5/source_scout_cmapi_v4_entrypoint.py \
             tests_v5/test_source_scout_benchmark.py \
             tests_v5/test_source_scout_cmapi_v3.py
 
@@ -48,7 +49,7 @@ jobs:
             tests_v5.test_source_scout_cmapi_v3 -v
 
       - name: Run bounded CMAPI EN FR JP history and sold benchmark
-        run: python -m v5.source_scout_cmapi_v3_entrypoint
+        run: python -m v5.source_scout_cmapi_v4_entrypoint
 
       - name: Publish CMAPI benchmark summary
         if: always() && hashFiles('cmapi_benchmark.md') != ''
