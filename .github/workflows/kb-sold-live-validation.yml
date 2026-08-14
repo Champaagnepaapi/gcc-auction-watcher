@@ -27,3 +27,44 @@ jobs:
             --page-size 5 \
             --max-pages 1 \
             --max-records 5
+      - name: Print safe SOLD schema diagnostics
+        run: |
+          python - <<'PY'
+          from robot_kb.sidecar.collectors import GCCMarketplaceCollector
+
+          payload = GCCMarketplaceCollector()._request_page({
+              "sellingTypeGroup": "AUCTION",
+              "status": "SOLD",
+              "page": 1,
+              "limit": 1,
+              "includeCounts": "false",
+          })
+          rows = payload.get("results") or []
+          if not rows:
+              print("SOLD_SCHEMA: no rows")
+              raise SystemExit(0)
+          row = rows[0]
+          print("SOLD_SCHEMA_TOP_KEYS:", sorted(row.keys()))
+          item = row.get("item") if isinstance(row.get("item"), dict) else {}
+          print("SOLD_SCHEMA_ITEM_KEYS:", sorted(item.keys()))
+
+          wanted = ("price", "sold", "sale", "bid", "end", "status", "updated", "payment", "amount", "winner")
+          forbidden = ("seller", "buyer", "user", "owner", "email", "address", "phone", "name", "avatar")
+
+          def walk(value, path=""):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      child_path = f"{path}.{key}" if path else str(key)
+                      lower = child_path.casefold()
+                      if any(token in lower for token in forbidden):
+                          continue
+                      walk(child, child_path)
+              elif isinstance(value, list):
+                  return
+              else:
+                  lower = path.casefold()
+                  if any(token in lower for token in wanted):
+                      print(f"SOLD_FIELD {path}={value!r}")
+
+          walk(row)
+          PY
