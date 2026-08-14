@@ -17,7 +17,9 @@ jobs:
   ingest:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The first successful mirror can contain the whole fixed market baseline.
+    # Later runs are normally much smaller because unchanged fixed rows are skipped.
+    timeout-minutes: 45
     env:
       ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
       MIRROR_STATE: v4_kb_shadow_state.json
