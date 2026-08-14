@@ -23,8 +23,9 @@ jobs:
       TCG_CARDMARKET_API_KEY: ${{ secrets.TCG_CARDMARKET_API_KEY }}
       CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
       CARDTRADER_API_TOKEN: ${{ secrets.CARDTRADER_API_TOKEN }}
-      SOURCE_SCOUT_PANEL_SIZE: "20"
-      # CMAPI Basic has paid overage. First benchmark is deliberately disabled.
+      SOURCE_SCOUT_PANEL_SIZE: "18"
+      # The language entrypoint enables CMAPI internally with a strict 6-call
+      # maximum and a 94-request remaining-quota safety buffer.
       SOURCE_SCOUT_ENABLE_CMAPI: "false"
       PYTHONDONTWRITEBYTECODE: "1"
 
@@ -48,14 +49,15 @@ jobs:
           python -m py_compile \
             v5/source_scout_benchmark.py \
             v5/source_scout_entrypoint.py \
+            v5/source_scout_language_entrypoint.py \
             tests_v5/test_source_scout_benchmark.py \
             tests_v5/test_source_scout_entrypoint.py
 
       - name: Run Source Scout focused tests
         run: python -m unittest tests_v5.test_source_scout_benchmark tests_v5.test_source_scout_entrypoint -v
 
-      - name: Run read-only same-panel Source Scout benchmark
-        run: python -m v5.source_scout_entrypoint
+      - name: Run language-stratified read-only Source Scout benchmark
+        run: python -m v5.source_scout_language_entrypoint
 
       - name: Publish report in workflow summary
         if: always() && hashFiles('source_scout_report.md') != ''
