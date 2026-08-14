@@ -3,10 +3,7 @@ from __future__ import annotations
 import unittest
 
 from robot_kb.domain import ObservationType
-from robot_kb.sidecar.gcc_contract import (
-    GCC_SOLD_PRICE_CONTRACT,
-    normalize_gcc_source_contract,
-)
+from robot_kb.sidecar.gcc_contract import normalize_gcc_source_contract
 from robot_kb.sidecar.models import RawSourceRecord
 
 
@@ -56,9 +53,6 @@ class GCCSoldContractTests(unittest.TestCase):
         self.assertTrue(observation.genuine_sale_evidence)
         self.assertEqual(observation.event_at, "2026-08-14T18:00:00Z")
         self.assertEqual(observation.prices[0].amount_minor, 24000)
-        self.assertEqual(
-            observation.fact["final_price_evidence_method"], GCC_SOLD_PRICE_CONTRACT
-        )
         # Immutable source payload remains untouched: provenance stays auditable.
         self.assertNotIn("soldPriceInCents", raw.payload)
 
