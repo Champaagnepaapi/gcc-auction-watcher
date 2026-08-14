@@ -1,0 +1,53 @@
+name: V4 OCR Live Benchmark (read-only)
+
+on:
+  push:
+    branches:
+      - agent/v4-ocr-live-benchmark
+    paths:
+      - tools/ocr_live_benchmark.py
+      - .github/workflows/v4-ocr-live-benchmark.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v4-ocr-live-benchmark
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install OCR and browser runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends tesseract-ocr
+          playwright install --with-deps chromium
+          tesseract --version | head -n 1
+
+      - name: Run forced OCR benchmark on random GCC slabs
+        env:
+          V4_MISLISTED_IMAGE_OCR_ENABLED: "true"
+          V4_MISLISTED_OCR_TIMEOUT_SECONDS: "8"
+          HEADLESS: "true"
+          NTFY_TOPIC: ""
+        run: python tools/ocr_live_benchmark.py
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-ocr-live-benchmark
+          path: ocr_benchmark_results.json
+          if-no-files-found: warn
+          retention-days: 3
