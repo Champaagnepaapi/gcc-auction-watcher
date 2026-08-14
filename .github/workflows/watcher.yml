@@ -29,11 +29,6 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      # GitHub-hosted runners are disposable, so Chromium cannot literally stay
-      # installed on the VM between runs. Cache the Playwright browser payloads
-      # instead so normal runs restore them rather than downloading ~hundreds of
-      # MB every 10 minutes. System dependencies are installed only if a launch
-      # probe proves that the current runner image actually needs them.
       - name: Restore Playwright browser cache
         id: playwright-cache
         uses: actions/cache@v4
@@ -107,6 +102,10 @@ jobs:
 
           STATE_FILE: state.json
 
+          # Passive historical mirror only; V4 itself never receives Neon credentials.
+          V4_KB_SHADOW_SPOOL_PATH: v4_kb_shadow_spool.json
+          V4_KB_AUCTION_NEAR_FINAL_MINUTES: "12"
+
           V4_TCGDEX_ENABLED: "true"
           V4_TCGDEX_REQUEST_TIMEOUT: "6"
           V4_TCGDEX_CACHE_TTL_HOURS: "24"
@@ -152,6 +151,16 @@ jobs:
         with:
           path: state.json
           key: gcc-state-${{ github.run_id }}
+
+      - name: Upload passive KB discovery spool
+        if: ${{ steps.scan.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-kb-shadow-spool
+          path: v4_kb_shadow_spool.json
+          if-no-files-found: error
+          retention-days: 2
 
       - name: "Register V4 run in issue #1"
         if: always()

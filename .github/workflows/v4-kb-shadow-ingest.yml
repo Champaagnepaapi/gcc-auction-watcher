@@ -1,0 +1,105 @@
+name: V4 KB shadow ingest
+
+on:
+  workflow_run:
+    workflows: ["GCC Auction Watcher"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: robot-kb-cloud-shadow
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    # The first successful mirror can contain the whole fixed market baseline.
+    # Later runs are normally much smaller because unchanged fixed rows are skipped.
+    timeout-minutes: 45
+    env:
+      ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
+      MIRROR_STATE: v4_kb_shadow_state.json
+      SPOOL_PATH: v4-kb-shadow-artifact/v4_kb_shadow_spool.json
+      PENDING_PATH: v4_kb_shadow_pending.json
+      MANIFEST_PATH: v4_kb_shadow_manifest.json
+
+    steps:
+      - name: Checkout production helper
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download successful V4 discovery spool
+        uses: actions/download-artifact@v4
+        with:
+          name: v4-kb-shadow-spool
+          path: v4-kb-shadow-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore independent KB mirror state
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.MIRROR_STATE }}
+          key: v4-kb-shadow-state-${{ github.run_id }}
+          restore-keys: |
+            v4-kb-shadow-state-
+
+      - name: Select only historical changes and near-final auction fallbacks
+        id: filter
+        shell: bash
+        run: |
+          pending_count=$(python v4_kb_shadow_bridge.py filter \
+            --spool "$SPOOL_PATH" \
+            --state "$MIRROR_STATE" \
+            --output "$PENDING_PATH" \
+            --manifest "$MANIFEST_PATH")
+          echo "pending_count=$pending_count" >> "$GITHUB_OUTPUT"
+          echo "V4 KB pending rows: $pending_count"
+
+      - name: Checkout validated Robot KB P3 implementation
+        if: ${{ steps.filter.outputs.pending_count != '0' }}
+        uses: actions/checkout@v4
+        with:
+          ref: 35f550c2006fd8a143b92151e1c7c5dea5f7b86d
+          path: .robot-kb-shadow
+          fetch-depth: 1
+
+      - name: Install PostgreSQL shadow dependency
+        if: ${{ steps.filter.outputs.pending_count != '0' }}
+        working-directory: .robot-kb-shadow
+        run: python -m pip install -r requirements-postgres.txt
+
+      - name: Validate database secret presence
+        if: ${{ steps.filter.outputs.pending_count != '0' }}
+        run: |
+          if [ -z "$ROBOT_KB_DATABASE_URL" ]; then
+            echo "Required repository secret ROBOT_KB_DATABASE_URL is absent." >&2
+            exit 1
+          fi
+
+      - name: Ingest selected GCC history into Neon
+        if: ${{ steps.filter.outputs.pending_count != '0' }}
+        shell: bash
+        run: |
+          observed_at=$(python -c 'import json; print(json.load(open("v4_kb_shadow_manifest.json"))["observed_at"])')
+          cd .robot-kb-shadow
+          python -m robot_kb.sidecar \
+            --gcc-fixture "../$PENDING_PATH" \
+            --observed-at "$observed_at"
+
+      - name: Commit mirror state only after successful ingest
+        run: python v4_kb_shadow_bridge.py commit --state "$MIRROR_STATE" --manifest "$MANIFEST_PATH"
+
+      - name: Save independent KB mirror state
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.MIRROR_STATE }}
+          key: v4-kb-shadow-state-${{ github.run_id }}
