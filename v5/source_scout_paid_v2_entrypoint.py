@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Mapping, Sequence
 
 from . import source_scout_benchmark as scout
 from . import source_scout_language_entrypoint as base
 from . import source_scout_paid_entrypoint as paid
+
+
+PPT_EVIDENCE: list[dict[str, object]] = []
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _set_code(card: scout.PanelCard) -> str:
@@ -60,6 +70,10 @@ def pokemonpricetracker_api(
     JP: language=japanese and strict set-code + collector-number identity; card
     names are not trusted because the provider currently returns many JP rows
     with English display names.
+
+    For every resolved deep lookup, the complete provider response is retained
+    in-memory and written after the benchmark to a sidecar JSON file. This is
+    intentionally raw provider evidence, not a rewritten valuation.
     """
     client = scout.SafeClient("pokemonpricetracker", call_cap=60, interval=0.08)
     anchor_client = scout.SafeClient("tcgdex_ppt_anchor", call_cap=10, interval=0.03)
@@ -166,6 +180,7 @@ def pokemonpricetracker_api(
         out.append(obs)
 
     for index, tcg_id in depth:
+        retrieved_at = _utc_now()
         response, payload = client.request(
             "GET",
             "https://www.pokemonpricetracker.com/api/v2/cards",
@@ -199,15 +214,55 @@ def pokemonpricetracker_api(
         except (TypeError, ValueError):
             pass
 
+        card = panel[index]
+        PPT_EVIDENCE.append(
+            {
+                "provider": "pokemonpricetracker",
+                "retrieved_at": retrieved_at,
+                "panel_index": index,
+                "card_label": card.label,
+                "tcgdex_id": card.tcgdex_id,
+                "tcgdex_language": card.tcgdex_language,
+                "identity_status": out[index].identity,
+                "canonical_identity": {
+                    "name": card.identity.card_name,
+                    "set": card.identity.set,
+                    "card_number": card.identity.card_number,
+                    "language": card.identity.language,
+                    "finish": card.identity.finish,
+                    "edition": card.identity.edition,
+                },
+                "provider_tcgplayer_id": tcg_id,
+                "provider_payload": payload,
+            }
+        )
+
     return out, client.runtime
+
+
+def _write_evidence() -> None:
+    document = {
+        "schema_version": 1,
+        "provider": "pokemonpricetracker",
+        "generated_at": _utc_now(),
+        "evidence_count": len(PPT_EVIDENCE),
+        "evidence": PPT_EVIDENCE,
+    }
+    Path("pokemonpricetracker_evidence.json").write_text(
+        json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
     # Only replace the provider function. Do not monkeypatch the base parser
     # helpers: the paid helper functions intentionally fall back to them, and
     # replacing them with the paid helpers creates infinite recursion.
+    PPT_EVIDENCE.clear()
     base.pokemonpricetracker_api = pokemonpricetracker_api
-    return base.main()
+    result = base.main()
+    _write_evidence()
+    return result
 
 
 if __name__ == "__main__":
