@@ -7,6 +7,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.header import Header
 from statistics import median
 from typing import Any, Mapping, Optional
 from urllib.parse import quote
@@ -14,6 +15,9 @@ from urllib.parse import quote
 import requests
 
 import watcher
+import v4_raw_consensus as raw_consensus
+
+
 
 
 TCGDEX_BASE_URL = "https://api.tcgdex.net/v2"
@@ -99,10 +103,16 @@ class RawMarketSignal:
     low: float
     central: float
     high: float
-    currency: str
-    sources: tuple[str, ...]
-    variant: str
-    note: str
+    currency: str = "EUR"
+    sources: tuple[str, ...] = ()
+    variant: str = ""
+    note: str = ""
+    confidence: str = "STRONG"  # "STRONG", "MODERATE", "WEAK", "REJECTED"
+    anomaly_flags: tuple[str, ...] = ()
+    providers_used: tuple[str, ...] = ()
+    providers_rejected: tuple[str, ...] = ()
+    disagreement_ratio: float = 1.0
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass
@@ -140,20 +150,25 @@ class RequestBudget:
     auth_note: str = ""
 
 
+import v4_price_discovery as pd
+
+
 @dataclass(frozen=True)
 class ManualReviewLead:
     identity_key: str
     lot: watcher.Lot
     canonical: CanonicalCard
-    raw: RawMarketSignal
+    raw: Optional[RawMarketSignal]
     gap_pct: float
     graded_note: str
+    discovery_signal: Optional[pd.PriceDiscoverySignal] = None
 
 
 _ORIGINAL_INSPECT_ITEM = watcher.inspect_item
 _ORIGINAL_IS_VALID_POKEMON_CARD = watcher.is_valid_pokemon_card
 _ORIGINAL_PROCESS_EXTERNAL = watcher.process_external_market_candidates
 _ORIGINAL_FORMAT_RUN_DIAGNOSTICS = watcher.format_run_diagnostics
+
 
 _SESSION = requests.Session()
 _DIAGNOSTICS = MultiMarketDiagnostics()
@@ -702,25 +717,52 @@ def _raw_variant_choice(
     lot: watcher.Lot, canonical: CanonicalCard
 ) -> tuple[str, bool]:
     expected = watcher.expected_commercial_dimensions(lot)
+    multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
+        " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
+    )
+    for dim, val in multi_dims.items():
+        if dim not in expected or not expected[dim]:
+            expected[dim] = val
+        elif expected[dim] != val and val != "__conflict__":
+            expected[dim] = "__conflict__"
+
     if any(
         expected.get(key) not in {None, ""}
         for key in ("printing", "special_finish", "variant", "shadow")
     ):
         return "", False
-    edition = expected.get("edition", "")
+
+    if any(val == "__conflict__" for val in expected.values()):
+        return "", False
+
+    listing_edition = raw_consensus.normalize_edition_str(expected.get("edition", ""))
     finish = expected.get("finish", "")
     variants = canonical.variants or {}
+    catalog_finish = raw_consensus.get_catalog_proven_finish(variants)
+    catalog_edition = raw_consensus.get_catalog_proven_edition(variants)
+    edition_applicable = bool(
+        listing_edition
+        or catalog_edition
+        or variants.get("firstEdition") is True
+        or variants.get("editionApplicable") is True
+    )
+
+    if listing_edition and catalog_edition and listing_edition != catalog_edition:
+        return "", False
+    if edition_applicable and not (listing_edition or catalog_edition):
+        return "", False
+    edition = listing_edition or catalog_edition or ""
 
     if edition == "first_edition":
-        if finish == "holo":
+        if finish == "holo" or catalog_finish == "holo":
             return "1st-edition-holofoil", True
-        if finish in {"non_holo", ""}:
+        if finish in {"non_holo", ""} or catalog_finish == "normal":
             return "1st-edition", True
         return "", False
     if edition == "unlimited":
-        if finish == "holo":
+        if finish == "holo" or catalog_finish == "holo":
             return "unlimited-holofoil", True
-        if finish in {"non_holo", ""}:
+        if finish in {"non_holo", ""} or catalog_finish == "normal":
             return "unlimited", True
         return "", False
 
@@ -730,6 +772,9 @@ def _raw_variant_choice(
         return "reverse", True
     if finish == "non_holo":
         return "normal", True
+
+    if catalog_finish:
+        return catalog_finish, True
 
     available = [
         key
@@ -745,40 +790,115 @@ def _raw_variant_choice(
     return "", False
 
 
+def _deterministic_catalog_proven_dimensions(
+    canonical: CanonicalCard,
+) -> dict[str, str]:
+    """Return only dimensions proven by the exact TCGdex card-price attachment."""
+    deterministic_reasons = {
+        "TCGDEX_EXACT_NAME_LOCALID",
+        "TCGDEX_EXACT_NAME_LOCALID_SET",
+        "TCGDEX_EXACT_SET_LOCALID",
+    }
+    if (
+        canonical.status != "EXACT"
+        or canonical.reason not in deterministic_reasons
+        or not canonical.card_id
+        or not canonical.set_id
+        or not canonical.set_name
+        or not canonical.local_id
+    ):
+        return {}
+
+    proven = {
+        "set": canonical.set_name,
+        "collector_number": canonical.full_number or canonical.local_id,
+    }
+    finish = raw_consensus.get_catalog_proven_finish(canonical.variants or {})
+    if finish:
+        proven["finish"] = finish
+    edition = raw_consensus.get_catalog_proven_edition(canonical.variants or {})
+    if edition:
+        proven["edition"] = edition
+    return proven
+
+
+def _raw_target_dimensions(
+    lot: watcher.Lot, canonical: CanonicalCard
+) -> tuple[dict[str, str], dict[str, str]]:
+    expected = watcher.expected_commercial_dimensions(lot)
+    multi_dims = raw_consensus.parse_multilingual_commercial_dimensions(
+        " ".join(str(v or "") for v in (lot.title, lot.listing_text, lot.variant))
+    )
+    for dimension, value in multi_dims.items():
+        if dimension not in expected or not expected[dimension]:
+            expected[dimension] = value
+
+    # These are matching targets only. They never become provenance proof.
+    if lot.card_set:
+        expected["set"] = str(lot.card_set)
+    if lot.card_number:
+        expected["number"] = str(lot.card_number)
+
+    catalog_proven = _deterministic_catalog_proven_dimensions(canonical)
+    if (
+        expected.get("edition") not in {None, ""}
+        or catalog_proven.get("edition")
+        or (canonical.variants or {}).get("firstEdition") is True
+        or (canonical.variants or {}).get("editionApplicable") is True
+    ):
+        expected["edition_applicable"] = "true"
+    if catalog_proven.get("set"):
+        expected["set"] = canonical.set_name
+    if catalog_proven.get("collector_number"):
+        expected["number"] = canonical.full_number or canonical.local_id
+    return expected, catalog_proven
+
+
 def _all_raw_centers(
     canonical: CanonicalCard,
+    lot: Optional[watcher.Lot] = None,
 ) -> list[tuple[str, float, str]]:
-    """Return conservative marketplace centers across every exposed RAW variant."""
+    """Return conservative marketplace centers across every exposed RAW variant passing the compatibility gate."""
     pricing = canonical.pricing
+    lot_lang = lot.language if lot is not None else "fr"
+    if lot is not None:
+        expected, catalog_dimensions = _raw_target_dimensions(lot, canonical)
+    else:
+        expected, catalog_dimensions = {}, {}
+
+    catalog_proven = catalog_dimensions.get("finish")
     centers: list[tuple[str, float, str]] = []
+
     cardmarket = pricing.get("cardmarket")
     if isinstance(cardmarket, Mapping):
         for suffix, label in (("", "normal"), ("-holo", "holo")):
-            values = [
-                _finite_positive(cardmarket.get(f"trend{suffix}")),
-                _finite_positive(cardmarket.get(f"avg7{suffix}")),
-                _finite_positive(cardmarket.get(f"avg30{suffix}")),
-                _finite_positive(cardmarket.get(f"avg{suffix}")),
-            ]
-            values = [value for value in values if value is not None]
-            if values:
-                centers.append(("Cardmarket", median(values), label))
+            est = raw_consensus.estimate_cardmarket_raw(
+                cardmarket,
+                label,
+                lot_lang,
+                listing_dimensions=expected,
+                catalog_proven_finish=catalog_proven,
+                catalog_proven_dimensions=catalog_dimensions,
+            )
+            if est and est.confidence != "REJECTED" and est.status != "REJECTED":
+                centers.append(("Cardmarket", est.central, label))
 
     tcgplayer = pricing.get("tcgplayer")
     if isinstance(tcgplayer, Mapping):
-        unit = str(tcgplayer.get("unit") or "USD")
         for key, tier in tcgplayer.items():
             if key in {"unit", "updated"} or not isinstance(tier, Mapping):
                 continue
-            value = (
-                _finite_positive(tier.get("marketPrice"))
-                or _finite_positive(tier.get("midPrice"))
+            est = raw_consensus.estimate_tcgplayer_raw(
+                tcgplayer,
+                str(key),
+                lot_lang,
+                listing_dimensions=expected,
+                catalog_proven_finish=catalog_proven,
+                catalog_proven_dimensions=catalog_dimensions,
             )
-            if value is None:
-                continue
-            converted = _to_eur(value, unit)
-            if converted is not None:
-                centers.append(("TCGplayer", converted, str(key)))
+            if est and est.confidence != "REJECTED" and est.status != "REJECTED":
+                centers.append(("TCGplayer", est.central, str(key)))
+
     return centers
 
 
@@ -790,91 +910,92 @@ def raw_market_signal(
         return None
     variant, deterministic = _raw_variant_choice(lot, canonical)
     pricing = canonical.pricing
-    centers: list[tuple[str, float]] = []
+    lot_lang = lot.language or "fr"
 
     if deterministic:
+        expected, catalog_dimensions = _raw_target_dimensions(lot, canonical)
+
+        catalog_proven = catalog_dimensions.get("finish")
+
+        estimates: list[raw_consensus.RawProviderEstimate] = []
+
         cardmarket = pricing.get("cardmarket")
         if isinstance(cardmarket, Mapping):
-            # Cardmarket has only normal vs holo fields; never use it as an
-            # exact edition/reverse/special-printing proof.
-            expected = watcher.expected_commercial_dimensions(lot)
-            edition_sensitive = expected.get("edition") not in {None, ""}
-            if not edition_sensitive and variant in {"normal", "holo"}:
-                suffix = "-holo" if variant == "holo" else ""
-                values = [
-                    _finite_positive(cardmarket.get(f"trend{suffix}")),
-                    _finite_positive(cardmarket.get(f"avg7{suffix}")),
-                    _finite_positive(cardmarket.get(f"avg30{suffix}")),
-                    _finite_positive(cardmarket.get(f"avg{suffix}")),
-                ]
-                values = [value for value in values if value is not None]
-                if values:
-                    centers.append(("Cardmarket", median(values)))
+            cm_est = raw_consensus.estimate_cardmarket_raw(
+                cardmarket,
+                variant,
+                lot_lang,
+                expected,
+                catalog_proven,
+                catalog_dimensions,
+            )
+            if cm_est is not None:
+                estimates.append(cm_est)
 
         tcgplayer = pricing.get("tcgplayer")
         if isinstance(tcgplayer, Mapping):
-            key_patterns = {
-                "normal": ("normal",),
-                "holo": ("holo", "holofoil"),
-                "reverse": ("reverse", "reverseholofoil", "reverseholo"),
-                "1st-edition": ("1stedition", "firstedition", "1steditionnormal"),
-                "1st-edition-holofoil": (
-                    "1steditionholofoil",
-                    "firsteditionholofoil",
-                    "1steditionholo",
-                ),
-                "unlimited": ("unlimited", "unlimitednormal"),
-                "unlimited-holofoil": ("unlimitedholofoil", "unlimitedholo"),
-            }.get(variant, ())
+            tp_est = raw_consensus.estimate_tcgplayer_raw(
+                tcgplayer,
+                variant,
+                lot_lang,
+                expected,
+                catalog_proven,
+                catalog_dimensions,
+            )
+            if tp_est is not None:
+                estimates.append(tp_est)
 
-            norm_tcgplayer = {
-                re.sub(r"[^a-z0-9]", "", str(k).lower()): (k, v)
-                for k, v in tcgplayer.items()
-                if isinstance(v, Mapping)
-            }
-            for pat in key_patterns:
-                matched = norm_tcgplayer.get(pat)
-                if matched is not None:
-                    _, tier = matched
-                    value = (
-                        _finite_positive(tier.get("marketPrice"))
-                        or _finite_positive(tier.get("midPrice"))
-                    )
-                    if value is not None:
-                        unit = str(tcgplayer.get("unit") or "USD")
-                        converted = _to_eur(value, unit)
-                        if converted is not None:
-                            centers.append(("TCGplayer", converted))
-                            break
+        consensus = raw_consensus.arbitrate_raw_consensus(estimates, lot_lang)
+        if consensus.status == "REJECTED" or consensus.central <= 0:
+            return None
+
+
+        signal = RawMarketSignal(
+            low=max(0.01, consensus.low),
+            central=consensus.central,
+            high=max(consensus.central, consensus.high),
+            currency=consensus.currency,
+            sources=consensus.providers_used,
+            variant=variant,
+            note=consensus.note,
+            confidence=consensus.confidence,
+            anomaly_flags=consensus.anomaly_flags,
+            providers_used=consensus.providers_used,
+            providers_rejected=consensus.providers_rejected,
+            disagreement_ratio=consensus.disagreement_ratio,
+            diagnostics=consensus.diagnostics,
+        )
+        _DIAGNOSTICS.raw_signal_found += 1
+        return signal
+
     else:
         # Variant uncertainty must never become an automatic graded valuation.
         # For manual-review only, use the minimum across every exposed RAW
         # variant as the conservative floor. If a slab is still deeply below
         # that floor, it is worth human inspection without claiming its value.
         _DIAGNOSTICS.raw_signal_variant_ambiguous += 1
-        centers = [
-            (f"{source}:{raw_variant}", value)
-            for source, value, raw_variant in _all_raw_centers(canonical)
-        ]
-        variant = "AMBIGUOUS_CONSERVATIVE_ENVELOPE"
+        all_centers = _all_raw_centers(canonical, lot)
+        if not all_centers:
+            return None
+        values = [val for _, val, _ in all_centers]
+        central = float(median(values))
+        low = min(values) * 0.90
+        high = max(values) * 1.10
+        sources = tuple(dict.fromkeys(src for src, _, _ in all_centers))
+        signal = RawMarketSignal(
+            low=max(0.01, low),
+            central=central,
+            high=max(central, high),
+            currency="EUR",
+            sources=sources,
+            variant="AMBIGUOUS_CONSERVATIVE_ENVELOPE",
+            note="; ".join(f"{src}:{var} {val:.2f} €" for src, val, var in all_centers),
+            confidence="WEAK",
+            providers_used=sources,
+        )
+        _DIAGNOSTICS.raw_signal_found += 1
+        return signal
 
-    if not centers:
-        return None
-    values = [value for _, value in centers]
-    central = median(values)
-    low = min(values) * 0.90
-    high = max(values) * 1.10
-    signal = RawMarketSignal(
-        low=max(0.01, low),
-        central=central,
-        high=max(central, high),
-        currency="EUR",
-        sources=tuple(source for source, _ in centers),
-        variant=variant,
-        note="; ".join(f"{source} {value:.2f} €" for source, value in centers),
-    )
-    _DIAGNOSTICS.raw_signal_found += 1
-    return signal
 
 
 def _poketrace_headers() -> Mapping[str, str]:
@@ -1303,10 +1424,271 @@ def _poketrace_evidence(
     )
 
 
+def _collect_price_discovery_lead(
+    candidate: watcher.ValuationCandidate,
+    canonical: CanonicalCard,
+    raw: Optional[RawMarketSignal],
+    poketrace: Optional[watcher.ExternalMarketEvidence] = None,
+    fallback: Optional[watcher.ExternalMarketEvidence] = None,
+    now: Optional[Any] = None,
+) -> Optional[ManualReviewLead]:
+    """Extract validated V4 evidence anchors and evaluate price discovery for manual review."""
+    anchors: list[pd.AdjacentAnchor] = []
+    target_grader = (candidate.lot.grader or "").strip().upper()
+    target_grade = str(candidate.lot.grade or "").strip()
+    target_num_grade = pd._numeric_grade(target_grade)
+    effective_now = now or getattr(candidate.lot, "fetched_at", None)
+
+    def sold_temporal_fields(comp: Any) -> dict[str, Any]:
+        sold_at = getattr(comp, "sold_at", None)
+        age = watcher.sale_age_days(comp, effective_now) if sold_at else None
+        return {
+            "sold_at": sold_at,
+            "age_days": int(age) if age is not None else None,
+            "is_recent": bool(age is not None and age <= 90),
+        }
+
+    # 1. RAW consensus anchor: only robust, non-conflicting, multi-source or strong consensus
+    if raw is not None and raw.central > 0 and raw.confidence in {"STRONG", "MODERATE"}:
+        blocked_flags = {
+            "CONFLICT",
+            "PROVIDER_DISAGREEMENT",
+            "FLOOR_DISCONNECT",
+            "OUTLIER_SPIKE",
+            "OUTLIER_CONTAMINATION",
+            "HIGH_DISPERSION",
+        }
+        if not any(flag in raw.anomaly_flags for flag in blocked_flags) and getattr(raw, "disagreement_ratio", 1.0) <= 1.30:
+            if len(raw.sources) >= 2 or raw.confidence == "STRONG":
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="RAW_CONSENSUS",
+                        source="raw_consensus",
+                        grader=None,
+                        grade=None,
+                        language=canonical.language_code or "fr",
+                        price=raw.central,
+                        price_type="CONSENSUS",
+                        sale_count=len(raw.sources),
+                    )
+                )
+
+
+    # 2. PokeTrace exact and adjacent graded evidence
+    if poketrace is not None:
+        if poketrace.estimate is not None and poketrace.estimate.central > 0:
+            anchors.append(
+                pd.AdjacentAnchor(
+                    anchor_type="PSA_SAME_GRADE" if target_grader == "PSA" else "POKETRACE_ESTIMATE",
+                    source="poketrace",
+                    grader=candidate.lot.grader,
+                    grade=candidate.lot.grade,
+                    language=canonical.language_code or "fr",
+                    price=poketrace.estimate.central,
+                    price_type="SOLD",
+                    sale_count=getattr(poketrace.estimate, "exact_grade_count", 1) or 1,
+                )
+
+            )
+        for comp in poketrace.comparables:
+            if comp.price > 0:
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="PSA_SAME_GRADE" if (comp.grader or "").upper() == "PSA" else "POKETRACE_SOLD",
+                        source="poketrace",
+                        grader=comp.grader or candidate.lot.grader,
+                        grade=str(comp.grade) if comp.grade is not None else candidate.lot.grade,
+                        language=comp.context or canonical.language_code or "en",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                        **sold_temporal_fields(comp),
+                    )
+                )
+
+
+    # 3. Fallback (PSA APR / eBay) sold evidence
+    if fallback is not None:
+        if fallback.estimate is not None and fallback.estimate.central > 0:
+            anchors.append(
+                pd.AdjacentAnchor(
+                    anchor_type="PSA_SAME_GRADE" if target_grader == "PSA" else "EBAY_SOLD",
+                    source=fallback.source or "ebay",
+                    grader=candidate.lot.grader,
+                    grade=candidate.lot.grade,
+                    language=canonical.language_code or "en",
+                    price=fallback.estimate.central,
+                    price_type="SOLD",
+                    sale_count=fallback.estimate.exact_grade_count or 1,
+                )
+            )
+        for comp in fallback.comparables:
+            if comp.price > 0:
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="PSA_SAME_GRADE" if (comp.grader or "").upper() == "PSA" else "EBAY_SOLD",
+                        source=fallback.source or "ebay",
+                        grader=comp.grader or candidate.lot.grader,
+                        grade=str(comp.grade) if comp.grade is not None else candidate.lot.grade,
+                        language=comp.context or canonical.language_code or "en",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                        **sold_temporal_fields(comp),
+                    )
+                )
+
+    # 4. GCC completed sales history: strictly filter exact target sales and historical reference sales
+    exact_target_sales: list[Any] = []
+    historical_ref_sales: list[Any] = []
+
+    if candidate.gcc and candidate.gcc.sales:
+        for comp in candidate.gcc.sales:
+            if comp.price <= 0 or getattr(comp, "exact_card", True) is False:
+                continue
+            c_grader = (comp.grader or "").strip().upper()
+            c_grade = pd._numeric_grade(comp.grade)
+
+            if c_grader == target_grader and c_grade == target_num_grade:
+                exact_target_sales.append(comp)
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="EXACT_GCC_SOLD",
+                        source="gcc",
+                        grader=comp.grader,
+                        grade=str(comp.grade) if comp.grade is not None else None,
+                        language=candidate.lot.language or "fr",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                        **sold_temporal_fields(comp),
+                    )
+                )
+            elif c_grader in {"PSA", "CGC", "BGS"} and c_grade == target_num_grade:
+                historical_ref_sales.append(comp)
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="PSA_SAME_GRADE" if c_grader == "PSA" else "NEIGHBORING_GRADE",
+                        source="gcc",
+                        grader=comp.grader,
+                        grade=str(comp.grade) if comp.grade is not None else None,
+                        language=candidate.lot.language or "fr",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                        **sold_temporal_fields(comp),
+                    )
+                )
+            else:
+                anchors.append(
+                    pd.AdjacentAnchor(
+                        anchor_type="GCC_HISTORY",
+                        source="gcc",
+                        grader=comp.grader,
+                        grade=str(comp.grade) if comp.grade is not None else None,
+                        language=candidate.lot.language or "fr",
+                        price=comp.price,
+                        price_type="SOLD",
+                        sale_count=1,
+                        **sold_temporal_fields(comp),
+                    )
+                )
+
+    # Collect additional historical reference comps from poketrace / fallback if dated
+    for src_obj in (poketrace, fallback):
+        if src_obj is not None and getattr(src_obj, "comparables", None):
+            for comp in src_obj.comparables:
+                if getattr(comp, "price", 0) > 0 and getattr(comp, "exact_card", True) is not False:
+                    c_grader = (getattr(comp, "grader", None) or "").strip().upper()
+                    c_grade = pd._numeric_grade(getattr(comp, "grade", None))
+                    if c_grader in {"PSA", "CGC", "BGS"} and c_grade == target_num_grade and getattr(comp, "sold_at", None):
+                        historical_ref_sales.append(comp)
+
+    # Partition exact target sales into recent vs stale
+    recent_exact_sales: list[Any] = []
+    stale_target_sales: list[Any] = []
+    for s in exact_target_sales:
+        s_sold_at = getattr(s, "sold_at", None)
+        if s_sold_at is not None and effective_now is not None:
+            try:
+                delta_days = (effective_now - s_sold_at).total_seconds() / 86400.0
+                if delta_days <= 90:
+                    recent_exact_sales.append(s)
+                else:
+                    stale_target_sales.append(s)
+            except Exception:
+                stale_target_sales.append(s)
+        else:
+            stale_target_sales.append(s)
+
+    # Date-matched pairing for temporal cross grader adjustment
+    historical_observations: list[pd.HistoricalRatioObservation] = []
+    if stale_target_sales and historical_ref_sales:
+        historical_observations = pd.pair_date_matched_historical_ratios(
+            stale_target_sales,
+            historical_ref_sales,
+            target_grader=target_grader,
+            target_grade=target_grade,
+            reference_grader="PSA",
+            target_language=candidate.lot.language or "fr",
+            now=effective_now,
+        )
+
+    if anchors or raw is not None:
+        signal = pd.evaluate_price_discovery(
+            listing_identity=f"{canonical.name} #{canonical.full_number}",
+            gcc_price=candidate.lot.current_price or 0.0,
+            grader=candidate.lot.grader,
+            grade=candidate.lot.grade,
+            language=canonical.language_code or "fr",
+            exact_grader_sales=exact_target_sales,
+            recent_exact_sales=recent_exact_sales,
+            adjacent_anchors=anchors,
+            raw_consensus=raw,
+            historical_target_sales=historical_observations,
+            now=effective_now,
+        )
+
+
+
+        if signal.manual_review_recommended:
+            key = _manual_review_key(candidate.lot)
+            gap = max(0.0, (signal.credible_high_reference - (candidate.lot.current_price or 0.0)) / max(0.01, signal.credible_high_reference) * 100)
+            return ManualReviewLead(
+                identity_key=key,
+                lot=candidate.lot,
+                canonical=canonical,
+                raw=raw,
+                gap_pct=gap,
+                graded_note=signal.main_thesis,
+                discovery_signal=signal,
+            )
+
+    # Check classic RAW manual review fallback
+    should_review, gap = _should_manual_review(candidate.lot, raw)
+    if should_review and raw is not None:
+        key = _manual_review_key(candidate.lot)
+        return ManualReviewLead(
+            identity_key=key,
+            lot=candidate.lot,
+            canonical=canonical,
+            raw=raw,
+            gap_pct=gap,
+            graded_note="Marché gradé non confirmé; revue RAW",
+            discovery_signal=None,
+        )
+
+    return None
+
+
 def _should_manual_review(
     lot: watcher.Lot, raw: Optional[RawMarketSignal]
 ) -> tuple[bool, float]:
     if raw is None or lot.current_price is None or raw.low <= 0:
+        return False, 0.0
+    if raw.confidence not in {"STRONG", "MODERATE"}:
+        return False, 0.0
+    if any(flag in raw.anomaly_flags for flag in ("FLOOR_DISCONNECT", "OUTLIER_SPIKE", "PROVIDER_DISAGREEMENT")):
         return False, 0.0
     gap = (raw.low - lot.current_price) / raw.low * 100
     return gap >= watcher.MIN_DISCOUNT, gap
@@ -1363,24 +1745,64 @@ def _manual_review_should_notify(
 
 
 def _notify_manual_review(lead: ManualReviewLead) -> None:
-    title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
-    grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
-    message = (
-        f"{title}\n\n"
-        f"{lead.canonical.name} #{lead.canonical.full_number}\n"
-        f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
-        f"{grade}\n\n"
-        f"Prix GCC : {lead.lot.current_price:.2f} €\n"
-        f"Marché RAW externe : {lead.raw.low:.2f}–{lead.raw.high:.2f} €\n"
-        f"RAW central : {lead.raw.central:.2f} €\n"
-        f"Sources RAW : {', '.join(lead.raw.sources)}\n"
-        f"Écart prudent vs RAW : {lead.gap_pct:.1f}%\n"
-        f"Marché gradé : {lead.graded_note or 'non confirmé'}\n\n"
-        "RAW ≠ valeur du slab gradé. Aucun prix max conseillé n'est "
-        "calculé depuis le RAW; revue manuelle uniquement.\n"
-        f"{lead.lot.url}"
-    )
-    watcher.log("*** MANUAL REVIEW: graded market pending ***")
+    if lead.discovery_signal is not None:
+        sig = lead.discovery_signal
+        title = f"GCC MANUAL REVIEW — {sig.category}"
+        grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
+        anchor_lines = "\n".join(
+            f"- {a.anchor_type} ({a.source}): {a.price:.2f} €" + (f" ({', '.join(a.uncertainty_reasons)})" if a.uncertainty_reasons else "")
+            for a in sig.credible_adjacent_anchors[:4]
+        )
+        extrap_text = ""
+        if sig.is_extrapolated and sig.temporally_adjusted_central:
+            extrap_text = (
+                f"\nAjustement temporel : {sig.extrapolation_type} (Niveau preuve: {sig.evidence_level})\n"
+                f"- Vente historique exacte ({lead.lot.grader}) : {sig.historical_exact_grader_sale or 0:.2f} €\n"
+                f"- Référence historique (PSA) : {sig.historical_reference_price or 0:.2f} €\n"
+                f"- Ratio historique Grader/PSA : {sig.historical_grader_reference_ratio or 0:.4f}\n"
+                f"- Marché PSA robuste actuel : {sig.current_robust_reference_value or 0:.2f} €\n"
+                f"- Estimation ajustée actuelle : {sig.temporally_adjusted_low or 0:.2f}–{sig.temporally_adjusted_high or 0:.2f} € (central: {sig.temporally_adjusted_central:.2f} €)\n"
+                f"- Décote implicite vs GCC : {sig.implicit_discount_pct or 0:.1f}%\n"
+            )
+        message = (
+            f"{title}\n\n"
+            f"{lead.canonical.name} #{lead.canonical.full_number}\n"
+            f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
+            f"{grade}\n\n"
+            f"Prix GCC : {lead.lot.current_price:.2f} €\n"
+            f"Référence haute crédible : {sig.credible_high_reference:.2f} € (Upside {sig.asymmetric_upside_ratio:.1f}x)\n"
+            f"Liquidité : {sig.liquidity} | Qualité preuve : {sig.evidence_quality} | Incertitude : {sig.uncertainty}\n"
+            f"Spread Grader : {sig.grader_spread}\n"
+            f"Thèse : {sig.main_thesis}\n"
+            f"{extrap_text}\n"
+            f"Ancres adjacentes crédibles :\n{anchor_lines or 'Aucune'}\n\n"
+            "Revue manuelle uniquement. Aucun achat ou enchère automatique.\n"
+            f"{lead.lot.url}"
+        )
+
+    else:
+        title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
+        grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
+        extra_sources = f"Sources RAW : {', '.join(lead.raw.sources)}" if lead.raw else ""
+        if lead.raw and lead.raw.providers_rejected:
+            extra_sources += f" [Rejetés: {', '.join(lead.raw.providers_rejected)}]"
+
+        message = (
+            f"{title}\n\n"
+            f"{lead.canonical.name} #{lead.canonical.full_number}\n"
+            f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
+            f"{grade}\n\n"
+            f"Prix GCC : {lead.lot.current_price:.2f} €\n"
+            + (f"Marché RAW consensus : {lead.raw.low:.2f}–{lead.raw.high:.2f} € (confiance {lead.raw.confidence})\n" if lead.raw else "")
+            + (f"RAW central : {lead.raw.central:.2f} €\n" if lead.raw else "")
+            + (f"{extra_sources}\n" if extra_sources else "")
+            + f"Écart prudent vs plancher RAW : {lead.gap_pct:.1f}%\n"
+            f"Marché gradé : {lead.graded_note or 'non confirmé'}\n\n"
+            "RAW ≠ valeur du slab gradé. Aucun prix max conseillé n'est "
+            "calculé depuis le RAW; revue manuelle uniquement.\n"
+            f"{lead.lot.url}"
+        )
+    watcher.log(f"*** MANUAL REVIEW: {title} ***")
     print(message, flush=True)
     if watcher.NTFY_TOPIC:
         try:
@@ -1388,10 +1810,11 @@ def _notify_manual_review(lead: ManualReviewLead) -> None:
                 f"{watcher.NTFY_SERVER}/{watcher.NTFY_TOPIC}",
                 data=message.encode("utf-8"),
                 headers={
-                    "Title": title,
+                    "Title": Header(title, "utf-8").encode(),
                     "Priority": "3",
                     "Tags": "mag,card_index",
                 },
+
                 timeout=10,
             ).raise_for_status()
         except Exception as error:
@@ -1400,18 +1823,20 @@ def _notify_manual_review(lead: ManualReviewLead) -> None:
             )
 
 
+
 def _fallback_external(
     page,
     candidate: watcher.ValuationCandidate,
     budgets: watcher.ValidationBudgets,
-    external_diagnostics: watcher.ExternalMarketDiagnostics,
+    diagnostics: watcher.ExternalMarketDiagnostics,
     now: datetime,
 ) -> watcher.ExternalMarketEvidence:
-    global _DIAGNOSTICS
+    """Conserve l'arbre strict existant (APR/eBay) sans budget supplémentaire."""
     _DIAGNOSTICS.fallback_apr_ebay += 1
     return watcher.fetch_external_market_evidence(
-        page, candidate, budgets, external_diagnostics, now
+        page, candidate, budgets, diagnostics, now
     )
+
 
 
 def _combine_retry_with_fallback(
@@ -1445,6 +1870,7 @@ def _combine_retry_with_fallback(
             ).strip("; "),
         )
     return fallback
+
 
 
 def multimarket_process_external_market_candidates(
@@ -1484,19 +1910,6 @@ def multimarket_process_external_market_candidates(
         ):
             return poketrace
 
-        if poketrace.status == watcher.EXTERNAL_PENDING:
-            should_review, gap = _should_manual_review(candidate.lot, raw)
-            if should_review and raw is not None:
-                leads[_manual_review_key(candidate.lot)] = ManualReviewLead(
-                    _manual_review_key(candidate.lot),
-                    candidate.lot,
-                    canonical,
-                    raw,
-                    gap,
-                    poketrace.note,
-                )
-            return poketrace
-
         fallback = _fallback_external(
             page,
             candidate,
@@ -1505,21 +1918,17 @@ def multimarket_process_external_market_candidates(
             fetch_now,
         )
         combined = _combine_retry_with_fallback(poketrace, fallback)
-        should_review, gap = _should_manual_review(candidate.lot, raw)
-        if should_review and raw is not None and combined.strength != watcher.EVIDENCE_STRONG:
-            leads[_manual_review_key(candidate.lot)] = ManualReviewLead(
-                _manual_review_key(candidate.lot),
-                candidate.lot,
-                canonical,
-                raw,
-                gap,
-                "; ".join(
-                    value
-                    for value in (poketrace.note, fallback.note)
-                    if value
-                ),
-            )
+        if not (
+            combined.status == watcher.EXTERNAL_MATCHED
+            and combined.strength == watcher.EVIDENCE_STRONG
+            and combined.estimate is not None
+        ):
+            lead = _collect_price_discovery_lead(candidate, canonical, raw, poketrace, fallback, now=fetch_now)
+
+            if lead is not None:
+                leads[lead.identity_key] = lead
         return combined
+
 
     opportunities = _ORIGINAL_PROCESS_EXTERNAL(
         page,

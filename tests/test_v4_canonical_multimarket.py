@@ -6,9 +6,13 @@ from unittest.mock import patch
 
 import watcher
 import v4_canonical_multimarket as mm
+import v4_multimarket_safety as mms
+import v4_price_discovery as pd
 
 
 NOW = datetime(2026, 8, 12, 8, 0, tzinfo=timezone.utc)
+
+
 
 
 def lot(
@@ -560,16 +564,21 @@ class RawMarketSignalTests(unittest.TestCase):
             language_code="en",
             pricing={
                 "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
                     "trend-holo": 100,
                     "avg7-holo": 98,
                     "avg30-holo": 96,
                 },
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
                     "holo": {"marketPrice": 110},
                 },
             },
             variants={"normal": False, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
         with patch.object(mm, "_usd_per_eur", return_value=1.1):
             signal = mm.raw_market_signal(target, canonical)
@@ -593,10 +602,13 @@ class RawMarketSignalTests(unittest.TestCase):
             pricing={
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
                     "reverseHolofoil": {"marketPrice": 77.0},
                 },
             },
             variants={"normal": False, "holo": False, "reverse": True},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
         with patch.object(mm, "_usd_per_eur", return_value=1.0):
             signal = mm.raw_market_signal(target, canonical)
@@ -617,14 +629,22 @@ class RawMarketSignalTests(unittest.TestCase):
             name="Charizard",
             language_code="en",
             pricing={
-                "cardmarket": {"trend": 50, "trend-holo": 100},
+                "cardmarket": {
+                    "language": "en",
+                    "condition": "NM",
+                    "trend": 50,
+                    "trend-holo": 100,
+                },
                 "tcgplayer": {
                     "unit": "USD",
+                    "language": "en",
+                    "condition": "NM",
                     "normal": {"marketPrice": 55},
                     "holo": {"marketPrice": 110},
                 },
             },
             variants={"normal": True, "holo": True, "reverse": False},
+            reason="TCGDEX_EXACT_NAME_LOCALID",
         )
         with patch.object(mm, "_usd_per_eur", return_value=1.0):
             signal = mm.raw_market_signal(target, canonical)
@@ -935,6 +955,154 @@ class MultiMarketIntegrationTests(unittest.TestCase):
             watcher.is_valid_pokemon_card = old_valid
             watcher.process_external_market_candidates = old_process
             watcher.EXTERNAL_CACHE_SCHEMA_VERSION = old_schema
+
+
+    def test_fallback_external_calls_real_watcher_fetch_external_market_evidence(self):
+        # Must not crash or call nonexistent fetch_psa_apr_evidence
+        budgets = watcher.ValidationBudgets()
+        diagnostics = watcher.ExternalMarketDiagnostics()
+        with patch.object(watcher, "fetch_external_market_evidence") as mock_fetch:
+            mock_fetch.return_value = watcher.ExternalMarketEvidence(
+                "key", watcher.EXTERNAL_CLEAN_NO_MATCH, watcher.EVIDENCE_UNAVAILABLE, "ebay", note="clean"
+            )
+            res = mm._fallback_external(None, self.candidate, budgets, diagnostics, NOW)
+            mock_fetch.assert_called_once()
+            self.assertEqual(res.status, watcher.EXTERNAL_CLEAN_NO_MATCH)
+
+    def test_safe_notify_manual_review_with_raw_none_does_not_crash(self):
+        # Lead with raw=None and discovery_signal must format and notify safely
+        import v4_multimarket_safety as mms
+        import v4_price_discovery as pd
+        signal = pd.PriceDiscoverySignal(
+            listing_identity="Charizard Base Set",
+            gcc_price=45.0,
+            grader="PCA",
+            grade="10",
+            exact_grader_liquidity=pd.LIQUIDITY_LOW,
+            category=pd.CATEGORY_ILLIQUID_PRICE_DISCOVERY,
+            liquidity=pd.LIQUIDITY_LOW,
+            evidence_quality=pd.EVIDENCE_QUALITY_MODERATE,
+            uncertainty=pd.UNCERTAINTY_HIGH,
+            grader_spread=pd.GRADER_SPREAD_HIGH,
+            credible_high_reference=120.0,
+            asymmetric_upside_ratio=2.67,
+            main_thesis="Sparse PCA 10 liquidity rescued by PSA 10 sold anchor",
+            credible_adjacent_anchors=(),
+            crossgrade_required=False,
+            manual_review_recommended=True,
+            diagnostics=(),
+        )
+        lead = mm.ManualReviewLead(
+            "key", self.target, self.canonical, raw=None, gap_pct=0.0, graded_note="graded absent", discovery_signal=signal
+        )
+        # Test calling safe_notify_manual_review directly
+        mms.safe_notify_manual_review(lead)
+
+    def test_collect_price_discovery_lead_blocks_conflicted_or_weak_raw(self):
+        # 1. Weak or conflicted raw consensus alone returns None (blocked from creating lead)
+        weak_raw = mm.RawMarketSignal(
+            90, 100, 110, "EUR", ("Cardmarket",), "holo", "raw", confidence="WEAK", anomaly_flags=("CONFLICT",), disagreement_ratio=1.45
+        )
+        lead_solo = mm._collect_price_discovery_lead(
+            self.candidate, self.canonical, weak_raw, None, None, NOW
+        )
+        self.assertIsNone(lead_solo)
+
+        # 2. When valid poketrace anchors exist alongside weak raw, no RAW_CONSENSUS anchor is added
+        mock_est = type("Estimate", (), {"central": 220.0, "low": 200.0, "high": 250.0, "exact_grade_count": 5})()
+        poketrace = watcher.ExternalMarketEvidence(
+            watcher.external_commercial_identity_key(self.target),
+            watcher.EXTERNAL_MATCHED,
+            watcher.EVIDENCE_STRONG,
+            "poketrace",
+            estimate=mock_est,
+            fetched_at=NOW,
+        )
+
+        canonical_fr = mm.CanonicalCard(
+            status="EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Dracaufeu",
+            language_code="fr",
+            unique_name_number=True,
+        )
+        lead_with_pt = mm._collect_price_discovery_lead(
+            self.candidate, canonical_fr, weak_raw, poketrace=poketrace, now=NOW
+        )
+        self.assertIsNotNone(lead_with_pt)
+        self.assertIsNotNone(lead_with_pt.discovery_signal)
+        for a in lead_with_pt.discovery_signal.credible_adjacent_anchors:
+            self.assertNotEqual(a.anchor_type, "RAW_CONSENSUS")
+
+    def test_safe_notify_manual_review_installed_hardening_does_not_recurse(self):
+        """CRITICAL: After install_multimarket_safety_hardening(), notifying raw=None lead does not cause RecursionError."""
+        original_candidate_matcher = mm._candidate_exact_for_canonical
+        original_notifier = mm._notify_manual_review
+        original_processor = watcher.process_external_market_candidates
+        try:
+            mms.install_multimarket_safety_hardening()
+            signal = pd.PriceDiscoverySignal(
+                listing_identity="Dracaufeu #4/102",
+                gcc_price=40.0,
+                grader="PCA",
+                grade="8",
+                exact_grader_liquidity=pd.LIQUIDITY_LOW,
+                category=pd.CATEGORY_ILLIQUID_PRICE_DISCOVERY,
+                liquidity=pd.LIQUIDITY_LOW,
+                evidence_quality=pd.EVIDENCE_QUALITY_MODERATE,
+                uncertainty=pd.UNCERTAINTY_HIGH,
+                grader_spread=pd.GRADER_SPREAD_LOW,
+                credible_high_reference=220.0,
+                asymmetric_upside_ratio=5.5,
+                main_thesis="Thèse de test",
+                credible_adjacent_anchors=(),
+                crossgrade_required=False,
+                manual_review_recommended=True,
+                diagnostics=(),
+            )
+            lead = mm.ManualReviewLead(
+                "key-rec-test", self.target, self.canonical, raw=None, gap_pct=0.0, graded_note="graded absent", discovery_signal=signal
+            )
+            # Calling the installed notifier must execute without recursion.
+            mm._notify_manual_review(lead)
+        finally:
+            mm._candidate_exact_for_canonical = original_candidate_matcher
+            mm._notify_manual_review = original_notifier
+            watcher.process_external_market_candidates = original_processor
+
+    def test_synthetic_pricing_keys_are_not_consumed_in_production_raw_signal(self):
+        """Production raw_market_signal ignores synthetic justtcg/pricecharting/ebay_raw keys."""
+        canonical = mm.CanonicalCard(
+            "EXACT",
+            card_id="base1-4",
+            set_id="base1",
+            set_name="Base Set",
+            local_id="4",
+            full_number="4/102",
+            name="Charizard",
+            language_code="en",
+            pricing={
+                "justtcg": {"marketPrice": 100.0, "currency": "USD", "condition": "NM", "language": "en"},
+                "pricecharting": {"loose": 100.0, "currency": "USD"},
+                "ebay_raw": {"sales": [90.0, 95.0, 100.0], "currency": "USD", "language": "en"},
+            },
+            variants={"normal": True, "holo": True},
+            unique_name_number=True,
+        )
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/1",
+            title="Charizard 4/102",
+            current_price=50.0,
+            source_type="auction",
+            language="en",
+        )
+        # With only synthetic keys in pricing, production raw_market_signal returns None
+        sig = mm.raw_market_signal(lot, canonical)
+        self.assertIsNone(sig)
 
 
 if __name__ == "__main__":

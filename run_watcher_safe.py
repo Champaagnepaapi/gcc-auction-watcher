@@ -272,22 +272,26 @@ def install_technical_alert_guard() -> None:
 def estimated_all_queue_backlog_runs(
     queue: watcher.FixedEconomicQueueDiagnostics,
 ) -> int:
-    """Estimate runs needed to drain every queued item, including STALE.
+    """Estimate runs needed to drain every queued item, including STALE and P4_EXTERNAL_PENDING.
 
-    Coverage semantics stay unchanged: only NEW/CHANGED/NEVER_EVALUATED are
-    coverage-critical. This helper only fixes the human-facing backlog metric so
-    a remaining STALE queue is not reported as zero runs.
+    Coverage semantics separate first-evaluation coverage from external-market coverage.
+    This helper computes the realistic ETA accounting for scheduler priority, preemption,
+    and dedicated P4 capacity.
     """
-
-    backlog = queue.queued_backlog
-    if backlog <= 0:
-        return 0
+    p0 = queue.backlog_count(watcher.QUEUE_P0_NEW)
+    p1 = queue.backlog_count(watcher.QUEUE_P1_CHANGED)
+    p2 = queue.backlog_count(watcher.QUEUE_P2_NEVER_EVALUATED)
+    p3 = queue.backlog_count(watcher.QUEUE_P3_STALE)
+    p4 = queue.backlog_count(watcher.QUEUE_P4_EXTERNAL_PENDING)
     budget = max(1, int(queue.processing_budget))
-    return ceil(backlog / budget)
+    p4_budget = max(1, getattr(queue, "p4_processing_budget", watcher.MAX_EXTERNAL_PENDING_PER_RUN))
+    return watcher.simulate_backlog_drain_runs(p0, p1, p2, p3, p4, budget, p4_budget)
+
+
 
 
 def install_fixed_queue_backlog_diagnostics() -> None:
-    """Make the production backlog-run estimate include stale reevaluations."""
+    """Make the production backlog-run estimate include stale reevaluations and external pending."""
 
     watcher.FixedEconomicQueueDiagnostics.estimated_backlog_runs = property(
         estimated_all_queue_backlog_runs

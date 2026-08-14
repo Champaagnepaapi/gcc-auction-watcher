@@ -871,11 +871,73 @@ class EconomicCoverageAudit:
         return COVERAGE_COMPLETE
 
 
+def simulate_backlog_drain_runs(
+    p0: int = 0,
+    p1: int = 0,
+    p2: int = 0,
+    p3: int = 0,
+    p4: int = 0,
+    valuation_cap: int = 120,
+    p4_cap: int = 10,
+    min_stale_cap: int = 5,
+) -> int:
+    """Simulate exact scheduler dispatch to determine realistic number of runs to drain all queues."""
+    total = p0 + p1 + p2 + p3 + p4
+    if total <= 0:
+        return 0
+    budget_cap = max(1, valuation_cap)
+    p4_limit = max(1, p4_cap)
+    stale_floor_limit = max(1, min_stale_cap)
+
+    runs = 0
+    rem_p0, rem_p1, rem_p2, rem_p3, rem_p4 = p0, p1, p2, p3, p4
+    while (rem_p0 + rem_p1 + rem_p2 + rem_p3 + rem_p4) > 0:
+        runs += 1
+        budget = budget_cap
+
+        # 1. Tier 1: Urgent Pool (P0 + P1)
+        urgent = rem_p0 + rem_p1
+        take_urgent = min(urgent, budget)
+        budget -= take_urgent
+        if rem_p0 >= take_urgent:
+            rem_p0 -= take_urgent
+        else:
+            take_p1 = take_urgent - rem_p0
+            rem_p0 = 0
+            rem_p1 -= take_p1
+
+        # 2. Tier 2: P4 Reservation
+        take_p4 = min(rem_p4, min(p4_limit, budget))
+        rem_p4 -= take_p4
+        budget -= take_p4
+
+        # 3. Tier 3: Discovery Pool (P2 + P3)
+        if budget > 0:
+            stale_floor = min(rem_p3, min(stale_floor_limit, budget))
+            rem_p3 -= stale_floor
+            budget -= stale_floor
+
+            take_p2 = min(rem_p2, budget)
+            rem_p2 -= take_p2
+            budget -= take_p2
+
+            extra_p3 = min(rem_p3, budget)
+            rem_p3 -= extra_p3
+            budget -= extra_p3
+
+        if runs > 10000:
+            break
+
+    return runs
+
+
 @dataclass
 class FixedEconomicQueueDiagnostics:
+
     """Comptabilité de la file fixed; aucune donnée ne modifie la valorisation."""
 
     processing_budget: int = MAX_FIXED_CANDIDATES
+    p4_processing_budget: int = MAX_EXTERNAL_PENDING_PER_RUN
     category_ids: dict[str, set[str]] = field(
         default_factory=lambda: {
             QUEUE_P0_NEW: set(),
@@ -909,6 +971,14 @@ class FixedEconomicQueueDiagnostics:
 
     def record_budget_skipped(self, item_id: str) -> None:
         self.budget_skipped_ids.add(item_id)
+
+    def record_external_pending_unresolved(self, item_id: str) -> None:
+        """Called when an item's external evaluation remains PENDING or RETRY."""
+        if item_id in self.processed_ids:
+            self.processed_ids.remove(item_id)
+        for cat in (QUEUE_P0_NEW, QUEUE_P1_CHANGED, QUEUE_P2_NEVER_EVALUATED, QUEUE_P3_STALE, QUEUE_FRESH):
+            self.category_ids[cat].discard(item_id)
+        self.category_ids[QUEUE_P4_EXTERNAL_PENDING].add(item_id)
 
     def count(self, category: str) -> int:
         return len(self.category_ids[category])
@@ -948,7 +1018,7 @@ class FixedEconomicQueueDiagnostics:
         )
 
     @property
-    def coverage_backlog(self) -> int:
+    def first_evaluation_backlog(self) -> int:
         return sum(
             self.backlog_count(category)
             for category in (
@@ -959,13 +1029,61 @@ class FixedEconomicQueueDiagnostics:
         )
 
     @property
-    def estimated_backlog_runs(self) -> int:
-        if self.coverage_backlog <= 0:
+    def coverage_backlog(self) -> int:
+        return self.first_evaluation_backlog
+
+    @property
+    def external_pending_backlog(self) -> int:
+        return self.backlog_count(QUEUE_P4_EXTERNAL_PENDING)
+
+    @property
+    def stale_backlog(self) -> int:
+        return self.backlog_count(QUEUE_P3_STALE)
+
+    @property
+    def first_evaluation_coverage_status(self) -> str:
+        if not self.initialized:
+            return COVERAGE_UNKNOWN
+        if self.first_evaluation_backlog > 0 or self.failed_ids or not self.accounting_coherent:
+            return COVERAGE_INCOMPLETE
+        return COVERAGE_COMPLETE
+
+    @property
+    def external_market_coverage_status(self) -> str:
+        if not self.initialized:
+            return COVERAGE_UNKNOWN
+        if self.external_pending_backlog > 0:
+            return COVERAGE_INCOMPLETE
+        return COVERAGE_COMPLETE
+
+    @property
+    def estimated_first_evaluation_runs(self) -> int:
+        if self.first_evaluation_backlog <= 0:
             return 0
-        return (self.coverage_backlog + self.processing_budget - 1) // self.processing_budget
+        budget = max(1, self.processing_budget)
+        return (self.first_evaluation_backlog + budget - 1) // budget
+
+    @property
+    def estimated_external_backlog_runs(self) -> int:
+        if self.external_pending_backlog <= 0:
+            return 0
+        p4_cap = max(1, getattr(self, "p4_processing_budget", MAX_EXTERNAL_PENDING_PER_RUN))
+        return (self.external_pending_backlog + p4_cap - 1) // p4_cap
+
+    @property
+    def estimated_backlog_runs(self) -> int:
+        p0 = self.backlog_count(QUEUE_P0_NEW)
+        p1 = self.backlog_count(QUEUE_P1_CHANGED)
+        p2 = self.backlog_count(QUEUE_P2_NEVER_EVALUATED)
+        p3 = self.backlog_count(QUEUE_P3_STALE)
+        p4 = self.backlog_count(QUEUE_P4_EXTERNAL_PENDING)
+        budget = max(1, self.processing_budget)
+        p4_cap = max(1, getattr(self, "p4_processing_budget", MAX_EXTERNAL_PENDING_PER_RUN))
+        return simulate_backlog_drain_runs(p0, p1, p2, p3, p4, budget, p4_cap)
 
     @property
     def accounting_coherent(self) -> bool:
+
         return (
             self.eligible_candidates
             == self.processed_this_run
@@ -977,9 +1095,15 @@ class FixedEconomicQueueDiagnostics:
     def status(self) -> str:
         if not self.initialized:
             return COVERAGE_UNKNOWN
-        if self.coverage_backlog or self.failed_ids or not self.accounting_coherent:
+        if (
+            self.first_evaluation_coverage_status == COVERAGE_INCOMPLETE
+            or self.external_market_coverage_status == COVERAGE_INCOMPLETE
+            or self.failed_ids
+            or not self.accounting_coherent
+        ):
             return COVERAGE_INCOMPLETE
         return COVERAGE_COMPLETE
+
 
 
 @dataclass
@@ -1198,6 +1322,41 @@ class RunDiagnostics:
         return self.overall_coverage_status
 
     @property
+    def first_evaluation_coverage_status(self) -> str:
+        fixed_status = (
+            self.fixed_queue.first_evaluation_coverage_status
+            if self.fixed_queue.initialized
+            else self.fixed_economic_coverage.status
+        )
+        statuses = {
+            fixed_status,
+            self.auction_economic_coverage.status,
+        }
+        if COVERAGE_INCOMPLETE in statuses:
+            return COVERAGE_INCOMPLETE
+        if statuses == {COVERAGE_COMPLETE}:
+            return COVERAGE_COMPLETE
+        return COVERAGE_UNKNOWN
+
+    @property
+    def external_market_coverage_status(self) -> str:
+        if self.fixed_queue.initialized:
+            return self.fixed_queue.external_market_coverage_status
+        return COVERAGE_COMPLETE
+
+    @property
+    def external_pending_backlog(self) -> int:
+        if self.fixed_queue.initialized:
+            return self.fixed_queue.external_pending_backlog
+        return 0
+
+    @property
+    def estimated_backlog_runs(self) -> int:
+        if self.fixed_queue.initialized:
+            return self.fixed_queue.estimated_backlog_runs
+        return 0
+
+    @property
     def economic_coverage_status(self) -> str:
         fixed_status = (
             self.fixed_queue.status
@@ -1230,6 +1389,8 @@ class RunDiagnostics:
     def economic_result_trustworthy(self) -> bool:
         return (
             self.discovery_coverage_status == COVERAGE_COMPLETE
+            and self.first_evaluation_coverage_status == COVERAGE_COMPLETE
+            and self.external_market_coverage_status == COVERAGE_COMPLETE
             and self.economic_coverage_status == COVERAGE_COMPLETE
         )
 
@@ -6771,11 +6932,18 @@ def process_external_market_candidates(
             run_diagnostics.record_external_rejection(candidate.lot)
         elif result.path == PATH_EXTERNAL_PENDING:
             rejection = REJECTION_EXTERNAL_PENDING
+            run_diagnostics.fixed_queue.record_external_pending_unresolved(
+                fixed_listing_id(candidate.lot)
+            )
         elif evidence.status in EXTERNAL_RETRY_STATUSES:
             rejection = REJECTION_EXTERNAL_RETRY
+            run_diagnostics.fixed_queue.record_external_pending_unresolved(
+                fixed_listing_id(candidate.lot)
+            )
         else:
             rejection = candidate.gcc.rejection_category or REJECTION_OTHER
         run_diagnostics.record_valuation(candidate.lot, rejection)
+
         log(
             f"Arbitrage {result.path}: {candidate.lot.title} | {result.reason}"
         )
@@ -7236,14 +7404,11 @@ def _fixed_queue_category(
     ):
         return QUEUE_P2_NEVER_EVALUATED
 
-    # 3. External Pending / Retry with exponential cooldown
+    # 3. External Pending / Retry: always stays P4_EXTERNAL_PENDING to preserve backlog and coverage status
     if record.get("last_evaluation_status") in {
         REJECTION_EXTERNAL_PENDING,
         REJECTION_EXTERNAL_RETRY,
     }:
-        retry_after = _parse_state_datetime(record.get("retry_after"))
-        if retry_after is not None and now < retry_after:
-            return QUEUE_FRESH  # Cooldown active; skip this run
         return QUEUE_P4_EXTERNAL_PENDING
 
     # 4. Adaptive STALE re-evaluation
@@ -7279,20 +7444,15 @@ def _fixed_queue_sort_key(
             if ADAPTIVE_REFRESH_ENABLED
             else FIXED_REEVALUATION_TTL_HOURS
         )
-        return (
-            adaptive_ttl,
-            last_evaluated or earliest,
-            first_seen or earliest,
-            item_id,
-        )
+        age = (
+            datetime.now(timezone.utc) - (last_evaluated or earliest)
+        ).total_seconds() / 3600.0
+        urgency = age / max(1.0, float(adaptive_ttl))
+        return (-urgency, last_evaluated or earliest, item_id)
     if category == QUEUE_P4_EXTERNAL_PENDING:
-        retry_after = _parse_state_datetime(record.get("retry_after"))
-        return (
-            retry_after or last_evaluated or earliest,
-            first_seen or earliest,
-            item_id,
-        )
-    return (first_seen or earliest, item_id)
+        retry_count = int(record.get("retry_count") or 0)
+        return (retry_count, last_evaluated or earliest, item_id)
+    return (item_id,)
 
 
 def _prepare_fixed_economic_queue(
@@ -7414,10 +7574,17 @@ def _prepare_fixed_economic_queue(
     selected.extend(urgent_pool[:take_urgent])
     remaining_budget = valuation_cap - len(selected)
 
-    # 2. Tier 2: Hard-Capped External Pending Reservation
+    # 2. Tier 2: Hard-Capped External Pending Reservation (filter lots ready to retry)
+    p4_ready_lots = [
+        lot for lot in p4_lots
+        if (
+            _parse_state_datetime(records[fixed_listing_id(lot)].get("retry_after")) is None
+            or run_now >= _parse_state_datetime(records[fixed_listing_id(lot)].get("retry_after"))
+        )
+    ]
     reserved_pending_cap = min(MAX_EXTERNAL_PENDING_PER_RUN, remaining_budget)
-    take_pending = min(len(p4_lots), reserved_pending_cap)
-    selected.extend(p4_lots[:take_pending])
+    take_pending = min(len(p4_ready_lots), reserved_pending_cap)
+    selected.extend(p4_ready_lots[:take_pending])
     remaining_budget = valuation_cap - len(selected)
 
     # 3. Tier 3: Anti-Starvation Discovery Sharing (P2_NEVER_EVALUATED & P3_STALE)
@@ -7624,7 +7791,11 @@ def format_fixed_economic_queue(
                 "pending retry backlog: "
                 f"{queue.backlog_count(QUEUE_P4_EXTERNAL_PENDING)}"
             ),
+            f"first-evaluation backlog: {queue.first_evaluation_backlog}",
+            f"external pending backlog: {queue.external_pending_backlog}",
             f"evaluation failures: {len(queue.failed_ids)}",
+            f"first-evaluation coverage: {queue.first_evaluation_coverage_status}",
+            f"external-market coverage: {queue.external_market_coverage_status}",
             f"economic coverage: {queue.status}",
             f"estimated backlog runs remaining: {queue.estimated_backlog_runs}",
             f"accounting invariant: {'OK' if queue.accounting_coherent else 'FAILED'}",
@@ -7944,6 +8115,8 @@ def format_economic_coverage(
 def format_scan_coverage(diagnostics: RunDiagnostics) -> str:
     discovery_status = diagnostics.discovery_coverage_status
     economic_status = diagnostics.economic_coverage_status
+    first_eval_status = diagnostics.first_evaluation_coverage_status
+    external_status = diagnostics.external_market_coverage_status
     status = diagnostics.scan_coverage_status
     trustworthy = "YES" if diagnostics.economic_result_trustworthy else "NO"
     if diagnostics.final_opportunities == 0:
@@ -7986,7 +8159,14 @@ def format_scan_coverage(diagnostics: RunDiagnostics) -> str:
                         diagnostics,
                         "auction",
                     ),
-                    f"ECONOMIC OVERALL\neconomic coverage status: {economic_status}",
+                    (
+                        "ECONOMIC OVERALL\n"
+                        f"FIRST_EVALUATION_COVERAGE: {first_eval_status}\n"
+                        f"EXTERNAL_MARKET_COVERAGE: {external_status}\n"
+                        f"EXTERNAL_PENDING_BACKLOG: {diagnostics.external_pending_backlog}\n"
+                        f"realistic backlog ETA: {diagnostics.estimated_backlog_runs} runs\n"
+                        f"economic coverage status: {economic_status}"
+                    ),
                 )
             ),
             "\n".join(

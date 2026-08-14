@@ -242,9 +242,9 @@ Important : **PR #46 ne rend pas PSA APR “disponible” lorsqu’un WAF bloque
 
 Cette voie utilise la **page web publique APR**, pas l’ancienne API Collectors publique.
 
-## RAW TCGdex : signal secondaire uniquement
+## RAW multi-provider : consensus robuste, microvariantes et observabilité (Backport V5 → V4)
 
-TCGdex peut fournir des prix Cardmarket / TCGplayer RAW.
+V4 intègre un moteur de consensus multi-marché RAW (`v4_raw_consensus.py`) couvrant **Cardmarket**, **JustTCG**, **TCGplayer**, **PriceCharting** et **eBay RAW**. En production, seuls **Cardmarket** et **TCGplayer**, attachés à l'identité carte TCGdex déterministe, alimentent le consensus ; JustTCG, PriceCharting et eBay RAW restent des adaptateurs diagnostiques/hors-ligne.
 
 Règle absolue :
 
@@ -254,26 +254,79 @@ RAW market ≠ valeur du slab gradé
 
 Le RAW :
 
-- ne crée jamais une estimation PSA/BGS/CGC ;
-- ne crée jamais `max_recommended` ;
-- ne crée jamais une opportunity automatique ;
-- peut servir de **signal de revue manuelle**.
+- ne crée jamais une estimation PSA/PCA/BGS/CGC ;
+- ne crée jamais `max_recommended` ni d'achat/enchère automatique ;
+- sert exclusivement de **signal d'alerte pour revue manuelle humaine**.
 
-Si le marché gradé exact reste indisponible mais qu’un slab est au moins ~30 % sous une enveloppe RAW externe prudente, V4 peut envoyer :
+### Pipeline de validation & Backport sélectif V5 → V4
+Le pipeline RAW de V4 s'articule autour des composants matures backportés de V5 :
+1. **Fournisseurs de production live vs adaptateurs spécialisés** :
+   - **Production live** : Cardmarket et TCGplayer via les données de prix rattachées à une résolution exacte TCGdex.
+   - **Adaptateurs spécialisés** : JustTCG, PriceCharting et eBay RAW sont conservés pour les tests et diagnostics hors-ligne. Une réponse incomplète reste observable, mais ne peut pas entrer dans le quorum.
+2. **Parser multilingue déterministe** : Extraction stricte des éditions (1ère Édition, 1. Edition, Prima Edizione, Unlimited), finitions (Holo, Reverse Holo, Nicht-Holo, Olografica) et finitions spéciales (Poke Ball, Master Ball, Cosmos, Galaxy, Cracked Ice). Les contradictions de titre échouent immédiatement en `__conflict__` fail-closed.
+3. **Validateur de microvariantes (*Microvariant Gate*) & Normalisation sémantique** :
+   - Blocage systématique des comparables incompatibles (`FINISH_MISMATCH`, `EDITION_MISMATCH`, `PROMO_MISMATCH`, `LANGUAGE_MISMATCH`, `SET_MISMATCH`, `NUMBER_MISMATCH`).
+   - Validation symétrique des promos (rejet listing promo vs provider régulier ET listing régulier vs provider promo).
+   - Normalisation multi-tokens robuste des éditions (espaces, tirets, camelCase, compact, ordinaux multilingues : *1ère Édition, 1. Edition, 1a Edición, Prima Edizione, Unlimited, Shadowless*).
+   - Décomposition des labels composés (*1stEditionHolofoil, 1steditionreverseholo, unlimitedholofoil*) avec vérification indépendante de chaque dimension.
+4. **Provenance explicite des dimensions d'identité** :
+   - Chaque dimension requise et applicable est classée `PROVIDER_PROVEN`, `CATALOG_PROVEN` ou `UNKNOWN`. La valeur demandée par le listing ou la requête est une cible de comparaison, jamais une preuve.
+   - Un fournisseur ne peut compter vers un consensus RAW `STRONG` / éligible à notification que si **toutes** ses dimensions requises et applicables sont `PROVIDER_PROVEN` ou `CATALOG_PROVEN`.
+   - Une dimension requise `UNKNOWN` laisse la donnée fournisseur visible dans les diagnostics, mais exclut ce fournisseur de `providers_used` et du quorum indépendant. Deux fournisseurs incomplets ne peuvent donc jamais se combiner en `STRONG`.
+   - Cette règle est appliquée dans la couche commune d'arbitrage, y compris lorsque les adaptateurs sont appelés directement ou hors-ligne.
+5. **Preuve catalogue déterministe (*Catalog Proof*)** :
+   - La preuve catalogue n'est pas limitée au finish. Une identité carte exacte et déterministe TCGdex peut prouver une dimension applicable uniquement lorsque l'invariant catalogue établit réellement cette dimension ; elle peut notamment porter le set, le numéro de collection, un finish unique ou une édition explicitement déterminée.
+   - Exemple de finish prouvé : une seule variante existe (`variants = {"normal": False, "holo": True, "reverse": False}`). La simple présence de `firstEdition: true` indique que l'édition est applicable ; elle ne prouve pas, à elle seule, l'édition exacte du lot.
+   - Pour une carte où First Edition / Unlimited est applicable, l'édition doit être prouvée par le fournisseur ou par un invariant catalogue déterministe valide. Le silence d'un fournisseur n'implique jamais Unlimited. Une édition explicitement contradictoire est rejetée.
+   - Lorsque l'édition est réellement non applicable au produit, son omission par le fournisseur est admise.
+6. **Rejet des anomalies statistiques (*Anti-Outlier Engine*)** :
+   - Déconnexion du plancher (*Floor Disconnect*) : détection des écarts anormaux entre trend/avg30 et `low`.
+   - Rupture inter-périodes (*Period Divergence*) : détection des effondrements récents (`avg7 < 0.45 * avg30`).
+   - Rejet de contamination (`OUTLIER_CONTAMINATION`) lorsque les fournisseurs indépendants concordent.
+7. **Observabilité, Filtrage des paliers & Consensus multi-sources** :
+   - Traçabilité complète du statut de chaque fournisseur (`ACCEPTED`, `DOWNWEIGHTED`, `REJECTED`) avec reason codes standardisés (`EXACT_COMPATIBLE`, `OUTLIER_CONTAMINATION`, `LANGUAGE_MISMATCH`, `FINISH_MISMATCH`, `PROVIDER_DISAGREEMENT`, etc.).
+   - Filtrage strict de compatibilité dimensionnelle sur chaque palier avant inclusion dans l'enveloppe de variantes ambiguës.
+   - En production V4, le consensus RAW s'appuie exclusivement sur Cardmarket et TCGplayer via TCGdex ; les adaptateurs JustTCG/PriceCharting/eBay RAW restent isolés pour les tests et diagnostics hors-ligne.
+   - Les opportunités de notification RAW exigent un consensus $\ge 2$ fournisseurs indépendants, compatibles et entièrement prouvés. Une source unique complète reste diagnostique / `WEAK` ; une source incomplète reste `DIAGNOSTIC_ONLY` et ne compte jamais vers ce seuil.
+   - Les conflits ou désaccords inter-fournisseurs (`disagreement_ratio > 1.30`) bloquent strictement l'utilisation de l'ancre RAW dans le price-discovery.
 
-```text
-GCC MANUAL REVIEW — GRADED MARKET PENDING
-```
 
-La notification :
+### Observabilité du Backlog Externe & ETA Réaliste
+La couverture économique sépare strictement :
+- `FIRST_EVALUATION_COVERAGE` : achèvement du premier passage d'évaluation interne (lots `P0_NEW`, `P1_CHANGED`, `P2_NEVER_EVALUATED`) ;
+- `EXTERNAL_MARKET_COVERAGE` : achèvement de la file externe `P4_EXTERNAL_PENDING` ;
+- `EXTERNAL_PENDING_BACKLOG` : nombre exact de lots en attente de validation externe ;
+- `realistic backlog ETA` : simulation exacte du drainage de file tenant compte de la priorité stricte des lots urgents (P0/P1) préemptant la capacité et du plafond dédié P4 (10 lots/run max), garantissant l'absence de sous-estimation de l'ETA.
 
-- montre identité TCGdex, grade, prix GCC, plage RAW et sources ;
-- explique explicitement que RAW ≠ valeur du slab ;
-- n’affiche aucun prix max d’achat dérivé du RAW ;
-- est dédupliquée 24 h ;
-- peut renotifier après baisse de prix significative ou amélioration matérielle du gap.
+Un run ne peut plus déclarer une couverture globale complète ni un résultat digne de confiance (`economic result trustworthy = YES`) tant qu'un backlog P4 subsiste.
 
-Ainsi une carte potentiellement anormalement bon marché ne disparaît plus silencieusement uniquement parce que PSA APR/eBay n’ont pas fourni de prix gradé.
+### Écart de Grader & Découverte de Prix Asymétrique (*Grader Spread & Price Discovery*)
+Le module `v4_price_discovery.py` permet d'exploiter la valeur asymétrique de slabs secondaires ou peu liquides :
+1. `CROSSGRADE_OPPORTUNITY` : Slabs secondaires de très haut grade (PCA 10 / BGS 9.5 / CGC 10) bénéficiant d'un spread face au benchmark PSA [DIAGNOSTIC / NON-LIVE en production V4 tant qu'aucun flux crossgrade réel n'est injecté].
+2. `SECONDARY_GRADER_DISCOUNT` : Marché secondaire liquide mais décoté significativement par rapport à la valeur équitable.
+3. `ILLIQUID_PRICE_DISCOVERY` : Liquidité exacte faible sur le slab considéré, mais multiples ancres adjacentes solides (PSA 10 vendu récent, consensus RAW, ventes historiques GCC) prouvant une décote asymétrique majeure.
+
+### Ajustement Temporel Multi-Grader (*Temporal Cross-Grader Adjustment*)
+Pour éviter qu'une vente ancienne sur un grader secondaire (ex: SGS 8 vendu 18 € il y a un an) n'ancre artificiellement à la baisse l'estimation actuelle lorsque le marché global (PSA 8) a fortement progressé :
+- **Calcul du ratio historique** : $\text{ratio} = \frac{\text{prix historique grader cible}}{\text{prix historique référence PSA}}$.
+- **Rebasement actuel** : $\text{estimation ajustée} = \text{valeur robuste PSA actuelle récente} \times \text{ratio historique}$.
+- **Filtrage robuste des anomalies** : Médiane robuste sur les ratios historiques observés pour neutraliser tout outlier isolé.
+- **Préservation de la décote spécifique** : Aucun postulat d'égalité naïve SGS = PSA ; le spread de grader est préservé de manière explicite.
+- **Fail-closed sans extrapolation aveugle** : Si aucune référence récente de même grade n'existe, le pipeline bascule en revue manuelle sans inventer d'estimation chiffrée (`MANUAL_REVIEW_NO_ESTIMATE`).
+- **Hiérarchie stricte des preuves** :
+  $$\text{EXACT\_RECENT\_COMP} > \text{EXACT\_OLD\_COMP\_TEMPORALLY\_ADJUSTED} > \text{CROSS\_GRADER\_ESTIMATE\_ONLY} > \text{MANUAL\_REVIEW\_NO\_ESTIMATE}$$
+- **Surfaçage exclusif en Revue Manuelle** : Aucune décision d'achat, d'enchère ou de paiement automatique.
+
+**Principes de sécurité :**
+- `LOW_LIQUIDITY` est une caractéristique d'incertitude (`uncertainty = HIGH`), jamais un rejet automatique.
+- La probabilité de crossgrade est facultative (`crossgrade_required = false`) et purement diagnostique.
+- Les annonces actives seules (*active asks*) ne créent jamais d'opportunité.
+- Les ancres trans-linguistiques (ex. PSA 10 anglais vs slab français) sont explicitement décotées et augmentent l'incertitude.
+- Les slabs de bas grade (ex. note $\le 7$) ne peuvent pas utiliser d'ancre PSA 10 sans échelon intermédiaire.
+
+
+
+
 
 ---
 

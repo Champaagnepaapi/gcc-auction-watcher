@@ -28,6 +28,12 @@ def make_lot(
 
 
 class FixedQueueBacklogDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_estimated_backlog_runs = watcher.FixedEconomicQueueDiagnostics.estimated_backlog_runs
+
+    def tearDown(self):
+        watcher.FixedEconomicQueueDiagnostics.estimated_backlog_runs = self._orig_estimated_backlog_runs
+
     def test_stale_backlog_is_counted_without_downgrading_coverage(self):
         queue = watcher.FixedEconomicQueueDiagnostics(processing_budget=120)
         queue.initialized = True
@@ -42,6 +48,7 @@ class FixedQueueBacklogDiagnosticTests(unittest.TestCase):
         self.assertEqual(queue.status, watcher.COVERAGE_COMPLETE)
 
         run_watcher_safe.install_fixed_queue_backlog_diagnostics()
+
 
         self.assertEqual(queue.estimated_backlog_runs, 1)
         summary = watcher.format_fixed_economic_queue(queue)
@@ -60,6 +67,51 @@ class FixedQueueBacklogDiagnosticTests(unittest.TestCase):
 
         self.assertEqual(queue.queued_backlog, 241)
         self.assertEqual(queue.estimated_backlog_runs, 3)
+
+    def test_external_pending_backlog_calculates_realistic_eta_and_blocks_coverage(self):
+        """Invariant: 2253 P4 pending with max 10 P4 processed/run requires ~226 runs, not 19, and blocks complete external coverage."""
+        queue = watcher.FixedEconomicQueueDiagnostics(processing_budget=120, p4_processing_budget=10)
+        queue.initialized = True
+
+        for index in range(2253):
+            queue.register(f"pending-{index}", watcher.QUEUE_P4_EXTERNAL_PENDING)
+
+        run_watcher_safe.install_fixed_queue_backlog_diagnostics()
+
+        # First evaluation is complete (no P0/P1/P2 backlog)
+        self.assertEqual(queue.first_evaluation_backlog, 0)
+        self.assertEqual(queue.first_evaluation_coverage_status, watcher.COVERAGE_COMPLETE)
+
+        # External market coverage is INCOMPLETE due to 2253 pending items
+        self.assertEqual(queue.external_pending_backlog, 2253)
+        self.assertEqual(queue.external_market_coverage_status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(queue.status, watcher.COVERAGE_INCOMPLETE)
+
+        # Realistic ETA must use P4 capacity (10/run), giving ceil(2253/10) = 226 runs, NOT ceil(2253/120) = 19
+        self.assertEqual(queue.estimated_external_backlog_runs, 226)
+        self.assertEqual(queue.estimated_backlog_runs, 226)
+
+        diagnostics = watcher.RunDiagnostics()
+        diagnostics.fixed_queue = queue
+        diagnostics.fixed_coverage.set_end_reason("EOF")
+        diagnostics.auction_coverage.set_end_reason("EOF")
+        diagnostics.fixed_coverage.expected_total_scope = "COMPLETE"
+        diagnostics.auction_coverage.expected_total_scope = "COMPLETE"
+        diagnostics.fixed_economic_coverage.register_candidates([], discovered_listings=0)
+        diagnostics.auction_economic_coverage.register_candidates([], discovered_listings=0)
+        diagnostics.fixed_economic_coverage.finalized = True
+        diagnostics.auction_economic_coverage.finalized = True
+
+        # Scan text must truthfully reflect incomplete external coverage and untrustworthy overall result
+        summary = watcher.format_scan_coverage(diagnostics)
+        self.assertIn("FIRST_EVALUATION_COVERAGE: COMPLETE", summary)
+        self.assertIn("EXTERNAL_MARKET_COVERAGE: INCOMPLETE", summary)
+        self.assertIn("EXTERNAL_PENDING_BACKLOG: 2253", summary)
+        self.assertIn("realistic backlog ETA: 226 runs", summary)
+        self.assertIn("economic result trustworthy: NO", summary)
+
+
+
 
 
 class FixedQueueFourTierSchedulingTests(unittest.TestCase):
@@ -253,7 +305,7 @@ class FixedQueueFourTierSchedulingTests(unittest.TestCase):
         self.assertEqual(selected_cats.count(watcher.QUEUE_P3_STALE), 0)
 
     def test_cooldown_active_returns_fresh_and_expired_returns_p4(self):
-        """Invariant: Active cooldown returns FRESH, expired returns P4_EXTERNAL_PENDING."""
+        """Invariant: Unresolved external items remain P4_EXTERNAL_PENDING to prevent disappearing from backlog."""
         record_active = {
             "last_evaluated_at": NOW.isoformat(),
             "evaluated_fingerprint": "same",
@@ -264,7 +316,7 @@ class FixedQueueFourTierSchedulingTests(unittest.TestCase):
         }
         self.assertEqual(
             watcher._fixed_queue_category(record_active, "same", NOW),
-            watcher.QUEUE_FRESH,
+            watcher.QUEUE_P4_EXTERNAL_PENDING,
         )
 
         record_expired = {
@@ -279,6 +331,7 @@ class FixedQueueFourTierSchedulingTests(unittest.TestCase):
             watcher._fixed_queue_category(record_expired, "same", NOW),
             watcher.QUEUE_P4_EXTERNAL_PENDING,
         )
+
 
     def test_exponential_progression_of_retry_cooldown(self):
         """Invariant: Cooldown doubles: 15m -> 30m -> 60m -> 120m -> 240m -> 360m max."""
@@ -385,6 +438,143 @@ class FixedQueueFourTierSchedulingTests(unittest.TestCase):
         }
         category = watcher._fixed_queue_category(record_legacy, "same", NOW)
         self.assertEqual(category, watcher.QUEUE_P4_EXTERNAL_PENDING)
+
+
+    def test_external_arbitration_selected_pending_remains_in_backlog(self):
+        """Selected P4 items that remain EXTERNAL_PENDING during arbitration must remain in external backlog."""
+        lot = make_lot("p4-item-1", price=50.0)
+        item_id = watcher.fixed_listing_id(lot)
+        candidate = watcher.ValuationCandidate(
+            gcc=watcher.GccMarketEvidence(
+                lot=lot,
+                sales=[],
+                estimate=None,
+                opportunity=None,
+                branch=watcher.GCC_BRANCH_UNAVAILABLE,
+                strength=watcher.EVIDENCE_UNAVAILABLE,
+                rejection="historique vide",
+                rejection_category=watcher.REJECTION_EMPTY_HISTORY,
+            )
+        )
+        candidate.fixed_queue_category = watcher.QUEUE_P4_EXTERNAL_PENDING
+
+        queue_diag = watcher.FixedEconomicQueueDiagnostics(processing_budget=120, p4_processing_budget=10)
+        queue_diag.initialized = True
+        queue_diag.register(item_id, watcher.QUEUE_P4_EXTERNAL_PENDING)
+        queue_diag.record_selected(item_id)
+        queue_diag.record_processed(item_id)
+
+        diagnostics = watcher.RunDiagnostics()
+        diagnostics.fixed_queue = queue_diag
+        diagnostics.fixed_economic_coverage = queue_diag
+
+        # External evidence returns EXTERNAL_PENDING
+        def mock_pending_provider(cand, budgets, now):
+            return watcher.ExternalMarketEvidence(
+                watcher.external_commercial_identity_key(cand.lot),
+                watcher.EXTERNAL_PENDING,
+                watcher.EVIDENCE_UNAVAILABLE,
+                "poketrace",
+                note="budget exhausted",
+            )
+
+        budgets = watcher.ValidationBudgets()
+        state = {watcher.FIXED_QUEUE_STATE_KEY: {"items": {item_id: {}}}}
+
+        watcher.process_external_market_candidates(
+            None,
+            [candidate],
+            state,
+            budgets,
+            diagnostics,
+            NOW,
+            provider=mock_pending_provider,
+        )
+
+        # After arbitration, candidate remains in external pending backlog and coverage is INCOMPLETE
+        self.assertEqual(queue_diag.external_pending_backlog, 1)
+        self.assertEqual(queue_diag.external_market_coverage_status, watcher.COVERAGE_INCOMPLETE)
+        self.assertEqual(queue_diag.status, watcher.COVERAGE_INCOMPLETE)
+
+    def test_p0_to_p4_transition_does_not_double_count(self):
+        """P0 item becoming P4 pending during arbitration is removed from P0 and not double counted."""
+        item_id = "p0-item-to-p4"
+        queue_diag = watcher.FixedEconomicQueueDiagnostics(processing_budget=120)
+        queue_diag.initialized = True
+        queue_diag.register(item_id, watcher.QUEUE_P0_NEW)
+        queue_diag.record_selected(item_id)
+        queue_diag.record_processed(item_id)
+
+        # Transition to P4 unresolved
+        queue_diag.record_external_pending_unresolved(item_id)
+
+        self.assertEqual(queue_diag.count(watcher.QUEUE_P0_NEW), 0)
+        self.assertEqual(queue_diag.count(watcher.QUEUE_P4_EXTERNAL_PENDING), 1)
+        self.assertEqual(queue_diag.first_evaluation_backlog, 0)
+        self.assertEqual(queue_diag.external_pending_backlog, 1)
+        self.assertEqual(queue_diag.queued_backlog, 1)
+        self.assertTrue(queue_diag.accounting_coherent)
+
+    def test_cooldown_unresolved_external_items_remain_in_p4_backlog(self):
+        """Unresolved external items in backoff cooldown remain in P4 backlog, keeping external coverage INCOMPLETE."""
+        lot = make_lot("cooldown-item", price=50.0)
+        item_id = watcher.fixed_listing_id(lot)
+        items = self.state[watcher.FIXED_QUEUE_STATE_KEY]["items"]
+        items[item_id] = {
+            "item_id": item_id,
+            "first_seen_at": (NOW - timedelta(days=1)).isoformat(),
+            "last_seen_at": NOW.isoformat(),
+            "last_evaluated_at": (NOW - timedelta(hours=1)).isoformat(),
+            "last_price": 50.0,
+            "metadata_fingerprint": watcher.fixed_metadata_fingerprint(lot),
+            "evaluated_fingerprint": watcher.fixed_metadata_fingerprint(lot),
+            "evaluation_version": watcher.ECONOMIC_EVALUATION_VERSION,
+            "last_evaluation_status": watcher.REJECTION_EXTERNAL_PENDING,
+            "retry_count": 2,
+            "retry_after": (NOW + timedelta(hours=2)).isoformat(),  # Cooldown active
+            "active": True,
+        }
+
+
+        selected, cat_map, records = watcher._prepare_fixed_economic_queue(
+            [lot], self.state, NOW, self.diagnostics, valuation_cap=120
+        )
+        self.assertEqual(cat_map[item_id], watcher.QUEUE_P4_EXTERNAL_PENDING)
+        self.assertEqual(self.diagnostics.fixed_queue.external_pending_backlog, 1)
+        self.assertEqual(self.diagnostics.fixed_queue.external_market_coverage_status, watcher.COVERAGE_INCOMPLETE)
+        # Not selected for processing this run because cooldown is active
+        self.assertEqual(len(selected), 0)
+
+    def test_eta_calculation_with_shared_capacity(self):
+        """ETA must account for shared scheduler capacity (20 P4 + 240 other with 120 total cap -> 3 runs)."""
+        queue = watcher.FixedEconomicQueueDiagnostics(processing_budget=120, p4_processing_budget=10)
+        queue.initialized = True
+        for i in range(20):
+            queue.register(f"p4-{i}", watcher.QUEUE_P4_EXTERNAL_PENDING)
+        for i in range(240):
+            queue.register(f"p3-{i}", watcher.QUEUE_P3_STALE)
+
+        run_watcher_safe.install_fixed_queue_backlog_diagnostics()
+
+        # p4_runs = ceil(20/10) = 2, total_runs = ceil(260/120) = 3 -> ETA is max(2, 3) = 3 runs
+        self.assertEqual(queue.estimated_backlog_runs, 3)
+
+    def test_eta_preemption_125_p1_and_20_p4_requires_3_runs(self):
+        """125 P1 + 20 P4 with processing_budget=120 and p4_budget=10 must report 3 runs, not 2 (P1 preemption)."""
+        queue = watcher.FixedEconomicQueueDiagnostics(processing_budget=120, p4_processing_budget=10)
+        queue.initialized = True
+        for i in range(125):
+            queue.register(f"p1-{i}", watcher.QUEUE_P1_CHANGED)
+        for i in range(20):
+            queue.register(f"p4-{i}", watcher.QUEUE_P4_EXTERNAL_PENDING)
+
+        run_watcher_safe.install_fixed_queue_backlog_diagnostics()
+
+        # Run 1: 120 P1 processed (5 P1 + 20 P4 remain; P4 got 0 capacity due to P1 budget consumption)
+        # Run 2: 5 P1 + 10 P4 processed (10 P4 remain)
+        # Run 3: 10 P4 processed (0 remain)
+        # Total runs required = 3
+        self.assertEqual(queue.estimated_backlog_runs, 3)
 
 
 if __name__ == "__main__":

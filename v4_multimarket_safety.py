@@ -134,45 +134,14 @@ def hardened_candidate_exact_for_canonical(
     return True
 
 
+_ORIG_NOTIFY_MANUAL_REVIEW = getattr(mm, "_notify_manual_review", None)
+
+
 def safe_notify_manual_review(lead: mm.ManualReviewLead) -> None:
-    title = "GCC MANUAL REVIEW — GRADED MARKET PENDING"
-    grade = watcher.format_grade_label(lead.lot.grader, lead.lot.grade)
-    message = (
-        f"{title}\n\n"
-        f"{lead.canonical.name} #{lead.canonical.full_number}\n"
-        f"{lead.canonical.set_name} · TCGdex {lead.canonical.card_id}\n"
-        f"{grade}\n\n"
-        f"Prix GCC : {lead.lot.current_price:.2f} €\n"
-        f"Marché RAW externe : {lead.raw.low:.2f}–{lead.raw.high:.2f} €\n"
-        f"RAW central : {lead.raw.central:.2f} €\n"
-        f"Sources RAW : {', '.join(lead.raw.sources)}\n"
-        f"Écart prudent vs RAW : {lead.gap_pct:.1f}%\n"
-        f"Marché gradé : {lead.graded_note or 'non confirmé'}\n\n"
-        "RAW ≠ valeur du slab gradé. Aucun prix max conseillé n'est "
-        "calculé depuis le RAW; revue manuelle uniquement.\n"
-        f"{lead.lot.url}"
-    )
-    watcher.log("*** MANUAL REVIEW: graded market pending ***")
-    print(message, flush=True)
-    if watcher.NTFY_TOPIC:
-        try:
-            requests.post(
-                f"{watcher.NTFY_SERVER}/{watcher.NTFY_TOPIC}",
-                data=message.encode("utf-8"),
-                headers={
-                    "Title": Header(title, "utf-8").encode(),
-                    "Priority": "3",
-                    "Tags": "mag,card_index",
-                },
-                timeout=10,
-            ).raise_for_status()
-        except Exception as error:
-            watcher.log(
-                f"Notification manual review échouée: {type(error).__name__}"
-            )
+    if _ORIG_NOTIFY_MANUAL_REVIEW is not None and _ORIG_NOTIFY_MANUAL_REVIEW is not safe_notify_manual_review:
+        return _ORIG_NOTIFY_MANUAL_REVIEW(lead)
+    return None
 
-
-_combine_retry_with_fallback = mm._combine_retry_with_fallback
 
 
 def hardened_multimarket_process_external_market_candidates(
@@ -197,19 +166,15 @@ def hardened_multimarket_process_external_market_candidates(
         candidate: watcher.ValuationCandidate,
         canonical: mm.CanonicalCard,
         raw: mm.RawMarketSignal | None,
-        graded_note: str,
+        poketrace: watcher.ExternalMarketEvidence | None,
+        fallback: watcher.ExternalMarketEvidence | None,
+        fetch_now: datetime | None = None,
     ) -> None:
-        should_review, gap = mm._should_manual_review(candidate.lot, raw)
-        if should_review and raw is not None:
-            key = mm._manual_review_key(candidate.lot)
-            leads[key] = mm.ManualReviewLead(
-                key,
-                candidate.lot,
-                canonical,
-                raw,
-                gap,
-                graded_note,
-            )
+        lead = mm._collect_price_discovery_lead(
+            candidate, canonical, raw, poketrace, fallback, now=fetch_now
+        )
+        if lead is not None:
+            leads[lead.identity_key] = lead
 
     def fetch(candidate, validation_budgets, fetch_now):
         if provider is not None:
@@ -236,8 +201,9 @@ def hardened_multimarket_process_external_market_candidates(
             run_diagnostics.external_market,
             fetch_now,
         )
-        combined = _combine_retry_with_fallback(poketrace, fallback)
+        combined = mm._combine_retry_with_fallback(poketrace, fallback)
         if not (
+
             combined.status == watcher.EXTERNAL_MATCHED
             and combined.strength == watcher.EVIDENCE_STRONG
             and combined.estimate is not None
@@ -246,11 +212,12 @@ def hardened_multimarket_process_external_market_candidates(
                 candidate,
                 canonical,
                 raw,
-                "; ".join(
-                    value for value in (poketrace.note, fallback.note) if value
-                ),
+                poketrace,
+                fallback,
+                fetch_now,
             )
         return combined
+
 
     opportunities = mm._ORIGINAL_PROCESS_EXTERNAL(
         page,
