@@ -1,0 +1,38 @@
+name: PR64 canonical README update
+
+on:
+  push:
+    branches:
+      - agent/v4-more-cert-verifiers
+    paths:
+      - .github/workflows/pr64-readme-update.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v4-more-cert-verifiers
+      - name: Update canonical README
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('README.md')
+          text = p.read_text(encoding='utf-8').rstrip()
+          marker = '# PR #64 — extension des vérificateurs officiels de certificats'
+          if marker not in text:
+              text += '''\n\n---\n\n# PR #64 — extension des vérificateurs officiels de certificats\n\nLe Mislisted Slab Hunter conserve l'ordre **certificat officiel d'abord, OCR en fallback** et étend les adaptateurs de vérification à : **PCA, CGC, Beckett BGS/BVG/BCCG, SGC, SGS, CollectAura/CA, ACE, GRAAD, AP Grading et GEM**, en plus de **PSA + CCC** déjà présents.\n\nRègles inchangées :\n\n- grade officiel trouvé → comparaison directe avec le grade GCC ;\n- certificat introuvable, bloqué ou grade non lisible → fallback OCR du slab ;\n- grader sans adaptateur officiel robuste → fallback OCR ;\n- OCR seul = preuve non confirmée, `IMAGE_ONLY` / revue manuelle ;\n- mismatch positif = piste de mislisting en revue manuelle ;\n- mismatch négatif = blocage de l'alerte économique au grade GCC surestimé ;\n- parser officiel strict : un subgrade, une population ou un autre nombre ne peut pas devenir silencieusement la note globale ;\n- aucun achat, bid, checkout ou paiement automatique.\n\nValidation PR #64 : run **`31838778755`**, job **`94890915083`** — **482/482 tests V4 PASS**, compilation PASS, `git diff --check` PASS, comparaison discovery live PASS (`legacy_only=0`, `private safety-net failures=0`).\n'''
+          p.write_text(text.rstrip() + '\n', encoding='utf-8')
+          PY
+      - name: Commit README
+        run: |
+          if git diff --quiet -- README.md; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update canonical handoff for PR64"
+          git push origin HEAD:agent/v4-more-cert-verifiers
