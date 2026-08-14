@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from email.header import decode_header, make_header
 from unittest.mock import patch
 
 import watcher
@@ -75,9 +76,10 @@ class NotificationSemanticsTests(unittest.TestCase):
 
         kwargs = post.call_args.kwargs
         payload = kwargs["data"].decode("utf-8")
+        decoded_title = str(make_header(decode_header(kwargs["headers"]["Title"])))
         self.assertTrue(payload.startswith("GCC AUCTION — OPPORTUNITÉ GCC — EXTERNE EN ATTENTE"))
         self.assertIn("Chemin de valorisation : EXTERNAL_PENDING", payload)
-        self.assertIn("EXTERNE EN ATTENTE", kwargs["headers"]["Title"])
+        self.assertIn("EXTERNE EN ATTENTE", decoded_title)
         self.assertEqual(op.valuation_path, watcher.PATH_EXTERNAL_PENDING)
 
     def test_final_alert_keeps_existing_title(self) -> None:
