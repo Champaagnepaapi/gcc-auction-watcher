@@ -1,0 +1,77 @@
+name: V5 Source Scout Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      panel_size:
+        description: "Canonical TCGdex panel size (5-20)"
+        required: false
+        default: "20"
+        type: string
+      enable_cmapi:
+        description: "Enable CMAPI/RapidAPI. WARNING: Basic has paid overages after free quota. Keep false unless daily usage was checked first."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      JUSTTCG_API_KEY: ${{ secrets.JUSTTCG_API_KEY }}
+      POKEWALLET_API_KEY: ${{ secrets.POKEWALLET_API_KEY }}
+      TCGAPI_DEV_API_KEY: ${{ secrets.TCGAPI_DEV_API_KEY }}
+      TCG_CARDMARKET_API_KEY: ${{ secrets.TCG_CARDMARKET_API_KEY }}
+      CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
+      CARDTRADER_API_TOKEN: ${{ secrets.CARDTRADER_API_TOKEN }}
+      SOURCE_SCOUT_PANEL_SIZE: ${{ inputs.panel_size || '20' }}
+      SOURCE_SCOUT_ENABLE_CMAPI: ${{ inputs.enable_cmapi && 'true' || 'false' }}
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Checkout benchmark branch without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install read-only benchmark dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Compile Source Scout benchmark
+        run: python -m py_compile v5/source_scout_benchmark.py tests_v5/test_source_scout_benchmark.py
+
+      - name: Run Source Scout focused tests
+        run: python -m unittest tests_v5.test_source_scout_benchmark -v
+
+      - name: Run read-only same-panel Source Scout benchmark
+        run: python -m v5.source_scout_benchmark
+
+      - name: Publish report in workflow summary
+        if: always() && hashFiles('source_scout_report.md') != ''
+        shell: bash
+        run: cat source_scout_report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Source Scout reports
+        if: always() && hashFiles('source_scout_report.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-scout-report-${{ github.run_id }}
+          path: |
+            source_scout_report.json
+            source_scout_report.md
+          if-no-files-found: error
+          retention-days: 14
