@@ -25,14 +25,95 @@ _AMBIGUOUS_COMPLETION_STATUSES = frozenset(
 _BUNDLE_RE = re.compile(
     r"\b(?:bundle|lot|set of|collection|complete(?:\s+\w+){0,3}\s+set|"
     r"pair|duo|trio|menu|"
-    r"choose one|choose your|au choix|sealed|booster|display|box|pack|case|"
-    r"mystery|oripa|break|spot|multi(?:ple)?|[2-9]\s*[x×])\b",
+    r"sealed|booster|display|box|pack|case|mystery|oripa|break|spot|"
+    r"multi(?:ple)?)\b",
+    re.IGNORECASE,
+)
+_MENU_RE = re.compile(
+    r"\b(?:(?:pick|choose|select)\s+(?:one|a|your)|choose\s+your|au\s+choix|"
+    r"choisissez\s+un(?:e)?\s+carte)\b",
     re.IGNORECASE,
 )
 _MULTIPLE_NAMES_RE = re.compile(
-    r"\b[\wÀ-ÿ'-]+(?:\s+[\wÀ-ÿ'-]+){0,2}\s*(?:&|\+|\band\b|\bet\b)\s*"
-    r"[\wÀ-ÿ'-]+",
+    r"\b[A-Za-zÀ-ÿ][\wÀ-ÿ'-]*(?:\s+[A-Za-zÀ-ÿ][\wÀ-ÿ'-]*){0,2}\s*"
+    r"(?:&|\+|\band\b|\bet\b|\bor\b|\bou\b)\s*"
+    r"[A-Za-zÀ-ÿ][\wÀ-ÿ'-]*",
     re.IGNORECASE,
+)
+_SLASH_ALTERNATIVE_RE = re.compile(
+    r"\b[A-Za-zÀ-ÿ][\wÀ-ÿ'-]*(?:\s+[A-Za-zÀ-ÿ][\wÀ-ÿ'-]*){0,2}"
+    r"\s*/\s*[A-Za-zÀ-ÿ][\wÀ-ÿ'-]*\b",
+    re.IGNORECASE,
+)
+_MULTIPLICITY_RE = re.compile(
+    r"\b(?:(?:[2-9]|[1-9]\d+)\s*[x×]|[x×]\s*(?:[2-9]|[1-9]\d+)|"
+    r"two|three|four|five|six|seven|eight|nine|ten|deux|trois|quatre|"
+    r"cinq|six|sept|huit|neuf|dix)\b",
+    re.IGNORECASE,
+)
+_PLURAL_CARD_RE = re.compile(r"\b(?:cards|cartes)\b", re.IGNORECASE)
+_CARD_TYPE_VALUES = frozenset(
+    {
+        "CARD",
+        "CARDS",
+        "GRADED_CARD",
+        "POKEMON_CARD",
+        "SINGLE_CARD",
+        "SLAB",
+        "TRADING_CARD",
+    }
+)
+_POKEMON_CATEGORY_VALUES = frozenset(
+    {"POKEMON", "POKEMON_CARD", "POKEMON_CARDS"}
+)
+_COMPATIBLE_CATEGORY_VALUES = _POKEMON_CATEGORY_VALUES | frozenset(
+    {"CARD", "CARDS", "TCG", "TRADING_CARD", "TRADING_CARDS"}
+)
+_CARDINALITY_FIELDS = (
+    "quantity",
+    "cardinality",
+    "cardCount",
+    "cardsCount",
+    "numberOfCards",
+    "itemCount",
+    "itemsCount",
+)
+_NEGATIVE_SCOPE_FLAGS = (
+    "bundle",
+    "collection",
+    "containsMultipleCards",
+    "isBundle",
+    "isCollection",
+    "isLot",
+    "isMultiItem",
+    "isMultiple",
+    "isSealed",
+    "lot",
+    "multiple",
+    "sealed",
+    "sealedProduct",
+)
+_NEGATIVE_SCOPE_TOKENS = frozenset(
+    {
+        "BOOSTER",
+        "BOX",
+        "BREAK",
+        "BUNDLE",
+        "CASE",
+        "COLLECTION",
+        "DISPLAY",
+        "LOT",
+        "MENU",
+        "MULTI_CARD",
+        "MULTIPLE",
+        "MYSTERY",
+        "ORIPA",
+        "PACK",
+        "SEALED",
+        "SEALED_PRODUCT",
+        "SET",
+        "SPOT",
+    }
 )
 _SUPPORTED_CURRENCIES = frozenset({"EUR", "USD", "CHF"})
 
@@ -180,13 +261,136 @@ def _quantity(value: Any) -> Optional[int]:
     return None
 
 
+def _structured_cardinality(
+    payload: Mapping[str, Any],
+    item: Mapping[str, Any],
+    collectible: Mapping[str, Any],
+) -> tuple[Optional[int], bool, bool]:
+    """Return normalized cardinality, proof-of-one, and explicit non-one."""
+
+    values = []
+    for container, fields in (
+        (payload, _CARDINALITY_FIELDS),
+        (item, _CARDINALITY_FIELDS),
+        (
+            collectible,
+            ("cardinality", "cardCount", "cardsCount", "numberOfCards"),
+        ),
+    ):
+        for field in fields:
+            if field not in container:
+                continue
+            normalized = _quantity(container.get(field))
+            if normalized is None:
+                return None, False, False
+            values.append(normalized)
+    if not values or len(set(values)) != 1:
+        return None, False, bool(values and any(value != 1 for value in values))
+    cardinality = values[0]
+    return cardinality, cardinality == 1, cardinality != 1
+
+
+def _scope_token(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return re.sub(r"[^A-Z0-9]+", "_", value.strip().upper()).strip("_")
+
+
+def _is_negative_scope_token(token: str) -> bool:
+    return any(
+        token == negative
+        or token.startswith(f"{negative}_")
+        or token.endswith(f"_{negative}")
+        for negative in _NEGATIVE_SCOPE_TOKENS
+    )
+
+
+def _structured_type_is_individual_card(
+    payload: Mapping[str, Any],
+    item: Mapping[str, Any],
+    collectible: Mapping[str, Any],
+) -> tuple[bool, bool]:
+    type_values = []
+    for container, fields in (
+        (payload, ("itemType", "productType")),
+        (item, ("type", "itemType", "productType")),
+        (collectible, ("type", "itemType", "productType")),
+    ):
+        for field in fields:
+            if field not in container:
+                continue
+            token = _scope_token(container.get(field))
+            if token is None:
+                return False, False
+            type_values.append(token)
+    if not type_values:
+        return False, False
+    type_blocked = any(_is_negative_scope_token(token) for token in type_values)
+    type_compatible = bool(
+        not type_blocked
+        and all(token in _CARD_TYPE_VALUES for token in type_values)
+    )
+
+    category_values = []
+    for container in (payload, item, collectible):
+        if "category" not in container:
+            continue
+        token = _scope_token(container.get("category"))
+        if token is None:
+            return False, type_blocked
+        category_values.append(token)
+    category_compatible = bool(
+        category_values
+        and any(token in _POKEMON_CATEGORY_VALUES for token in category_values)
+        and all(token in _COMPATIBLE_CATEGORY_VALUES for token in category_values)
+    )
+    return type_compatible and category_compatible, type_blocked
+
+
+def _structured_scope_is_negative(
+    payload: Mapping[str, Any],
+    item: Mapping[str, Any],
+    collectible: Mapping[str, Any],
+) -> bool:
+    false_values = (False, 0, "", "0", "false", "no", "none", None)
+    for container in (payload, item, collectible):
+        if "isSingleCard" in container:
+            value = container.get("isSingleCard")
+            normalized = value.strip().casefold() if isinstance(value, str) else value
+            if normalized not in (True, 1, "1", "true", "yes"):
+                return True
+        for field in _NEGATIVE_SCOPE_FLAGS:
+            if field not in container:
+                continue
+            value = container.get(field)
+            normalized = value.strip().casefold() if isinstance(value, str) else value
+            if normalized not in false_values:
+                return True
+        for field in (
+            "format",
+            "itemScope",
+            "listingScope",
+            "listingType",
+            "productFormat",
+            "productKind",
+            "scope",
+        ):
+            if field not in container:
+                continue
+            token = _scope_token(container.get(field))
+            if token is not None and _is_negative_scope_token(token):
+                return True
+    return False
+
+
 def _single_card_scope(
     payload: Mapping[str, Any],
     item: Mapping[str, Any],
     collectible: Mapping[str, Any],
     title: Any,
-    quantity: Optional[int],
-) -> tuple[str, bool]:
+) -> tuple[str, bool, Optional[int]]:
+    """Require structured one-card proof; free text can only veto exactness."""
+
     text_values = (
         title,
         payload.get("body"),
@@ -198,23 +402,36 @@ def _single_card_scope(
     evidence_text = "\n".join(
         str(value) for value in text_values if _nonempty(value)
     )
-    item_type = str(_first(collectible.get("type"), item.get("type"), "")).strip().upper()
-    category = str(_first(collectible.get("category"), item.get("category"), "")).strip().upper()
-    negative_text = bool(
-        _BUNDLE_RE.search(evidence_text) or _MULTIPLE_NAMES_RE.search(evidence_text)
+    quantity, cardinality_is_one, explicit_non_one = _structured_cardinality(
+        payload, item, collectible
     )
-    if negative_text or (quantity is not None and quantity != 1):
-        return "BUNDLE_OR_MULTI", False
+    type_is_card, type_is_blocked = _structured_type_is_individual_card(
+        payload, item, collectible
+    )
+    negative_structured = bool(
+        explicit_non_one
+        or type_is_blocked
+        or _structured_scope_is_negative(payload, item, collectible)
+    )
+    negative_text = bool(
+        _BUNDLE_RE.search(evidence_text)
+        or _MENU_RE.search(evidence_text)
+        or _MULTIPLE_NAMES_RE.search(evidence_text)
+        or _SLASH_ALTERNATIVE_RE.search(evidence_text)
+        or _MULTIPLICITY_RE.search(evidence_text)
+        or _PLURAL_CARD_RE.search(evidence_text)
+    )
+    if negative_structured or negative_text:
+        return "BUNDLE_OR_MULTI", False, quantity
     positive = bool(
-        quantity == 1
-        and item_type in {"CARD", "CARDS"}
-        and category == "POKEMON"
+        cardinality_is_one
+        and type_is_card
         and isinstance(title, str)
         and bool(title.strip())
     )
     if positive:
-        return "SINGLE_CARD", True
-    return "AMBIGUOUS_ITEM_SCOPE", False
+        return "SINGLE_CARD", True, quantity
+    return "AMBIGUOUS_ITEM_SCOPE", False, quantity
 
 
 def _timestamp_value(value: str) -> datetime:
@@ -240,9 +457,8 @@ def normalize_gcc(record: RawSourceRecord) -> NormalizationBatch:
         mode = "UNKNOWN"
 
     title = _first(item.get("title"), payload.get("title"))
-    quantity = _quantity(_first(payload.get("quantity"), item.get("quantity")))
-    item_scope, explicit_single = _single_card_scope(
-        payload, item, collectible, title, quantity
+    item_scope, explicit_single, quantity = _single_card_scope(
+        payload, item, collectible, title
     )
 
     language = _first(collectible.get("language"), item.get("language"))

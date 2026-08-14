@@ -217,20 +217,30 @@ class SaleAndClassificationRemediationTests(unittest.TestCase):
         )
 
     def test_single_card_requires_positive_evidence(self):
+        def titled(value: str) -> dict:
+            return gcc_payload(
+                item={**gcc_payload()["item"], "title": value}
+            )
+
         cases = {
-            "multiple_names": gcc_payload(
-                item={
-                    **gcc_payload()["item"],
-                    "title": "Charizard & Blastoise",
-                }
-            ),
-            "complete_set": gcc_payload(
-                item={**gcc_payload()["item"], "title": "Complete Base Set"}
-            ),
-            "choose_one": gcc_payload(
-                item={**gcc_payload()["item"], "title": "Pokemon choose one"}
-            ),
+            "pick_one": titled("Pick one Pokemon card"),
+            "choose_one": titled("Choose one"),
+            "french_menu": titled("Choisissez une carte"),
+            "english_or": titled("Charizard or Blastoise"),
+            "french_or": titled("Dracaufeu ou Tortank"),
+            "slash_alternative": titled("Charizard / Blastoise"),
+            "ampersand_alternative": titled("Charizard & Blastoise"),
+            "ten_times": titled("10x Charizard cards"),
+            "two_times": titled("2x Charizard"),
+            "english_number_word": titled("Two Charizard cards"),
+            "french_number_word": titled("Deux cartes Dracaufeu"),
+            "plural_cards": titled("Pokemon cards"),
+            "plural_cartes": titled("Cartes Pokemon"),
+            "complete_set": titled("Complete Base Set"),
             "sealed_box": gcc_payload(description="Sealed booster box"),
+            "structured_bundle": gcc_payload(isBundle=True),
+            "structured_sealed": gcc_payload(isSealed=True),
+            "structured_sealed_type": gcc_payload(productType="SEALED_BOX"),
             "string_quantity": gcc_payload(quantity="2"),
             "multi_item_body": gcc_payload(
                 description="Includes Charizard & Blastoise cards"
@@ -248,6 +258,51 @@ class SaleAndClassificationRemediationTests(unittest.TestCase):
         valid_claims = {claim.field_name: claim.value for claim in valid.claims}
         self.assertTrue(valid.exact_identity_eligible)
         self.assertEqual(valid_claims["item_scope"], "SINGLE_CARD")
+
+    def test_authoritative_cardinality_is_required_and_normalized(self):
+        for quantity in (1, "1", "01"):
+            with self.subTest(quantity=quantity, expected="single"):
+                observation = normalize_gcc(
+                    gcc_record(gcc_payload(quantity=quantity))
+                ).observations[0]
+                claims = {claim.field_name: claim.value for claim in observation.claims}
+                self.assertTrue(observation.exact_identity_eligible)
+                self.assertEqual(claims["item_scope"], "SINGLE_CARD")
+
+        for quantity in (2, "2", "02", "10", "10x", "x10", "two", "deux"):
+            with self.subTest(quantity=quantity, expected="non-exact"):
+                observation = normalize_gcc(
+                    gcc_record(gcc_payload(quantity=quantity))
+                ).observations[0]
+                self.assertFalse(observation.exact_identity_eligible)
+                self.assertIn("single_card_scope", observation.unresolved_dimensions)
+
+        missing = gcc_payload()
+        missing.pop("quantity")
+        observation = normalize_gcc(gcc_record(missing)).observations[0]
+        claims = {claim.field_name: claim.value for claim in observation.claims}
+        self.assertFalse(observation.exact_identity_eligible)
+        self.assertEqual(claims["item_scope"], "AMBIGUOUS_ITEM_SCOPE")
+        self.assertIn("single_card_scope", observation.unresolved_dimensions)
+
+        explicit_cardinality = gcc_payload()
+        explicit_cardinality.pop("quantity")
+        explicit_cardinality["cardCount"] = "01"
+        observation = normalize_gcc(
+            gcc_record(explicit_cardinality)
+        ).observations[0]
+        self.assertTrue(observation.exact_identity_eligible)
+
+        missing_type = gcc_payload()
+        missing_type["item"]["collectible"].pop("type")
+        observation = normalize_gcc(gcc_record(missing_type)).observations[0]
+        self.assertFalse(observation.exact_identity_eligible)
+
+        conflicting_counts = gcc_payload(cardCount=2)
+        observation = normalize_gcc(
+            gcc_record(conflicting_counts)
+        ).observations[0]
+        self.assertFalse(observation.exact_identity_eligible)
 
     def test_ambiguous_listing_cannot_inherit_preproven_card_mapping(self):
         listing_id = "mapped-listing"
@@ -270,13 +325,39 @@ class SaleAndClassificationRemediationTests(unittest.TestCase):
             listing_id,
             priceInCents=2_900,
             updatedAt=T1,
-            description="Exact-looking title, but includes Charizard & Blastoise",
         )
+        ambiguous.pop("quantity")
         self.run_record(gcc_record(ambiguous, T3))
         latest = self.kb.connection.execute(
             "SELECT canonical_card_id FROM market_observation ORDER BY observed_at DESC LIMIT 1"
         ).fetchone()
         self.assertIsNone(latest["canonical_card_id"])
+
+    def test_ambiguous_listing_is_retained_as_raw_unresolved_market_evidence(self):
+        payload = gcc_payload("retained-ambiguous")
+        payload.pop("quantity")
+        self.run_record(gcc_record(payload, T2))
+
+        observation = self.kb.connection.execute(
+            "SELECT * FROM market_observation"
+        ).fetchone()
+        source_record = self.kb.connection.execute(
+            "SELECT id FROM source_record WHERE source_native_record_id = ?",
+            (payload["id"],),
+        ).fetchone()
+        resolution = self.kb.connection.execute(
+            "SELECT resolution_state, canonical_card_id FROM identity_resolution"
+        ).fetchone()
+        item_scope = self.kb.connection.execute(
+            "SELECT claimed_value_json FROM field_claim WHERE field_name = 'item_scope'"
+        ).fetchone()
+
+        self.assertEqual(observation["observation_type"], "LISTING_SNAPSHOT")
+        self.assertIsNone(observation["canonical_card_id"])
+        self.assertEqual(resolution["resolution_state"], "UNKNOWN")
+        self.assertIsNone(resolution["canonical_card_id"])
+        self.assertEqual(item_scope["claimed_value_json"], '"AMBIGUOUS_ITEM_SCOPE"')
+        self.assertEqual(self.kb.raw_source_payload(source_record["id"]), payload)
 
 
 class RawPayloadMigrationTests(unittest.TestCase):
