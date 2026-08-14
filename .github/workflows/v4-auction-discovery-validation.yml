@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "v4_auction_item_discovery.py"
+      - "v4_private_auction_coverage.py"
       - "v4_canonical_multimarket.py"
       - "v4_multimarket_safety.py"
       - "compare_auction_discovery.py"
@@ -46,13 +47,14 @@ jobs:
       - name: Compile changed V4 Python files
         run: |
           python -m py_compile v4_auction_item_discovery.py
+          python -m py_compile v4_private_auction_coverage.py
           python -m py_compile compare_auction_discovery.py
           python -m py_compile run_watcher_safe.py
           python -m py_compile v4_canonical_multimarket.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile run_watcher_multimarket.py
 
-      - name: Compare item-level and legacy discovery live
+      - name: Compare augmented and legacy discovery live
         id: compare
         env:
           V4_AUCTION_COMPARE_MINUTES: "720"
