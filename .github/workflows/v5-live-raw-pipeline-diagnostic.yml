@@ -49,7 +49,7 @@ jobs:
             tests_v5.test_source_scout_cmapi_v3 \
             tests_v5.test_source_scout_cmapi_liquid_sentinel -v
 
-      - name: Run four-call Charizard Base Set CMAPI sentinel
+      - name: Run four-call Umbreon VMAX Evolving Skies CMAPI sentinel
         run: python -m v5.source_scout_cmapi_liquid_sentinel
 
       - name: Publish CMAPI liquid sentinel summary
