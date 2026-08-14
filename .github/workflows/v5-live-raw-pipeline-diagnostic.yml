@@ -21,7 +21,6 @@ jobs:
       POKEWALLET_API_KEY: ${{ secrets.POKEWALLET_API_KEY }}
       TCGAPI_DEV_API_KEY: ${{ secrets.TCGAPI_DEV_API_KEY }}
       TCG_CARDMARKET_API_KEY: ${{ secrets.TCG_CARDMARKET_API_KEY }}
-      CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
       CARDTRADER_API_TOKEN: ${{ secrets.CARDTRADER_API_TOKEN }}
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
       SOURCE_SCOUT_PANEL_SIZE: "18"
@@ -52,7 +51,6 @@ jobs:
             v5/source_scout_paid_entrypoint.py \
             v5/source_scout_paid_v2_entrypoint.py \
             v5/source_scout_paid_v3_entrypoint.py \
-            v5/source_scout_cmapi_entrypoint.py \
             v5/neon_source_scout_ingest.py \
             v5/neon_source_scout_ingest_v2.py \
             tests_v5/test_source_scout_benchmark.py \
@@ -61,8 +59,8 @@ jobs:
       - name: Run Source Scout focused tests
         run: python -m unittest tests_v5.test_source_scout_benchmark tests_v5.test_source_scout_entrypoint -v
 
-      - name: Run language-stratified benchmark with bounded CMAPI probe
-        run: python -m v5.source_scout_cmapi_entrypoint
+      - name: Run language-stratified read-only Source Scout benchmark
+        run: python -m v5.source_scout_paid_v3_entrypoint
 
       - name: Persist PokemonPriceTracker evidence to Neon
         if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
