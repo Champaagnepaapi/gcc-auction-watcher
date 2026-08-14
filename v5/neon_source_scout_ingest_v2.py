@@ -80,7 +80,6 @@ def _insert_metric(
             created_at,
         ),
     )
-    inserted = cur.rowcount > 0
 
     cur.execute(
         "SELECT id, lifecycle_state FROM market_observation WHERE idempotency_key = %s",
@@ -90,6 +89,17 @@ def _insert_metric(
     if not row:
         raise RuntimeError(f"market_observation missing after upsert: {source_native_record_id}")
     observation_id, lifecycle_state = str(row[0]), str(row[1])
+
+    # Exact replay of an already completed observation is a no-op. PostgreSQL
+    # executes BEFORE INSERT guards before checking ON CONFLICT, so attempting
+    # to insert the typed fact again under a SEALED parent would raise even
+    # though the unique constraint would ultimately make it a no-op.
+    if lifecycle_state == "SEALED":
+        return False
+    if lifecycle_state != "DRAFT":
+        raise RuntimeError(
+            f"unexpected market_observation lifecycle {lifecycle_state}: {source_native_record_id}"
+        )
 
     # Add the typed fact while the parent observation is still mutable only by sealing.
     cur.execute(
@@ -110,19 +120,19 @@ def _insert_metric(
             sample_size,
         ),
     )
+    fact_inserted = cur.rowcount > 0
 
     # Seal only after the typed fact exists, as enforced by the KB trigger.
-    if lifecycle_state == "DRAFT":
-        cur.execute(
-            """
-            UPDATE market_observation
-               SET lifecycle_state = 'SEALED', sealed_at = %s
-             WHERE id = %s AND lifecycle_state = 'DRAFT'
-            """,
-            (base._now(), observation_id),
-        )
+    cur.execute(
+        """
+        UPDATE market_observation
+           SET lifecycle_state = 'SEALED', sealed_at = %s
+         WHERE id = %s AND lifecycle_state = 'DRAFT'
+        """,
+        (base._now(), observation_id),
+    )
 
-    return inserted
+    return fact_inserted
 
 
 def main() -> int:
