@@ -48,9 +48,11 @@ Le socle P0 ne migre pas `state.json`, ne s’intègre pas au watcher et ne prod
 
 ---
 
-# P1 — Shadow Observation Sidecar (remédiation ciblée, live non activé)
+# P1 — Shadow Observation Sidecar (GREEN, durable shadow autorisé)
 
 Branche : `agent/p1-shadow-observation-sidecar`, créée exactement depuis le P0 GREEN `946f4b7511f966c00b215a34178b183d01712c3e`.
+
+Verdict Red Team final : **GREEN — SAFE FOR DURABLE SHADOW DEPLOYMENT**, audité au SHA `3f208ff1885ed14ad8c5af559cb11fa994aae60f`.
 
 Le package isolé `robot_kb.sidecar` suit la chaîne suivante :
 
@@ -75,6 +77,14 @@ Couverture implémentée :
 - diagnostics : les compteurs reflètent les rejets et comportements réels (`sale_candidates_rejected`, `ambiguous_sale_records`, `duplicate_sale_replays`, `metric_alias_conflicts`, `monetary_facts_rejected`, `crawl_batches_truncated`) ; l’ancien pseudo-compteur constant `fabricated_sales` a été supprimé ;
 - isolation : aucun fichier/entrypoint V4 n’importe le sidecar. Une panne collector/normalizer est arrêtée à la frontière de sa source et n’a aucun chemin synchrone vers scoring, alertes, Fast Lane, achat, bid, checkout, grading ou état V4.
 
+Pilote réel contrôlé du 2026-08-14 :
+
+- la collecte manuelle read-only GCC/TCGdex a été validée ;
+- le pilote GCC contient 25 listings distincts, dont 25/25 se rejouent avec un scope exact `SINGLE_CARD` fondé sur `GCC_SINGLE_COLLECTIBLE_OBJECT` ; les quantités restent `null` et aucune quantité 1 n'est fabriquée ;
+- le pilote TCGdex produit uniquement des `PROVIDER_METRIC_OBSERVATION` ;
+- zéro `SALE_TRANSACTION` fabriquée ;
+- la base `~/robot-pokemon-data/shadow-pilot-2026-08-14.sqlite` reste hors du repository.
+
 Entrée manuelle :
 
 ```text
@@ -82,9 +92,9 @@ python -m robot_kb.sidecar --database /chemin/local.sqlite --gcc-fixture replay.
 python -m robot_kb.sidecar --database /chemin/local.sqlite --tcgdex-fixture replay.json
 ```
 
-Les GET live existent uniquement derrière une intention explicite `--allow-live-read-only` combinée à `--live-gcc ...` ou `--live-tcgdex-card ...`. Le crawl GCC utilise des défauts conservateurs de 50 rows/page, 10 pages et 500 records, avec plafonds stricts de 100/20/2 000, timeout maximal 30 s, intervalle minimal 0,25 s et au plus deux retries sur erreurs transitoires sûres ; un `429 Retry-After` est respecté dans une attente bornée à 30 s. Les valeurs CLI nulles, négatives ou démesurées sont rejetées avant tout réseau. Aucun workflow, cron, scheduler ou dispatch live n’est ajouté. La base pilote réelle `~/robot-pokemon-data/shadow-pilot-2026-08-14.sqlite` reste hors du repository et n'est utilisée qu'en lecture seule pour le replay hors ligne. Les fichiers SQLite runtime (`.db`, `.sqlite`, `.sqlite3` et journaux associés) sont ignorés par Git. SQLite reste local/test/replay ; le chemin de base est configurable via `--database`/`ROBOT_KB_DATABASE`, et un backend durable PostgreSQL devra être autorisé et ajouté à la frontière repository avant déploiement durable.
+Les GET live existent uniquement derrière une intention explicite `--allow-live-read-only` combinée à `--live-gcc ...` ou `--live-tcgdex-card ...`. Le crawl GCC utilise des défauts conservateurs de 50 rows/page, 10 pages et 500 records, avec plafonds stricts de 100/20/2 000, timeout maximal 30 s, intervalle minimal 0,25 s et au plus deux retries sur erreurs transitoires sûres ; un `429 Retry-After` est respecté dans une attente bornée à 30 s. Les valeurs CLI nulles, négatives ou démesurées sont rejetées avant tout réseau. Aucun workflow, cron, scheduler ou dispatch live n’est ajouté. La base pilote réelle reste hors du repository et n'est utilisée qu'en lecture seule pour le replay hors ligne. Les fichiers SQLite runtime (`.db`, `.sqlite`, `.sqlite3` et journaux associés) sont ignorés par Git. SQLite reste local/test/replay ; le chemin de base est configurable via `--database`/`ROBOT_KB_DATABASE`.
 
-**Statut remédiation : NOT GREEN — en attente d’une nouvelle décision Red Team. Statut live : NOT ENABLED.** Aucun appel provider live ni collecte automatique n’a été lancé pendant P1. Prochaine étape obligatoire : nouvelle revue Red Team, corrections supplémentaires si demandées, déclaration GREEN externe, puis autorisation utilisateur explicite avant tout déploiement shadow durable ou activation read-only.
+**Statut final P1 : GREEN. Collecte manuelle contrôlée read-only : VALIDATED. Collecte automatique durable/schedulée : NOT YET DEPLOYED.** La phase suivante est l'ajout d'un backend durable PostgreSQL, la migration contrôlée du pilote, puis l'installation d'un scheduler contrôlé. V4 reste isolé. V5 / PR #8 reste draft et non mergée. Le sidecar ne possède aucun chemin d'achat, bid ou checkout.
 
 ---
 
