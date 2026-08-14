@@ -10,7 +10,8 @@ permissions:
   actions: read
 
 concurrency:
-  group: v4-kb-shadow-ingest
+  # Share the durable-shadow writer lock with the hourly cloud collector.
+  group: robot-kb-cloud-shadow
   cancel-in-progress: false
 
 jobs:
