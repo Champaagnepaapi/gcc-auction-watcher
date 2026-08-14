@@ -39,6 +39,15 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Ensure OCR runtime for mislisted slab fallback
+        shell: bash
+        run: |
+          if ! command -v tesseract >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends tesseract-ocr
+          fi
+          tesseract --version | head -n 1
+
       - name: Ensure Chromium runtime is usable
         shell: bash
         run: |
@@ -116,6 +125,14 @@ jobs:
           V4_POKETRACE_PACING_SECONDS: "0.40"
           V4_POKETRACE_MIN_SALES: "3"
           V4_RAW_REVIEW_TTL_HOURS: "24"
+
+          # Mislisted slab hunter: official grader cert first, image OCR only
+          # when official verification is unavailable/unreadable.
+          V4_MISLISTED_SLAB_HUNTER_ENABLED: "true"
+          V4_MISLISTED_IMAGE_OCR_ENABLED: "true"
+          V4_MISLISTED_CERT_MAX_PER_RUN: "5"
+          V4_MISLISTED_CERT_TIMEOUT_SECONDS: "6"
+          V4_MISLISTED_OCR_TIMEOUT_SECONDS: "8"
 
           EBAY_ENABLED: "true"
           EBAY_MAX_QUERIES_PER_CARD: "2"
