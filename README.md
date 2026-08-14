@@ -116,14 +116,36 @@ Le backend PostgreSQL durable permet la persistance cloud continue des observati
 
 - **Statut : ENABLED**
 - Commit workflow sur `main` : `4d207fd30b1bf6bdc5b25f6b4d5d1edfbafc5602`
-- Cron GitHub Actions : `17 */2 * * *` (toutes les 2 heures à :17 UTC)
+- Cron GitHub Actions : `17 * * * *` (toutes les heures à :17 UTC)
 - Biais et bornes de chaque exécution :
-  * Maximum 25 annonces fixed + 25 annonces auction GCC par run ;
+  * Rotation durable fixed : 4 pages de 100 annonces par run (400 annonces fixed/run) ;
+  * Curseur indépendant persisté (`v4_kb_fixed_rotation_state.json`), avancé uniquement après commit réussi ;
+  * Wrap sécurisé à la page 1 lorsque l'inventaire est épuisé ;
+  * Backup auction : toujours depuis la page 1 `ENDING_SOON` (pas de rotation des auctions) ;
+  * Moissonneur de ventes réelles (`status=SOLD&sortType=MOST_RECENT`) intégré ;
   * Requetes réseau HTTP GET uniquement (`--allow-live-read-only`) ;
   * Aucun input automatique de cartes TCGdex en cron (réservé aux déclenchements manuels) ;
   * Concurrency sérialisée (`group: robot-kb-cloud-shadow`, `cancel-in-progress: false`) ;
   * Timeout borné à 15 minutes ;
   * Strictement passif : aucun achat, bid, checkout ou interaction avec la production V4.
+
+## Moissonneur de ventes GCC SOLD & Hiérarchie de preuves
+
+Issue #58 — branche `agent/kb-sold-harvester-fixed-rotation`.
+
+### Sonde live GCC SOLD (14 août 2026)
+
+- Endpoint direct de liste : `https://api.gradedcardcenter.com/on-sale-items?status=SOLD&sortType=MOST_RECENT` (~146 665 ventes historiques : ~135 437 auctions, ~11 228 fixed).
+- Endpoint direct par item : `https://api.gradedcardcenter.com/on-sale-items/<id>` fournit le statut exact `status` (`SOLD` vs `WAITING_FOR_PAYMENT`), `soldAt` (horodatage UTC ISO-8601) et `priceInCents`.
+- Confirmation de sécurité : les enchères terminées non payées portent explicitement `status="WAITING_FOR_PAYMENT"` et `soldAt=null` ; seul le statut univoque `SOLD` avec `soldAt` et `price > 0` engendre un `SALE_TRANSACTION`.
+
+### Hiérarchie des preuves de prix
+
+1. `exact recent SOLD` (`SALE_TRANSACTION` avec `soldAt` univoque) ;
+2. `older exact SOLD with temporal adjustment` ;
+3. `compatible fixed asks` (`LISTING_SNAPSHOT`) ;
+4. `auction snapshot <=5 min` uniquement lorsqu'aucune vente SOLD n'est disponible (fallback `LISTING_SNAPSHOT`, jamais `SALE_TRANSACTION`) ;
+5. autres snapshots d'enchères actives = signal faible uniquement.
 
 ---
 

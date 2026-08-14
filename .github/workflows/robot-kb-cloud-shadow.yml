@@ -31,23 +31,52 @@ jobs:
     timeout-minutes: 15
     env:
       ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
+      ROTATION_STATE: v4_kb_fixed_rotation_state.json
+      ROTATION_SPOOL: v4_kb_rotation_spool.json
+      ROTATION_MANIFEST: v4_kb_rotation_manifest.json
       TCGDEX_CARD_1: ${{ inputs.tcgdex_card_1 }}
       TCGDEX_CARD_2: ${{ inputs.tcgdex_card_2 }}
       TCGDEX_CARD_3: ${{ inputs.tcgdex_card_3 }}
     steps:
-      - name: Checkout validated P3 shadow candidate
+      - name: Checkout production repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install V4 helper dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Restore independent fixed rotation cursor state
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.ROTATION_STATE }}
+          key: v4-kb-rotation-state-${{ github.run_id }}
+          restore-keys: |
+            v4-kb-rotation-state-
+
+      - name: Collect 4-page fixed rotation batch + auction backup + sold harvest
+        run: |
+          python v4_kb_shadow_bridge.py rotate \
+            --rotation-state "$ROTATION_STATE" \
+            --output-spool "$ROTATION_SPOOL" \
+            --manifest "$ROTATION_MANIFEST" \
+            --page-size 100 \
+            --pages 4
+
+      - name: Checkout validated Robot KB P3 implementation
         uses: actions/checkout@v4
         with:
           ref: 35f550c2006fd8a143b92151e1c7c5dea5f7b86d
+          path: .robot-kb-shadow
           fetch-depth: 1
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements-postgres.txt
-
-      - name: Install sidecar dependencies
+      - name: Install PostgreSQL shadow dependency
+        working-directory: .robot-kb-shadow
         run: python -m pip install -r requirements-postgres.txt
 
       - name: Validate database secret presence
@@ -57,15 +86,14 @@ jobs:
             exit 1
           fi
 
-      - name: Collect bounded GCC listings (GET only)
-        run: >-
-          python -m robot_kb.sidecar
-          --allow-live-read-only
-          --live-gcc fixed
-          --live-gcc auction
-          --page-size 100
-          --max-pages 2
-          --max-records 100
+      - name: Ingest rotated batch into Neon
+        shell: bash
+        run: |
+          observed_at=$(python -c 'import json; print(json.load(open("v4_kb_rotation_manifest.json"))["retrieved_at"])')
+          cd .robot-kb-shadow
+          python -m robot_kb.sidecar \
+            --gcc-fixture "../$ROTATION_SPOOL" \
+            --observed-at "$observed_at"
 
       - name: Collect optional bounded TCGdex cards (GET only)
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.tcgdex_card_1 != '' || inputs.tcgdex_card_2 != '' || inputs.tcgdex_card_3 != '') }}
@@ -74,4 +102,14 @@ jobs:
           if [ -n "$TCGDEX_CARD_1" ]; then arguments+=(--live-tcgdex-card "$TCGDEX_CARD_1"); fi
           if [ -n "$TCGDEX_CARD_2" ]; then arguments+=(--live-tcgdex-card "$TCGDEX_CARD_2"); fi
           if [ -n "$TCGDEX_CARD_3" ]; then arguments+=(--live-tcgdex-card "$TCGDEX_CARD_3"); fi
+          cd .robot-kb-shadow
           python -m robot_kb.sidecar --allow-live-read-only "${arguments[@]}"
+
+      - name: Commit rotation cursor state only after successful ingest
+        run: python v4_kb_shadow_bridge.py commit-rotate --rotation-state "$ROTATION_STATE" --manifest "$ROTATION_MANIFEST"
+
+      - name: Save independent fixed rotation cursor state
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.ROTATION_STATE }}
+          key: v4-kb-rotation-state-${{ github.run_id }}
