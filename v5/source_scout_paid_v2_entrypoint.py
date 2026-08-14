@@ -203,9 +203,10 @@ def pokemonpricetracker_api(
 
 
 def main() -> int:
+    # Only replace the provider function. Do not monkeypatch the base parser
+    # helpers: the paid helper functions intentionally fall back to them, and
+    # replacing them with the paid helpers creates infinite recursion.
     base.pokemonpricetracker_api = pokemonpricetracker_api
-    base._cardmarket_value = paid._cardmarket_value
-    base._graded_from_ppt = paid._graded_from_ppt
     return base.main()
 
 
