@@ -44,13 +44,18 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Compile Source Scout benchmark
-        run: python -m py_compile v5/source_scout_benchmark.py tests_v5/test_source_scout_benchmark.py
+        run: |
+          python -m py_compile \
+            v5/source_scout_benchmark.py \
+            v5/source_scout_entrypoint.py \
+            tests_v5/test_source_scout_benchmark.py \
+            tests_v5/test_source_scout_entrypoint.py
 
       - name: Run Source Scout focused tests
-        run: python -m unittest tests_v5.test_source_scout_benchmark -v
+        run: python -m unittest tests_v5.test_source_scout_benchmark tests_v5.test_source_scout_entrypoint -v
 
       - name: Run read-only same-panel Source Scout benchmark
-        run: python -m v5.source_scout_benchmark
+        run: python -m v5.source_scout_entrypoint
 
       - name: Publish report in workflow summary
         if: always() && hashFiles('source_scout_report.md') != ''
