@@ -48,7 +48,7 @@ Contrats P1 :
 - preuve brute : la migration forward `0004_sidecar_raw_payload.sql` conserve les octets canoniques reconstructibles dans `source_payload`, adressés par SHA-256 et dédupliqués, puis relie immuablement chaque nouveau `source_record` via `source_record_payload`. Les occurrences de retrieval restent séparées ;
 - atomicité : chaque source record et tous ses faits dérivés sont écrits sous un unique transaction/savepoint couvrant source, objet externe, payload, retrieval, observation typée, prix, sujet, claims, résolution et lien d’identité. Toute erreur annule cette unité sans annuler les unités déjà commitées d’autres jobs ;
 - identité : une absence provider ne crée jamais `Unlimited`, non-promo, finish normal, sans stamp, édition, shadow ou langue. `SINGLE_CARD` exige positivement soit une cardinalité générique structurée égale à 1, soit le contrat GCC `GCC_SINGLE_COLLECTIBLE_OBJECT` observé dans les payloads réels ;
-- ventes : un `SALE_TRANSACTION` GCC exige le statut univoque `SOLD`, un champ `soldPrice`/`acceptedOfferPrice`, un champ `soldAt`/`saleOccurredAt` et une chronologie `sale <= source_updated <= observed` lorsque la mise à jour source existe. `COMPLETED`, `SUCCESSFUL`, une fin d’enchère, `finalPrice`, `completedAt`, une disparition ou un ask restent des snapshots non vendus ;
+- ventes : un `SALE_TRANSACTION` GCC exige une preuve finale explicite. Le contrat générique accepte `SOLD` + `soldPrice`/`acceptedOfferPrice` + `soldAt`/`saleOccurredAt`. Le contrat GCC live validé du 14/08/2026 accepte aussi **uniquement dans le scope API explicite `status=SOLD`**, avec un `soldAt` timezone-aware, le couple `priceInCents`/`price` comme prix final. `ENDED`, `COMPLETED`, `SUCCESSFUL`, une simple fin d’enchère, une disparition, un ask ou un `price` sans `SOLD + soldAt` restent des snapshots non vendus ;
 - métriques et devises : les alias TCGdex d’une même métrique/segment sont dédupliqués s’ils concordent et la seule métrique conflictuelle est rejetée sinon, sans perdre les métriques indépendantes ;
 - diagnostics : les compteurs reflètent les rejets et comportements réels (`sale_candidates_rejected`, `ambiguous_sale_records`, `duplicate_sale_replays`, `metric_alias_conflicts`, `monetary_facts_rejected`, `crawl_batches_truncated`) ;
 - isolation : aucun fichier/entrypoint V4 n’importe le sidecar. Une panne collector/normalizer est arrêtée à la frontière de sa source et n’a aucun chemin synchrone vers scoring, alertes, Fast Lane, achat, bid, checkout, grading ou état V4.
@@ -61,7 +61,8 @@ Le backend PostgreSQL durable permet la persistance cloud continue des observati
 
 ## Validation P3 & Idempotence
 
-- Branche de développement et candidate validée : `agent/p3-postgres-durable-shadow` au SHA exact **`35f550c2006fd8a143b92151e1c7c5dea5f7b86d`**.
+- Socle PostgreSQL initial validé : `agent/p3-postgres-durable-shadow` au SHA **`35f550c2006fd8a143b92151e1c7c5dea5f7b86d`**.
+- Head Robot KB après ajout du collecteur GCC SOLD prouvé : **`1d06fe33b6fc640657255e15a8d17251aa02b6ce`**.
 - Migrations natives PostgreSQL :
   * `0001_durable_shadow.sql` (checksum `c5357dc1dcfa99121c993c4d4567aae886990bf52ddcfb7ca93fe9266c04dffd`)
   * `0002_trigger_alias_safety.sql` (checksum `9e7cb1d05ec6be333267434109bb07f0ff5dad73a70863b22eb858ed5f45599e`) : remplace trois fonctions trigger pour supprimer tout risque de collision avec les records PL/pgSQL `OLD`/`NEW`, sans altérer les tables ni les données.
@@ -77,7 +78,7 @@ Le backend PostgreSQL durable permet la persistance cloud continue des observati
 - Seconde migration pilote (contrôle d'idempotence immédiat) : **PASS**, `rows_inserted = 0`.
 - Intégrité vérifiée :
   * 34/34 payloads bruts du pilote original préservés (octets, longueur et SHA-256 identiques) ;
-  * 0 vente fabriquée (`sale_transaction = 0`) ;
+  * 0 vente fabriquée lors de la promotion initiale ;
   * 0 fait orphelin ;
   * 0 observation non scellée ;
   * 0 foreign key invalide ;
@@ -88,15 +89,14 @@ Le backend PostgreSQL durable permet la persistance cloud continue des observati
 
 - Secret GitHub repository configuré : `ROBOT_KB_DATABASE_URL` (ne jamais enregistrer, afficher ou commiter sa valeur).
 - Workflow cloud shadow : `.github/workflows/robot-kb-cloud-shadow.yml`.
-- Le workflow pinne le checkout validé au SHA `35f550c2006fd8a143b92151e1c7c5dea5f7b86d`.
+- Le workflow pinne désormais le checkout Robot KB validé au SHA **`1d06fe33b6fc640657255e15a8d17251aa02b6ce`**.
 - Premier run cloud manuel réel : Run ID **`31817898878`** — **SUCCESS**.
-- Bilan du premier run cloud :
-  * 50 records GCC collectés (25 fixed + 25 auction) ;
-  * 50 observations acceptées ;
-  * 0 échec source ;
-  * 0 `sale_transaction`.
+- Bilan du premier run cloud historique : 50 records GCC collectés (25 fixed + 25 auction), 50 observations acceptées, 0 échec source, 0 `sale_transaction`.
+- Validation live du nouveau scope SOLD : run **`31832063222`**, 5 records `status=SOLD` échantillonnés → **5/5 `SALE_TRANSACTION`**, 0 rejet, 0 échec source. Le payload source brut reste immuable/auditable.
 
-## État courant Neon `main` (après premier run cloud)
+## État Neon historique après premier run cloud
+
+Les anciens compteurs ci-dessous décrivent le premier run historique et ne doivent plus être lus comme l’état courant après activation SOLD :
 
 | Table | Lignes |
 |---|---:|
@@ -115,15 +115,16 @@ Le backend PostgreSQL durable permet la persistance cloud continue des observati
 ## Collecte Shadow Automatique Schedulée — ACTIVE
 
 - **Statut : ENABLED**
-- Commit workflow sur `main` : `4d207fd30b1bf6bdc5b25f6b4d5d1edfbafc5602`
-- Cron GitHub Actions : `17 */2 * * *` (toutes les 2 heures à :17 UTC)
+- Déploiement du collecteur SOLD sur `main` : **`78dd3cb72d42647dc996a9fcbe1e8afe21f10348`** (PR #60).
+- Cron GitHub Actions actuel : **`17 * * * *`**, donc toutes les heures à `:17` UTC.
 - Biais et bornes de chaque exécution :
-  * Maximum 25 annonces fixed + 25 annonces auction GCC par run ;
-  * Requetes réseau HTTP GET uniquement (`--allow-live-read-only`) ;
-  * Aucun input automatique de cartes TCGdex en cron (réservé aux déclenchements manuels) ;
-  * Concurrency sérialisée (`group: robot-kb-cloud-shadow`, `cancel-in-progress: false`) ;
-  * Timeout borné à 15 minutes ;
-  * Strictement passif : aucun achat, bid, checkout ou interaction avec la production V4.
+  * scopes GCC `fixed` + `auction` + **`sold`** ;
+  * maximum 100 records par scope dans l’invocation courante, pagination bornée ;
+  * requêtes réseau HTTP GET uniquement (`--allow-live-read-only`) ;
+  * aucun input automatique de cartes TCGdex en cron (réservé aux déclenchements manuels) ;
+  * concurrency sérialisée (`group: robot-kb-cloud-shadow`, `cancel-in-progress: false`) ;
+  * timeout borné à 15 minutes ;
+  * strictement passif : aucun achat, bid, checkout ou interaction avec la production V4.
 
 ---
 
@@ -177,6 +178,7 @@ Comportement :
 - ne traite que celles arrivant dans la fenêtre finale `≤5 min` ;
 - rafraîchit le prix et le timer du lot GCC exact ;
 - compare le prix courant au `max_recommended` persistant déjà calculé ;
+- affiche l’identité carte relue sur la fiche (nom/personnage, référence, set/série, année/langue/variante si disponibles, grader/grade), et non un heading UI GCC parasite ;
 - envoie au maximum une alerte finale dédupliquée si le lot reste sous le plafond ;
 - aucune mutation de `state.json` ;
 - aucun achat, bid ou checkout.
@@ -234,6 +236,7 @@ Pokémon + carte + 0–100 € + ≤60 min
 
 - Le watcher s’arrête lorsque l’ordre `ENDING_SOON` prouve que l’horizon 60 min est franchi ou lorsque l’inventaire est épuisé.
 - Statut nominal : `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`.
+- Le total GCC `ON_SALE` global n’est pas utilisé comme dénominateur de cette fenêtre lorsque son scope est différent (`DIFFERENT_SCOPE_DIAGNOSTIC`).
 - L’ancien collector auction reste fallback uniquement si API/pagination/ordre/endTime ne permettent plus de prouver la couverture.
 - L’ancien prototype long-wait PR #30 est **supersédé** par la Fast Lane zéro-sleep de PR #45 ; ne pas réintroduire de `sleep` long dans le Main Scanner.
 
@@ -409,7 +412,8 @@ Un run ne peut plus déclarer une couverture globale complète ni un résultat d
 Le module `v4_price_discovery.py` permet d'exploiter la valeur asymétrique de slabs secondaires ou peu liquides :
 1. `CROSSGRADE_OPPORTUNITY` : Slabs secondaires de très haut grade (PCA 10 / BGS 9.5 / CGC 10) bénéficiant d'un spread face au benchmark PSA [DIAGNOSTIC / NON-LIVE en production V4 tant qu'aucun flux crossgrade réel n'est injecté].
 2. `SECONDARY_GRADER_DISCOUNT` : Marché secondaire liquide mais décoté significativement par rapport à la valeur équitable.
-3. `ILLIQUID_PRICE_DISCOVERY` : Liquidité exacte faible sur le slab considéré, mais multiples ancres adjacentes solides (PSA 10 vendu récent, consensus RAW, ventes historiques GCC) prouvant une décote asymétrique majeure.
+3. `SAME_GRADER_MARKET_DISCOUNT` : décote soutenue par des ventes SOLD même grader + même grade ; ne doit pas être étiquetée comme spread inter-grader.
+4. `ILLIQUID_PRICE_DISCOVERY` : Liquidité exacte faible sur le slab considéré, mais multiples ancres adjacentes solides (PSA 10 vendu récent, consensus RAW, ventes historiques GCC) prouvant une décote asymétrique majeure.
 
 ### Ajustement Temporel Multi-Grader (*Temporal Cross-Grader Adjustment*)
 Pour éviter qu'une vente ancienne sur un grader secondaire (ex: SGS 8 vendu 18 € il y a un an) n'ancre artificiellement à la baisse l'estimation actuelle lorsque le marché global (PSA 8) a fortement progressé :
@@ -457,6 +461,16 @@ Concordance forte GCC/externe :
 
 - intervalles prudents `low/high` qui se chevauchent ;
 - ratio des centres dans `0.80–1.25`.
+
+### Sémantique des titres de notification
+
+Depuis PR #56 :
+
+- `GCC_EXTERNAL_CONFIRMED` → **`FORTE OPPORTUNITÉ CONFIRMÉE`** ;
+- `EXTERNAL_PENDING` → **`OPPORTUNITÉ GCC — EXTERNE EN ATTENTE`** ;
+- `GCC_ONLY` → **`OPPORTUNITÉ GCC — EXTERNE NON CONFIRMÉ`**.
+
+Une alerte ne doit donc plus laisser croire qu’un marché externe a confirmé la fair value lorsqu’il est encore pending ou absent.
 
 ## Cache externe et rafraîchissement adaptatif
 
@@ -677,7 +691,7 @@ PR #8 reste draft et non mergée après cette intégration.
 3. `V4 Auction Discovery Validation` — CI + comparaison discovery read-only.
 4. `V4 GCC Coverage Audit` — audit couverture V4.
 5. `PSA Public API Diagnostic` — diagnostic PSA/APR historique.
-6. `Robot KB cloud shadow` — Sidecar shadow durable PostgreSQL schedulé (toutes les 2 h) et manuel.
+6. `Robot KB cloud shadow` — Sidecar shadow durable PostgreSQL schedulé **chaque heure à :17 UTC** et manuel.
 7. `V5 Live Raw Pipeline Diagnostic` — live V5 manuel.
 8. `V5 Catalog Identity Benchmark` — benchmark identité.
 9. `V5 GCC Catalog Refresh` — catalogue cumulatif GCC.
@@ -715,7 +729,9 @@ Avant toute intégration de PR #8 :
 
 ---
 
-# Déploiement V4 du 14 août 2026 — Edge Hunter P0 / PR #53
+# Déploiements du 14 août 2026 — Edge Hunter / notifications / Robot KB SOLD
+
+## PR #53 — Edge Hunter P0
 
 Merge production :
 
@@ -723,29 +739,70 @@ Merge production :
 1d29cbfaa7b17c5a08e6450813f956573cf9ec12
 ```
 
-Le durcissement `v4_edge_hunter_safety.py` est actif dans `run_watcher_multimarket.py` après l'installation du pipeline canonique/multimarché.
+- canonicalisation multilingue avant raisonnement Edge Hunter : FR/EN/JP et principales autres langues convergent vers un code canonique ;
+- `EXACT_*` interdit si l’identité canonique minimale n’est pas résolue ;
+- `SAME_GRADER_MARKET_DISCOUNT` séparé de `SECONDARY_GRADER_DISCOUNT` ;
+- discovery GCC non plafonnée par les budgets de valorisation/providers ;
+- coverage discovery vs économique explicitement séparée.
 
-Corrections de sûreté :
+Validation : **449/449 tests V4 PASS**, compile/diff PASS. Contrôle production `31826408879 / 94851490641` : auction discovery complète sur son scope, `pages_failed=0`, `incomplete_reasons=NONE`.
 
-- canonicalisation de langue avant raisonnement Edge Hunter : `French`, `FR`, `fr`, `français`, `FRA` et `fr-FR` convergent vers `fr`; `LANGUAGE_DIFFERENCE_FRENCH_VS_FR` ne doit plus exister ;
-- un comparable Edge Hunter ne peut être qualifié `EXACT_*` que si l'identité canonique minimale est résolue de façon déterministe : carte TCGdex exacte, set, numéro, langue, grader et grade ; sinon la branche échoue fermée avec diagnostic `IDENTITY_INCOMPLETE | EXACT_COMPS_UNVERIFIED` et ne fabrique pas d'alerte économique exacte ;
-- quand une décote est prouvée par des ventes `SOLD` même grader + même grade, la catégorie est `SAME_GRADER_MARKET_DISCOUNT`, et non `SECONDARY_GRADER_DISCOUNT` ; ce dernier reste réservé aux thèses réellement fondées sur un spread/benchmark de grader secondaire ;
-- les notifications de couverture séparent désormais explicitement le **scope de discovery**, l'**évaluation économique des candidats découverts** et la **couverture globale** ; le total GCC `ON_SALE` plus large n'est jamais utilisé comme dénominateur du scope auction `ENDING_SOON <=60 min` lorsqu'il est `DIFFERENT_SCOPE_DIAGNOSTIC` ;
-- invariant production : **discovery GCC n'est jamais plafonné par les budgets de valorisation ou de providers**. Fixed pagine le scope filtré complet ; auction parcourt `ENDING_SOON` jusqu'à preuve du franchissement de l'horizon ou épuisement puis ajoute le safety-net private. Les caps concernent uniquement les évaluations/enrichissements coûteux en aval.
+## PR #55 — identité dans la Fast Lane ≤5 min
 
-Validation PR #53 :
+Merge production :
 
 ```text
-CI run 31827054528
-validation job 94854209726
+9281c7fdfbda1e680904afec77d623dd2ff86e38
 ```
 
-- **449/449 tests V4 : PASS** ;
-- compilation des entrypoints/modules V4 concernés : PASS ;
-- `git diff --check` : PASS ;
-- comparaison live read-only à horizon diagnostic 720 min : API + private safety-net **55** candidats vs legacy **54**, `primary_only=1`, `legacy_only=0`, `private safety-net failures=0` ; PASS ;
-- aucune action d'achat, bid, checkout, grading payant ou mutation économique ajoutée.
+La notification finale n’utilise plus un heading UI GCC parasite comme `Aucune note plus élevée #...` : elle relit et affiche l’identité réelle disponible de la carte. Économie, prix/timer, état et `max_recommended` inchangés.
 
-Contrôle production de la correction de couverture auction précédente : run `31826408879`, job `94851490641` : fixed discovery `3000/3000 COMPLETE`; auction API `120/120` timers, private safety-net `+9`, `69` candidats `<=60 min`, `pages_failed=0`, `incomplete_reasons=NONE`, `coverage status=COMPLETE`, `expected_total_scope=DIFFERENT_SCOPE_DIAGNOSTIC`. L'ancien affichage trompeur du type `133/14568 | INCOMPLETE` n'est donc plus la sémantique production.
+## PR #56 — marché externe explicite dans les titres
 
-Le futur détecteur visuel de **mislisted slab** (metadata vs image/certificat, scénarios positif/négatif) reste une phase séparée : il ne doit pas être simulé par les correctifs P0 ci-dessus et devra conserver une file/coverage dédiée, fail-closed, sans achat/bid/checkout automatique.
+Merge production :
+
+```text
+93842e061a77b9f1af095b9190a7d14a04832cb0
+```
+
+`FORTE OPPORTUNITÉ CONFIRMÉE` est réservé au chemin réellement confirmé par marché externe ; `EXTERNAL_PENDING` et `GCC_ONLY` sont annoncés comme tels. Aucun changement de valorisation.
+
+## PR #57 — Mislisted Slab Hunter PSA, SAFE-OFF
+
+Merge production du code :
+
+```text
+003f2ec079e13dc6110b05cceb36e5b58191e481
+```
+
+Le module conserve le `serialNumber` GCC et sait classifier un conflit metadata ↔ certificat officiel :
+
+- certificat > metadata → `POSITIVE_GRADE_MISMATCH` / revue manuelle ;
+- certificat < metadata → `NEGATIVE_GRADE_MISMATCH` / blocage fail-closed de la valorisation au grade supérieur ;
+- scénarios FV séparés lorsque des comps GCC sont disponibles ;
+- aucun achat/bid/checkout.
+
+**État production : SAFE-OFF** via `V4_MISLISTED_SLAB_HUNTER_ENABLED=false`. Le test live direct du certificat PSA depuis GitHub Actions (`31832260643`) a retourné un HTTP error/WAF : ne pas contourner l’anti-bot et ne pas activer cette lane tant qu’une source officielle/robuste n’est pas validée. La comparaison **image réelle du slab ↔ metadata** reste la prochaine extension ; le code actuel ne prétend pas faire de vision/OCR live.
+
+## Robot KB — PR #59 + PR #60 : ventes GCC finales prouvées
+
+Merge Robot KB P3 :
+
+```text
+1d06fe33b6fc640657255e15a8d17251aa02b6ce
+```
+
+Déploiement workflow cloud shadow sur `main` :
+
+```text
+78dd3cb72d42647dc996a9fcbe1e8afe21f10348
+```
+
+- collecteur GET-only `sellingTypeGroup=AUCTION&status=SOLD` ;
+- contrat live validé : `status=SOLD` + `soldAt` + `priceInCents/price` = vente finale prouvée GCC ;
+- `ENDED` ou absence de `soldAt` reste un snapshot ;
+- validation live `31832063222` : **5/5** rows SOLD stockées en `SALE_TRANSACTION`, 0 source failure ;
+- le cloud shadow Neon collecte désormais `fixed + auction + sold` toutes les heures à `:17` UTC ;
+- aucune modification de V4/V5, aucun achat/bid/checkout.
+
+**V5 PR #8 reste expérimentale, draft et non mergée.**
