@@ -47,6 +47,34 @@ class MislistedSlabHunterTests(unittest.TestCase):
         self.assertEqual(cert.status, "OK")
         self.assertEqual(cert.grader, "CCC")
 
+    def test_generic_official_parser_covers_common_graders(self) -> None:
+        samples = (
+            ("PCA", "123456789", "PCA 10 Neuf Sup'", 10.0),
+            ("CGC", "1234567999", "Grade\nGem Mint 10", 10.0),
+            ("BGS", "0006608830", "Final Grade\n9.5", 9.5),
+            ("SGC", "1234567890", "Grade\nMINT 9", 9.0),
+            ("SGS", "305000770", "Certification N°305000770\n9.5\nMINT", 9.5),
+            ("CA", "123456789", "Note: 10", 10.0),
+            ("ACE", "217458", "#217458\nM Rayquaza EX\nGrade\nMINT\n9", 9.0),
+            ("AP", "245539", "Overall Grade: 8.5", 8.5),
+            ("GEM", "12345678", "Grade 10", 10.0),
+        )
+        for grader, cert_number, text, expected_grade in samples:
+            with self.subTest(grader=grader):
+                cert = cert_router.parse_official_grade_text(text, cert_number, grader)
+                self.assertEqual(cert.grade, expected_grade)
+                self.assertEqual(cert.status, "OK")
+                self.assertEqual(cert.grader, grader)
+
+    def test_generic_official_parser_does_not_promote_subgrades_or_population(self) -> None:
+        cert = cert_router.parse_official_grade_text(
+            "Certification 123456789\nSurface 9.5\nCorners 9\nPopulation Grade 10",
+            "123456789",
+            "PCA",
+        )
+        self.assertIsNone(cert.grade)
+        self.assertEqual(cert.status, hunter.CERT_GRADE_UNREADABLE)
+
     def test_positive_and_negative_grade_direction(self) -> None:
         positive = hunter.classify_grade_mismatch(8, certificate_grade=9)
         negative = hunter.classify_grade_mismatch(10, certificate_grade=9)
@@ -68,6 +96,10 @@ class MislistedSlabHunterTests(unittest.TestCase):
     def test_api_serial_number_is_preserved_for_cert_lookup(self) -> None:
         result = {"item": {"serialNumber": "13 121 6316"}}
         self.assertEqual(hunter._serial_from_result(result), "131216316")
+
+    def test_sgc_provider_format_reinserts_expected_hyphen(self) -> None:
+        self.assertEqual(cert_router._provider_cert("SGC", "1234567890"), "1234567-890")
+        self.assertEqual(cert_router._provider_cert("SGC", "1234567"), "1234567")
 
     def _lot(self, grade: str, grader: str = "PSA") -> watcher.Lot:
         return watcher.Lot(
@@ -157,6 +189,41 @@ class MislistedSlabHunterTests(unittest.TestCase):
             result = cert_router.resolve_grader_certificate(page, "ccc", "544340143")
         resolver.assert_called_once_with(page, "544340143")
         self.assertEqual(result.grade, 9.0)
+
+    def test_router_routes_supported_graders_to_official_adapter(self) -> None:
+        page = object()
+        cases = (
+            ("PCA", "resolve_pca_certificate", (page, "123456789")),
+            ("CGC", "resolve_cgc_certificate", (page, "123456789")),
+            ("BGS", "resolve_beckett_certificate", ("BGS", "123456789")),
+            ("SGC", "resolve_sgc_certificate", (page, "123456789")),
+            ("SGS", "resolve_sgs_certificate", ("123456789",)),
+            ("CA", "resolve_collectaura_certificate", (page, "123456789")),
+            ("ACE", "resolve_ace_certificate", ("123456789",)),
+            ("GRAAD", "resolve_graad_certificate", ("123456789",)),
+            ("AP", "resolve_ap_certificate", (page, "123456789")),
+            ("GEM", "resolve_gem_certificate", (page, "123456789")),
+        )
+        for grader, resolver_name, expected_args in cases:
+            with self.subTest(grader=grader):
+                cert = hunter.GraderCertificate("123456789", 9.0, status="OK", grader=grader)
+                with patch.object(cert_router, resolver_name, return_value=cert) as resolver:
+                    result = cert_router.resolve_grader_certificate(page, grader, "123456789")
+                resolver.assert_called_once_with(*expected_args)
+                self.assertEqual(result.grade, 9.0)
+
+    def test_collectaura_alias_routes_to_ca_official_adapter(self) -> None:
+        page = object()
+        cert = hunter.GraderCertificate("123456789", 10.0, status="OK", grader="CA")
+        with patch.object(cert_router, "resolve_collectaura_certificate", return_value=cert) as resolver:
+            result = cert_router.resolve_grader_certificate(page, "CollectAura", "123456789")
+        resolver.assert_called_once_with(page, "123456789")
+        self.assertEqual(result.grader, "CA")
+
+    def test_unknown_grader_keeps_ocr_fallback_available(self) -> None:
+        cert = cert_router.resolve_grader_certificate(object(), "UNKNOWN", "123456789")
+        self.assertIsNone(cert.grade)
+        self.assertEqual(cert.status, hunter.CERT_UNAVAILABLE)
 
 
 if __name__ == "__main__":

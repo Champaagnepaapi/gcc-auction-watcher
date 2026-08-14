@@ -837,3 +837,22 @@ Règles :
 Runtime production proposé : `V4_MISLISTED_SLAB_HUNTER_ENABLED=true`, `V4_MISLISTED_IMAGE_OCR_ENABLED=true`, Tesseract installé par le workflow si absent.
 
 Validation PR #63 : run **`31836557339`**, job **`94884024784`** — **466/466 tests V4 PASS**, compilation PASS, `git diff --check` PASS, comparaison discovery live PASS (`legacy_only=0`, `private safety-net failures=0`).
+
+---
+
+# PR #64 — extension des vérificateurs officiels de certificats
+
+Le Mislisted Slab Hunter conserve l'ordre **certificat officiel d'abord, OCR en fallback** et étend les adaptateurs de vérification à : **PCA, CGC, Beckett BGS/BVG/BCCG, SGC, SGS, CollectAura/CA, ACE, GRAAD, AP Grading et GEM**, en plus de **PSA + CCC** déjà présents.
+
+Règles inchangées :
+
+- grade officiel trouvé → comparaison directe avec le grade GCC ;
+- certificat introuvable, bloqué ou grade non lisible → fallback OCR du slab ;
+- grader sans adaptateur officiel robuste → fallback OCR ;
+- OCR seul = preuve non confirmée, `IMAGE_ONLY` / revue manuelle ;
+- mismatch positif = piste de mislisting en revue manuelle ;
+- mismatch négatif = blocage de l'alerte économique au grade GCC surestimé ;
+- parser officiel strict : un subgrade, une population ou un autre nombre ne peut pas devenir silencieusement la note globale ;
+- aucun achat, bid, checkout ou paiement automatique.
+
+Validation PR #64 : run **`31838778755`**, job **`94890915083`** — **482/482 tests V4 PASS**, compilation PASS, `git diff --check` PASS, comparaison discovery live PASS (`legacy_only=0`, `private safety-net failures=0`).
