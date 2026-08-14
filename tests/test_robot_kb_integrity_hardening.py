@@ -451,8 +451,20 @@ class RelationshipIntegrityTests(IntegrityTestCase):
 
     def test_cancel_and_void_edges_cannot_form_cross_type_cycle(self):
         source_id = self.source()
-        first = self.sale(source_id, "same-event", T0)
-        second = self.sale(source_id, "same-event", T1)
+        first = self.kb.append_market_observation(
+            ObservationType.SALE_TRANSACTION,
+            source_id,
+            "same-event",
+            observed_at=T0,
+            fact={"transaction_status": "VOIDED"},
+        )
+        second = self.kb.append_market_observation(
+            ObservationType.SALE_TRANSACTION,
+            source_id,
+            "same-event",
+            observed_at=T1,
+            fact={"transaction_status": "CANCELLED"},
+        )
         self.kb.add_observation_relationship(
             second, first, ObservationRelationshipType.CANCELS
         )
@@ -1157,13 +1169,16 @@ class ScenarioExactnessTests(unittest.TestCase):
 class MigrationAndConnectionTests(unittest.TestCase):
     def copy_migrations(self, destination: Path, versions=(1, 2)) -> None:
         destination.mkdir()
+        filenames = {
+            1: "0001_initial.sql",
+            2: "0002_integrity_hardening.sql",
+            3: "0003_final_integrity_closure.sql",
+        }
         for version in versions:
-            source = migrations.MIGRATION_DIRECTORY / (
-                "0001_initial.sql" if version == 1 else "0002_integrity_hardening.sql"
-            )
+            source = migrations.MIGRATION_DIRECTORY / filenames[version]
             shutil.copy2(source, destination / source.name)
 
-    def test_existing_0001_database_applies_0002_and_seals_complete_fact(self):
+    def test_existing_0001_database_applies_forward_migrations_and_seals_fact(self):
         with tempfile.TemporaryDirectory(prefix="gcc-kb-migration-") as directory:
             root = Path(directory)
             only_0001 = root / "only-0001"
@@ -1213,7 +1228,7 @@ class MigrationAndConnectionTests(unittest.TestCase):
                     [row[0] for row in connection.execute(
                         "SELECT version FROM schema_migration ORDER BY version"
                     )],
-                    [1, 2],
+                    [1, 2, 3],
                 )
             finally:
                 connection.close()

@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple, Union
 
@@ -27,6 +27,9 @@ from .domain import (
 from .migrations import apply_migrations, connect_database, ensure_foreign_keys
 
 
+_SQLITE_INTEGER_MAX = 9_223_372_036_854_775_807
+
+
 class KnowledgeBaseError(RuntimeError):
     pass
 
@@ -41,6 +44,41 @@ class ProvenanceError(KnowledgeBaseError):
 
 class VariantError(KnowledgeBaseError):
     pass
+
+
+def _exact_positive_decimal(value: Any) -> Tuple[str, int, int]:
+    """Return a finite decimal and its exact SQLite-safe rational form."""
+
+    try:
+        rate = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("FX rate must be a decimal") from exc
+    if not rate.is_finite() or rate <= 0:
+        raise ValueError("FX rate must be positive")
+
+    decimal_text = format(rate, "f")
+    integer_text, separator, fractional_text = decimal_text.partition(".")
+    scale = len(fractional_text) if separator else 0
+    significant_digits = (integer_text + fractional_text).lstrip("0")
+    if scale > 18 or len(significant_digits) > 18:
+        raise ValueError("FX rate is outside the supported exact decimal range")
+    numerator = int(integer_text + fractional_text)
+    denominator = 10**scale
+    if numerator > _SQLITE_INTEGER_MAX or denominator > _SQLITE_INTEGER_MAX:
+        raise ValueError("FX rate is outside the supported exact decimal range")
+    return decimal_text, numerator, denominator
+
+
+def _round_half_up_minor(amount_minor: int, numerator: int, denominator: int) -> int:
+    if amount_minor > _SQLITE_INTEGER_MAX:
+        raise ValueError("FX amount exceeds SQLite's exact integer range")
+    product = amount_minor * numerator
+    if product > _SQLITE_INTEGER_MAX:
+        raise ValueError("FX multiplication exceeds SQLite's exact integer range")
+    quotient, remainder = divmod(product, denominator)
+    if remainder >= denominator // 2 + denominator % 2:
+        quotient += 1
+    return quotient
 
 
 @dataclass(frozen=True)
@@ -132,20 +170,10 @@ class FXNormalization:
             raise ValueError("currency must be a three-letter code")
         if self.original_amount_minor < 0 or self.target_amount_minor < 0:
             raise ValueError("FX amounts cannot be negative")
-        try:
-            rate = Decimal(self.fx_rate_decimal)
-        except InvalidOperation as exc:
-            raise ValueError("FX rate must be a decimal") from exc
-        if not rate.is_finite() or rate <= 0:
-            raise ValueError("FX rate must be positive")
-        try:
-            expected_target = int(
-                (Decimal(self.original_amount_minor) * rate).quantize(
-                    Decimal("1"), rounding=ROUND_HALF_UP
-                )
-            )
-        except (InvalidOperation, OverflowError) as exc:
-            raise ValueError("FX rate is outside the supported decimal range") from exc
+        _, numerator, denominator = _exact_positive_decimal(self.fx_rate_decimal)
+        expected_target = _round_half_up_minor(
+            self.original_amount_minor, numerator, denominator
+        )
         if self.target_amount_minor != expected_target:
             raise ValueError(
                 "target amount does not match original amount and decimal FX rate"
@@ -345,6 +373,22 @@ class KnowledgeBase:
         upstream_market_system_id: Optional[str] = None,
         upstream_native_id: Optional[str] = None,
     ) -> str:
+        if (upstream_market_system_id is None) != (upstream_native_id is None):
+            raise KnowledgeBaseError(
+                "upstream marketplace system and native ID must be provided together"
+            )
+        if upstream_market_system_id is not None:
+            upstream = self.connection.execute(
+                "SELECT system_role FROM source_system WHERE id = ?",
+                (upstream_market_system_id,),
+            ).fetchone()
+            if upstream is None or upstream["system_role"] not in {
+                "MARKET",
+                "LISTING_PLATFORM",
+            }:
+                raise KnowledgeBaseError(
+                    "external object upstream system must be a marketplace"
+                )
         existing = self.connection.execute(
             """
             SELECT id, upstream_market_system_id, upstream_native_id
@@ -824,6 +868,22 @@ class KnowledgeBase:
         ).fetchone()
         if allowed is None:
             raise VariantError("variant profile is not allowed for this card family")
+        unknown_applicability = self.connection.execute(
+            """
+            SELECT d.code
+            FROM family_variant_applicability AS a
+            JOIN variant_dimension AS d ON d.id = a.dimension_id
+            WHERE a.card_family_id = ?
+              AND a.applicability_state = 'UNKNOWN'
+            ORDER BY d.code
+            """,
+            (row["card_family_id"],),
+        ).fetchall()
+        if unknown_applicability:
+            raise VariantError(
+                "variant applicability is not closed for dimensions: "
+                + ", ".join(item["code"] for item in unknown_applicability)
+            )
         missing_applicable = self.connection.execute(
             """
             SELECT d.code
@@ -861,6 +921,26 @@ class KnowledgeBase:
             raise VariantError(
                 "variant profile assigns non-applicable dimensions: "
                 + ", ".join(item["code"] for item in forbidden)
+            )
+        unresolved_exact = self.connection.execute(
+            """
+            SELECT d.code
+            FROM family_variant_applicability AS a
+            JOIN variant_dimension AS d ON d.id = a.dimension_id
+            JOIN variant_assignment AS va
+              ON va.profile_id = ? AND va.dimension_id = a.dimension_id
+            JOIN variant_value AS vv ON vv.id = va.value_id
+            WHERE a.card_family_id = ?
+              AND a.applicability_state = 'APPLICABLE'
+              AND vv.code = 'UNKNOWN'
+            ORDER BY d.code
+            """,
+            (variant_profile_id, row["card_family_id"]),
+        ).fetchall()
+        if unresolved_exact:
+            raise VariantError(
+                "exact canonical variant has unresolved applicable dimensions: "
+                + ", ".join(item["code"] for item in unresolved_exact)
             )
         existing = self.connection.execute(
             """
@@ -1260,23 +1340,39 @@ class KnowledgeBase:
         upstream_market_system_id: Optional[str],
         upstream_event_object_id: Optional[str],
     ) -> None:
+        if upstream_market_system_id is None:
+            if upstream_event_object_id is not None:
+                raise KnowledgeBaseError(
+                    "upstream event object requires a declared marketplace"
+                )
+            return
+        upstream = self.connection.execute(
+            "SELECT system_role FROM source_system WHERE id = ?",
+            (upstream_market_system_id,),
+        ).fetchone()
+        if upstream is None or upstream["system_role"] not in {
+            "MARKET",
+            "LISTING_PLATFORM",
+        }:
+            raise KnowledgeBaseError(
+                "observation upstream system must be a marketplace"
+            )
         if upstream_event_object_id is None:
             return
         lineage = self.connection.execute(
             """
-            SELECT e.source_system_id, s.system_role
+            SELECT e.source_system_id, e.upstream_market_system_id
             FROM external_object AS e
-            JOIN source_system AS s ON s.id = e.source_system_id
             WHERE e.id = ?
             """,
             (upstream_event_object_id,),
         ).fetchone()
         if lineage is None or (
             lineage["source_system_id"] != upstream_market_system_id
-            or lineage["system_role"] not in {"MARKET", "LISTING_PLATFORM"}
+            and lineage["upstream_market_system_id"] != upstream_market_system_id
         ):
             raise KnowledgeBaseError(
-                "upstream event object must belong to the declared marketplace"
+                "upstream event object is incompatible with the declared marketplace"
             )
 
     def _validate_revision_target(
@@ -1351,6 +1447,9 @@ class KnowledgeBase:
             )
         price_by_type = {component.component_type: component for component in prices}
         for normalization in fx_normalizations:
+            normalized_rate, _, _ = _exact_positive_decimal(
+                normalization.fx_rate_decimal
+            )
             component = price_by_type.get(normalization.component_type)
             if component is None or (
                 component.knowledge_state != PriceKnowledge.KNOWN
@@ -1374,7 +1473,7 @@ class KnowledgeBase:
                     rate["lifecycle_state"] == "SEALED"
                     and rate["base_currency"] == normalization.original_currency
                     and rate["quote_currency"] == normalization.target_currency
-                    and rate["rate_decimal"] == normalization.fx_rate_decimal
+                    and rate["rate_decimal"] == normalized_rate
                     and rate["effective_date"] == normalization.rate_effective_date
                     and rate["rate_source"] == normalization.rate_source
                 )
@@ -1393,6 +1492,11 @@ class KnowledgeBase:
             else _now()
         )
         normalized_fact = self._normalize_fact(observation_type, fact)
+        content_fact = {
+            key: value
+            for key, value in normalized_fact.items()
+            if key not in {"rate_numerator", "rate_denominator"}
+        }
         price_payload = sorted(
             (
                 {
@@ -1405,7 +1509,15 @@ class KnowledgeBase:
             key=lambda component: component["component_type"],
         )
         fx_payload = sorted(
-            (asdict(normalization) for normalization in fx_normalizations),
+            (
+                {
+                    **asdict(normalization),
+                    "fx_rate_decimal": _exact_positive_decimal(
+                        normalization.fx_rate_decimal
+                    )[0],
+                }
+                for normalization in fx_normalizations
+            ),
             key=lambda normalization: (
                 normalization["component_type"],
                 normalization["target_currency"],
@@ -1424,7 +1536,7 @@ class KnowledgeBase:
             "observed_at": observed,
             "source_updated_at": source_updated,
             "revision_of_observation_id": revision_of_observation_id,
-            "fact": normalized_fact,
+            "fact": content_fact,
             "prices": price_payload,
             "fx_normalizations": fx_payload,
         }
@@ -1524,6 +1636,9 @@ class KnowledgeBase:
                 )
                 price_component_ids[component.component_type] = price_component_id
             for normalization in fx_normalizations:
+                normalized_rate, rate_numerator, rate_denominator = (
+                    _exact_positive_decimal(normalization.fx_rate_decimal)
+                )
                 self.connection.execute(
                     """
                     INSERT INTO fx_normalization(
@@ -1531,8 +1646,9 @@ class KnowledgeBase:
                         original_amount_minor, original_currency,
                         fx_rate_decimal, rate_observation_id, rate_source,
                         rate_effective_date, target_currency,
-                        target_amount_minor, created_at, price_component_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        target_amount_minor, created_at, price_component_id,
+                        rate_numerator, rate_denominator
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         _new_id("fxnorm"),
@@ -1540,7 +1656,7 @@ class KnowledgeBase:
                         normalization.component_type,
                         normalization.original_amount_minor,
                         normalization.original_currency,
-                        normalization.fx_rate_decimal,
+                        normalized_rate,
                         normalization.rate_observation_id,
                         normalization.rate_source,
                         normalization.rate_effective_date,
@@ -1548,6 +1664,8 @@ class KnowledgeBase:
                         normalization.target_amount_minor,
                         _now(),
                         price_component_ids[normalization.component_type],
+                        rate_numerator,
+                        rate_denominator,
                     ),
                 )
             if revision_of_observation_id is not None:
@@ -1592,6 +1710,14 @@ class KnowledgeBase:
                 normalized[field] = _optional_timestamp(
                     normalized[field], field=field
                 )
+        if observation_type == ObservationType.FX_RATE_OBSERVATION:
+            rate_decimal, numerator, denominator = _exact_positive_decimal(
+                normalized["rate_decimal"]
+            )
+            normalized["rate_decimal"] = rate_decimal
+            normalized["rate_numerator"] = numerator
+            normalized["rate_denominator"] = denominator
+            columns = columns + ("rate_numerator", "rate_denominator")
         return {column: normalized[column] for column in columns}
 
     def _insert_fact(
@@ -1601,6 +1727,8 @@ class KnowledgeBase:
         fact: Mapping[str, Any],
     ) -> None:
         table, columns, _ = _FACT_COLUMNS[observation_type]
+        if observation_type == ObservationType.FX_RATE_OBSERVATION:
+            columns = columns + ("rate_numerator", "rate_denominator")
         column_sql = ", ".join(("observation_id",) + columns)
         placeholders = ", ".join("?" for _ in range(len(columns) + 1))
         self.connection.execute(
@@ -1633,14 +1761,23 @@ class KnowledgeBase:
             ObservationRelationshipType.CANCELS,
             ObservationRelationshipType.VOIDS,
         }:
+            required_status = (
+                "CANCELLED"
+                if relationship_type == ObservationRelationshipType.CANCELS
+                else "VOIDED"
+            )
             compatible = self.connection.execute(
                 """
                 SELECT 1
                 FROM market_observation AS action
                 JOIN market_observation AS target ON target.id = ?
+                JOIN sale_transaction AS action_sale
+                  ON action_sale.observation_id = action.id
                 WHERE action.id = ?
                   AND action.lifecycle_state = 'SEALED'
                   AND target.lifecycle_state = 'SEALED'
+                  AND action.observation_type = 'SALE_TRANSACTION'
+                  AND action_sale.transaction_status = ?
                   AND action.observation_type = target.observation_type
                   AND action.source_system_id = target.source_system_id
                   AND action.source_native_record_id = target.source_native_record_id
@@ -1648,11 +1785,28 @@ class KnowledgeBase:
                   AND action.upstream_event_object_id IS target.upstream_event_object_id
                   AND action.canonical_card_id IS target.canonical_card_id
                 """,
-                (to_observation_id, from_observation_id),
+                (to_observation_id, from_observation_id, required_status),
             ).fetchone()
             if compatible is None:
                 raise KnowledgeBaseError(
-                    "cancel/void relationship targets an unrelated market event"
+                    "cancel/void action status or target event is incompatible"
+                )
+            conflicting = self.connection.execute(
+                """
+                SELECT 1 FROM observation_relationship
+                WHERE from_observation_id = ? AND to_observation_id = ?
+                  AND relationship_type IN ('CANCELS', 'VOIDS')
+                  AND relationship_type <> ?
+                """,
+                (
+                    from_observation_id,
+                    to_observation_id,
+                    relationship_type.value,
+                ),
+            ).fetchone()
+            if conflicting is not None:
+                raise KnowledgeBaseError(
+                    "one action cannot both cancel and void the same observation"
                 )
         existing = self.connection.execute(
             """
@@ -1701,6 +1855,45 @@ class KnowledgeBase:
         canonical_card_id: Optional[str] = None,
         link_role: str = "SUBJECT",
     ) -> str:
+        subject_matches = self.connection.execute(
+            """
+            SELECT 1
+            FROM identity_resolution AS r
+            JOIN identity_subject AS subject
+              ON subject.id = r.identity_subject_id
+            JOIN market_observation AS observation ON observation.id = ?
+            WHERE r.id = ?
+              AND (
+                  (
+                      observation.source_record_id IS NOT NULL
+                      AND subject.source_record_id = observation.source_record_id
+                  )
+                  OR (
+                      subject.external_object_id IS NOT NULL
+                      AND (
+                          subject.external_object_id = observation.upstream_event_object_id
+                          OR EXISTS (
+                              SELECT 1 FROM source_record AS record
+                              WHERE record.id = observation.source_record_id
+                                AND record.external_object_id = subject.external_object_id
+                          )
+                          OR EXISTS (
+                              SELECT 1 FROM external_object AS object
+                              WHERE object.id = subject.external_object_id
+                                AND object.source_system_id = observation.source_system_id
+                                AND object.source_native_id =
+                                    observation.source_native_record_id
+                          )
+                      )
+                  )
+              )
+            """,
+            (observation_id, identity_resolution_id),
+        ).fetchone()
+        if subject_matches is None:
+            raise ProvenanceError(
+                "identity resolution subject is unrelated to the observation"
+            )
         if link_role == "SUBJECT":
             if canonical_card_id is not None:
                 raise ProvenanceError(
