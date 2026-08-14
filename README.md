@@ -3,7 +3,7 @@
 > **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
 > Après tout changement important de production, d’architecture V5, de provider, de benchmark ou de workflow, mettre ce README à jour avant de considérer la phase terminée.
 
-## État canonique — 13 août 2026
+## État canonique — 14 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -11,6 +11,7 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 - **V4 sur `main` = production canonique.**
 - **V5 = expérimental, PR #8. Ne jamais merger PR #8 sans autorisation explicite.**
+- **Robot KB durable shadow = actif sur Neon PostgreSQL `main`, strictement GET-only, aucun impact V4.**
 - Pokémon **cartes individuelles uniquement** ; sealed/lots restent hors scope actuel.
 - Discovery V4 : **0–100 €** pour capter les anomalies extrêmes ; `MAX_PRICE=100`.
 - Décote minimale utilisateur : **30 %**, avec seuil adaptatif plus exigeant lorsque les preuves sont faibles.
@@ -18,6 +19,111 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 - Aucun achat, bid, checkout ou grading payant automatique.
 - `AMBIGUOUS` / conflit matériel = fail-closed. Ne jamais relâcher le matching pour améliorer artificiellement la couverture.
 - Une absence de valorisation n’est **pas** un signal négatif : distinguer `pas de marché confirmé` de `mauvaise offre`.
+
+---
+
+# P0 — Card Knowledge Base Foundation (expérimental, hors production)
+
+La branche `agent/p0-card-knowledge-base-foundation` contient le socle isolé `robot_kb/`, gelé GREEN au SHA `946f4b7511f966c00b215a34178b183d01712c3e`. Il n’est importé ni par le watcher V4 ni par ses entrypoints : **aucune décision, valorisation, notification, Fast Lane ou feature flag V4 ne change**.
+
+Principes du socle :
+
+- identité canonique interne (`canonical_set` → `card_family` → `localized_card` → `canonical_card`) ; les IDs TCGdex/GCC/eBay/Cardmarket/TCGplayer/PokeTrace/PSA restent des alias externes ;
+- identité inconnue laissée nullable, avec candidats finis, dimensions non résolues, preuves et conflits conservés ;
+- provenance par claim et par champ, séparant source, méthode de preuve, directness et état de résolution ; une cible de requête n’est pas une preuve et le silence provider ne crée aucun défaut (`Unlimited`, non-promo, finish standard, etc.) ;
+- microvariantes génériques par dimensions/valeurs/profils/assignments et combinaisons autorisées ; Base Set sépare notamment `edition_stamp` de `shadow_treatment` ;
+- grader, grade, qualifier, subgrades et certification portés par l’instance/segment gradé, jamais par l’identité du print commercial ;
+- ledger marché append-only : ventes, snapshots de listings, agrégats providers, populations et taux FX restent des faits distincts ; une correction insère une nouvelle observation reliée par `REVISION_OF`, sans écraser l’historique ;
+- foreign keys, index uniques partiels et triggers imposent l’append-only, la transition unique `DRAFT` → `SEALED`, le fait typé complet, la cohérence sujet/résolution, la clôture des variantes, les relations revision/cancel/void, les normalisations FX exactes et l’absence de faits orphelins.
+
+---
+
+# P1 — Shadow Observation Sidecar (GREEN, durable shadow autorisé)
+
+Le sidecar `robot_kb.sidecar` permet l’ingestion asynchrone et déterministe d’observations de marché réelles (GCC et TCGdex) vers le repository `robot_kb`.
+
+Contrats P1 :
+
+- historique : chaque snapshot/fait est scellé et immuable ; un changement 30 € → 25 € crée deux observations. Une vente économique utilise une identité stable fondée sur la source, le listing, le timestamp de finalisation et le prix/devise final : plusieurs retrievals gardent leur lineage mais ne créent qu’un `SALE_TRANSACTION`. Une finalisation contradictoire du même listing échoue explicitement au lieu de créer une seconde vente silencieuse ;
+- preuve brute : la migration forward `0004_sidecar_raw_payload.sql` conserve les octets canoniques reconstructibles dans `source_payload`, adressés par SHA-256 et dédupliqués, puis relie immuablement chaque nouveau `source_record` via `source_record_payload`. Les occurrences de retrieval restent séparées ;
+- atomicité : chaque source record et tous ses faits dérivés sont écrits sous un unique transaction/savepoint couvrant source, objet externe, payload, retrieval, observation typée, prix, sujet, claims, résolution et lien d’identité. Toute erreur annule cette unité sans annuler les unités déjà commitées d’autres jobs ;
+- identité : une absence provider ne crée jamais `Unlimited`, non-promo, finish normal, sans stamp, édition, shadow ou langue. `SINGLE_CARD` exige positivement soit une cardinalité générique structurée égale à 1, soit le contrat GCC `GCC_SINGLE_COLLECTIBLE_OBJECT` observé dans les payloads réels ;
+- ventes : un `SALE_TRANSACTION` GCC exige le statut univoque `SOLD`, un champ `soldPrice`/`acceptedOfferPrice`, un champ `soldAt`/`saleOccurredAt` et une chronologie `sale <= source_updated <= observed` lorsque la mise à jour source existe. `COMPLETED`, `SUCCESSFUL`, une fin d’enchère, `finalPrice`, `completedAt`, une disparition ou un ask restent des snapshots non vendus ;
+- métriques et devises : les alias TCGdex d’une même métrique/segment sont dédupliqués s’ils concordent et la seule métrique conflictuelle est rejetée sinon, sans perdre les métriques indépendantes ;
+- diagnostics : les compteurs reflètent les rejets et comportements réels (`sale_candidates_rejected`, `ambiguous_sale_records`, `duplicate_sale_replays`, `metric_alias_conflicts`, `monetary_facts_rejected`, `crawl_batches_truncated`) ;
+- isolation : aucun fichier/entrypoint V4 n’importe le sidecar. Une panne collector/normalizer est arrêtée à la frontière de sa source et n’a aucun chemin synchrone vers scoring, alertes, Fast Lane, achat, bid, checkout, grading ou état V4.
+
+---
+
+# P3 — Cloud PostgreSQL Durable Shadow Backend & Neon Production
+
+Le backend PostgreSQL durable permet la persistance cloud continue des observations shadow sans dépendre d'une machine locale.
+
+## Validation P3 & Idempotence
+
+- Branche de développement et candidate validée : `agent/p3-postgres-durable-shadow` au SHA exact **`35f550c2006fd8a143b92151e1c7c5dea5f7b86d`**.
+- Migrations natives PostgreSQL :
+  * `0001_durable_shadow.sql` (checksum `c5357dc1dcfa99121c993c4d4567aae886990bf52ddcfb7ca93fe9266c04dffd`)
+  * `0002_trigger_alias_safety.sql` (checksum `9e7cb1d05ec6be333267434109bb07f0ff5dad73a70863b22eb858ed5f45599e`) : remplace trois fonctions trigger pour supprimer tout risque de collision avec les records PL/pgSQL `OLD`/`NEW`, sans altérer les tables ni les données.
+- Branche de validation Neon : projet `robot-pokemon-kb` (`square-waterfall-62275912`), branche `p3-migration-validation` (`br-noisy-grass-axr6inqe`), base `neondb`.
+- Migration du pilote SQLite historique (`shadow-pilot-2026-08-14.sqlite`, SHA-256 `15f8d165219f2995ec593c7c6a7aeaf42f3fe2029a75c566f8828b56e06ac80a`) : **PASS**.
+- Micro-check d'idempotence indépendant : **PASS** (`rows_inserted = 0` lors de la réexécution réelle, counts et fingerprints rigoureusement identiques, ledger inchangé). La branche de validation est conservée pour audit.
+
+## Promotion Neon Production (`main`)
+
+- Projet : `robot-pokemon-kb` (`square-waterfall-62275912`)
+- Branche Neon de production : `main` (`br-blue-pond-ax68g15k`), base `neondb`.
+- Promotion initiale du pilote : **PASS**, `rows_inserted = 1099`.
+- Seconde migration pilote (contrôle d'idempotence immédiat) : **PASS**, `rows_inserted = 0`.
+- Intégrité vérifiée :
+  * 34/34 payloads bruts du pilote original préservés (octets, longueur et SHA-256 identiques) ;
+  * 0 vente fabriquée (`sale_transaction = 0`) ;
+  * 0 fait orphelin ;
+  * 0 observation non scellée ;
+  * 0 foreign key invalide ;
+  * 45 `provider_metric_observation` ;
+  * Ledger de migration PostgreSQL valide (`0001` + `0002`).
+
+## Collecte Cloud & Secret GitHub Actions
+
+- Secret GitHub repository configuré : `ROBOT_KB_DATABASE_URL` (ne jamais enregistrer, afficher ou commiter sa valeur).
+- Workflow cloud shadow : `.github/workflows/robot-kb-cloud-shadow.yml`.
+- Le workflow pinne le checkout validé au SHA `35f550c2006fd8a143b92151e1c7c5dea5f7b86d`.
+- Premier run cloud manuel réel : Run ID **`31817898878`** — **SUCCESS**.
+- Bilan du premier run cloud :
+  * 50 records GCC collectés (25 fixed + 25 auction) ;
+  * 50 observations acceptées ;
+  * 0 échec source ;
+  * 0 `sale_transaction`.
+
+## État courant Neon `main` (après premier run cloud)
+
+| Table | Lignes |
+|---|---:|
+| `source_payload` | 84 |
+| `source_record` | 84 |
+| `source_record_retrieval` | 103 |
+| `external_object` | 75 |
+| `market_observation` | 145 |
+| `listing_snapshot` | 100 |
+| `sale_transaction` | 0 |
+| `provider_metric_observation` | 45 |
+| `field_claim` | 1180 |
+| `identity_resolution` | 90 |
+| `observation_identity_link` | 145 |
+
+## Collecte Shadow Automatique Schedulée — ACTIVE
+
+- **Statut : ENABLED**
+- Commit workflow sur `main` : `4d207fd30b1bf6bdc5b25f6b4d5d1edfbafc5602`
+- Cron GitHub Actions : `17 */2 * * *` (toutes les 2 heures à :17 UTC)
+- Biais et bornes de chaque exécution :
+  * Maximum 25 annonces fixed + 25 annonces auction GCC par run ;
+  * Requetes réseau HTTP GET uniquement (`--allow-live-read-only`) ;
+  * Aucun input automatique de cartes TCGdex en cron (réservé aux déclenchements manuels) ;
+  * Concurrency sérialisée (`group: robot-kb-cloud-shadow`, `cancel-in-progress: false`) ;
+  * Timeout borné à 15 minutes ;
+  * Strictement passif : aucun achat, bid, checkout ou interaction avec la production V4.
 
 ---
 
@@ -576,9 +682,10 @@ PR #8 reste draft et non mergée après cette intégration.
 3. `V4 Auction Discovery Validation` — CI + comparaison discovery read-only.
 4. `V4 GCC Coverage Audit` — audit couverture V4.
 5. `PSA Public API Diagnostic` — diagnostic PSA/APR historique.
-6. `V5 Live Raw Pipeline Diagnostic` — live V5 manuel.
-7. `V5 Catalog Identity Benchmark` — benchmark identité.
-8. `V5 GCC Catalog Refresh` — catalogue cumulatif GCC.
+6. `Robot KB cloud shadow` — Sidecar shadow durable PostgreSQL schedulé (toutes les 2 h) et manuel.
+7. `V5 Live Raw Pipeline Diagnostic` — live V5 manuel.
+8. `V5 Catalog Identity Benchmark` — benchmark identité.
+9. `V5 GCC Catalog Refresh` — catalogue cumulatif GCC.
 
 Éviter les workflows temporaires/redondants lorsqu’un workflow existant suffit.
 
