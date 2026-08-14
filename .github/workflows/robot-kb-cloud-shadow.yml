@@ -16,7 +16,7 @@ on:
         required: false
         type: string
   schedule:
-    - cron: "17 */2 * * *"
+    - cron: "17 * * * *"
 
 permissions:
   contents: read
@@ -63,9 +63,9 @@ jobs:
           --allow-live-read-only
           --live-gcc fixed
           --live-gcc auction
-          --page-size 25
-          --max-pages 1
-          --max-records 25
+          --page-size 100
+          --max-pages 2
+          --max-records 100
 
       - name: Collect optional bounded TCGdex cards (GET only)
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.tcgdex_card_1 != '' || inputs.tcgdex_card_2 != '' || inputs.tcgdex_card_3 != '') }}
