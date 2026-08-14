@@ -84,13 +84,13 @@ def pokemonpricetracker_api(
             anchor_only = True
 
         if language == "ja":
-            search_text = str(identity.card_number or "")
+            search_text = " ".join(filter(None, (code, identity.card_number)))
         else:
             search_text = " ".join(filter(None, (identity.card_name, identity.card_number)))
 
         params: dict[str, object] = {
             "search": search_text,
-            "setName": identity.set or "",
+            "setName": code if language == "ja" else (identity.set or ""),
             "limit": 10,
         }
         if language == "ja":
