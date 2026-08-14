@@ -1,0 +1,30 @@
+name: Mislisted slab PSA cert live validation
+
+on:
+  push:
+    branches:
+      - agent/v4-mislisted-slab-hunter
+
+permissions:
+  contents: read
+
+jobs:
+  validate-cert-read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Resolve known PSA certificate without enabling production hunter
+        run: |
+          python - <<'PY'
+          from v4_mislisted_slab_hunter import resolve_psa_certificate
+          cert = resolve_psa_certificate('131216316')
+          print(f'CERT_STATUS={cert.status}')
+          print(f'CERT_GRADE={cert.grade}')
+          if cert.status != 'OK' or cert.grade != 10.0:
+              raise SystemExit(1)
+          PY
