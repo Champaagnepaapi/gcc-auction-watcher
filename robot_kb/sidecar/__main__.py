@@ -20,7 +20,10 @@ from .collectors import (
     load_tcgdex_fixture,
     utc_now,
 )
+from .final_sales import GCCCompletedSalesCollector
+from .gcc_contract import normalize_gcc_source_contract
 from .models import CollectionResult
+from .normalizers import normalize_tcgdex
 from .persistence import ShadowKnowledgePersistence
 from .runner import ShadowSidecar
 
@@ -59,9 +62,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-gcc",
         action="append",
-        choices=("fixed", "auction"),
+        choices=("fixed", "auction", "sold"),
         default=[],
-        help="manually fetch one GCC inventory mode",
+        help=(
+            "manually fetch one GCC scope; sold requests only explicit status=SOLD "
+            "rows and never infers a sale from an ended auction"
+        ),
     )
     parser.add_argument(
         "--live-tcgdex-card",
@@ -124,18 +130,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
 
     gcc_collector = GCCMarketplaceCollector()
+    sold_collector = GCCCompletedSalesCollector(gcc_collector)
     for mode in args.live_gcc:
-        jobs.append(
-            (
-                f"gcc-live:{mode}",
-                lambda mode=mode: gcc_collector.collect(
-                    mode,
-                    page_size=args.page_size,
-                    max_pages=args.max_pages,
-                    max_records=args.max_records,
-                ),
+        if mode == "sold":
+            jobs.append(
+                (
+                    "gcc-live:sold",
+                    lambda: sold_collector.collect(
+                        page_size=args.page_size,
+                        max_pages=args.max_pages,
+                        max_records=args.max_records,
+                    ),
+                )
             )
-        )
+        else:
+            jobs.append(
+                (
+                    f"gcc-live:{mode}",
+                    lambda mode=mode: gcc_collector.collect(
+                        mode,
+                        page_size=args.page_size,
+                        max_pages=args.max_pages,
+                        max_records=args.max_records,
+                    ),
+                )
+            )
     tcgdex_collector = TCGdexCollector()
     for specification in args.live_tcgdex_card:
         language, separator, card_id = specification.partition(":")
@@ -152,7 +171,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     database_target = os.getenv("ROBOT_KB_DATABASE_URL") or args.database
     with KnowledgeBase.open(database_target) as knowledge_base:
-        sidecar = ShadowSidecar(ShadowKnowledgePersistence(knowledge_base))
+        sidecar = ShadowSidecar(
+            ShadowKnowledgePersistence(knowledge_base),
+            normalizers={
+                "gcc": normalize_gcc_source_contract,
+                "tcgdex": normalize_tcgdex,
+            },
+        )
         diagnostics = sidecar.run_sources(jobs)
     print(json.dumps(diagnostics.as_dict(), indent=2, sort_keys=True))
     return 1 if diagnostics.source_failures else 0
