@@ -11,6 +11,7 @@ from run_watcher_safe import (
 from v4_auction_item_discovery import install_v4_auction_item_discovery
 from v4_auction_last_chance import install_fast_lane_notification_guard
 from v4_canonical_multimarket import install_canonical_multimarket_pipeline
+from v4_edge_hunter_safety import install_v4_edge_hunter_safety
 from v4_kb_shadow_bridge import (
     flush_capture_if_configured,
     install_v4_kb_shadow_capture,
@@ -29,6 +30,9 @@ if __name__ == "__main__":
     install_current_auction_discovery_diagnostics()
     install_canonical_multimarket_pipeline()
     install_multimarket_safety_hardening()
+    # Install after the canonical/multimarket pipeline so these guards wrap the
+    # final Edge Hunter functions rather than being overwritten by an installer.
+    install_v4_edge_hunter_safety()
     install_fast_lane_notification_guard()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
