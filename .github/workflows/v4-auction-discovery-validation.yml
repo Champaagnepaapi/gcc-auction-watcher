@@ -7,6 +7,7 @@ on:
     paths:
       - "v4_auction_item_discovery.py"
       - "v4_canonical_multimarket.py"
+      - "v4_kb_shadow_bridge.py"
       - "v4_multimarket_safety.py"
       - "compare_auction_discovery.py"
       - "run_watcher_safe.py"
@@ -14,6 +15,7 @@ on:
       - "watcher.py"
       - "tests/**"
       - ".github/workflows/watcher.yml"
+      - ".github/workflows/v4-kb-shadow-ingest.yml"
       - ".github/workflows/v4-auction-discovery-validation.yml"
 
 permissions:
@@ -49,6 +51,7 @@ jobs:
           python -m py_compile compare_auction_discovery.py
           python -m py_compile run_watcher_safe.py
           python -m py_compile v4_canonical_multimarket.py
+          python -m py_compile v4_kb_shadow_bridge.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile run_watcher_multimarket.py
 
