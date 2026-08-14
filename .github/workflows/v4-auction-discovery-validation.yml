@@ -9,6 +9,7 @@ on:
       - "v4_private_auction_coverage.py"
       - "v4_kb_shadow_bridge.py"
       - "v4_canonical_multimarket.py"
+      - "v4_edge_hunter_safety.py"
       - "v4_multimarket_safety.py"
       - "compare_auction_discovery.py"
       - "run_watcher_safe.py"
@@ -54,6 +55,7 @@ jobs:
           python -m py_compile compare_auction_discovery.py
           python -m py_compile run_watcher_safe.py
           python -m py_compile v4_canonical_multimarket.py
+          python -m py_compile v4_edge_hunter_safety.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile run_watcher_multimarket.py
 
