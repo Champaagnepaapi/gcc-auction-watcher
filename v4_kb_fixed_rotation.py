@@ -161,8 +161,20 @@ def fetch_fixed_rotation_batch(
                 collected_rows.append(dict(r))
                 valid_page_records += 1
 
-        if results and valid_page_records == 0:
-            raise RotationError(f"Page {page_to_fetch} contained results but 0 valid records")
+        if not results:
+            if page_to_fetch <= total_pages_seen:
+                raise RotationError(
+                    f"Page {page_to_fetch} returned empty results within known inventory "
+                    f"(total_pages_seen={total_pages_seen})"
+                )
+            # Valid wrap/end condition: refreshed count proves page is beyond current inventory
+            current_page = 1
+            continue
+
+        if valid_page_records == 0:
+            raise RotationError(
+                f"Page {page_to_fetch} contained results but 0 valid records"
+            )
 
         # Determine next page in sequence
         next_page = info.get("nextPage")

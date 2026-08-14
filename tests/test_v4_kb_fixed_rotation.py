@@ -250,6 +250,82 @@ class FixedRotationTests(unittest.TestCase):
             current_state = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(current_state["last_page"], 2)
 
+    def test_empty_results_within_known_inventory_raises_rotation_error(self):
+        """Regression test: empty results within known page range (page <= total_pages_seen) fails."""
+        def fake_get(url: str, params: Mapping[str, Any] = None, **kwargs: Any) -> FakeResponse:
+            page = params.get("page", 1) if params else 1
+            if page == 3:
+                return FakeResponse({
+                    "info": {"currentPage": 3, "nextPage": 4, "counts": {"fixedPriceCount": 6800}},
+                    "results": [],
+                })
+            return FakeResponse({
+                "info": {"currentPage": page, "nextPage": page + 1, "counts": {"fixedPriceCount": 6800}},
+                "results": [fake_gcc_row(f"p{page}-i1")],
+            })
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_file = root / "state.json"
+            state_file.write_text(
+                json.dumps({"schema_version": 1, "last_page": 0, "total_pages_seen": 68}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(rotation.RotationError) as ctx:
+                rotation.fetch_fixed_rotation_batch(
+                    state_file,
+                    root / "fixture.json",
+                    root / "manifest.json",
+                    pages_per_run=4,
+                    http_get=fake_get,
+                )
+
+            self.assertIn("empty results within known inventory", str(ctx.exception))
+            current_state = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(current_state["last_page"], 0)
+
+    def test_empty_results_beyond_refreshed_count_accepts_wrap(self):
+        """Accept empty results only when refreshed counts prove page is beyond current inventory."""
+        calls: list[int] = []
+
+        def fake_get(url: str, params: Mapping[str, Any] = None, **kwargs: Any) -> FakeResponse:
+            page = params.get("page", 1) if params else 1
+            calls.append(page)
+            if page == 11:
+                # Count shrank: 800 items = 8 pages, so page 11 is beyond current inventory
+                return FakeResponse({
+                    "info": {"currentPage": 11, "nextPage": None, "counts": {"fixedPriceCount": 800}},
+                    "results": [],
+                })
+            return FakeResponse({
+                "info": {"currentPage": page, "nextPage": page + 1, "counts": {"fixedPriceCount": 800}},
+                "results": [fake_gcc_row(f"p{page}-i1")],
+            })
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_file = root / "state.json"
+            # State starts with last_page=10, so next requested page is 11
+            state_file.write_text(
+                json.dumps({"schema_version": 1, "last_page": 10, "total_pages_seen": 12}),
+                encoding="utf-8",
+            )
+
+            manifest = rotation.fetch_fixed_rotation_batch(
+                state_file,
+                root / "fixture.json",
+                root / "manifest.json",
+                pages_per_run=4,
+                http_get=fake_get,
+            )
+
+            # Page 11 empty accepted as wrap -> fetches pages 1, 2, 3, 4
+            self.assertEqual(calls, [11, 1, 2, 3, 4])
+            self.assertEqual(manifest["last_page"], 4)
+            self.assertEqual(manifest["pages_fetched"], 4)
+            self.assertEqual(manifest["total_pages_seen"], 8)
+
     def test_failed_neon_ingest_does_not_advance_cursor(self):
         def fake_get(url: str, params: Mapping[str, Any] = None, **kwargs: Any) -> FakeResponse:
             page = params.get("page", 1) if params else 1
