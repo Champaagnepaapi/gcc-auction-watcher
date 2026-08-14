@@ -14,6 +14,7 @@ from v4_auction_item_discovery import (
     _ORIGINAL_COLLECT_LOTS_FROM_LISTING,
     discover_auction_api_lots,
 )
+from v4_private_auction_coverage import discover_private_auction_lots
 
 
 def write_output(name: str, value: object) -> None:
@@ -88,15 +89,24 @@ def main() -> int:
         legacy_page = context.new_page()
         legacy_page.set_default_timeout(watcher.TEXT_TIMEOUT)
         legacy_page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
+
+        private_result = discover_private_auction_lots(
+            legacy_page, max_minutes=horizon
+        )
+        private_ids = {
+            lot.url
+            for lot in private_result.lots
+            if lot.minutes_to_end is not None and lot.minutes_to_end <= horizon
+        }
+        primary_ids.update(private_ids)
+
         legacy_lots = collect_legacy(legacy_page, horizon)
 
-        # The API snapshot is taken first, while the legacy collector needs tens
-        # of seconds to open all sale pages. Comparing both at the same numeric
-        # horizon therefore creates a deterministic boundary race: a lot can be
-        # >H at the API snapshot and become <=H before legacy reads it. Restrict
-        # the later legacy sample to a horizon that was certainly already inside
-        # H at the earlier API snapshot. One full minute is always reserved to
-        # account for integer countdown rounding.
+        # The API snapshot is taken first, while the private safety net and full
+        # legacy collector need tens of seconds. Restrict the later legacy sample
+        # to a horizon that was certainly already inside H at the earlier API
+        # snapshot. One full minute is always reserved for integer countdown
+        # rounding.
         elapsed_seconds = max(0.0, monotonic() - primary_snapshot_finished)
         boundary_margin_minutes = max(1, ceil(elapsed_seconds / 60.0))
         legacy_comparable_horizon = max(0, horizon - boundary_margin_minutes)
@@ -116,7 +126,10 @@ def main() -> int:
     print(f"primary rows seen: {primary_result.rows_seen}", flush=True)
     print(f"primary timers parsed: {primary_result.timers_parsed}", flush=True)
     print(f"primary threshold crossed: {str(primary_result.threshold_crossed).lower()}", flush=True)
-    print(f"primary candidates <= {horizon} min: {len(primary_ids)}", flush=True)
+    print(f"private sales checked: {private_result.private_sales_seen}", flush=True)
+    print(f"private candidates <= {horizon} min: {len(private_ids)}", flush=True)
+    print(f"private safety-net failures: {private_result.failures}", flush=True)
+    print(f"augmented candidates <= {horizon} min: {len(primary_ids)}", flush=True)
     print(
         "legacy comparison horizon: "
         f"{legacy_comparable_horizon} min "
@@ -146,16 +159,27 @@ def main() -> int:
     write_output("legacy_unresolved", len(legacy_unresolved))
 
     if not primary_result.complete:
-        print(f"FAIL: primary discovery incomplete: {primary_result.reason}", flush=True)
+        print(f"FAIL: primary API discovery incomplete: {primary_result.reason}", flush=True)
         return 1
     if primary_result.scope_status != PRIMARY_SCOPE_STATUS:
-        print("FAIL: unexpected primary scope status", flush=True)
+        print("FAIL: unexpected primary API scope status", flush=True)
+        return 1
+    if private_result.failures:
+        print("FAIL: private-auction safety net had page failures", flush=True)
         return 1
     if legacy_only:
-        print("FAIL: API discovery missed candidate(s) already inside the common-time legacy horizon", flush=True)
+        print(
+            "FAIL: augmented discovery missed candidate(s) already inside the "
+            "common-time legacy horizon",
+            flush=True,
+        )
         return 1
 
-    print("PASS: API item-level discovery is a superset of legacy at a common-time horizon", flush=True)
+    print(
+        "PASS: API + private-auction safety net is a superset of legacy at a "
+        "common-time horizon",
+        flush=True,
+    )
     return 0
 
 
