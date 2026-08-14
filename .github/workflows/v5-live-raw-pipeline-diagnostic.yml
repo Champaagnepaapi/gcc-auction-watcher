@@ -7,13 +7,25 @@ permissions:
   contents: read
 
 # Branch-local Source Scout override.
-# Four-call CMAPI liquid-card sentinel only; main and PR #8 remain untouched.
+# main and PR #8 keep their existing V5 live diagnostic unchanged.
+# CMAPI remains explicitly disabled in the routine benchmark after the bounded validation.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     env:
-      CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      JUSTTCG_API_KEY: ${{ secrets.JUSTTCG_API_KEY }}
+      POKEWALLET_API_KEY: ${{ secrets.POKEWALLET_API_KEY }}
+      TCGAPI_DEV_API_KEY: ${{ secrets.TCGAPI_DEV_API_KEY }}
+      TCG_CARDMARKET_API_KEY: ${{ secrets.TCG_CARDMARKET_API_KEY }}
+      CARDTRADER_API_TOKEN: ${{ secrets.CARDTRADER_API_TOKEN }}
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      SOURCE_SCOUT_PANEL_SIZE: "18"
+      SOURCE_SCOUT_ENABLE_CMAPI: "false"
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
@@ -31,39 +43,45 @@ jobs:
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Compile bounded CMAPI liquid sentinel
+      - name: Compile Source Scout benchmark
         run: |
           python -m py_compile \
             v5/source_scout_benchmark.py \
-            v5/source_scout_cmapi_v2_entrypoint.py \
-            v5/source_scout_cmapi_v3_entrypoint.py \
-            v5/source_scout_cmapi_liquid_sentinel.py \
+            v5/source_scout_entrypoint.py \
+            v5/source_scout_language_entrypoint.py \
+            v5/source_scout_paid_entrypoint.py \
+            v5/source_scout_paid_v2_entrypoint.py \
+            v5/source_scout_paid_v3_entrypoint.py \
+            v5/source_scout_paid_v4_entrypoint.py \
+            v5/neon_source_scout_ingest.py \
+            v5/neon_source_scout_ingest_v2.py \
             tests_v5/test_source_scout_benchmark.py \
-            tests_v5/test_source_scout_cmapi_v3.py \
-            tests_v5/test_source_scout_cmapi_liquid_sentinel.py
+            tests_v5/test_source_scout_entrypoint.py
 
-      - name: Run CMAPI focused safety and parser tests
-        run: |
-          python -m unittest \
-            tests_v5.test_source_scout_benchmark \
-            tests_v5.test_source_scout_cmapi_v3 \
-            tests_v5.test_source_scout_cmapi_liquid_sentinel -v
+      - name: Run Source Scout focused tests
+        run: python -m unittest tests_v5.test_source_scout_benchmark tests_v5.test_source_scout_entrypoint -v
 
-      - name: Run four-call Umbreon VMAX Evolving Skies CMAPI sentinel
-        run: python -m v5.source_scout_cmapi_liquid_sentinel
+      - name: Run throttled language-stratified read-only Source Scout benchmark
+        run: python -m v5.source_scout_paid_v4_entrypoint
 
-      - name: Publish CMAPI liquid sentinel summary
-        if: always() && hashFiles('cmapi_liquid_sentinel.md') != ''
+      - name: Persist PokemonPriceTracker evidence to Neon
+        if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
+        run: python -m v5.neon_source_scout_ingest_v2
+
+      - name: Publish report in workflow summary
+        if: always() && hashFiles('source_scout_report.md') != ''
         shell: bash
-        run: cat cmapi_liquid_sentinel.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat source_scout_report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload sanitized CMAPI liquid sentinel evidence
-        if: always() && hashFiles('cmapi_liquid_sentinel.json') != ''
+      - name: Upload Source Scout reports and provider evidence
+        if: always() && hashFiles('source_scout_report.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: cmapi-liquid-sentinel-${{ github.run_id }}
+          name: source-scout-report-${{ github.run_id }}
           path: |
-            cmapi_liquid_sentinel.json
-            cmapi_liquid_sentinel.md
+            source_scout_report.json
+            source_scout_report.md
+            pokemonpricetracker_evidence.json
+            pokemonpricetracker_probe.json
           if-no-files-found: error
           retention-days: 14
