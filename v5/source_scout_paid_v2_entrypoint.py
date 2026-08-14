@@ -11,6 +11,7 @@ from . import source_scout_paid_entrypoint as paid
 
 
 PPT_EVIDENCE: list[dict[str, object]] = []
+PPT_JP_PROBES: list[dict[str, object]] = []
 
 
 def _utc_now() -> str:
@@ -21,20 +22,40 @@ def _set_code(card: scout.PanelCard) -> str:
     return str(card.tcgdex_id or "").split("-", 1)[0].strip()
 
 
-def _set_ok(expected: object, actual: object, code: str = "") -> bool:
+def _row_set_values(row: Mapping[str, object]) -> list[object]:
+    values: list[object] = []
+    for key in ("setName", "set_name", "setId", "set_id", "setCode", "set_code", "set"):
+        value = row.get(key)
+        if isinstance(value, Mapping):
+            for nested_key in ("id", "name", "code", "setId", "setCode"):
+                nested = value.get(nested_key)
+                if nested not in (None, ""):
+                    values.append(nested)
+        elif value not in (None, ""):
+            values.append(value)
+    return values
+
+
+def _set_ok(expected: object, actual_values: Sequence[object], code: str = "") -> bool:
     left = scout.norm(expected)
-    right = scout.norm(actual)
-    if not left or not right:
-        return False
-    if left == right or right.endswith(left) or left.endswith(right):
-        return True
     code_norm = scout.norm(code)
-    if code_norm and code_norm in right.split():
-        return True
-    try:
-        return scout._set_similarity(expected, actual, None) >= 0.86
-    except Exception:
+    if not left and not code_norm:
         return False
+    for actual in actual_values:
+        right = scout.norm(actual)
+        if not right:
+            continue
+        if code_norm and (right == code_norm or code_norm in right.split()):
+            return True
+        if left and (left == right or right.endswith(left) or left.endswith(right)):
+            return True
+        if left:
+            try:
+                if scout._set_similarity(expected, actual, None) >= 0.86:
+                    return True
+            except Exception:
+                pass
+    return False
 
 
 def _match(
@@ -47,12 +68,11 @@ def _match(
     exact: list[Mapping[str, object]] = []
     for row in rows:
         name = row.get("name")
-        set_name = row.get("setName") or row.get("set_name")
         number = row.get("cardNumber") or row.get("number")
         if not ignore_name:
             if not name or scout._normalize_card_name(name) != scout._normalize_card_name(identity.card_name):
                 continue
-        if identity.set and not _set_ok(identity.set, set_name, set_code):
+        if identity.set and not _set_ok(identity.set, _row_set_values(row), set_code):
             continue
         if identity.card_number and not scout.number_ok(identity.card_number, number):
             continue
@@ -60,16 +80,32 @@ def _match(
     return exact
 
 
+def _jp_candidate_summary(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    for row in rows[:20]:
+        summaries.append(
+            {
+                "name": row.get("name"),
+                "cardNumber": row.get("cardNumber") or row.get("number"),
+                "set_values": [str(value) for value in _row_set_values(row)],
+                "tcgPlayerId": row.get("tcgPlayerId") or row.get("tcgplayerId"),
+                "language": row.get("language"),
+            }
+        )
+    return summaries
+
+
 def pokemonpricetracker_api(
     panel: Sequence[scout.PanelCard], key: str
 ) -> tuple[list[scout.Observation], scout.Runtime]:
-    """Paid PPT probe with tolerant provider-native set/number matching.
+    """Paid PPT probe with provider-native EN/FR/JP matching.
 
     EN: card name + collector number, tolerant provider set prefixes.
     FR: corresponding EN TCGdex anchor, then Cardmarket EUR/graded/history.
-    JP: language=japanese and strict set-code + collector-number identity; card
-    names are not trusted because the provider currently returns many JP rows
-    with English display names.
+    JP: language=japanese; query by collector number first and validate using
+    provider set id/name/code + exact collector number. Card display names are
+    deliberately not identity evidence because provider JP rows may expose an
+    English display name.
 
     For every resolved deep lookup, the complete provider response is retained
     in-memory and written after the benchmark to a sidecar JSON file. This is
@@ -79,7 +115,7 @@ def pokemonpricetracker_api(
     anchor_client = scout.SafeClient("tcgdex_ppt_anchor", call_cap=10, interval=0.03)
     anchor_cache = {}
     out: list[scout.Observation] = []
-    depth: list[tuple[int, str]] = []
+    depth: list[tuple[int, str, str]] = []
 
     for index, card in enumerate(panel):
         language = scout.lang(card.identity.language)
@@ -98,64 +134,53 @@ def pokemonpricetracker_api(
             anchor_only = True
 
         if language == "ja":
-            search_text = " ".join(filter(None, (code, identity.card_number)))
+            attempts: list[dict[str, object]] = [
+                {"language": "japanese", "search": identity.card_number or "", "limit": 100},
+                {"language": "japanese", "search": identity.card_name or "", "limit": 100},
+            ]
         else:
-            search_text = " ".join(filter(None, (identity.card_name, identity.card_number)))
+            attempts = [
+                {
+                    "search": " ".join(filter(None, (identity.card_name, identity.card_number))),
+                    "setName": identity.set or "",
+                    "limit": 10,
+                },
+                {
+                    "search": " ".join(filter(None, (identity.card_name, identity.card_number))),
+                    "limit": 10,
+                },
+            ]
 
-        params: dict[str, object] = {
-            "search": search_text,
-            "setName": code if language == "ja" else (identity.set or ""),
-            "limit": 10,
-        }
-        if language == "ja":
-            params["language"] = "japanese"
-
-        response, payload = client.request(
-            "GET",
-            "https://www.pokemonpricetracker.com/api/v2/cards",
-            headers={"Authorization": f"Bearer {key}"},
-            params=params,
-        )
-        obs = scout.Observation("pokemonpricetracker", card.label)
-        if response:
-            base._update_quota(client.runtime, response)
-        if not response or response.status_code != 200:
-            obs.error = f"HTTP_{getattr(response, 'status_code', 'REQUEST')}"
-            out.append(obs)
-            continue
-
-        rows = paid._rows(payload)
-        exact = _match(
-            identity,
-            rows,
-            set_code=code,
-            ignore_name=(language == "ja"),
-        )
-
-        if not exact:
-            fallback_params: dict[str, object] = {
-                "search": search_text,
-                "limit": 20 if language == "ja" else 10,
-            }
-            if language == "ja":
-                fallback_params["language"] = "japanese"
-            response2, payload2 = client.request(
+        rows: list[Mapping[str, object]] = []
+        exact: list[Mapping[str, object]] = []
+        attempted_queries: list[dict[str, object]] = []
+        request_error: str | None = None
+        for params in attempts:
+            if not str(params.get("search") or "").strip():
+                continue
+            attempted_queries.append({key: value for key, value in params.items() if key != "limit"})
+            response, payload = client.request(
                 "GET",
                 "https://www.pokemonpricetracker.com/api/v2/cards",
                 headers={"Authorization": f"Bearer {key}"},
-                params=fallback_params,
+                params=params,
             )
-            if response2:
-                base._update_quota(client.runtime, response2)
-            if response2 and response2.status_code == 200:
-                rows = paid._rows(payload2)
-                exact = _match(
-                    identity,
-                    rows,
-                    set_code=code,
-                    ignore_name=(language == "ja"),
-                )
+            if response:
+                base._update_quota(client.runtime, response)
+            if not response or response.status_code != 200:
+                request_error = f"HTTP_{getattr(response, 'status_code', 'REQUEST')}"
+                continue
+            rows = paid._rows(payload)
+            exact = _match(
+                identity,
+                rows,
+                set_code=code,
+                ignore_name=(language == "ja"),
+            )
+            if exact:
+                break
 
+        obs = scout.Observation("pokemonpricetracker", card.label)
         if len(exact) == 1:
             row = exact[0]
             obs.identity = "ANCHOR_ONLY" if anchor_only else "EXACT"
@@ -170,29 +195,52 @@ def pokemonpricetracker_api(
             obs.language = "NOT_EXPOSED" if anchor_only else "EXACT"
             tcg_id = row.get("tcgPlayerId") or row.get("tcgplayerId")
             if tcg_id:
-                depth.append((index, str(tcg_id)))
+                depth.append((index, str(tcg_id), language))
         elif len(exact) > 1:
             obs.identity = "AMBIGUOUS"
         elif rows:
             obs.identity = "MISMATCH_OR_INSUFFICIENT"
         else:
             obs.identity = "UNRESOLVED"
+            if request_error:
+                obs.error = request_error
+
+        if language == "ja" and len(exact) != 1:
+            PPT_JP_PROBES.append(
+                {
+                    "card_label": card.label,
+                    "tcgdex_id": card.tcgdex_id,
+                    "expected": {
+                        "name": identity.card_name,
+                        "set": identity.set,
+                        "set_code": code,
+                        "card_number": identity.card_number,
+                    },
+                    "queries": attempted_queries,
+                    "identity_status": obs.identity,
+                    "candidate_count_last_attempt": len(rows),
+                    "candidates": _jp_candidate_summary(rows),
+                }
+            )
         out.append(obs)
 
-    for index, tcg_id in depth:
+    for index, tcg_id, language in depth:
         retrieved_at = _utc_now()
+        params: dict[str, object] = {
+            "tcgPlayerId": tcg_id,
+            "includeHistory": "true",
+            "includeEbay": "true",
+            "includeCardmarket": "true",
+            "days": 180,
+            "maxDataPoints": 180,
+        }
+        if language == "ja":
+            params["language"] = "japanese"
         response, payload = client.request(
             "GET",
             "https://www.pokemonpricetracker.com/api/v2/cards",
             headers={"Authorization": f"Bearer {key}"},
-            params={
-                "tcgPlayerId": tcg_id,
-                "includeHistory": "true",
-                "includeEbay": "true",
-                "includeCardmarket": "true",
-                "days": 180,
-                "maxDataPoints": 180,
-            },
+            params=params,
         )
         if response:
             base._update_quota(client.runtime, response)
@@ -252,6 +300,21 @@ def _write_evidence() -> None:
         json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2),
         encoding="utf-8",
     )
+    Path("pokemonpricetracker_jp_probe.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "provider": "pokemonpricetracker",
+                "generated_at": _utc_now(),
+                "probe_count": len(PPT_JP_PROBES),
+                "probes": PPT_JP_PROBES,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
@@ -259,6 +322,7 @@ def main() -> int:
     # helpers: the paid helper functions intentionally fall back to them, and
     # replacing them with the paid helpers creates infinite recursion.
     PPT_EVIDENCE.clear()
+    PPT_JP_PROBES.clear()
     base.pokemonpricetracker_api = pokemonpricetracker_api
     result = base.main()
     _write_evidence()
