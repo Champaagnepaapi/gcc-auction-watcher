@@ -7,11 +7,11 @@ permissions:
   contents: read
 
 # Branch-local Source Scout override.
-# Bounded CMAPI benchmark only; main and PR #8 remain untouched.
+# Four-call CMAPI liquid-card sentinel only; main and PR #8 remain untouched.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
       CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
       PYTHONDONTWRITEBYTECODE: "1"
@@ -31,38 +31,39 @@ jobs:
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Compile bounded CMAPI benchmark
+      - name: Compile bounded CMAPI liquid sentinel
         run: |
           python -m py_compile \
             v5/source_scout_benchmark.py \
-            v5/source_scout_language_entrypoint.py \
             v5/source_scout_cmapi_v2_entrypoint.py \
             v5/source_scout_cmapi_v3_entrypoint.py \
-            v5/source_scout_cmapi_v4_entrypoint.py \
+            v5/source_scout_cmapi_liquid_sentinel.py \
             tests_v5/test_source_scout_benchmark.py \
-            tests_v5/test_source_scout_cmapi_v3.py
+            tests_v5/test_source_scout_cmapi_v3.py \
+            tests_v5/test_source_scout_cmapi_liquid_sentinel.py
 
-      - name: Run Source Scout and CMAPI focused safety tests
+      - name: Run CMAPI focused safety and parser tests
         run: |
           python -m unittest \
             tests_v5.test_source_scout_benchmark \
-            tests_v5.test_source_scout_cmapi_v3 -v
+            tests_v5.test_source_scout_cmapi_v3 \
+            tests_v5.test_source_scout_cmapi_liquid_sentinel -v
 
-      - name: Run bounded CMAPI EN FR JP history and sold benchmark
-        run: python -m v5.source_scout_cmapi_v4_entrypoint
+      - name: Run four-call Charizard Base Set CMAPI sentinel
+        run: python -m v5.source_scout_cmapi_liquid_sentinel
 
-      - name: Publish CMAPI benchmark summary
-        if: always() && hashFiles('cmapi_benchmark.md') != ''
+      - name: Publish CMAPI liquid sentinel summary
+        if: always() && hashFiles('cmapi_liquid_sentinel.md') != ''
         shell: bash
-        run: cat cmapi_benchmark.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat cmapi_liquid_sentinel.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload CMAPI benchmark evidence
-        if: always() && hashFiles('cmapi_benchmark.json') != ''
+      - name: Upload sanitized CMAPI liquid sentinel evidence
+        if: always() && hashFiles('cmapi_liquid_sentinel.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: cmapi-benchmark-${{ github.run_id }}
+          name: cmapi-liquid-sentinel-${{ github.run_id }}
           path: |
-            cmapi_benchmark.json
-            cmapi_benchmark.md
+            cmapi_liquid_sentinel.json
+            cmapi_liquid_sentinel.md
           if-no-files-found: error
           retention-days: 14
