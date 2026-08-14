@@ -52,6 +52,7 @@ jobs:
             v5/source_scout_paid_entrypoint.py \
             v5/source_scout_paid_v2_entrypoint.py \
             v5/neon_source_scout_ingest.py \
+            v5/neon_source_scout_ingest_v2.py \
             tests_v5/test_source_scout_benchmark.py \
             tests_v5/test_source_scout_entrypoint.py
 
@@ -63,7 +64,7 @@ jobs:
 
       - name: Persist PokemonPriceTracker evidence to Neon
         if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
-        run: python -m v5.neon_source_scout_ingest
+        run: python -m v5.neon_source_scout_ingest_v2
 
       - name: Publish report in workflow summary
         if: always() && hashFiles('source_scout_report.md') != ''
