@@ -11,17 +11,17 @@ from . import source_scout_cmapi_v3_entrypoint as cmapi
 from .models import CardIdentity
 
 
-# Deliberately fixed, highly liquid vintage sentinel. The identity is strict:
-# English Charizard, Base Set, collector number 4/102. No fuzzy rescue.
+# Deliberately fixed, highly liquid modern sentinel with no 1st/Unlimited/
+# Shadowless split. The identity remains strict and deterministic.
 SENTINEL_IDENTITY = CardIdentity(
     game="Pokemon",
-    card_name="Charizard",
-    set="Base Set",
-    card_number="4/102",
-    year=1999,
+    card_name="Umbreon VMAX",
+    set="Evolving Skies",
+    card_number="215/203",
+    year=2021,
     language="en",
 )
-SEARCH_QUERY = "Charizard 4"
+SEARCH_QUERY = "Umbreon VMAX 215"
 MAX_CMAPI_CALLS = 4
 STOP_IF_REMAINING_AT_OR_BELOW = 20
 CALL_INTERVAL_SECONDS = 2.2
@@ -62,7 +62,7 @@ def main() -> int:
 
     host = os.getenv("CMAPI_RAPIDAPI_HOST", cmapi.CMAPI_HOST).strip() or cmapi.CMAPI_HOST
     client = scout.SafeClient(
-        "cmapi_liquid_charizard_sentinel",
+        "cmapi_liquid_umbreon_vmax_sentinel",
         call_cap=MAX_CMAPI_CALLS,
         interval=CALL_INTERVAL_SECONDS,
         response_cap=2_000_000,
@@ -80,7 +80,7 @@ def main() -> int:
     exact = [row for row in rows if _strict_match(row)]
 
     report: dict[str, object] = {
-        "mode": "CMAPI_LIQUID_CHARIZARD_BASE_SET_SENTINEL",
+        "mode": "CMAPI_LIQUID_UMBREON_VMAX_EVOLVING_SKIES_SENTINEL",
         "canonical_identity": {
             "name": SENTINEL_IDENTITY.card_name,
             "set": SENTINEL_IDENTITY.set,
@@ -198,7 +198,7 @@ def main() -> int:
     history = report.get("history_jan_2024") if isinstance(report.get("history_jan_2024"), Mapping) else {}
     search = report["search"] if isinstance(report.get("search"), Mapping) else {}
     lines = [
-        "# CMAPI liquid Charizard sentinel",
+        "# CMAPI liquid Umbreon VMAX sentinel",
         "",
         f"- Search HTTP: `{search.get('http')}`",
         f"- Exact identity matches: `{search.get('exact_matches')}`",
