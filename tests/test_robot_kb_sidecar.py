@@ -196,7 +196,7 @@ class GCCShadowTests(SidecarTestCase):
         )
         self.assertEqual(
             self.kb.connection.execute("SELECT COUNT(*) FROM field_claim").fetchone()[0],
-            11,
+            12,
         )
 
     def test_unresolved_identity_retains_evidence_without_provider_defaults(self):

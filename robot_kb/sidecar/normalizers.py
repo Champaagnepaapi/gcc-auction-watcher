@@ -265,10 +265,11 @@ def _structured_cardinality(
     payload: Mapping[str, Any],
     item: Mapping[str, Any],
     collectible: Mapping[str, Any],
-) -> tuple[Optional[int], bool, bool]:
-    """Return normalized cardinality, proof-of-one, and explicit non-one."""
+) -> tuple[Optional[int], bool, bool, bool]:
+    """Return value, proof-of-one, explicit non-one, and field absence."""
 
     values = []
+    field_present = False
     for container, fields in (
         (payload, _CARDINALITY_FIELDS),
         (item, _CARDINALITY_FIELDS),
@@ -280,14 +281,17 @@ def _structured_cardinality(
         for field in fields:
             if field not in container:
                 continue
+            field_present = True
             normalized = _quantity(container.get(field))
             if normalized is None:
-                return None, False, False
+                return None, False, False, False
             values.append(normalized)
-    if not values or len(set(values)) != 1:
-        return None, False, bool(values and any(value != 1 for value in values))
+    if not field_present:
+        return None, False, False, True
+    if len(set(values)) != 1:
+        return None, False, bool(any(value != 1 for value in values)), False
     cardinality = values[0]
-    return cardinality, cardinality == 1, cardinality != 1
+    return cardinality, cardinality == 1, cardinality != 1, False
 
 
 def _scope_token(value: Any) -> Optional[str]:
@@ -383,12 +387,67 @@ def _structured_scope_is_negative(
     return False
 
 
+def _gcc_single_collectible_object(
+    payload: Mapping[str, Any],
+    item: Mapping[str, Any],
+    collectible: Mapping[str, Any],
+    source_native_record_id: str,
+) -> bool:
+    """Recognize GCC's singular graded-card inventory object contract.
+
+    This is deliberately a conjunction of independent structured fields from
+    the retained GCC payloads. A title, card metadata, or certificate alone is
+    never sufficient.
+    """
+
+    def scalar_text(value: Any) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
+    listing_id = scalar_text(payload.get("id"))
+    item_id = scalar_text(item.get("id"))
+    serial_number = scalar_text(item.get("serialNumber"))
+    grader = scalar_text(item.get("gradingCompany"))
+    grade = scalar_text(item.get("grade"))
+    recto_image = scalar_text(item.get("rectoImageKey"))
+    verso_image = scalar_text(item.get("versoImageKey"))
+    singular_objects = bool(
+        isinstance(payload.get("item"), Mapping)
+        and isinstance(item.get("collectible"), Mapping)
+    )
+    competing_collection_shape = any(
+        field in container
+        for container, fields in (
+            (payload, ("items", "collectibles", "components")),
+            (item, ("items", "collectibles", "components")),
+            (collectible, ("items", "collectibles", "components")),
+        )
+        for field in fields
+    )
+    return bool(
+        singular_objects
+        and not competing_collection_shape
+        and listing_id == source_native_record_id
+        and item_id is not None
+        and item_id != listing_id
+        and serial_number is not None
+        and re.fullmatch(r"\d{8,9}", serial_number)
+        and grader is not None
+        and grade is not None
+        and recto_image is not None
+        and verso_image is not None
+        and recto_image != verso_image
+    )
+
+
 def _single_card_scope(
     payload: Mapping[str, Any],
     item: Mapping[str, Any],
     collectible: Mapping[str, Any],
     title: Any,
-) -> tuple[str, bool, Optional[int]]:
+    source_native_record_id: str,
+) -> tuple[str, bool, Optional[int], Optional[str]]:
     """Require structured one-card proof; free text can only veto exactness."""
 
     text_values = (
@@ -398,13 +457,19 @@ def _single_card_scope(
         payload.get("listingText"),
         item.get("body"),
         item.get("description"),
+        item.get("descriptionEn"),
+        item.get("descriptionFr"),
+        item.get("additionalInformation"),
     )
     evidence_text = "\n".join(
         str(value) for value in text_values if _nonempty(value)
     )
-    quantity, cardinality_is_one, explicit_non_one = _structured_cardinality(
-        payload, item, collectible
-    )
+    (
+        quantity,
+        cardinality_is_one,
+        explicit_non_one,
+        generic_cardinality_absent,
+    ) = _structured_cardinality(payload, item, collectible)
     type_is_card, type_is_blocked = _structured_type_is_individual_card(
         payload, item, collectible
     )
@@ -422,16 +487,28 @@ def _single_card_scope(
         or _PLURAL_CARD_RE.search(evidence_text)
     )
     if negative_structured or negative_text:
-        return "BUNDLE_OR_MULTI", False, quantity
+        return "BUNDLE_OR_MULTI", False, quantity, None
+    gcc_single_collectible = bool(
+        generic_cardinality_absent
+        and type_is_card
+        and _gcc_single_collectible_object(
+            payload, item, collectible, source_native_record_id
+        )
+    )
     positive = bool(
-        cardinality_is_one
+        (cardinality_is_one or gcc_single_collectible)
         and type_is_card
         and isinstance(title, str)
         and bool(title.strip())
     )
     if positive:
-        return "SINGLE_CARD", True, quantity
-    return "AMBIGUOUS_ITEM_SCOPE", False, quantity
+        method = (
+            "GENERIC_STRUCTURED_CARDINALITY"
+            if cardinality_is_one
+            else "GCC_SINGLE_COLLECTIBLE_OBJECT"
+        )
+        return "SINGLE_CARD", True, quantity, method
+    return "AMBIGUOUS_ITEM_SCOPE", False, quantity, None
 
 
 def _timestamp_value(value: str) -> datetime:
@@ -457,8 +534,14 @@ def normalize_gcc(record: RawSourceRecord) -> NormalizationBatch:
         mode = "UNKNOWN"
 
     title = _first(item.get("title"), payload.get("title"))
-    item_scope, explicit_single, quantity = _single_card_scope(
-        payload, item, collectible, title
+    item_scope, explicit_single, quantity, cardinality_evidence_method = (
+        _single_card_scope(
+            payload,
+            item,
+            collectible,
+            title,
+            record.source_native_record_id,
+        )
     )
 
     language = _first(collectible.get("language"), item.get("language"))
@@ -481,6 +564,7 @@ def normalize_gcc(record: RawSourceRecord) -> NormalizationBatch:
         payload.get("sellerId"), seller.get("id"), seller.get("username")
     )
     certification_number = _first(
+        item.get("serialNumber"),
         item.get("certificationNumber"),
         item.get("certificateNumber"),
         collectible.get("certificationNumber"),
@@ -512,6 +596,11 @@ def normalize_gcc(record: RawSourceRecord) -> NormalizationBatch:
             _claim("bid_count", bid_count, SourceKind.LISTING),
             _claim("seller_identifier", seller_id, SourceKind.LISTING),
             _claim("item_scope", item_scope, SourceKind.LISTING),
+            _claim(
+                "cardinality_evidence_method",
+                cardinality_evidence_method,
+                SourceKind.LISTING,
+            ),
         )
     )
 
@@ -575,7 +664,7 @@ def normalize_gcc(record: RawSourceRecord) -> NormalizationBatch:
         status in _UNEQUIVOCAL_SOLD_STATUSES
         or status in _AMBIGUOUS_COMPLETION_STATUSES
         or any(
-            field in payload
+            _nonempty(payload.get(field))
             for field in (
                 "soldAt",
                 "saleOccurredAt",

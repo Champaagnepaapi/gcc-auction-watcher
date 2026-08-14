@@ -75,6 +75,26 @@ def gcc_record(payload: dict, retrieved_at: str = T2) -> RawSourceRecord:
     )
 
 
+def gcc_single_collectible_payload(
+    listing_id: str = "gcc-card-1", **overrides: object
+) -> dict:
+    """Minimal anonymized shape of GCC's retained singular card object."""
+
+    payload = gcc_payload(listing_id)
+    payload.pop("quantity")
+    payload["item"] = {
+        **payload["item"],
+        "id": f"item-{listing_id}",
+        "serialNumber": "12345678",
+        "gradingCompany": "PSA",
+        "grade": "9",
+        "rectoImageKey": f"recto-{listing_id}",
+        "versoImageKey": f"verso-{listing_id}",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def sold_payload(
     listing_id: str = "sale-1", price: int = 2_750, **overrides: object
 ) -> dict:
@@ -194,6 +214,25 @@ class SaleAndClassificationRemediationTests(unittest.TestCase):
         )
         self.assertTrue(genuine.observations[0].genuine_sale_evidence)
 
+    def test_null_sale_field_is_not_a_candidate_but_malformed_evidence_is(self):
+        active = normalize_gcc(
+            gcc_record(gcc_payload("active-null", soldAt=None), T2)
+        )
+        self.assertEqual(active.sale_candidates_rejected, 0)
+        self.assertEqual(
+            active.observations[0].observation_type,
+            ObservationType.LISTING_SNAPSHOT,
+        )
+
+        malformed = normalize_gcc(
+            gcc_record(sold_payload("malformed", soldAt="not-a-timestamp"), T2)
+        )
+        self.assertEqual(malformed.sale_candidates_rejected, 1)
+        self.assertEqual(
+            malformed.observations[0].observation_type,
+            ObservationType.LISTING_SNAPSHOT,
+        )
+
     def test_sale_rejection_diagnostics_reflect_actual_records(self):
         self.run_record(gcc_record(sold_payload("future", soldAt="2099-01-01T00:00:00Z")))
         self.run_record(
@@ -258,6 +297,62 @@ class SaleAndClassificationRemediationTests(unittest.TestCase):
         valid_claims = {claim.field_name: claim.value for claim in valid.claims}
         self.assertTrue(valid.exact_identity_eligible)
         self.assertEqual(valid_claims["item_scope"], "SINGLE_CARD")
+        self.assertEqual(
+            valid_claims["cardinality_evidence_method"],
+            "GENERIC_STRUCTURED_CARDINALITY",
+        )
+
+    def test_real_gcc_single_collectible_contract_is_positive_proof(self):
+        payload = gcc_single_collectible_payload()
+        observation = normalize_gcc(gcc_record(payload)).observations[0]
+        claims = {claim.field_name: claim.value for claim in observation.claims}
+
+        self.assertTrue(observation.exact_identity_eligible)
+        self.assertEqual(claims["item_scope"], "SINGLE_CARD")
+        self.assertEqual(
+            claims["cardinality_evidence_method"],
+            "GCC_SINGLE_COLLECTIBLE_OBJECT",
+        )
+        self.assertIsNone(observation.fact["quantity"])
+
+    def test_real_gcc_proof_fails_closed_on_scope_evidence_or_incompleteness(self):
+        def without_item_field(field: str) -> dict:
+            payload = gcc_single_collectible_payload(f"missing-{field}")
+            payload["item"].pop(field)
+            return payload
+
+        contradictory_text = gcc_single_collectible_payload("text-veto")
+        contradictory_text["item"]["descriptionEn"] = "Charizard or Blastoise"
+        multiple_shape = gcc_single_collectible_payload("multiple-shape")
+        multiple_shape["item"]["collectibles"] = [
+            multiple_shape["item"]["collectible"],
+            {"type": "CARDS", "category": "Pokemon"},
+        ]
+        cases = {
+            "bundle": gcc_single_collectible_payload("bundle", isBundle=True),
+            "sealed": gcc_single_collectible_payload("sealed", isSealed=True),
+            "explicit_multiple": gcc_single_collectible_payload(
+                "quantity-two", quantity=2
+            ),
+            "malformed_cardinality": gcc_single_collectible_payload(
+                "bad-quantity", quantity="10x"
+            ),
+            "missing_serial": without_item_field("serialNumber"),
+            "missing_back_image": without_item_field("versoImageKey"),
+            "multiple_collectibles": multiple_shape,
+            "text_contradiction": contradictory_text,
+        }
+        for name, payload in cases.items():
+            with self.subTest(name=name):
+                observation = normalize_gcc(gcc_record(payload)).observations[0]
+                claims = {claim.field_name: claim.value for claim in observation.claims}
+                self.assertFalse(observation.exact_identity_eligible)
+                self.assertNotIn("cardinality_evidence_method", claims)
+                self.assertIn(
+                    claims["item_scope"],
+                    {"AMBIGUOUS_ITEM_SCOPE", "BUNDLE_OR_MULTI"},
+                )
+                self.assertIn("single_card_scope", observation.unresolved_dimensions)
 
     def test_authoritative_cardinality_is_required_and_normalized(self):
         for quantity in (1, "1", "01"):
@@ -321,12 +416,10 @@ class SaleAndClassificationRemediationTests(unittest.TestCase):
             identifier["id"], ResolutionState.PROVEN, canonical_card_id=card_id
         )
 
-        ambiguous = gcc_payload(
-            listing_id,
-            priceInCents=2_900,
-            updatedAt=T1,
+        ambiguous = gcc_single_collectible_payload(
+            listing_id, priceInCents=2_900, updatedAt=T1
         )
-        ambiguous.pop("quantity")
+        ambiguous["item"].pop("versoImageKey")
         self.run_record(gcc_record(ambiguous, T3))
         latest = self.kb.connection.execute(
             "SELECT canonical_card_id FROM market_observation ORDER BY observed_at DESC LIMIT 1"
