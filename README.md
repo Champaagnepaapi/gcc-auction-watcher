@@ -330,6 +330,17 @@ Chaque run hourly peut couvrir :
 
 Le ciblage n’utilise jamais un badge GCC « bonne affaire » comme preuve économique.
 
+Validation live post-merge PR #75 : run `31888162893`, job `95020369028` — **SUCCESS** sur `caebf0e5865e6851c5240b80c8ba55e3cfa7f5d5` :
+
+- collecte fixed : `recent=100`, `rotation=200` (pages `1..2`), `targeted=100`, `unique_total=300` après déduplication ;
+- ciblage observé : English `+95` uniques, BGS `+4`, grade 5 `+1` ;
+- backup auction : 100 observations supplémentaires ;
+- sidecar Neon : `source_records_fetched=400`, `observations_accepted=400`, `source_failures=0`, `rejected_malformed_records=0`, `monetary_facts_rejected=0` ;
+- commit des curseurs exécuté **après** succès de l’ingestion : `last_page=2`, `target_cursor=3` ;
+- cache d’état durable sauvegardé avec succès.
+
+Ce run valide en production la stratégie `100 récents + 200 rotation + jusqu’à 100 ciblés` et le comportement fail-safe des curseurs.
+
 ## SOLD frais lossless
 
 Workflow : `.github/workflows/robot-kb-sold-shadow.yml`, cadence `17,47 * * * *`.
