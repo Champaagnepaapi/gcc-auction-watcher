@@ -7,13 +7,75 @@ permissions:
   contents: read
 
 jobs:
-  coverage-audit:
+  v4-ppt-shadow-live:
+    if: github.ref_name == 'agent/v4-ppt-shadow-market-20260815'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      HEADLESS: "true"
+
+      # Isolated ephemeral diagnostic state. Never restore/save production state.
+      STATE_FILE: "v4_ppt_shadow_live_state.json"
+      NTFY_TOPIC: ""
+      V4_KB_SHADOW_SPOOL_PATH: ""
+
+      # Same economic discovery envelope as V4, but no notification/state deployment.
+      MAX_PRICE_EUR: "100"
+      MIN_DISCOUNT_PCT: "30"
+      MAX_AUCTION_MINUTES: "60"
+      FIXED_REEVALUATION_TTL_HOURS: "24"
+
+      # Identity + current graded external baseline. PokeTrace is bounded well below plan limits.
+      V4_TCGDEX_ENABLED: "true"
+      V4_TCGDEX_REQUEST_TIMEOUT: "6"
+      V4_TCGDEX_CACHE_TTL_HOURS: "24"
+      V4_POKETRACE_ENABLED: "true"
+      V4_POKETRACE_MAX_REQUESTS_PER_RUN: "20"
+      V4_POKETRACE_REQUEST_TIMEOUT: "8"
+      V4_POKETRACE_PACING_SECONDS: "0.40"
+      V4_POKETRACE_MIN_SALES: "3"
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+
+      # Keep this diagnostic focused on GCC/PokeTrace vs PPT. Public PSA/eBay fallbacks,
+      # active asks, cert/OCR and Robot KB writes are intentionally disabled here.
+      EBAY_ENABLED: "false"
+      PSA_APR_ENABLED: "false"
+      V4_EXACT_ACTIVE_ASK_ENABLED: "false"
+      V4_MISLISTED_SLAB_HUNTER_ENABLED: "false"
+      V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED: "false"
+
+      # PokemonPriceTracker shadow: hard fail-closed budget.
+      V4_PPT_SHADOW_ENABLED: "true"
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      V4_PPT_SHADOW_MAX_HTTP_CALLS_PER_RUN: "12"
+      V4_PPT_SHADOW_CREDIT_CAP_PER_RUN: "60"
+      V4_PPT_SHADOW_DAILY_REMAINING_FLOOR: "15000"
+      V4_PPT_SHADOW_REQUEST_INTERVAL_SECONDS: "1.10"
+      V4_PPT_SHADOW_TIMEOUT_SECONDS: "20"
+      V4_PPT_SHADOW_CACHE_TTL_HOURS: "6"
+
+      GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout selected shadow branch without persisted credentials
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify branch and safety contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "agent/v4-ppt-shadow-market-20260815"
+          test "${STATE_FILE}" != "state.json"
+          test -z "${NTFY_TOPIC:-}"
+          test -z "${V4_KB_SHADOW_SPOOL_PATH:-}"
+          test "${V4_PPT_SHADOW_ENABLED}" = "true"
+          test -n "${POKEMONPRICETRACKER_API_KEY:-}"
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "Contract: read-only shadow, isolated state, no ntfy, no Neon, PPT <=12 HTTP / <=60 credits"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,20 +84,195 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          python -m pip install --disable-pip-version-check -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Run V4 GCC coverage audit
-        env:
-          HEADLESS: "true"
-          GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
-          MAX_PRICE_EUR: "100"
-          MIN_DISCOUNT_PCT: "30"
-          MAX_AUCTION_MINUTES: "60"
-          EBAY_ENABLED: "false"
-          PSA_APR_ENABLED: "false"
+      - name: Prepare optional GCC session
+        shell: bash
         run: |
-          if [ -n "$GCC_SESSION_B64" ]; then
+          set -euo pipefail
+          if [ -n "${GCC_SESSION_B64:-}" ]; then
             printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
+          else
+            echo "No GCC session injected; public discovery mode will be used."
           fi
-          python v4_gcc_coverage_audit.py
+
+      - name: Run bounded V4 plus PPT live shadow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import runpy
+          import requests
+
+          allowed = {"GET", "HEAD", "OPTIONS"}
+          original_request = requests.sessions.Session.request
+
+          def guarded_request(self, method, url, *args, **kwargs):
+              verb = str(method or "").upper()
+              if verb not in allowed:
+                  raise RuntimeError(f"READ_ONLY_DIAGNOSTIC_BLOCKED_HTTP_{verb or 'UNKNOWN'}")
+              return original_request(self, method, url, *args, **kwargs)
+
+          def blocked_post(*args, **kwargs):
+              raise RuntimeError("READ_ONLY_DIAGNOSTIC_BLOCKED_HTTP_POST")
+
+          assert os.environ.get("STATE_FILE") != "state.json"
+          assert not os.environ.get("NTFY_TOPIC", "")
+          assert not os.environ.get("V4_KB_SHADOW_SPOOL_PATH", "")
+          requests.sessions.Session.request = guarded_request
+          requests.post = blocked_post
+
+          try:
+              runpy.run_path("run_watcher_multimarket.py", run_name="__main__")
+          except SystemExit as exc:
+              code = 0 if exc.code is None else int(exc.code)
+              if code:
+                  raise SystemExit(code)
+          PY
+
+      - name: Build sanitized PPT shadow report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          state_path = Path(os.environ["STATE_FILE"])
+          output_json = Path("v4_ppt_shadow_live_report.json")
+          output_md = Path("v4_ppt_shadow_live_report.md")
+
+          if not state_path.exists():
+              report = {"status": "STATE_MISSING", "records": []}
+          else:
+              state = json.loads(state_path.read_text(encoding="utf-8"))
+              root = state.get("v4_ppt_shadow") if isinstance(state, dict) else None
+              if not isinstance(root, dict):
+                  report = {"status": "PPT_SHADOW_MISSING", "records": []}
+              else:
+                  raw_records = root.get("records") if isinstance(root.get("records"), dict) else {}
+                  records = []
+                  for identity_key, row in raw_records.items():
+                      if not isinstance(row, dict):
+                          continue
+                      ppt = row.get("ppt_shadow") if isinstance(row.get("ppt_shadow"), dict) else {}
+                      current = row.get("current_v4") if isinstance(row.get("current_v4"), dict) else {}
+                      records.append({
+                          "identity_key": identity_key,
+                          "observed_at": row.get("observed_at"),
+                          "status": row.get("status"),
+                          "shadow_effect": row.get("shadow_effect"),
+                          "card_id": row.get("card_id"),
+                          "card": row.get("card"),
+                          "set": row.get("set"),
+                          "number": row.get("number"),
+                          "grader": row.get("grader"),
+                          "grade": row.get("grade"),
+                          "gcc_price_eur": row.get("gcc_price_eur"),
+                          "current_v4_path": current.get("path"),
+                          "current_v4_fair_value_eur": current.get("fair_value_eur"),
+                          "current_v4_discount_pct": current.get("discount_pct"),
+                          "current_v4_already_opportunity": current.get("already_opportunity"),
+                          "gcc_exact_sold_count": current.get("gcc_exact_sold_count"),
+                          "ppt_evidence_class": ppt.get("evidence_class"),
+                          "ppt_evidence_strength": ppt.get("evidence_strength"),
+                          "ppt_fair_value_eur": ppt.get("fair_value_eur"),
+                          "ppt_discount_to_external_pct": ppt.get("discount_to_external_pct"),
+                          "ppt_sales_count": ppt.get("sales_count"),
+                          "ppt_last_sale_age_days": ppt.get("last_sale_age_days"),
+                          "momentum_30d_pct": ppt.get("momentum_30d_pct"),
+                          "momentum_90d_pct": ppt.get("momentum_90d_pct"),
+                          "momentum_180d_pct": ppt.get("momentum_180d_pct"),
+                          "sales_velocity_30d": ppt.get("sales_velocity_30d"),
+                          "sales_velocity_90d": ppt.get("sales_velocity_90d"),
+                          "sales_velocity_180d": ppt.get("sales_velocity_180d"),
+                          "kinetic_bonus_pp": ppt.get("kinetic_bonus_pp"),
+                          "shadow_required_discount_pct": ppt.get("shadow_required_discount_pct"),
+                          "baseline_30pct_signal": ppt.get("baseline_30pct_signal"),
+                          "kinetic_shadow_signal": ppt.get("kinetic_shadow_signal"),
+                          "production_economic_use": False,
+                          "notification_use": False,
+                      })
+
+                  def rank(row):
+                      signal = 1 if row.get("kinetic_shadow_signal") else 0
+                      discount = row.get("ppt_discount_to_external_pct")
+                      try:
+                          discount = float(discount)
+                      except (TypeError, ValueError):
+                          discount = -999.0
+                      return (signal, discount)
+
+                  records.sort(key=rank, reverse=True)
+                  report = {
+                      "status": "OK",
+                      "diagnostic_scope": "bounded_current_v4_gcc_poketrace_vs_ppt",
+                      "production_economic_use": False,
+                      "notification_use": False,
+                      "last_run": root.get("last_run", {}),
+                      "records": records,
+                  }
+
+          output_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+          last = report.get("last_run", {}) if isinstance(report.get("last_run"), dict) else {}
+          records = report.get("records", []) if isinstance(report.get("records"), list) else []
+          signals = [row for row in records if row.get("kinetic_shadow_signal")]
+          rescue = [row for row in signals if row.get("shadow_effect") == "PPT_EXTERNAL_RESCUE_CANDIDATE"]
+          revalue = [row for row in signals if row.get("shadow_effect") == "PPT_REVALUE_CANDIDATE"]
+
+          lines = [
+              "# V4 + PokemonPriceTracker live shadow",
+              "",
+              "**Shadow only:** no production fair value, max_recommended or notification was changed.",
+              "",
+              f"- status: `{report.get('status')}`",
+              f"- PPT HTTP calls: `{last.get('http_calls', 'n/a')}`",
+              f"- PPT credits: `{last.get('credits', 'n/a')}`",
+              f"- PPT daily remaining: `{last.get('daily_remaining', 'n/a')}`",
+              f"- eligible: `{(last.get('summary') or {}).get('eligible', 'n/a') if isinstance(last.get('summary'), dict) else 'n/a'}`",
+              f"- strong PPT evidence: `{(last.get('summary') or {}).get('strong', 'n/a') if isinstance(last.get('summary'), dict) else 'n/a'}`",
+              f"- kinetic shadow signals: `{len(signals)}`",
+              f"- external rescue hypotheses: `{len(rescue)}`",
+              f"- revalue hypotheses: `{len(revalue)}`",
+              "",
+              "## Top shadow signals",
+          ]
+          if not signals:
+              lines.append("No kinetic PPT signal in the bounded sample.")
+          else:
+              for row in signals[:10]:
+                  lines.append(
+                      "- "
+                      f"{row.get('card') or row.get('card_id') or 'unknown'} "
+                      f"{row.get('number') or ''} {row.get('grader') or ''} {row.get('grade') or ''}: "
+                      f"GCC €{row.get('gcc_price_eur')} vs PPT FV €{row.get('ppt_fair_value_eur')} | "
+                      f"discount {row.get('ppt_discount_to_external_pct')}% | "
+                      f"momentum 30/90/180 {row.get('momentum_30d_pct')}/"
+                      f"{row.get('momentum_90d_pct')}/{row.get('momentum_180d_pct')}% | "
+                      f"effect `{row.get('shadow_effect')}`"
+                  )
+          output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          cat v4_ppt_shadow_live_report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized live shadow evidence
+        if: always() && hashFiles('v4_ppt_shadow_live_report.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-ppt-shadow-live-${{ github.run_id }}
+          path: |
+            v4_ppt_shadow_live_report.json
+            v4_ppt_shadow_live_report.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Cleanup diagnostic state and GCC session
+        if: always()
+        shell: bash
+        run: |
+          rm -f "${STATE_FILE}" gcc_session.json
