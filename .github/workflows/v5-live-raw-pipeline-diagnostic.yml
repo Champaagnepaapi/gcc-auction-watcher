@@ -6,80 +6,73 @@ on:
 permissions:
   contents: read
 
+# Branch-only Source Scout validation. This deliberately reuses an existing
+# visible manual workflow so no throwaway workflow is added to main.
+# PokemonPriceTracker: max 6 HTTP calls, 3 liquid sentinels, raw schema artifact.
+# No GCC session, CMAPI/eBay ASP key, Neon write, purchase, bid or checkout.
 jobs:
-  diagnose-live-raw-pipeline-v5:
+  source-scout-ppt-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
-      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
-      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-      GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
-      V5_LIVE_RAW_RESULT_LIMIT: "20"
-      V5_LIVE_INCLUDE_EBAY_CH: "false"
-      PRICECHARTING_ENABLED: "false"
-      MARKETPLACE_INSIGHTS_ENABLED: "false"
-      GCC_HISTORY_ENABLED: "true"
-      GCC_HISTORY_CURRENCY: "USD"
-      GCC_CATALOG_INDEX_FILE: gcc_catalog_index.json
-      PRODUCT_RESEARCH_MODE: "MANUAL_VALIDATION_ONLY"
-      RAW_MAX_PAID_GRADINGS_PER_RUN: "0"
-      CARDGRADER_V5_ALLOW_PAID_CALLS: "false"
-      BUYER_FEES: ${{ vars.V5_BUYER_FEES_USD }}
-      DOMESTIC_SHIPPING: ${{ vars.V5_DOMESTIC_SHIPPING_USD }}
-      INTERNATIONAL_SHIPPING: ${{ vars.V5_INTERNATIONAL_SHIPPING_USD }}
-      GRADING_FEE: ${{ vars.V5_GRADING_FEE_USD }}
-      GRADING_SHIPPING: ${{ vars.V5_GRADING_SHIPPING_USD }}
-      VAULT_FEE: ${{ vars.V5_VAULT_FEE_USD }}
-      SELLING_FEE_PCT: ${{ vars.V5_SELLING_FEE_PCT }}
-      SELLING_FIXED_FEE: ${{ vars.V5_SELLING_FIXED_FEE_USD }}
-      FX_BUFFER_PCT: ${{ vars.V5_FX_BUFFER_PCT }}
-      OTHER_COSTS: ${{ vars.V5_OTHER_COSTS_USD }}
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
-      - name: Checkout repository without persisted credentials
+      - name: Checkout selected branch without persisted credentials
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Restore cumulative GCC catalogue
-        uses: actions/cache/restore@v4
-        with:
-          path: gcc_catalog_index.json
-          key: v5-gcc-catalog-${{ github.run_id }}
-          restore-keys: |
-            v5-gcc-catalog-
+      - name: Verify intended Source Scout branch
+        shell: bash
+        run: |
+          test "${GITHUB_REF_NAME}" = "agent/source-scout-ppt-cardinality-20260815"
+          echo "HEAD=$(git rev-parse HEAD)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install read-only diagnostic dependencies
-        run: |
-          python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
-          playwright install --with-deps chromium
+      - name: Install probe dependency
+        run: python -m pip install --disable-pip-version-check requests==2.32.4
 
-      - name: Prepare existing authenticated GCC session
+      - name: Compile isolated Source Scout modules
+        run: |
+          python -m py_compile \
+            catalog_cardinality.py \
+            robot_kb_ebay_asp_policy.py \
+            v5/pokemonpricetracker_adapter.py \
+            v5/pokemonpricetracker_contract_probe.py \
+            tests/test_catalog_cardinality.py \
+            tests/test_robot_kb_ebay_asp_policy.py \
+            tests/test_pokemonpricetracker_adapter.py \
+            tests/test_pokemonpricetracker_contract_probe.py
+
+      - name: Run focused deterministic tests
+        run: |
+          python -m unittest \
+            tests.test_catalog_cardinality \
+            tests.test_robot_kb_ebay_asp_policy \
+            tests.test_pokemonpricetracker_adapter \
+            tests.test_pokemonpricetracker_contract_probe -v
+
+      - name: Run bounded PokemonPriceTracker live contract probe
+        run: python -m v5.pokemonpricetracker_contract_probe
+
+      - name: Publish probe summary
+        if: always() && hashFiles('pokemonpricetracker_contract_probe.md') != ''
         shell: bash
-        run: |
-          if [ -z "${GCC_SESSION_B64:-}" ]; then
-            echo "GCC authenticated session: MISSING"
-            exit 1
-          fi
-          printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
-          echo "GCC authenticated session: READY"
+        run: cat pokemonpricetracker_contract_probe.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run aggregate-only V5 live raw pipeline with canonical card resolver
-        run: python -m v5.live_raw_pipeline_catalog
-
-      - name: Save cumulative GCC catalogue even after diagnostic failure
-        if: ${{ always() && hashFiles('gcc_catalog_index.json') != '' }}
-        uses: actions/cache/save@v4
+      - name: Upload raw schema evidence
+        if: always() && hashFiles('pokemonpricetracker_contract_probe.json') != ''
+        uses: actions/upload-artifact@v4
         with:
-          path: gcc_catalog_index.json
-          key: v5-gcc-catalog-${{ github.run_id }}
-
-      - name: Remove ephemeral GCC session
-        if: always()
-        run: rm -f gcc_session.json
+          name: pokemonpricetracker-contract-probe-${{ github.run_id }}
+          path: |
+            pokemonpricetracker_contract_probe.json
+            pokemonpricetracker_contract_probe.md
+          if-no-files-found: error
+          retention-days: 14
