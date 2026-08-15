@@ -65,7 +65,9 @@ def strict_card_match(card: Mapping[str, str], product: Mapping[str, object]) ->
         return False
     if "psa" not in norm.split():
         return False
-    if not re.search(r"\bpsa\s*(?:gem\s*mint\s*)?10\b", norm):
+    # eBay titles commonly use either "PSA 10", "PSA GEM MINT 10" or
+    # the official abbreviation "PSA GEM MT 10". All three mean grade 10.
+    if not re.search(r"\bpsa\s*(?:gem\s*(?:mint|mt)\s*)?10\b", norm):
         return False
     for token in _norm(card["name"]).split():
         if token not in norm.split():
