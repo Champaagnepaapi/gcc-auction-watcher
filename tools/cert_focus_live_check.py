@@ -23,20 +23,20 @@ KNOWN = (
     ("PSA", "131216316", 10.0),
     ("CCC", "544340143", 9.0),
 )
+PCA_SAMPLE_URL = "https://gradedcardcenter.com/item/388a81b3-5993-4269-bda2-e5d5ac175689"
 
 
-def _find_pca_listing(page):
-    diagnostics = watcher.RunDiagnostics()
-    lots = watcher.collect_fixed_lots_from_api(diagnostics, page_size=100, max_pages=8)
-    for lot in lots:
-        if (lot.grader or "").strip().upper() != "PCA":
-            continue
-        inspected = lot if lot.body else watcher.inspect_item(page, lot)
-        serial = hunter._serial_from_lot(inspected)
-        grade = hunter._numeric_grade(inspected.grade)
-        if serial and grade is not None:
-            return inspected, serial, grade
-    return None, "", None
+def _inspect_pca_sample(page):
+    lot = watcher.Lot(
+        url=PCA_SAMPLE_URL,
+        title="PCA live cert smoke sample",
+        current_price=None,
+        source_type="fixed",
+        grader="PCA",
+        grade="9.5",
+    )
+    inspected = watcher.inspect_item(page, lot)
+    return inspected, hunter._serial_from_lot(inspected), hunter._numeric_grade(inspected.grade)
 
 
 def main():
@@ -54,14 +54,18 @@ def main():
                 flush=True,
             )
 
-        lot, serial, expected = _find_pca_listing(page)
-        if lot is None:
-            print("CERT_CHECK grader=PCA status=NO_SAMPLE grade=None", flush=True)
+        inspected, serial, metadata_grade = _inspect_pca_sample(page)
+        if inspected.inspection_error or not serial:
+            print(
+                f"CERT_CHECK grader=PCA status=NO_SERIAL grade=None "
+                f"inspection_error={inspected.inspection_error or 'none'}",
+                flush=True,
+            )
         else:
             cert = router.resolve_grader_certificate(page, "PCA", serial)
             print(
-                f"CERT_CHECK grader=PCA metadata={expected:g} status={cert.status} "
-                f"grade={cert.grade} listing={lot.url}",
+                f"CERT_CHECK grader=PCA metadata={metadata_grade} status={cert.status} "
+                f"grade={cert.grade} listing={inspected.url}",
                 flush=True,
             )
         browser.close()
