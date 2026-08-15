@@ -6,14 +6,14 @@ on:
 permissions:
   contents: read
 
-# Branch-only Source Scout validation. This deliberately reuses an existing
-# visible manual workflow so no throwaway workflow is added to main.
-# PokemonPriceTracker: max 6 HTTP calls, 3 liquid sentinels, raw schema artifact.
-# No GCC session, CMAPI/eBay ASP key, Neon write, purchase, bid or checkout.
+# Branch-only Source Scout validation reusing the existing visible manual workflow.
+# PokemonPriceTracker paid-plan benchmark only: max 50 HTTP calls, max 500 API
+# credits, and fail-closed if daily remaining reaches 15,000. No GCC session,
+# CMAPI/eBay ASP key, Neon write, purchase, bid, checkout or paid grading.
 jobs:
-  source-scout-ppt-contract:
+  source-scout-ppt-full:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
       PYTHONDONTWRITEBYTECODE: "1"
@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install probe dependency
+      - name: Install benchmark dependency
         run: python -m pip install --disable-pip-version-check requests==2.32.4
 
       - name: Compile isolated Source Scout modules
@@ -45,10 +45,12 @@ jobs:
             robot_kb_ebay_asp_policy.py \
             v5/pokemonpricetracker_adapter.py \
             v5/pokemonpricetracker_contract_probe.py \
+            v5/pokemonpricetracker_full_benchmark.py \
             tests/test_catalog_cardinality.py \
             tests/test_robot_kb_ebay_asp_policy.py \
             tests/test_pokemonpricetracker_adapter.py \
-            tests/test_pokemonpricetracker_contract_probe.py
+            tests/test_pokemonpricetracker_contract_probe.py \
+            tests/test_pokemonpricetracker_full_benchmark.py
 
       - name: Run focused deterministic tests
         run: |
@@ -56,23 +58,24 @@ jobs:
             tests.test_catalog_cardinality \
             tests.test_robot_kb_ebay_asp_policy \
             tests.test_pokemonpricetracker_adapter \
-            tests.test_pokemonpricetracker_contract_probe -v
+            tests.test_pokemonpricetracker_contract_probe \
+            tests.test_pokemonpricetracker_full_benchmark -v
 
-      - name: Run bounded PokemonPriceTracker live contract probe
-        run: python -m v5.pokemonpricetracker_contract_probe
+      - name: Run full bounded PokemonPriceTracker paid-plan benchmark
+        run: python -m v5.pokemonpricetracker_full_benchmark
 
-      - name: Publish probe summary
-        if: always() && hashFiles('pokemonpricetracker_contract_probe.md') != ''
+      - name: Publish full benchmark summary
+        if: always() && hashFiles('pokemonpricetracker_full_benchmark.md') != ''
         shell: bash
-        run: cat pokemonpricetracker_contract_probe.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat pokemonpricetracker_full_benchmark.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload raw schema evidence
-        if: always() && hashFiles('pokemonpricetracker_contract_probe.json') != ''
+      - name: Upload full raw evidence
+        if: always() && hashFiles('pokemonpricetracker_full_benchmark.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: pokemonpricetracker-contract-probe-${{ github.run_id }}
+          name: pokemonpricetracker-full-benchmark-${{ github.run_id }}
           path: |
-            pokemonpricetracker_contract_probe.json
-            pokemonpricetracker_contract_probe.md
+            pokemonpricetracker_full_benchmark.json
+            pokemonpricetracker_full_benchmark.md
           if-no-files-found: error
           retention-days: 14
