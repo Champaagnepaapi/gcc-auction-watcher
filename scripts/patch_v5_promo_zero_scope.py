@@ -8,3 +8,4 @@ if text.count(old) != 1:
     raise SystemExit(f'unexpected promo candidate block count: {text.count(old)}')
 path.write_text(text.replace(old, new, 1), encoding='utf-8')
 print('scoped zero normalization to versioned promo prefixes only')
+# trigger after one-shot workflow exists
