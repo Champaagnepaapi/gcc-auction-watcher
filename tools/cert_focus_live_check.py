@@ -17,8 +17,7 @@ import v4_focus_cert_router as focus_router
 import v4_mislisted_slab_hunter as hunter
 
 
-# Read-only smoke checks: no bid/buy/checkout and no notification.
-# Keep these exact public samples stable so transport diagnostics are comparable.
+# Read-only smoke checks: exact public examples, no bid/buy/checkout/notification.
 KNOWN = (
     ("PSA", "131216316", 10.0),
     ("PCA", "76676760", 9.5),
