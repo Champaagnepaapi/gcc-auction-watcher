@@ -23,3 +23,4 @@ text = text.replace(old_gate, new_gate, 1)
 
 path.write_text(text, encoding='utf-8')
 print('wired exact TCGdex post-macro applicability retry')
+# trigger after workflow exists
