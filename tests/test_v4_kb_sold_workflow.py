@@ -21,9 +21,11 @@ class SoldWorkflowWiringTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 45", self.sold)
         self.assertIn("timeout-minutes: 45", self.hourly)
 
-    def test_hourly_lane_keeps_fixed_and_auction_without_sold_work(self):
-        self.assertIn("Fetch 4-page fixed backup rotation batch", self.hourly)
-        self.assertIn("--pages 4", self.hourly)
+    def test_hourly_lane_keeps_hybrid_fixed_and_auction_without_sold_work(self):
+        self.assertIn("Fetch fixed hybrid batch", self.hourly)
+        self.assertIn("--recent-records 100", self.hourly)
+        self.assertIn("--rotation-pages 2", self.hourly)
+        self.assertIn("--target-records 100", self.hourly)
         self.assertIn("--live-gcc auction", self.hourly)
         self.assertNotIn("SOLD_STATE:", self.hourly)
         self.assertNotIn("v4_kb_sold_watermark.py", self.hourly)
