@@ -81,7 +81,8 @@ class PptShadowLanguageGateTests(unittest.TestCase):
         self.assertEqual(summary["blocked_language"], 1)
         self.assertEqual(summary["eligible"], 0)
         self.assertEqual(session.calls, 0)
-        self.assertNotIn("v4_ppt_shadow", state)
+        self.assertEqual(state["v4_ppt_shadow"]["records"], {})
+        self.assertEqual(state["v4_ppt_shadow"]["cache"], {})
 
 
 if __name__ == "__main__":
