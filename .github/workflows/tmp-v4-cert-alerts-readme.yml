@@ -25,23 +25,7 @@ jobs:
             echo 'PR67 handoff already present'
             exit 0
           fi
-          cat >> README.md <<'EOF'
-
----
-
-# PR #67 — alertes immédiates sur tout problème de certificat PSA/PCA/CCC
-
-- Scope : **PSA / PCA / CCC** uniquement pour cette nouvelle notification immédiate.
-- Les numéros de certificat présents dans l'API GCC fixed sont maintenant conservés directement dans `commercial_dimensions.cert_number` avant l'ouverture de la fiche ; le benchmark read-only préalable sur 100 cartes fixed actives avait trouvé **100/100 numéros présents directement dans l'API GCC**.
-- **Numéro de certificat absent** après les données structurées + inspection de fiche → notification immédiate `CERT NUMBER MISSING — MANUAL REVIEW`, sans attendre qu'une opportunité économique V4 soit calculée.
-- **Numéro présent mais lookup officiel réellement tenté et non résolu** → notification immédiate `CERT LOOKUP FAILED — MANUAL REVIEW` ; si le vérificateur répond mais que la note globale reste illisible → `CERT GRADE UNREADABLE — MANUAL REVIEW`.
-- L'épuisement du budget `V4_MISLISTED_CERT_MAX_PER_RUN` n'est **pas** étiqueté comme problème de certificat : aucune fausse alerte n'est créée lorsque le lookup n'a simplement pas été tenté.
-- Déduplication persistante par `listing URL + grader + cert + type/statut du problème` ; un même problème n'est pas renotifié à chaque run.
-- La logique existante reste ensuite inchangée : certificat officiel d'abord, OCR ciblé PSA/PCA/CCC en fallback, mismatch officiel autoritaire, OCR seul manual-review, puis arbitrage V4 normal.
-- Une panne de lookup peut être purement technique (anti-bot, timeout, parsing) : **l'alerte n'est jamais une preuve de mislisting** et ne modifie ni fair value, ni prix max, ni décision économique.
-- Aucun achat, bid, checkout, paiement ou grading automatique.
-- **V5 PR #8 reste inchangée et non mergée.**
-EOF
+          printf '%s' 'Ci0tLQoKIyBQUiAjNjcg4oCUIGFsZXJ0ZXMgaW1tw6lkaWF0ZXMgc3VyIHRvdXQgcHJvYmzDqG1lIGRlIGNlcnRpZmljYXQgUFNBL1BDQS9DQ0MKCi0gU2NvcGUgOiAqKlBTQSAvIFBDQSAvIENDQyoqIHVuaXF1ZW1lbnQgcG91ciBjZXR0ZSBub3V2ZWxsZSBub3RpZmljYXRpb24gaW1tw6lkaWF0ZS4KLSBMZXMgbnVtw6lyb3MgZGUgY2VydGlmaWNhdCBwcsOpc2VudHMgZGFucyBsJ0FQSSBHQ0MgZml4ZWQgc29udCBtYWludGVuYW50IGNvbnNlcnbDqXMgZGlyZWN0ZW1lbnQgZGFucyBgY29tbWVyY2lhbF9kaW1lbnNpb25zLmNlcnRfbnVtYmVyYCBhdmFudCBsJ291dmVydHVyZSBkZSBsYSBmaWNoZSA7IGxlIGJlbmNobWFyayByZWFkLW9ubHkgcHLDqWFsYWJsZSBzdXIgMTAwIGNhcnRlcyBmaXhlZCBhY3RpdmVzIGF2YWl0IHRyb3V2w6kgKioxMDAvMTAwIG51bcOpcm9zIHByw6lzZW50cyBkaXJlY3RlbWVudCBkYW5zIGwnQVBJIEdDQyoqLgotICoqTnVtw6lybyBkZSBjZXJ0aWZpY2F0IGFic2VudCoqIGFwcsOocyBsZXMgZG9ubsOpZXMgc3RydWN0dXLDqWVzICsgaW5zcGVjdGlvbiBkZSBmaWNoZSDihpIgbm90aWZpY2F0aW9uIGltbcOpZGlhdGUgYENFUlQgTlVNQkVSIE1JU1NJTkcg4oCUIE1BTlVBTCBSRVZJRVdgLCBzYW5zIGF0dGVuZHJlIHF1J3VuZSBvcHBvcnR1bml0w6kgw6ljb25vbWlxdWUgVjQgc29pdCBjYWxjdWzDqWUuCi0gKipOdW3DqXJvIHByw6lzZW50IG1haXMgbG9va3VwIG9mZmljaWVsIHLDqWVsbGVtZW50IHRlbnTDqSBldCBub24gcsOpc29sdSoqIOKGkiBub3RpZmljYXRpb24gaW1tw6lkaWF0ZSBgQ0VSVCBMT09LVVAgRkFJTEVEIOKAlCBNQU5VQUwgUkVWSUVXYCA7IHNpIGxlIHbDqXJpZmljYXRldXIgcsOpcG9uZCBtYWlzIHF1ZSBsYSBub3RlIGdsb2JhbGUgcmVzdGUgaWxsaXNpYmxlIOKGkiBgQ0VSVCBHUkFERSBVTlJFQURBQkxFIOKAlCBNQU5VQUwgUkVWSUVXYC4KLSBMJ8OpcHVpc2VtZW50IGR1IGJ1ZGdldCBgVjRfTUlTTElTVEVEX0NFUlRfTUFYX1BFUl9SVU5gIG4nZXN0ICoqcGFzKiogw6l0aXF1ZXTDqSBjb21tZSBwcm9ibMOobWUgZGUgY2VydGlmaWNhdCA6IGF1Y3VuZSBmYXVzc2UgYWxlcnRlIG4nZXN0IGNyw6nDqWUgbG9yc3F1ZSBsZSBsb29rdXAgbidhIHNpbXBsZW1lbnQgcGFzIMOpdMOpIHRlbnTDqS4KLSBEw6lkdXBsaWNhdGlvbiBwZXJzaXN0YW50ZSBwYXIgYGxpc3RpbmcgVVJMICsgZ3JhZGVyICsgY2VydCArIHR5cGUvc3RhdHV0IGR1IHByb2Jsw6htZWAgOyB1biBtw6ptZSBwcm9ibMOobWUgbidlc3QgcGFzIHJlbm90aWZpw6kgw6AgY2hhcXVlIHJ1bi4KLSBMYSBsb2dpcXVlIGV4aXN0YW50ZSByZXN0ZSBlbnN1aXRlIGluY2hhbmfDqWUgOiBjZXJ0aWZpY2F0IG9mZmljaWVsIGQnYWJvcmQsIE9DUiBjaWJsw6kgUFNBL1BDQS9DQ0MgZW4gZmFsbGJhY2ssIG1pc21hdGNoIG9mZmljaWVsIGF1dG9yaXRhaXJlLCBPQ1Igc2V1bCBtYW51YWwtcmV2aWV3LCBwdWlzIGFyYml0cmFnZSBWNCBub3JtYWwuCi0gVW5lIHBhbm5lIGRlIGxvb2t1cCBwZXV0IMOqdHJlIHB1cmVtZW50IHRlY2huaXF1ZSAoYW50aS1ib3QsIHRpbWVvdXQsIHBhcnNpbmcpIDogKipsJ2FsZXJ0ZSBuJ2VzdCBqYW1haXMgdW5lIHByZXV2ZSBkZSBtaXNsaXN0aW5nKiogZXQgbmUgbW9kaWZpZSBuaSBmYWlyIHZhbHVlLCBuaSBwcml4IG1heCwgbmkgZMOpY2lzaW9uIMOpY29ub21pcXVlLgotIEF1Y3VuIGFjaGF0LCBiaWQsIGNoZWNrb3V0LCBwYWllbWVudCBvdSBncmFkaW5nIGF1dG9tYXRpcXVlLgotICoqVjUgUFIgIzggcmVzdGUgaW5jaGFuZ8OpZSBldCBub24gbWVyZ8OpZS4qKgo=' | base64 --decode >> README.md
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add README.md
