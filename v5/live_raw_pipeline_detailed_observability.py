@@ -1,9 +1,10 @@
-"""V5 live diagnostic entrypoint with detailed identity observability.
+"""V5 live diagnostic with detailed identity observability and emergency fallback.
 
 Import order is intentional: ``live_raw_pipeline_uniqueness`` first installs the
-current deterministic uniqueness resolver. This module then keeps that resolver
-and its safety gates, adds passive observability, and applies the V5 live policy
-that PokeTrace is market/pricing only rather than an identity source.
+current deterministic uniqueness resolver. This module then keeps those safety
+gates, keeps routine PokeTrace identity retrieval disabled, and permits a
+separate bounded PokeTrace identity lane only after a genuine TCGdex technical
+outage and an unresolved normal catalogue chain.
 """
 
 from __future__ import annotations
@@ -12,15 +13,15 @@ import sys
 
 from . import live_raw_pipeline_uniqueness as _uniqueness_entrypoint  # noqa: F401
 from . import live_raw_pipeline_catalog as catalog_pipeline
-from .detailed_identity_observability import (
-    DetailedDeterministicUniquenessHybridPokemonCardResolver,
-    render_detailed_record,
+from .detailed_identity_observability import render_detailed_record
+from .emergency_identity_fallback import (
+    EmergencyFallbackDetailedPokemonCardResolver,
+    render_emergency_identity_policy,
 )
 from .poketrace_market_only_identity import (
     MarketOnlyPokeTraceIdentityResolver,
     MarketOnlyPokeTraceVisualIdentityResolver,
     render_market_only_identity_counters,
-    render_poketrace_market_only_policy,
 )
 
 
@@ -49,26 +50,21 @@ class DetailedCatalogAwareLiveRawPipelineDiagnostic(_BasePipelineDiagnostic):
                     )
                 )
         print("observability changes acceptance/valuation: false")
-        identity_resolver = getattr(
-            self.card_catalog_resolver, "poketrace_identity", None
-        )
-        if isinstance(identity_resolver, MarketOnlyPokeTraceIdentityResolver):
-            print(
-                render_poketrace_market_only_policy(
-                    identity_resolver,
-                    self.visual_identity,
-                )
-            )
+        if isinstance(
+            self.card_catalog_resolver,
+            EmergencyFallbackDetailedPokemonCardResolver,
+        ):
+            print(render_emergency_identity_policy(self.card_catalog_resolver))
         return summary
 
 
-# Patch only constructor symbols used by catalog_pipeline.main(). The catalogue
-# resolver, deterministic uniqueness and microvariant gates stay unchanged.
-# PokeTrace identity/visual search is deliberately replaced by market-only
-# no-ops; the PokeTrace market provider itself is not disabled or modified.
+# Routine PokeTrace identity remains a no-op. The catalogue resolver owns the
+# separate emergency lane and enables it only from per-record TCGdex technical
+# health evidence. Microvariant gates, market valuation and purchase safety are
+# otherwise unchanged.
 catalog_pipeline.PokeTraceIdentityResolver = MarketOnlyPokeTraceIdentityResolver
 catalog_pipeline.HybridPokemonCardResolver = (
-    DetailedDeterministicUniquenessHybridPokemonCardResolver
+    EmergencyFallbackDetailedPokemonCardResolver
 )
 catalog_pipeline.LocalVisualIdentityResolver = (
     MarketOnlyPokeTraceVisualIdentityResolver
