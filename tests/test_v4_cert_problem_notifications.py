@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from email.header import Header
 from unittest.mock import Mock, patch
@@ -71,18 +72,84 @@ class CertProblemNotificationTests(unittest.TestCase):
             lot = cert_alerts._fixed_api_lot_with_serial(result, base_lot.url, object())
         self.assertEqual(lot.commercial_dimensions["cert_number"], "131216316")
 
-    def test_missing_cert_number_alerts_immediately_and_keeps_v4_path(self) -> None:
+    def test_inspection_cannot_erase_structured_api_cert_number(self) -> None:
+        original = replace(self._lot(), body="")
+        inspected_without_cert = replace(
+            original,
+            body="Catégorie: Pokémon\nRéférence: #166/165\n",
+            commercial_dimensions={},
+        )
+        cert = hunter.GraderCertificate("131216316", 9.0, status="OK", grader="PSA")
+        delegate = Mock(return_value="NORMAL")
+        alert = Mock(return_value=True)
+        with patch.object(watcher, "inspect_item", return_value=inspected_without_cert), patch.object(
+            cert_alerts, "_DELEGATE_EVALUATE", delegate
+        ), patch.object(
+            cert_alerts,
+            "_resolve_cert_with_attempt_marker",
+            return_value=(cert, True),
+        ) as resolver, patch.object(
+            cert_alerts, "_send_cert_problem_review", alert
+        ), patch.object(
+            cert_alerts, "_serial_from_gradation_panel"
+        ) as panel:
+            result = cert_alerts.evaluate_with_cert_problem_notifications(
+                object(), original, 1, {}, "now",
+                datetime(2026, 8, 15, tzinfo=timezone.utc), watcher.RunDiagnostics()
+            )
+        self.assertEqual(result, "NORMAL")
+        resolver.assert_called_once_with(unittest.mock.ANY, "PSA", "131216316")
+        panel.assert_not_called()
+        alert.assert_not_called()
+        delegated_lot = delegate.call_args.args[1]
+        self.assertEqual(delegated_lot.commercial_dimensions["cert_number"], "131216316")
+
+    def test_gradation_panel_is_checked_before_missing_cert_alert(self) -> None:
         lot = self._lot(cert_number="")
+        cert = hunter.GraderCertificate("131216316", 9.0, status="OK", grader="PSA")
         delegate = Mock(return_value="NORMAL")
         alert = Mock(return_value=True)
         with patch.object(cert_alerts, "_DELEGATE_EVALUATE", delegate), patch.object(
+            cert_alerts, "_serial_from_gradation_panel", return_value="131216316"
+        ) as panel, patch.object(
+            cert_alerts,
+            "_resolve_cert_with_attempt_marker",
+            return_value=(cert, True),
+        ) as resolver, patch.object(
             cert_alerts, "_send_cert_problem_review", alert
-        ), patch.object(cert_alerts, "_resolve_cert_with_attempt_marker") as resolver:
+        ):
             result = cert_alerts.evaluate_with_cert_problem_notifications(
                 object(), lot, 1, {}, "now",
                 datetime(2026, 8, 15, tzinfo=timezone.utc), watcher.RunDiagnostics()
             )
         self.assertEqual(result, "NORMAL")
+        panel.assert_called_once_with(unittest.mock.ANY, lot.url)
+        resolver.assert_called_once_with(unittest.mock.ANY, "PSA", "131216316")
+        alert.assert_not_called()
+        delegated_lot = delegate.call_args.args[1]
+        self.assertEqual(delegated_lot.commercial_dimensions["cert_number"], "131216316")
+
+    def test_gradation_text_parser_reads_split_cert_label(self) -> None:
+        self.assertEqual(
+            cert_alerts._serial_from_text("Description\nGradation\nCertification\n13 121 6316\nGrade\n9"),
+            "131216316",
+        )
+
+    def test_missing_cert_number_alerts_only_after_gradation_fallback_fails(self) -> None:
+        lot = self._lot(cert_number="")
+        delegate = Mock(return_value="NORMAL")
+        alert = Mock(return_value=True)
+        with patch.object(cert_alerts, "_DELEGATE_EVALUATE", delegate), patch.object(
+            cert_alerts, "_send_cert_problem_review", alert
+        ), patch.object(
+            cert_alerts, "_serial_from_gradation_panel", return_value=""
+        ) as panel, patch.object(cert_alerts, "_resolve_cert_with_attempt_marker") as resolver:
+            result = cert_alerts.evaluate_with_cert_problem_notifications(
+                object(), lot, 1, {}, "now",
+                datetime(2026, 8, 15, tzinfo=timezone.utc), watcher.RunDiagnostics()
+            )
+        self.assertEqual(result, "NORMAL")
+        panel.assert_called_once()
         resolver.assert_not_called()
         alert.assert_called_once()
         self.assertEqual(alert.call_args.kwargs["issue"], cert_alerts.CERT_NUMBER_MISSING)
