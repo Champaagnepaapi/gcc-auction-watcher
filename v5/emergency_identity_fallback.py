@@ -1,17 +1,22 @@
 """Emergency identity fallback for the experimental V5 live diagnostic.
 
-Normal identity remains catalogue-first. PokeTrace may be used for identity only
-when all of the following are true:
+Normal identity remains catalogue-first. A previously proven TCGdex macro
+identity may be reused from Robot KB only when the current record experienced a
+genuine TCGdex technical outage. Clean TCGdex no-match never consults that
+cache. Pokemon TCG API remains the next deterministic external fallback.
+
+PokeTrace may be used for identity only when all of the following are true:
 
 * the current record experienced a genuine TCGdex technical outage;
-* the normal deterministic chain (including Pokemon TCG API) did not resolve it;
+* Robot KB and the normal deterministic chain (including Pokemon TCG API) did
+  not resolve it;
 * the identity has enough core coordinates and a PokeTrace-safe language;
 * the small per-run emergency budget is not exhausted.
 
-A clean TCGdex no-match never enables this path. Emergency PokeTrace uses a
-separate provider instance so identity responses cannot prime or alias the real
-market/pricing caches. Rate pacing and the circuit-breaker state are propagated
-back to the market provider after the emergency attempt.
+Emergency PokeTrace uses a separate provider instance so identity responses
+cannot prime or alias the real market/pricing caches. Rate pacing and the
+circuit-breaker state are propagated back to the market provider after the
+emergency attempt.
 """
 
 from __future__ import annotations
@@ -28,10 +33,19 @@ from .detailed_identity_observability import (
     _identity_key,
 )
 from .models import CardIdentity
+from .robot_kb_identity_cache import (
+    CACHE_AMBIGUOUS,
+    CACHE_MATCHED,
+    ROBOT_KB_TCGDEX_CACHE,
+    RobotKBIdentityCache,
+    render_robot_kb_identity_cache,
+)
 
 
 TCGDEX_TECHNICAL_OUTAGE = "TCGDEX_TECHNICAL_OUTAGE"
 POKETRACE_EMERGENCY = "POKETRACE_EMERGENCY"
+ROBOT_KB_CACHE_HIT = "ROBOT_KB_TCGDEX_CACHE_HIT"
+ROBOT_KB_CACHE_AMBIGUOUS = "ROBOT_KB_TCGDEX_CACHE_AMBIGUOUS"
 _TRANSIENT_HTTP = {408, 425, 429}
 
 
@@ -148,6 +162,10 @@ class EmergencyIdentityCounters:
     budget_exhausted: int = 0
     skipped_without_outage: int = 0
     skipped_language_or_coordinates: int = 0
+    robot_kb_hits: int = 0
+    robot_kb_ambiguous: int = 0
+    robot_kb_fallthrough: int = 0
+    pokemon_tcg_calls_avoided_by_robot_kb: int = 0
     tcgdex_transport_events: int = 0
     tcgdex_transient_http_events: int = 0
     tcgdex_json_events: int = 0
@@ -157,13 +175,20 @@ class EmergencyIdentityCounters:
 class EmergencyFallbackDetailedPokemonCardResolver(
     DetailedDeterministicUniquenessHybridPokemonCardResolver
 ):
-    """Current V5 resolver plus a tightly gated PokeTrace emergency lane."""
+    """Current V5 resolver plus Robot KB and tightly gated PokeTrace emergency lanes."""
 
     def __init__(self, *args, **kwargs) -> None:
+        robot_kb_identity_cache = kwargs.pop("robot_kb_identity_cache", None)
         super().__init__(*args, **kwargs)
         tracker = TCGdexOutageTrackingSession(self.session)
         self.session = tracker
         self.tcgdex_health = tracker
+        self.robot_kb_identity_cache = (
+            robot_kb_identity_cache
+            if robot_kb_identity_cache is not None
+            else RobotKBIdentityCache.from_env()
+        )
+        self._active_tcgdex_event_start: Optional[int] = None
         self.emergency_counters = EmergencyIdentityCounters()
         self.emergency_max_identities = max(
             0,
@@ -183,6 +208,45 @@ class EmergencyFallbackDetailedPokemonCardResolver(
         counters.tcgdex_nontransient_http_events += sum(
             e.kind == "nontransient_http" for e in events
         )
+
+    def _set_robot_kb_catalog_diagnostic(
+        self,
+        identity: CardIdentity,
+        result: CatalogIdentityResult,
+        events: tuple[TCGdexTechnicalEvent, ...],
+    ) -> None:
+        key = _identity_key(identity)
+        existing = self.catalog_diagnostic_for(identity)
+        cache_reason = ROBOT_KB_CACHE_HIT if result.matched else ROBOT_KB_CACHE_AMBIGUOUS
+        reasons = tuple(
+            dict.fromkeys(
+                existing.reason_codes + (TCGDEX_TECHNICAL_OUTAGE, cache_reason)
+            )
+        )
+        routes = tuple(
+            dict.fromkeys(existing.routes + ("robot_kb_tcgdex_cache",))
+        )
+        details = dict(existing.details)
+        details.update(
+            {
+                "robot_kb_cache_attempted": True,
+                "robot_kb_cache_status": "MATCHED" if result.matched else "AMBIGUOUS",
+                "tcgdex_technical_events": [
+                    {"kind": event.kind, "http_status": event.http_status}
+                    for event in events
+                ],
+            }
+        )
+        diagnostic = replace(
+            existing,
+            provider=ROBOT_KB_TCGDEX_CACHE,
+            status="MATCHED" if result.matched else "AMBIGUOUS",
+            routes=routes,
+            reason_codes=reasons,
+            details=details,
+        )
+        self._catalog_diagnostics[key] = diagnostic
+        self._catalog_diagnostics[_identity_key(result.identity)] = diagnostic
 
     def _set_catalog_emergency_diagnostic(
         self,
@@ -235,11 +299,64 @@ class EmergencyFallbackDetailedPokemonCardResolver(
             details=details,
         )
 
+    def _resolve_pokemon_tcg(self, identity: CardIdentity) -> CatalogIdentityResult:
+        """On a real TCGdex outage, consult Robot KB before Pokemon TCG API."""
+
+        event_start = self._active_tcgdex_event_start
+        if event_start is not None:
+            events = tuple(self.tcgdex_health.events[event_start:])
+            if _eligible_outage(events):
+                cached = self.robot_kb_identity_cache.lookup(identity)
+                if cached.status == CACHE_MATCHED:
+                    self.emergency_counters.robot_kb_hits += 1
+                    self.emergency_counters.pokemon_tcg_calls_avoided_by_robot_kb += 1
+                    return CatalogIdentityResult(
+                        identity=cached.identity,
+                        source=ROBOT_KB_TCGDEX_CACHE,
+                        matched=True,
+                        ambiguous=False,
+                        blocking=False,
+                        set_provenance=cached.set_provenance,
+                    )
+                if cached.status == CACHE_AMBIGUOUS:
+                    self.emergency_counters.robot_kb_ambiguous += 1
+                    return CatalogIdentityResult(
+                        identity=identity,
+                        source=ROBOT_KB_TCGDEX_CACHE,
+                        matched=False,
+                        ambiguous=True,
+                        blocking=False,
+                    )
+                self.emergency_counters.robot_kb_fallthrough += 1
+        return super()._resolve_pokemon_tcg(identity)
+
     def resolve_identity(self, identity: CardIdentity):
         event_start = len(self.tcgdex_health.events)
-        result = super().resolve_identity(identity)
+        previous_event_start = self._active_tcgdex_event_start
+        self._active_tcgdex_event_start = event_start
+        try:
+            result = super().resolve_identity(identity)
+        finally:
+            self._active_tcgdex_event_start = previous_event_start
+
         events = tuple(self.tcgdex_health.events[event_start:])
         self._record_events(events)
+
+        # Only successful exact TCGdex catalogue results are allowed to seed the
+        # durable cache. Cache write failures never alter the live resolution.
+        if result.source == "TCGDEX" and result.matched and not result.ambiguous:
+            self.robot_kb_identity_cache.store_tcgdex_result(result)
+
+        if result.source == ROBOT_KB_TCGDEX_CACHE:
+            if result.matched and result.set_provenance is not None:
+                self.poketrace_identity.register_set_provenance(
+                    identity, result.set_provenance
+                )
+                self.poketrace_identity.register_set_provenance(
+                    result.identity, result.set_provenance
+                )
+            self._set_robot_kb_catalog_diagnostic(identity, result, events)
+            return result
 
         if result.matched or result.ambiguous or result.blocking:
             return result
@@ -306,12 +423,21 @@ def render_emergency_identity_policy(
     return "\n".join(
         (
             "=== V5 EMERGENCY IDENTITY FALLBACK ===",
-            "normal identity: TCGdex -> Pokemon TCG API",
-            "PokeTrace identity: emergency-only after genuine TCGdex technical outage",
+            "normal identity: TCGdex -> Robot KB on TCGdex outage -> Pokemon TCG API",
+            "PokeTrace identity: emergency-only after genuine TCGdex technical outage and unresolved Robot KB/API chain",
             "eligible TCGdex failures: transport, JSON decode, HTTP 408/425/429/5xx",
+            "clean TCGdex no-match consults Robot KB: NO",
             "clean TCGdex no-match triggers PokeTrace: NO",
-            "other TCGdex 4xx trigger PokeTrace: NO",
+            "other TCGdex 4xx trigger Robot KB/PokeTrace emergency: NO",
+            "Robot KB cached microvariant metadata used as listing proof: NO",
             "emergency PokeTrace market-cache priming: NO (isolated provider runtime)",
+            f"Robot KB exact cache hits: {c.robot_kb_hits}",
+            f"Robot KB ambiguous: {c.robot_kb_ambiguous}",
+            f"Robot KB fallthrough: {c.robot_kb_fallthrough}",
+            (
+                "Pokemon TCG calls avoided by Robot KB: "
+                f"{c.pokemon_tcg_calls_avoided_by_robot_kb}"
+            ),
             f"emergency identity budget/run: {resolver.emergency_max_identities}",
             f"technical-outage records: {c.technical_outage_records}",
             f"emergency attempts: {c.attempts}",
@@ -329,5 +455,6 @@ def render_emergency_identity_policy(
             f"TCGdex transient HTTP events: {c.tcgdex_transient_http_events}",
             f"TCGdex JSON events: {c.tcgdex_json_events}",
             f"TCGdex non-transient HTTP events: {c.tcgdex_nontransient_http_events}",
+            render_robot_kb_identity_cache(resolver.robot_kb_identity_cache),
         )
     )
