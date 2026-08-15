@@ -46,6 +46,7 @@ class PromoPrefixCatalogAliasTests(unittest.TestCase):
             _local_card_number_candidates("swsh027"),
             ("swsh027", "SWSH027", "SWSH27"),
         )
+        self.assertEqual(_local_card_number_candidates("TG03/TG30"), ("TG03",))
         self.assertEqual(_local_card_number_candidates("089"), ("089", "89"))
 
     def test_exact_dp_alias_resolves_only_via_exact_dpp_set_and_dp45_card(self):
@@ -100,7 +101,10 @@ class PromoPrefixCatalogAliasTests(unittest.TestCase):
         self.assertEqual(result.source, "TCGDEX")
         self.assertEqual(result.identity.card_name, "Charizard G")
         self.assertEqual(result.identity.set, "DP Black Star Promos")
-        self.assertEqual(result.identity.card_number, "DP45")
+        # The exact TCGdex localId DP45 proves equivalence, but V5 preserves the
+        # seller spelling DP045 rather than rewriting a denominatorless promo ID.
+        self.assertEqual(result.identity.card_number, "DP045")
+        self.assertEqual(result.set_provenance.local_id, "DP45")
         self.assertEqual(result.microvariant_applicability.source, "TCGDEX_EXACT")
         self.assertTrue(result.microvariant_applicability.finish_proven_single)
         self.assertEqual(result.microvariant_applicability.single_finish, "holofoil")
