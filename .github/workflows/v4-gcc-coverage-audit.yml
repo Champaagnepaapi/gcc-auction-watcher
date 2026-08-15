@@ -165,6 +165,7 @@ jobs:
                           "identity_key": identity_key,
                           "observed_at": row.get("observed_at"),
                           "status": row.get("status"),
+                          "reason": row.get("reason"),
                           "shadow_effect": row.get("shadow_effect"),
                           "card_id": row.get("card_id"),
                           "card": row.get("card"),
@@ -173,6 +174,12 @@ jobs:
                           "grader": row.get("grader"),
                           "grade": row.get("grade"),
                           "gcc_price_eur": row.get("gcc_price_eur"),
+                          "listing_language": row.get("listing_language") or ppt.get("listing_language"),
+                          "provider_market_language": row.get("provider_market_language") or ppt.get("provider_market_language"),
+                          "market_relation": row.get("market_relation") or ppt.get("market_relation"),
+                          "market_relation_proof": row.get("market_relation_proof") or ppt.get("market_relation_proof"),
+                          "ppt_lookup_name": row.get("ppt_lookup_name"),
+                          "ppt_lookup_set": row.get("ppt_lookup_set"),
                           "current_v4_path": current.get("path"),
                           "current_v4_fair_value_eur": current.get("fair_value_eur"),
                           "current_v4_discount_pct": current.get("discount_pct"),
@@ -180,6 +187,18 @@ jobs:
                           "gcc_exact_sold_count": current.get("gcc_exact_sold_count"),
                           "ppt_evidence_class": ppt.get("evidence_class"),
                           "ppt_evidence_strength": ppt.get("evidence_strength"),
+                          "ppt_anchor_evidence_strength": ppt.get("ppt_anchor_evidence_strength"),
+                          "ppt_anchor_fair_value_eur": ppt.get("anchor_fair_value_eur"),
+                          "ppt_anchor_discount_pct_unadjusted": ppt.get("anchor_discount_pct_unadjusted"),
+                          "language_basis_status": ppt.get("language_basis_status"),
+                          "language_basis_ratio_fr_per_en": ppt.get("language_basis_ratio_fr_per_en"),
+                          "language_basis_pairs": ppt.get("language_basis_pairs"),
+                          "language_basis_distinct_days": ppt.get("language_basis_distinct_days"),
+                          "language_basis_recent_pairs_90d": ppt.get("language_basis_recent_pairs_90d"),
+                          "language_basis_latest_pair_age_days": ppt.get("language_basis_latest_pair_age_days"),
+                          "language_basis_relative_mad": ppt.get("language_basis_relative_mad"),
+                          "cross_language_safety_pp": ppt.get("cross_language_safety_pp"),
+                          "economic_eligible_in_shadow": ppt.get("economic_eligible_in_shadow"),
                           "ppt_fair_value_eur": ppt.get("fair_value_eur"),
                           "ppt_discount_to_external_pct": ppt.get("discount_to_external_pct"),
                           "ppt_sales_count": ppt.get("sales_count"),
@@ -198,19 +217,22 @@ jobs:
                           "notification_use": False,
                       })
 
+                  def num(value, fallback=-999.0):
+                      try:
+                          return float(value)
+                      except (TypeError, ValueError):
+                          return fallback
+
                   def rank(row):
                       signal = 1 if row.get("kinetic_shadow_signal") else 0
-                      discount = row.get("ppt_discount_to_external_pct")
-                      try:
-                          discount = float(discount)
-                      except (TypeError, ValueError):
-                          discount = -999.0
-                      return (signal, discount)
+                      adjusted = num(row.get("ppt_discount_to_external_pct"))
+                      anchor = num(row.get("ppt_anchor_discount_pct_unadjusted"))
+                      return (signal, adjusted, anchor)
 
                   records.sort(key=rank, reverse=True)
                   report = {
                       "status": "OK",
-                      "diagnostic_scope": "bounded_current_v4_gcc_poketrace_vs_ppt",
+                      "diagnostic_scope": "bounded_current_v4_gcc_poketrace_vs_ppt_with_fr_en_bridge",
                       "production_economic_use": False,
                       "notification_use": False,
                       "last_run": root.get("last_run", {}),
@@ -220,22 +242,34 @@ jobs:
           output_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
           last = report.get("last_run", {}) if isinstance(report.get("last_run"), dict) else {}
+          summary = last.get("summary", {}) if isinstance(last.get("summary"), dict) else {}
           records = report.get("records", []) if isinstance(report.get("records"), list) else []
           signals = [row for row in records if row.get("kinetic_shadow_signal")]
-          rescue = [row for row in signals if row.get("shadow_effect") == "PPT_EXTERNAL_RESCUE_CANDIDATE"]
-          revalue = [row for row in signals if row.get("shadow_effect") == "PPT_REVALUE_CANDIDATE"]
+          rescue = [row for row in signals if "EXTERNAL_RESCUE_CANDIDATE" in str(row.get("shadow_effect") or "")]
+          revalue = [row for row in signals if str(row.get("shadow_effect") or "").endswith("_REVALUE_CANDIDATE")]
+          cross = [row for row in records if row.get("market_relation") == "CROSS_LANGUAGE_EN_ANCHOR"]
+          calibrated = [row for row in cross if row.get("language_basis_status") == "CALIBRATED"]
+          anchor_only = [row for row in cross if row.get("language_basis_status") not in (None, "CALIBRATED")]
 
           lines = [
               "# V4 + PokemonPriceTracker live shadow",
               "",
               "**Shadow only:** no production fair value, max_recommended or notification was changed.",
               "",
+              "French physical cards remain French. PPT English data is a cross-language anchor, never an exact French SOLD comparable.",
+              "",
               f"- status: `{report.get('status')}`",
               f"- PPT HTTP calls: `{last.get('http_calls', 'n/a')}`",
               f"- PPT credits: `{last.get('credits', 'n/a')}`",
               f"- PPT daily remaining: `{last.get('daily_remaining', 'n/a')}`",
-              f"- eligible: `{(last.get('summary') or {}).get('eligible', 'n/a') if isinstance(last.get('summary'), dict) else 'n/a'}`",
-              f"- strong PPT evidence: `{(last.get('summary') or {}).get('strong', 'n/a') if isinstance(last.get('summary'), dict) else 'n/a'}`",
+              f"- eligible: `{summary.get('eligible', 'n/a')}`",
+              f"- matched: `{summary.get('matched', 'n/a')}`",
+              f"- exact-language EN: `{summary.get('exact_language', 'n/a')}`",
+              f"- FR -> EN anchors: `{summary.get('cross_language_anchor', 'n/a')}`",
+              f"- calibrated FR/EN: `{summary.get('cross_language_calibrated', 'n/a')}`",
+              f"- anchor-only FR/EN: `{summary.get('anchor_only', 'n/a')}`",
+              f"- bridge failed: `{summary.get('bridge_failed', 'n/a')}`",
+              f"- PPT anchor strong: `{summary.get('strong', 'n/a')}`",
               f"- kinetic shadow signals: `{len(signals)}`",
               f"- external rescue hypotheses: `{len(rescue)}`",
               f"- revalue hypotheses: `{len(revalue)}`",
@@ -243,19 +277,43 @@ jobs:
               "## Top shadow signals",
           ]
           if not signals:
-              lines.append("No kinetic PPT signal in the bounded sample.")
+              lines.append("No actionable shadow signal in the bounded sample.")
           else:
               for row in signals[:10]:
                   lines.append(
                       "- "
                       f"{row.get('card') or row.get('card_id') or 'unknown'} "
                       f"{row.get('number') or ''} {row.get('grader') or ''} {row.get('grade') or ''}: "
-                      f"GCC €{row.get('gcc_price_eur')} vs PPT FV €{row.get('ppt_fair_value_eur')} | "
+                      f"relation `{row.get('market_relation')}` | GCC €{row.get('gcc_price_eur')} "
+                      f"vs adjusted FV €{row.get('ppt_fair_value_eur')} | "
                       f"discount {row.get('ppt_discount_to_external_pct')}% | "
+                      f"basis {row.get('language_basis_status')} n={row.get('language_basis_pairs')} | "
                       f"momentum 30/90/180 {row.get('momentum_30d_pct')}/"
                       f"{row.get('momentum_90d_pct')}/{row.get('momentum_180d_pct')}% | "
                       f"effect `{row.get('shadow_effect')}`"
                   )
+
+          lines.extend(["", "## Top FR -> EN anchors"])
+          if not cross:
+              lines.append("No deterministic FR -> EN PPT match in this bounded sample.")
+          else:
+              def anchor_rank(row):
+                  try:
+                      return float(row.get("ppt_anchor_discount_pct_unadjusted"))
+                  except (TypeError, ValueError):
+                      return -999.0
+              for row in sorted(cross, key=anchor_rank, reverse=True)[:10]:
+                  lines.append(
+                      "- "
+                      f"{row.get('card') or row.get('card_id') or 'unknown'} "
+                      f"{row.get('number') or ''} {row.get('grader') or ''} {row.get('grade') or ''}: "
+                      f"GCC €{row.get('gcc_price_eur')} | PPT EN anchor €{row.get('ppt_anchor_fair_value_eur')} | "
+                      f"unadjusted gap {row.get('ppt_anchor_discount_pct_unadjusted')}% | "
+                      f"FR/EN basis `{row.get('language_basis_status')}` n={row.get('language_basis_pairs')} "
+                      f"ratio={row.get('language_basis_ratio_fr_per_en')} | "
+                      f"adjusted FR FV={row.get('ppt_fair_value_eur')}"
+                  )
+
           output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
           cat v4_ppt_shadow_live_report.md >> "$GITHUB_STEP_SUMMARY"
