@@ -2,21 +2,25 @@ name: V5 Live Raw Pipeline Diagnostic
 
 on:
   workflow_dispatch:
+    inputs:
+      pokemon_tcg_remaining_confirmed:
+        description: "RapidAPI Pokemon TCG requests remaining now (must be >=90)"
+        required: true
+        type: string
 
 permissions:
   contents: read
   actions: read
 
-# Branch-local evidence replay + PPT opportunity validation.
-# CMAPI key is deliberately absent: this workflow cannot spend RapidAPI quota.
-# main and PR #8 remain untouched.
+# Branch-local provider benchmark. CMAPI key is deliberately absent, so this
+# workflow cannot consume CMAPI quota. main and PR #8 remain untouched.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     env:
-      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
-      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      POKEMON_TCG_RAPIDAPI_KEY: ${{ secrets.POKEMON_TCG_RAPIDAPI_KEY }}
+      POKEMON_TCG_REMAINING_CONFIRMED: ${{ inputs.pokemon_tcg_remaining_confirmed }}
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
@@ -34,32 +38,14 @@ jobs:
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Compile evidence replay and PPT validation
+      - name: Compile Pokemon TCG RapidAPI probe
         run: |
           python -m py_compile \
-            v5/source_scout_benchmark.py \
-            v5/source_scout_opportunity_benchmark.py \
-            v5/source_scout_paid_entrypoint.py \
-            v5/source_scout_paid_v2_entrypoint.py \
-            v5/source_scout_paid_v3_entrypoint.py \
-            v5/source_scout_opportunity_ppt_validation.py \
-            v5/source_scout_opportunity_ppt_validation_v2.py \
-            v5/cmapi_sold_identity_uniqueness.py \
-            v5/neon_cmapi_ingest.py \
-            v5/neon_cmapi_ingest_v2.py \
-            v5/neon_cmapi_ingest_v3.py \
-            v5/neon_source_scout_ingest.py \
-            v5/neon_source_scout_ingest_v2.py \
-            tests_v5/test_source_scout_benchmark.py \
-            tests_v5/test_source_scout_opportunity_ppt_validation.py \
-            tests_v5/test_cmapi_sold_identity_uniqueness.py
+            v5/source_scout_pokemon_tcg_rapidapi_probe.py \
+            tests_v5/test_source_scout_pokemon_tcg_rapidapi_probe.py
 
-      - name: Run focused identity and PPT safety tests
-        run: |
-          python -m unittest \
-            tests_v5.test_source_scout_benchmark \
-            tests_v5.test_source_scout_opportunity_ppt_validation \
-            tests_v5.test_cmapi_sold_identity_uniqueness -v
+      - name: Run focused safety tests
+        run: python -m unittest tests_v5.test_source_scout_pokemon_tcg_rapidapi_probe -v
 
       - name: Download prior CMAPI benchmark evidence without new CMAPI calls
         uses: actions/download-artifact@v4
@@ -70,34 +56,21 @@ jobs:
           run-id: 31871803238
           github-token: ${{ github.token }}
 
-      - name: Replay prior CMAPI evidence through catalog uniqueness gate
-        if: ${{ env.NEON_DATABASE_URL != '' }}
+      - name: Run bounded Pokemon TCG RapidAPI probe
+        run: python -m v5.source_scout_pokemon_tcg_rapidapi_probe
+
+      - name: Publish benchmark summary
+        if: always() && hashFiles('pokemon_tcg_rapidapi_probe.md') != ''
         shell: bash
-        run: |
-          cp prior-cmapi/cmapi_opportunity_evidence.json cmapi_opportunity_evidence.json
-          python -m v5.neon_cmapi_ingest_v3
+        run: cat pokemon_tcg_rapidapi_probe.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run opportunity PPT validation with zero CMAPI calls
-        run: python -m v5.source_scout_opportunity_ppt_validation_v2
-
-      - name: Persist validated PokemonPriceTracker evidence to Neon
-        if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
-        run: python -m v5.neon_source_scout_ingest_v2
-
-      - name: Publish PPT validation summary
-        if: always() && hashFiles('source_scout_opportunity_ppt_report.md') != ''
-        shell: bash
-        run: cat source_scout_opportunity_ppt_report.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload PPT validation evidence
-        if: always() && hashFiles('source_scout_opportunity_ppt_report.json') != ''
+      - name: Upload benchmark evidence
+        if: always() && hashFiles('pokemon_tcg_rapidapi_probe.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: opportunity-ppt-validation-${{ github.run_id }}
+          name: pokemon-tcg-rapidapi-probe-${{ github.run_id }}
           path: |
-            source_scout_opportunity_ppt_report.json
-            source_scout_opportunity_ppt_report.md
-            pokemonpricetracker_evidence.json
-            pokemonpricetracker_probe.json
+            pokemon_tcg_rapidapi_probe.json
+            pokemon_tcg_rapidapi_probe.md
           if-no-files-found: error
           retention-days: 14
