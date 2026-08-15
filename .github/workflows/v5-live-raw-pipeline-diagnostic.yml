@@ -22,6 +22,11 @@ jobs:
       POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "0.40"
       POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"
       POKETRACE_FALLING_MARKET_THRESHOLD: "0.10"
+      # Robot KB is consulted for identity only after a genuine TCGdex
+      # technical outage. Missing schema/DB remains a non-fatal fallthrough.
+      ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
+      V5_ROBOT_KB_IDENTITY_CACHE_ENABLED: "true"
+      V5_POKETRACE_EMERGENCY_MAX_IDENTITIES_PER_RUN: "5"
       V5_PROGRESS_LOGS: "true"
       # One global sample: at most 20 unique listings across all marketplaces.
       V5_LIVE_RAW_RESULT_LIMIT: "20"
@@ -29,8 +34,8 @@ jobs:
       # Optional repository variable. When absent, no postcode is invented and
       # shipping diagnostics remain explicitly limited.
       V5_EBAY_DELIVERY_POSTAL_CODE: ${{ vars.V5_EBAY_DELIVERY_POSTAL_CODE }}
-      # Only ambiguous/insufficient RAW identities are sent through this local
-      # image matcher. Images stay in memory and no model API is called.
+      # Historical switches remain present for compatibility, but the detailed
+      # live entrypoint currently forces PokeTrace-backed visual identity off.
       V5_VISUAL_IDENTITY_ENABLED: "true"
       V5_VISUAL_IDENTITY_MAX_CANDIDATES: "8"
       V5_VISUAL_IDENTITY_MAX_EBAY_IMAGES: "3"
@@ -95,7 +100,7 @@ jobs:
 
       - name: Install read-only diagnostic dependencies
         run: |
-          python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
+          python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0 'psycopg[binary]>=3.2,<4'
           if [ "${V5_CARD_NUMBER_OCR_ENABLED}" = "true" ]; then
             sudo apt-get update -qq
             sudo apt-get install -y --no-install-recommends tesseract-ocr
@@ -117,7 +122,7 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           echo "GCC authenticated session: READY"
 
-      - name: Run fast V5 hybrid identity + deterministic uniqueness + local visual/OCR + detailed observability diagnostic
+      - name: Run fast V5 hybrid identity + deterministic uniqueness + Robot KB outage cache + detailed observability diagnostic
         run: python -m v5.live_raw_pipeline_detailed_observability
 
       - name: Save cumulative GCC catalogue even after diagnostic failure
