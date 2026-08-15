@@ -25,6 +25,7 @@ jobs:
       SOLD_BACKFILL_STATE: v4_kb_sold_backfill_state.json
       SOLD_BACKFILL_FIXTURE: v4_kb_sold_backfill_batch.json
       SOLD_BACKFILL_MANIFEST: v4_kb_sold_backfill_manifest.json
+      ROI_SNAPSHOT: robot_kb_roi_snapshot.json
     steps:
       - name: Checkout production repository
         uses: actions/checkout@v4
@@ -136,3 +137,19 @@ jobs:
             ${{ env.SOLD_STATE }}
             ${{ env.SOLD_BACKFILL_STATE }}
           key: v4-kb-sold-watermark-${{ github.run_id }}
+
+      # Advisory analytics run only after collection cursors are already saved.
+      # It is a READ ONLY Neon transaction and cannot block/falsify SOLD ingest.
+      - name: Build Robot KB ROI readiness snapshot (read only)
+        continue-on-error: true
+        run: python robot_kb_roi_analytics.py --output "$ROI_SNAPSHOT"
+
+      - name: Upload Robot KB ROI readiness snapshot
+        if: ${{ always() && hashFiles('robot_kb_roi_snapshot.json') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: robot-kb-roi-readiness-${{ github.run_id }}
+          path: ${{ env.ROI_SNAPSHOT }}
+          if-no-files-found: ignore
+          retention-days: 14
