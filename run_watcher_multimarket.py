@@ -30,6 +30,7 @@ from v4_notification_semantics import install_v4_notification_semantics
 from v4_private_auction_coverage import install_v4_private_auction_coverage
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
+from v4_structural_edge_hunter import install_v4_structural_edge_hunter
 
 
 def _mislisted_slab_hunter_enabled() -> bool:
@@ -98,6 +99,9 @@ if __name__ == "__main__":
     # They never create an opportunity or alter FV/max_recommended. Positive
     # exact asks are briefly cached by strict commercial identity.
     install_v4_exact_active_ask_position()
+    # Structural edges consume exact SOLD + active-ask context. Expected Profit
+    # is secondary/ranking-only and can never suppress a V4 notification.
+    install_v4_structural_edge_hunter()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
     exit_code = 1
