@@ -23,3 +23,4 @@ text = text.replace(old_resolve, new_resolve, 1)
 
 path.write_text(text, encoding='utf-8')
 print('added deterministic promo-prefix set alias and zero-normalized localId fallback')
+# trigger after one-shot workflow exists
