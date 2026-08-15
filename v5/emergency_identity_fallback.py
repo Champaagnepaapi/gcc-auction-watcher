@@ -343,9 +343,13 @@ class EmergencyFallbackDetailedPokemonCardResolver(
         self._record_events(events)
 
         # Only successful exact TCGdex catalogue results are allowed to seed the
-        # durable cache. Cache write failures never alter the live resolution.
+        # durable cache. A cache defect must never turn a catalogue success into
+        # a live identity failure.
         if result.source == "TCGDEX" and result.matched and not result.ambiguous:
-            self.robot_kb_identity_cache.store_tcgdex_result(result)
+            try:
+                self.robot_kb_identity_cache.store_tcgdex_result(result)
+            except Exception:
+                pass
 
         if result.source == ROBOT_KB_TCGDEX_CACHE:
             if result.matched and result.set_provenance is not None:
