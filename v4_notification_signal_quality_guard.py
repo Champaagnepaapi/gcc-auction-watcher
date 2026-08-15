@@ -13,11 +13,13 @@ from run_watcher_safe import fixed_discovery_requires_technical_alert
 ILLIQUID_AUCTION_MAX_MINUTES = max(
     0, int(os.getenv("V4_ILLIQUID_AUCTION_MAX_MINUTES", "5"))
 )
+# 1 / 0.70 = 1.428571... : a 30% discount to the credible GCC reference.
 ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO = max(
-    1.0, float(os.getenv("V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO", "1.75"))
+    1.0, float(os.getenv("V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO", "1.4285714286"))
 )
+# No absolute-euro floor by default: the user's 30% threshold is sufficient.
 ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = max(
-    0.0, float(os.getenv("V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR", "10"))
+    0.0, float(os.getenv("V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR", "0"))
 )
 
 _BASE_COLLECT_PRICE_DISCOVERY_LEAD = None
