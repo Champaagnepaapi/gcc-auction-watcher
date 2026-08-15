@@ -897,3 +897,18 @@ Validation PR #64 : run **`31838778755`**, job **`94890915083`** — **482/482 t
 - Validation code au head **`a1f9409dba53d0b3c831cc3bead0bb581d241c5a`** : run **`31872649742`**, job **`94983553903`** → **498/498 tests PASS**, compile PASS, `git diff --check` PASS ; discovery live primaire **73** vs legacy **72**, `primary_only=1`, `legacy_only=0`, timers non résolus 0/0, safety-net private failures 0, PASS superset à horizon commun.
 - Aucun achat, bid, checkout ou paiement automatique.
 - V5 PR #8 reste **inchangée et non mergée**.
+
+---
+
+# PR #67 — alertes immédiates sur tout problème de certificat PSA/PCA/CCC
+
+- Scope : **PSA / PCA / CCC** uniquement pour cette nouvelle notification immédiate.
+- Les numéros de certificat présents dans l'API GCC fixed sont maintenant conservés directement dans `commercial_dimensions.cert_number` avant l'ouverture de la fiche ; le benchmark read-only préalable sur 100 cartes fixed actives avait trouvé **100/100 numéros présents directement dans l'API GCC**.
+- **Numéro de certificat absent** après les données structurées + inspection de fiche → notification immédiate `CERT NUMBER MISSING — MANUAL REVIEW`, sans attendre qu'une opportunité économique V4 soit calculée.
+- **Numéro présent mais lookup officiel réellement tenté et non résolu** → notification immédiate `CERT LOOKUP FAILED — MANUAL REVIEW` ; si le vérificateur répond mais que la note globale reste illisible → `CERT GRADE UNREADABLE — MANUAL REVIEW`.
+- L'épuisement du budget `V4_MISLISTED_CERT_MAX_PER_RUN` n'est **pas** étiqueté comme problème de certificat : aucune fausse alerte n'est créée lorsque le lookup n'a simplement pas été tenté.
+- Déduplication persistante par `listing URL + grader + cert + type/statut du problème` ; un même problème n'est pas renotifié à chaque run.
+- La logique existante reste ensuite inchangée : certificat officiel d'abord, OCR ciblé PSA/PCA/CCC en fallback, mismatch officiel autoritaire, OCR seul manual-review, puis arbitrage V4 normal.
+- Une panne de lookup peut être purement technique (anti-bot, timeout, parsing) : **l'alerte n'est jamais une preuve de mislisting** et ne modifie ni fair value, ni prix max, ni décision économique.
+- Aucun achat, bid, checkout, paiement ou grading automatique.
+- **V5 PR #8 reste inchangée et non mergée.**

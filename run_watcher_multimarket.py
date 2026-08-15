@@ -13,6 +13,7 @@ from run_watcher_safe import (
 from v4_auction_item_discovery import install_v4_auction_item_discovery
 from v4_auction_last_chance import install_fast_lane_notification_guard
 from v4_canonical_multimarket import install_canonical_multimarket_pipeline
+from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
 from v4_focus_cert_router import install_v4_focus_cert_router
 from v4_kb_shadow_bridge import (
@@ -57,6 +58,9 @@ if __name__ == "__main__":
         install_v4_focus_cert_router()
         install_v4_mislisted_ocr_hardening()
         install_v4_mislisted_slab_hunter()
+        # Wrap the final slab-hunter evaluator: every actual PSA/PCA/CCC cert
+        # problem now produces an immediate, deduplicated manual-review alert.
+        install_v4_cert_problem_notifications()
     else:
         watcher.log("Mislisted slab hunter: safe-off (V4_MISLISTED_SLAB_HUNTER_ENABLED=false)")
     install_fast_lane_notification_guard()
