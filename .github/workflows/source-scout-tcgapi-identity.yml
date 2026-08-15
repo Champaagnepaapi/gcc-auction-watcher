@@ -55,3 +55,5 @@ jobs:
             tcgapi_identity_benchmark.md
           if-no-files-found: error
           retention-days: 7
+
+# One-shot source-scout workflow. Delete after the authenticated benchmark is captured.
