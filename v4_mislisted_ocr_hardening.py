@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import re
 import shutil
 import subprocess
 import tempfile
 from typing import Optional
+
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 import watcher
 import v4_mislisted_slab_hunter as hunter
@@ -14,16 +17,17 @@ import v4_mislisted_slab_hunter as hunter
 # targets most often. Other graders keep their official-cert adapters, but a
 # failed cert lookup does not fall through to a generic, low-precision OCR.
 OCR_FOCUS_GRADERS = frozenset({"PSA", "PCA", "CCC"})
-OCR_PSM_MODES = (6, 7, 11)
 OCR_MIN_CONSENSUS = 2
+OCR_TARGET_WIDTH = 1400
 
-# Relative crop inside the visible slab image: (left, top, width, height).
-# All three layouts put the overall grade on the right side of the top label.
-# Keeping the crop above the subgrade row is critical for CCC/PCA-style labels.
+# Relative crop inside the slab image: (left, top, width, height).
+# The overall grade is on the right side of the top label for PSA/PCA/CCC.
+# These ROIs intentionally include enough label context for Tesseract while
+# stopping before most subgrade rows.
 OCR_LABEL_ROIS: dict[str, tuple[float, float, float, float]] = {
-    "PSA": (0.42, 0.00, 0.58, 0.23),
-    "PCA": (0.56, 0.00, 0.44, 0.22),
-    "CCC": (0.60, 0.00, 0.40, 0.21),
+    "PSA": (0.38, 0.00, 0.62, 0.28),
+    "PCA": (0.48, 0.00, 0.52, 0.27),
+    "CCC": (0.48, 0.00, 0.52, 0.25),
 }
 
 _SUBGRADE_TOKENS = (
@@ -78,6 +82,45 @@ def _ocr_label_clip(box: dict, grader: str) -> Optional[dict[str, float]]:
     }
 
 
+def _relative_label_crop(image: Image.Image, grader: str) -> Optional[Image.Image]:
+    roi = OCR_LABEL_ROIS.get(_normalized_grader(grader))
+    if roi is None or image.width < 40 or image.height < 80:
+        return None
+    left, top, width, height = roi
+    x0 = max(0, int(round(image.width * left)))
+    y0 = max(0, int(round(image.height * top)))
+    x1 = min(image.width, int(round(image.width * (left + width))))
+    y1 = min(image.height, int(round(image.height * (top + height))))
+    if x1 - x0 < 20 or y1 - y0 < 20:
+        return None
+    return image.crop((x0, y0, x1, y1))
+
+
+def _upscale(image: Image.Image) -> Image.Image:
+    if image.width <= 0:
+        return image
+    scale = max(1.0, OCR_TARGET_WIDTH / float(image.width))
+    if scale <= 1.05:
+        return image.copy()
+    return image.resize(
+        (int(round(image.width * scale)), int(round(image.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+
+
+def _preprocess_variants(image: Image.Image) -> list[tuple[str, Image.Image, int]]:
+    """Independent OCR views; consensus must survive different preprocessing."""
+    rgb = _upscale(image.convert("RGB"))
+    gray = ImageOps.autocontrast(rgb.convert("L"), cutoff=1)
+    sharp = gray.filter(ImageFilter.UnsharpMask(radius=2, percent=180, threshold=2))
+    high_contrast = ImageEnhance.Contrast(sharp).enhance(1.6)
+    return [
+        ("rgb", rgb, 6),
+        ("gray", gray, 7),
+        ("sharp", high_contrast, 11),
+    ]
+
+
 def parse_grade_from_ocr_text(raw_text: str, grader: str) -> tuple[Optional[float], str]:
     """Parse an overall slab grade while explicitly excluding subgrade lines."""
     grader = _normalized_grader(grader)
@@ -90,7 +133,7 @@ def parse_grade_from_ocr_text(raw_text: str, grader: str) -> tuple[Optional[floa
         if line.strip()
     ]
     candidates: list[float] = []
-    for line in lines[:12]:
+    for line in lines[:16]:
         upper = line.upper().replace(",", ".")
         if any(token in upper for token in _SUBGRADE_TOKENS):
             continue
@@ -142,11 +185,11 @@ def _grade_consensus(votes: list[tuple[Optional[float], str]]) -> tuple[Optional
         if len(counts) > 1 or saw_ambiguous:
             return None, hunter.IMAGE_GRADE_AMBIGUOUS
 
-    # One OCR pass alone is intentionally insufficient to create a mismatch.
+    # One OCR view alone is intentionally insufficient to create a mismatch.
     return None, hunter.IMAGE_GRADE_AMBIGUOUS if saw_ambiguous else hunter.IMAGE_GRADE_UNAVAILABLE
 
 
-def _best_slab_box(page) -> Optional[dict]:
+def _best_slab_image(page):
     images = page.locator("img")
     best = None
     for index in range(images.count()):
@@ -161,11 +204,16 @@ def _best_slab_box(page) -> Optional[dict]:
             continue
         area = float(box["width"]) * float(box["height"])
         # Prefer portrait slab/card photography over wide site artwork.
-        portrait_bonus = 1.25 if float(box["height"]) >= float(box["width"]) * 1.15 else 1.0
+        portrait_bonus = 1.35 if float(box["height"]) >= float(box["width"]) * 1.15 else 1.0
         score = area * portrait_bonus
         if best is None or score > best[0]:
-            best = (score, box)
-    return None if best is None else best[1]
+            best = (score, candidate, box)
+    return None if best is None else (best[1], best[2])
+
+
+def _best_slab_box(page) -> Optional[dict]:
+    selected = _best_slab_image(page)
+    return None if selected is None else selected[1]
 
 
 def resolve_image_grade_from_page(page, grader: str) -> tuple[Optional[float], str]:
@@ -179,18 +227,27 @@ def resolve_image_grade_from_page(page, grader: str) -> tuple[Optional[float], s
         return None, hunter.IMAGE_GRADE_UNAVAILABLE
 
     try:
-        box = _best_slab_box(page)
-        clip = _ocr_label_clip(box, grader) if box is not None else None
-        if clip is None:
+        selected = _best_slab_image(page)
+        if selected is None:
             return None, hunter.IMAGE_GRADE_UNAVAILABLE
+        image_locator, _box = selected
 
-        png_bytes = page.screenshot(clip=clip)
+        # Screenshot the whole slab image first, then crop in pixel space. This
+        # avoids tiny CSS-coordinate clips and gives Pillow enough pixels to
+        # upscale/normalize the actual label before OCR.
+        slab_png = image_locator.screenshot(timeout=3000)
+        with Image.open(io.BytesIO(slab_png)) as source:
+            label = _relative_label_crop(source, grader)
+            if label is None:
+                return None, hunter.IMAGE_GRADE_UNAVAILABLE
+            variants = _preprocess_variants(label)
+
         votes: list[tuple[Optional[float], str]] = []
-        pass_timeout = max(2.0, hunter.OCR_TIMEOUT_SECONDS / max(1, len(OCR_PSM_MODES)))
-        with tempfile.NamedTemporaryFile(suffix=".png") as handle:
-            handle.write(png_bytes)
-            handle.flush()
-            for psm in OCR_PSM_MODES:
+        pass_timeout = max(2.0, hunter.OCR_TIMEOUT_SECONDS / max(1, len(variants)))
+        for _variant_name, variant, psm in variants:
+            with tempfile.NamedTemporaryFile(suffix=".png") as handle:
+                variant.save(handle, format="PNG")
+                handle.flush()
                 try:
                     completed = subprocess.run(
                         [
