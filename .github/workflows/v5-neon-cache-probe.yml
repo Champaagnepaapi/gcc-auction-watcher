@@ -1,0 +1,61 @@
+name: V5 Neon Cache Probe
+
+on:
+  push:
+    branches:
+      - diag/v5-neon-cache-probe-20260816
+    paths:
+      - '.github/workflows/v5-neon-cache-probe.yml'
+
+permissions:
+  contents: read
+
+env:
+  ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
+  V5_ROBOT_KB_IDENTITY_CACHE_ENABLED: 'true'
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal dependencies
+        run: python -m pip install --disable-pip-version-check requests==2.32.4 'psycopg[binary]>=3.2,<4'
+      - name: Probe exact cache hits and negative controls
+        shell: bash
+        run: |
+          python - <<'PY'
+          from v5.models import CardIdentity
+          from v5.robot_kb_identity_cache import RobotKBIdentityCache, CACHE_MATCHED, CACHE_NO_MATCH
+
+          cache = RobotKBIdentityCache.from_env()
+          cases = [
+              (CardIdentity(game='Pokémon TCG', card_name='Magneton', set='SVP Black Star Promos', card_number='159/225', language='English'), 'svp-159'),
+              (CardIdentity(game='Pokémon TCG', card_name='Maganon', set='Merveilles Secrètes', card_number='31/132', language='Français'), 'dp3-31'),
+          ]
+          for identity, expected_id in cases:
+              result = cache.lookup(identity)
+              assert result.status == CACHE_MATCHED, (identity, result.status)
+              assert result.set_provenance is not None
+              assert result.set_provenance.catalog_card_id == expected_id
+              print(f'CACHE_HIT {expected_id} {result.identity.card_name} | {result.identity.set} | {result.identity.card_number} | {result.set_provenance.language}')
+
+          negatives = [
+              CardIdentity(game='Pokémon TCG', card_name='Magneton', set='SVP Black Star Promos', card_number='159/225', language='Français'),
+              CardIdentity(game='Pokémon TCG', card_name='Magneton', set='SVP Black Star Promos', card_number='159/224', language='English'),
+              CardIdentity(game='Pokémon TCG', card_name='Magneton', set='Wrong Set', card_number='159/225', language='English'),
+          ]
+          for identity in negatives:
+              result = cache.lookup(identity)
+              assert result.status == CACHE_NO_MATCH, (identity, result.status)
+          print('NEGATIVE_CONTROLS language/set/denominator: PASS')
+          print(f'lookup_attempts={cache.counters.lookup_attempts} hits={cache.counters.lookup_hits} no_match={cache.counters.lookup_no_match}')
+          cache.close()
+          PY
