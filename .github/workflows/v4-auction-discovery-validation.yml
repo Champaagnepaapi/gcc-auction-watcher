@@ -11,7 +11,9 @@ on:
       - "v4_canonical_multimarket.py"
       - "v4_edge_hunter_safety.py"
       - "v4_multimarket_safety.py"
+      - "v4_cert_problem_notifications.py"
       - "compare_auction_discovery.py"
+      - "diag_gcc_gradation_cert_100.py"
       - "run_watcher_safe.py"
       - "run_watcher_multimarket.py"
       - "watcher.py"
@@ -57,7 +59,12 @@ jobs:
           python -m py_compile v4_canonical_multimarket.py
           python -m py_compile v4_edge_hunter_safety.py
           python -m py_compile v4_multimarket_safety.py
+          python -m py_compile v4_cert_problem_notifications.py
           python -m py_compile run_watcher_multimarket.py
+          python -m py_compile diag_gcc_gradation_cert_100.py
+
+      - name: Run 100-card GCC cert preservation diagnostic (read-only)
+        run: python diag_gcc_gradation_cert_100.py
 
       - name: Compare augmented and legacy discovery live
         id: compare
