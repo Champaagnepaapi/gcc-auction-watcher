@@ -331,7 +331,7 @@ Le **grade/metadata mislisting** reste géré par le Mislisted Slab Hunter cert-
 
 PR #80 introduit un calcul Expected Profit **informatif / de classement seulement**. Il est explicitement interdit de l’utiliser comme gate de suppression :
 
-- une forte décote reste notifiée même si l’Expected Profit est faible/incertain ;
+- une forte décote reste notifiée même si l'Expected Profit est faible/incertain ;
 - il ne change jamais fair value, `max_recommended`, seuil de décote ou décision V4 ;
 - il ne peut jamais créer ni supprimer une opportunité ;
 - il sert uniquement à contextualiser/prioriser les opportunités déjà admissibles.
@@ -708,3 +708,60 @@ Pendant des enchères actives, éviter toute modification risquée du cœur V4 ;
 Avant toute intégration de PR #8 : **autorisation explicite utilisateur obligatoire**, puis audit base/head/ancestry et validation V4 complète.
 
 **PR #8 reste expérimentale et non mergée par défaut.**
+
+---
+
+# Addendum canonique — 16 août 2026 — Japan Edge Hunter / PR #89
+
+Merge production :
+
+```text
+c2309e6d6f0c19bd07479b73498dae8445366238
+```
+
+Le **Japan Edge Hunter** est désormais une lane production séparée du cœur V4 et de V5. Il scanne en lecture seule les **ASK fixes** de Mercari Japan, Magi et Yahoo! Flea Market / PayPay Fleamarket pour des cartes Pokémon japonaises individuelles PSA 10, puis compare uniquement les identités exactes à des **GCC SOLD exacts**.
+
+Règles économiques / sécurité :
+
+- cadence GitHub Actions : `23 */6 * * *` ;
+- fair value de cette première version : GCC SOLD exacts uniquement ;
+- au moins 2 SOLD exacts récents, ou 3 SOLD exacts ≤365 j lorsque la fenêtre récente est insuffisante ;
+- seuil ntfy : **≥30 % de décote après buffer logistique** ;
+- coût proxy : `¥500` + buffer additionnel `12 %` ;
+- un prix Mercari/Magi/Yahoo reste **ASK, PAS UNE VENTE** ;
+- enchères en cours exclues ;
+- identité ambiguë, lot/multi-item, langue/set/numéro/grade/microvariante non prouvés => fail-closed / log-only ;
+- aucun achat, bid, checkout, paiement ou grading automatique.
+
+Le faux blocage Magi du premier live a été corrigé dans `japan_edge_hunter_v2.py` : les gates `auction` / `multi-item` n’utilisent plus le texte parasite des recommandations/footer de la page détail ; l’identité complète continue en revanche d’utiliser les preuves pertinentes de la fiche.
+
+Validation V2 read-only :
+
+```text
+run 31914421575
+job 95084109952
+```
+
+Résultat : 2 000 lignes GCC SOLD inspectées, 341 SOLD japonais PSA 10 éligibles, 59 références exactes, 36 recherches provider, 328 ASK observés, 170 candidats potentiellement ≥30 % avant preuve stricte, 10 enchères rejetées, 159 identités rejetées, **1 lead exact retenu**, 0 erreur provider.
+
+Premier lead de validation : Bulbasaur / 151 / `166/165` / Japanese / PSA 10, Yahoo Flea, ASK `¥10,500`, coût rendu conservateur estimé `CHF 62.90`, référence GCC SOLD `€100`, décote ~33 %, 3 GCC SOLD exacts <90 j. Ce signal est une décote **vs GCC**, pas une preuve que le marché mondial vaut €100.
+
+Validation finale offline du head fonctionnel : 15/15 tests ciblés PASS, compile PASS, YAML PASS et `git diff --check` PASS. Les commits ultérieurs sans diff de fichiers n’ont pas changé le tree validé.
+
+## Source officielle de microvariante — MEGA Dream ex
+
+Le Robot KB / Neon contient désormais l’avis officiel Pokémon `005318` comme preuve immuable :
+
+```text
+source_system.code = pokemon_card_official
+source_record = srecord_76532e18ea31ceecae3c27aeebb17dea
+payload_sha256 = b83378e9ee0e86f5d33d17fcdf193571041890bbf0bd764e7894468a426f9ce2
+```
+
+L’avis officiel établit qu’une erreur de **traitement de surface** existe sur certains lots de cartes MA de `MEGA Dream ex`, tout en précisant que des exemplaires correctement traités existent aussi. Conséquence d’identité : l’avis prouve l’existence de la microvariante, **pas** qu’un exemplaire individuel est `INCORRECT TEXTURE`. Pour les familles concernées, une référence GCC non qualifiée ne peut donc pas être promue comme comparable exact d’une variante texture spécifique ; `MA-INCORRECT TEXTURE` doit être explicitement prouvé.
+
+## Notifications Japan
+
+Le workflow `.github/workflows/japan-edge-hunter.yml` a les notifications `JAPAN EDGE >=30%` activées par défaut après la validation live V2. Il utilise le canal ntfy existant si `NTFY_TOPIC` est disponible ; une variable repo explicite `JAPAN_EDGE_NOTIFY_ENABLED=false` peut servir de coupe-circuit fail-safe.
+
+PR #8 reste expérimentale et non mergée. PR #87 reste séparée du Japan Edge Hunter et n’est pas mergée par PR #89.
