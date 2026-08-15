@@ -550,13 +550,14 @@ Branche : `agent/v5-poketrace-cardmarket-market-data`
 Head V5 expérimental actuellement validé :
 
 ```text
-dfeaec9088d8f53c789c21acdc2aa56b4595b753
+dbbe60f03bdb4d95a82f86d72d4241623cfaf877
 ```
 
 Règles :
 
 - aucune intégration dans `main` sans autorisation explicite utilisateur ;
-- TCGdex principal ; PokeTrace fallback identité/marché ;
+- identité normale : TCGdex exact / unicité déterministe ;
+- PokeTrace reste principalement provider marché/prix ; les recherches PokeTrace de routine pour fabriquer l’identité sont désactivées ;
 - bridge set déterministe seulement ;
 - microvariantes/First Edition/finish fail-closed ;
 - pas d’achat/bid/checkout/CardGrader automatique ;
@@ -566,7 +567,7 @@ Règles :
 
 PR #82 a ajouté à la branche V5 un workflow `V5 Offline Validation` sans secrets/providers, destiné aux PR enfants V5. Il exécute la suite `tests_v5`, `compileall v5` et `git diff --check` sans live.
 
-PR #81 a ensuite porté la partie utile de l’ancien patch local d’observabilité sur la V5 actuelle, **sans réintroduire son ancienne logique de microvariantes** :
+PR #81 a porté la partie utile de l’ancien patch local d’observabilité sur la V5 actuelle, **sans réintroduire son ancienne logique de microvariantes** :
 
 - diagnostics TCGdex/Pokémon TCG par identité ;
 - diagnostics PokeTrace par stratégie, compteurs de candidats et exemples bornés de raisons de rejet ;
@@ -576,25 +577,62 @@ PR #81 a ensuite porté la partie utile de l’ancien patch local d’observabil
 - les wrappers appellent les resolvers courants via `super()` et ne changent ni matching, ni seuils, ni valuation ;
 - metadata provider seule ne devient jamais une preuve listing ni un motif de `SINGLE_COMPATIBLE`.
 
-Le workflow manuel `V5 Live Raw Pipeline Diagnostic` utilise maintenant `v5.live_raw_pipeline_detailed_observability`, qui charge d’abord la deterministic uniqueness existante puis ajoute uniquement la couche d’observabilité.
+Validation offline PR #81 : run `31898349431`, job `95045035673` — **569/569 tests V5 PASS**, compile/diff PASS, 0 secret commercial/provider injecté.
 
-Validation offline PR #81 :
+## PokeTrace market-only + emergency TCGdex — PR #85 / PR #88
+
+PR #85 a supprimé PokeTrace du chemin normal de reconnaissance : TCGdex/catalogue reste l’autorité d’identité, et PokeTrace reste utilisé pour le marché/prix.
+
+PR #88 a ensuite ajouté un secours strict **uniquement après vraie panne technique TCGdex** et le cache Robot KB/Neon :
 
 ```text
-run 31898349431
-job 95045035673
+TCGdex live
+  -> si panne technique seulement : Robot KB / Neon, identité TCGdex déjà prouvée
+  -> si cache miss/indisponible : Pokémon TCG API catalogue
+  -> si toujours non résolu et panne TCGdex éligible : PokeTrace emergency-only
+  -> sinon fail-closed
+```
+
+Règles emergency :
+
+- panne éligible : transport, JSON invalide, HTTP 408/425/429/5xx ;
+- `CLEAN_NO_MATCH`, 404 et autres 4xx non transitoires n’ouvrent **jamais** Robot KB/PokeTrace emergency ;
+- PokeTrace emergency garde le matching strict existant, ambiguïté = blocage ;
+- budget par défaut : max 5 identités/run, clamp dur 0..10 ;
+- runtime PokeTrace emergency isolé : aucune réponse identité ne prime/alias les caches marché ;
+- Robot KB cache sur langue + nom exact + set exact + numéro local, dénominateur vérifié lorsqu’il est fourni ;
+- plusieurs identités courantes compatibles => `AMBIGUOUS` ;
+- metadata variants du cache ne prouve jamais édition/finish/microvariante ;
+- erreur DB/cache => fallback Pokémon TCG API, jamais crash/faux match ;
+- un succès TCGdex exact peut alimenter le cache ; un échec d’écriture cache n’invalide jamais le succès live.
+
+Robot KB / Neon principal : migration cache appliquée le **16 août 2026**, migration ID `4603e681-2d97-4441-b248-103c7dd3c93a`. Le cache part vide et se remplit uniquement avec des identités TCGdex exactes prouvées.
+
+Validation PR #88 :
+
+```text
+run 31913172878
+job 95081167254
 ```
 
 Résultat :
 
-- **569/569 tests V5 PASS** ;
+- **585/585 tests V5 PASS** ;
 - `compileall v5` PASS ;
 - `git diff --check` PASS ;
 - secrets commerciaux/providers injectés : **0** ;
-- aucun live V5 lancé pendant cette phase ;
+- aucun live V5 lancé pendant la phase ;
 - aucun achat, bid, checkout ou paiement.
 
-Les PR #75/#76/#77/#78/#79/#80/#84 n’ont pas mergé PR #8. Les PR #81/#82 ont été mergées **dans la branche V5 expérimentale uniquement**, jamais dans `main`.
+Benchmarks fallback identité :
+
+- PokemonPriceTracker : **16/18** macro exactes sur le panel, 2 vintage laissées ambiguës ;
+- tcgapi.dev : **3/18** macro exactes, langue non prouvée ;
+- JustTCG : **0/20** exact sur le benchmark corrigé set-aware.
+
+PokemonPriceTracker reste le meilleur candidat de fallback macro supplémentaire à ce stade, mais n’est pas promu comme autorité microvariante sans preuve catalogue déterministe.
+
+Les PR #75/#76/#77/#78/#79/#80/#84 n’ont pas mergé PR #8. Les PR #81/#82/#85/#88 ont été mergées **dans la branche V5 expérimentale uniquement**, jamais dans `main`.
 
 ---
 
