@@ -41,12 +41,28 @@ class SoldWorkflowWiringTests(unittest.TestCase):
         self.assertIn("v4-kb-sold-watermark-${{ github.run_id }}", self.sold)
 
         fetch = self.sold.index("Fetch lossless SOLD catch-up slice")
-        ingest = self.sold.index("Ingest proven SOLD fixture")
-        sold_commit = self.sold.index("Commit SOLD watermark/backlog only after successful ingest")
-        sold_save = self.sold.index("Save durable SOLD watermark/backlog state")
+        ingest = self.sold.index("Ingest proven fresh SOLD fixture")
+        sold_commit = self.sold.index("Commit SOLD fresh + historical cursors only after successful ingest")
+        sold_save = self.sold.index("Save durable SOLD fresh + historical state")
         self.assertLess(fetch, ingest)
         self.assertLess(ingest, sold_commit)
         self.assertLess(sold_commit, sold_save)
+
+    def test_historical_backfill_is_bounded_get_only_and_committed_after_ingest(self):
+        self.assertIn("SOLD_BACKFILL_STATE: v4_kb_sold_backfill_state.json", self.sold)
+        self.assertIn("v4_kb_sold_backfill.py fetch", self.sold)
+        self.assertIn('--bootstrap-before "$SOLD_BOOTSTRAP_SINCE"', self.sold)
+        self.assertIn("--max-records 400", self.sold)
+        self.assertIn("--max-page-probes 40", self.sold)
+        self.assertIn("--max-scan-pages 20", self.sold)
+        self.assertIn('--gcc-fixture "../$SOLD_BACKFILL_FIXTURE"', self.sold)
+        self.assertIn("v4_kb_sold_backfill.py commit", self.sold)
+
+        fetch = self.sold.index("Fetch historical SOLD backfill slice")
+        ingest = self.sold.index("Ingest proven historical SOLD fixture")
+        commit = self.sold.index("Commit SOLD fresh + historical cursors only after successful ingest")
+        self.assertLess(fetch, ingest)
+        self.assertLess(ingest, commit)
 
     def test_validated_sidecar_pin_and_small_live_sold_overlap_are_preserved(self):
         self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", self.sold)
