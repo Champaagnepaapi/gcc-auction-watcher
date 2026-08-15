@@ -21,6 +21,7 @@ ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = max(
 )
 
 _BASE_COLLECT_PRICE_DISCOVERY_LEAD = multimarket._collect_price_discovery_lead
+_BASE_MANUAL_REVIEW_SHOULD_NOTIFY = multimarket._manual_review_should_notify
 
 
 def _stable_manual_review_key(lot: watcher.Lot) -> str:
@@ -29,6 +30,26 @@ def _stable_manual_review_key(lot: watcher.Lot) -> str:
     if url:
         return f"gcc-listing:{url}"
     return f"fallback:{watcher.external_commercial_identity_key(lot)}"
+
+
+def _manual_review_should_notify_with_legacy_migration(
+    state: dict,
+    lead: multimarket.ManualReviewLead,
+    now: datetime,
+) -> bool:
+    """Migrate the previous commercial-identity dedupe record to the stable listing key."""
+    root = state.get(multimarket.MANUAL_REVIEW_STATE_KEY)
+    if (
+        isinstance(root, dict)
+        and root.get("schema_version") == multimarket.MANUAL_REVIEW_SCHEMA_VERSION
+    ):
+        entries = root.get("entries")
+        if isinstance(entries, dict) and lead.identity_key not in entries:
+            legacy_key = watcher.external_commercial_identity_key(lead.lot)
+            previous = entries.get(legacy_key)
+            if isinstance(previous, dict):
+                entries[lead.identity_key] = dict(previous)
+    return _BASE_MANUAL_REVIEW_SHOULD_NOTIFY(state, lead, now)
 
 
 def _is_auction(lot: watcher.Lot) -> bool:
@@ -164,6 +185,9 @@ def install_v4_notification_signal_quality_guard() -> None:
     # A stable listing URL prevents the same GCC listing from re-notifying merely
     # because enrichment changed an identity component between runs.
     multimarket._manual_review_key = _stable_manual_review_key
+    multimarket._manual_review_should_notify = (
+        _manual_review_should_notify_with_legacy_migration
+    )
 
     # Supersede the broader technical guard: expected bounded economic queues are
     # diagnostic only; actual discovery loss and urgent P0/P1 backlog remain ntfy.
