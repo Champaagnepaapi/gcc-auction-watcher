@@ -1,0 +1,52 @@
+name: V4 OCR 50-card Benchmark (read-only)
+
+on:
+  push:
+    branches:
+      - agent/v4-ocr-live-benchmark-50
+    paths:
+      - tools/ocr_live_benchmark_50.py
+      - .github/workflows/v4-ocr-live-benchmark-50.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v4-ocr-live-benchmark-50
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install OCR and browser runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends tesseract-ocr
+          playwright install --with-deps chromium
+
+      - name: Run focused 50-card OCR benchmark
+        env:
+          V4_MISLISTED_IMAGE_OCR_ENABLED: "true"
+          V4_MISLISTED_OCR_TIMEOUT_SECONDS: "8"
+          HEADLESS: "true"
+          NTFY_TOPIC: ""
+        run: python tools/ocr_live_benchmark_50.py
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-ocr-live-benchmark-50
+          path: ocr_benchmark_50_results.json
+          if-no-files-found: warn
+          retention-days: 3
