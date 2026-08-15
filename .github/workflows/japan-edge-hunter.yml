@@ -1,0 +1,71 @@
+name: Japan Edge Hunter
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: japan-edge-hunter
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      JAPAN_EDGE_GCC_PAGES: "20"
+      JAPAN_EDGE_MAX_SEEDS_PER_RUN: "12"
+      JAPAN_EDGE_MAX_ITEMS_PER_SEARCH: "25"
+      JAPAN_EDGE_MIN_DISCOUNT_PCT: "30"
+      JAPAN_EDGE_PROXY_FIXED_JPY: "500"
+      JAPAN_EDGE_LOGISTICS_BUFFER_PCT: "12"
+      # Enabled by default after the authorized V2 live validation. An explicit
+      # repository variable can still fail-safe disable it without a code change.
+      JAPAN_EDGE_NOTIFY_ENABLED: ${{ vars.JAPAN_EDGE_NOTIFY_ENABLED || 'true' }}
+      NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Restore Japan Edge state
+        uses: actions/cache/restore@v4
+        with:
+          path: .japan-edge-state
+          key: japan-edge-state-${{ github.run_id }}
+          restore-keys: |
+            japan-edge-state-
+
+      - name: Scan Japan asks against exact GCC SOLD
+        run: python japan_edge_hunter_v2.py --state .japan-edge-state/state.json --output japan_edge_report.json
+
+      - name: Save Japan Edge state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .japan-edge-state
+          key: japan-edge-state-${{ github.run_id }}
+
+      - name: Upload read-only report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: japan-edge-report-${{ github.run_id }}
+          path: japan_edge_report.json
+          if-no-files-found: ignore
+          retention-days: 14
