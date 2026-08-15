@@ -3,7 +3,7 @@
 > **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
 > Après tout changement important de production, d’architecture V5, de provider, de benchmark ou de workflow, mettre ce README à jour avant de considérer la phase terminée.
 
-## État canonique — 13 août 2026
+## État canonique — 15 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -433,7 +433,7 @@ Branche : `agent/v5-poketrace-cardmarket-market-data`
 Head V5 canonique actuellement vérifié :
 
 ```text
-df4df3da2ae90bc8083ccfcfa108e4010a2c4d05
+63b79636b05cff96a902acfbac9fc8b1c4bff499
 ```
 
 État :
@@ -441,35 +441,74 @@ df4df3da2ae90bc8083ccfcfa108e4010a2c4d05
 - open ;
 - draft ;
 - non mergée ;
-- base `main` a encore avancé depuis la dernière synchronisation V5 ;
 - ne pas resynchroniser/merger aveuglément : auditer les changements V4 d’abord.
 
-Architecture V5 :
+Architecture V5 actuelle après PR #85 :
 
 ```text
 eBay metadata
   ↓
-TCGdex exact multilingual
+TCGdex exact multilingual + unicité déterministe
   ↓
-PokeTrace fallback identité / marché
+Pokémon TCG API fallback lorsque compatible
   ↓
-Pokémon TCG API fallback
+fail-closed si identité encore non prouvée
   ↓
-visual matcher local + OCR
+local deterministic microvariant gates
   ↓
-local deterministic microvariant detector
+PokeTrace marché/prix après identité prouvée
 ```
 
 Principes V5 :
 
-- TCGdex principal ;
-- PokeTrace fallback identité + provider marché ;
-- bridge set TCGdex ↔ PokeTrace déterministe uniquement ;
+- TCGdex reste l’autorité d’identité principale ;
+- Pokémon TCG API reste le fallback catalogue existant lorsque la langue/scope le permet ;
+- **PokeTrace est marché/pricing only dans le live V5 courant** : aucune recherche PokeTrace ne crée ou ne sauve l’identité ;
+- le rescue visuel actuel basé sur les scans candidats PokeTrace est désactivé ;
+- les alias/provenances TCGdex déterministes peuvent encore alimenter le lookup **marché** PokeTrace ;
+- un résultat d’identité PokeTrace désactivé ne peut pas primer/aliaser le cache marché PokeTrace ;
+- bridge set TCGdex ↔ PokeTrace déterministe uniquement pour le lookup provider ;
 - candidate provider premium ≠ preuve listing ;
 - détecteur microvariante local par références différentielles ;
 - First/Unlimited/finish sensibles fail-closed ;
 - pas de listing/image/OCR eBay persisté ;
 - aucun achat/bid/checkout/CardGrader automatique.
+
+### PR V5 enfant #85 — PokeTrace market-only
+
+PR #85 a été mergée **dans la branche V5 canonique uniquement**, jamais dans `main` :
+
+```text
+head source: d996bb50322bf52a0d2754f486109bcb0ce70fb8
+merge V5:    63b79636b05cff96a902acfbac9fc8b1c4bff499
+```
+
+Effet :
+
+- recherche textuelle PokeTrace pour identité = no-op avant réseau ;
+- rescue visuel dépendant de PokeTrace = désactivé ;
+- PokeTrace marché/pricing = inchangé ;
+- fallback Pokémon TCG API = conservé ;
+- propagation d’un cache d’identité PokeTrace vers le cache marché = supprimée ;
+- logs explicites `MARKET/PRICING ONLY`.
+
+Validation :
+
+- workflow `V5 Offline Validation` run `31900436868` : **SUCCESS** ;
+- **572/572 tests V5** ;
+- `python -m compileall -q v5` : PASS ;
+- `git diff --check` : PASS ;
+- secrets commerciaux/provider injectés : 0 ;
+- aucun live/provider workflow dispatché ;
+- aucun achat, bid ou checkout.
+
+Fallback recommandé pour une phase ultérieure, **non implémenté par PR #85** :
+
+1. TCGdex exact / unicité déterministe ;
+2. Pokémon TCG API catalogue lorsque compatible ;
+3. PokeTrace seulement comme secours exceptionnel si TCGdex est en **panne technique** et que le catalogue secondaire n’a pas résolu l’identité ;
+4. jamais déclencher PokeTrace sur un simple `CLEAN_NO_MATCH` TCGdex ;
+5. à moyen terme, préférer un cache canonique TCGdex durable dans Robot KB/Neon pour absorber les pannes provider sans affaiblir l’identité.
 
 ### Bridge set V5
 
