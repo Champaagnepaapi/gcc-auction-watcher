@@ -5,8 +5,9 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
-# Branch-local PPT opportunity validation.
+# Branch-local evidence replay + PPT opportunity validation.
 # CMAPI key is deliberately absent: this workflow cannot spend RapidAPI quota.
 # main and PR #8 remain untouched.
 jobs:
@@ -33,7 +34,7 @@ jobs:
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Compile PPT opportunity validation
+      - name: Compile evidence replay and PPT validation
         run: |
           python -m py_compile \
             v5/source_scout_benchmark.py \
@@ -42,19 +43,42 @@ jobs:
             v5/source_scout_paid_v2_entrypoint.py \
             v5/source_scout_paid_v3_entrypoint.py \
             v5/source_scout_opportunity_ppt_validation.py \
+            v5/source_scout_opportunity_ppt_validation_v2.py \
+            v5/cmapi_sold_identity_uniqueness.py \
+            v5/neon_cmapi_ingest.py \
+            v5/neon_cmapi_ingest_v2.py \
+            v5/neon_cmapi_ingest_v3.py \
             v5/neon_source_scout_ingest.py \
             v5/neon_source_scout_ingest_v2.py \
             tests_v5/test_source_scout_benchmark.py \
-            tests_v5/test_source_scout_opportunity_ppt_validation.py
+            tests_v5/test_source_scout_opportunity_ppt_validation.py \
+            tests_v5/test_cmapi_sold_identity_uniqueness.py
 
-      - name: Run focused PPT validation tests
+      - name: Run focused identity and PPT safety tests
         run: |
           python -m unittest \
             tests_v5.test_source_scout_benchmark \
-            tests_v5.test_source_scout_opportunity_ppt_validation -v
+            tests_v5.test_source_scout_opportunity_ppt_validation \
+            tests_v5.test_cmapi_sold_identity_uniqueness -v
+
+      - name: Download prior CMAPI benchmark evidence without new CMAPI calls
+        uses: actions/download-artifact@v4
+        with:
+          name: opportunity-source-benchmark-31871803238
+          path: prior-cmapi
+          repository: Champaagnepaapi/gcc-auction-watcher
+          run-id: 31871803238
+          github-token: ${{ github.token }}
+
+      - name: Replay prior CMAPI evidence through catalog uniqueness gate
+        if: ${{ env.NEON_DATABASE_URL != '' }}
+        shell: bash
+        run: |
+          cp prior-cmapi/cmapi_opportunity_evidence.json cmapi_opportunity_evidence.json
+          python -m v5.neon_cmapi_ingest_v3
 
       - name: Run opportunity PPT validation with zero CMAPI calls
-        run: python -m v5.source_scout_opportunity_ppt_validation
+        run: python -m v5.source_scout_opportunity_ppt_validation_v2
 
       - name: Persist validated PokemonPriceTracker evidence to Neon
         if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
