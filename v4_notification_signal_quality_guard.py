@@ -13,9 +13,9 @@ from run_watcher_safe import fixed_discovery_requires_technical_alert
 ILLIQUID_AUCTION_MAX_MINUTES = max(
     0, int(os.getenv("V4_ILLIQUID_AUCTION_MAX_MINUTES", "5"))
 )
-# 1 / 0.70 = 1.428571... : a 30% discount to the credible GCC reference.
-ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO = max(
-    1.0, float(os.getenv("V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO", "1.4285714286"))
+ILLIQUID_GCC_ONLY_MIN_DISCOUNT_PCT = min(
+    100.0,
+    max(0.0, float(os.getenv("V4_ILLIQUID_GCC_ONLY_MIN_DISCOUNT_PCT", "30"))),
 )
 # No absolute-euro floor by default: the user's 30% threshold is sufficient.
 ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = max(
@@ -105,10 +105,16 @@ def _illiquid_phone_worthy(lead: multimarket.ManualReviewLead) -> bool:
         return True
 
     current = float(lot.current_price or 0.0)
-    absolute_upside = max(0.0, float(signal.credible_high_reference) - current)
+    reference = float(signal.credible_high_reference or 0.0)
+    absolute_upside = max(0.0, reference - current)
+    discount_pct = (
+        max(0.0, (reference - current) / reference * 100.0)
+        if reference > 0.0
+        else 0.0
+    )
     return (
         _gcc_sold_anchor_count(signal) >= 2
-        and signal.asymmetric_upside_ratio >= ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO
+        and discount_pct >= ILLIQUID_GCC_ONLY_MIN_DISCOUNT_PCT
         and absolute_upside >= ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR
     )
 
