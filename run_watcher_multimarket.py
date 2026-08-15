@@ -15,6 +15,7 @@ from v4_auction_last_chance import install_fast_lane_notification_guard
 from v4_canonical_multimarket import install_canonical_multimarket_pipeline
 from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
+from v4_exact_active_ask_position import install_v4_exact_active_ask_position
 from v4_focus_cert_router import install_v4_focus_cert_router
 from v4_kb_shadow_bridge import (
     flush_capture_if_configured,
@@ -89,6 +90,9 @@ if __name__ == "__main__":
     # must not be overwritten by the ordinary external-confirmation title wrapper.
     if _mislisted_slab_hunter_enabled():
         install_v4_manual_slab_review_notifications()
+    # Active asks are context only and must wrap the final opportunity/ntfy stack.
+    # They never create an opportunity or alter FV/max_recommended.
+    install_v4_exact_active_ask_position()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
     exit_code = 1
