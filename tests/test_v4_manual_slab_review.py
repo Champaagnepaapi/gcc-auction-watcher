@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from email.header import Header
 from unittest.mock import Mock, patch
 
 import watcher
@@ -180,7 +181,10 @@ class ManualSlabReviewTests(unittest.TestCase):
         delegate.assert_not_called()
         post.assert_called_once()
         kwargs = post.call_args.kwargs
-        self.assertEqual(kwargs["headers"]["Title"], manual_review.MANUAL_REVIEW_TITLE)
+        self.assertEqual(
+            kwargs["headers"]["Title"],
+            Header(manual_review.MANUAL_REVIEW_TITLE, "utf-8").encode(),
+        )
         payload = kwargs["data"].decode("utf-8")
         self.assertIn("GRADE NON CONFIRMÉ", payload)
         self.assertIn("CERT_UNAVAILABLE", payload)
