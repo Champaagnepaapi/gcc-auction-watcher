@@ -236,14 +236,15 @@ def evaluate_with_cert_problem_notifications(
     run_now,
     run_diagnostics: watcher.RunDiagnostics,
 ):
-    """Alert immediately on every actual PSA/PCA/CCC certificate problem.
+    """Alert on actionable PSA/PCA/CCC certificate integrity problems.
 
     A structured GCC API certificate survives inspection. Only when no cert is
     available do we explicitly open Description -> Gradation before declaring
-    CERT_NUMBER_MISSING. Present certs alert when an official lookup was actually
-    attempted (or reused from cache) and did not return a readable grade. Per-run
-    budget exhaustion alone is not labelled as a certificate problem. The normal
-    cert-first -> OCR -> V4 path then continues unchanged.
+    CERT_NUMBER_MISSING. An official verifier that responds but leaves the grade
+    unreadable still triggers manual review. Pure technical CERT_UNAVAILABLE
+    lookup failures are log-only because PSA/PCA can block GitHub Actions and
+    otherwise create notification floods. The normal cert-first -> OCR -> V4 path
+    then continues unchanged, including confirmed grade-mismatch alerts.
     """
     if _DELEGATE_EVALUATE is None:
         raise RuntimeError("cert problem notification hook not installed")
@@ -288,22 +289,22 @@ def evaluate_with_cert_problem_notifications(
     certificate, lookup_was_attempted = _resolve_cert_with_attempt_marker(
         page, grader, serial
     )
-    if (
-        lookup_was_attempted
-        and not (certificate.status == "OK" and certificate.grade is not None)
-    ):
-        issue = (
-            CERT_GRADE_UNREADABLE
-            if certificate.status == hunter.CERT_GRADE_UNREADABLE
-            else CERT_LOOKUP_FAILED
-        )
+    if lookup_was_attempted and certificate.status == hunter.CERT_GRADE_UNREADABLE:
         _send_cert_problem_review(
             inspected,
             state,
             grader=grader,
             cert_number=serial,
-            issue=issue,
-            cert_status=certificate.status or hunter.CERT_UNAVAILABLE,
+            issue=CERT_GRADE_UNREADABLE,
+            cert_status=certificate.status,
+        )
+    elif lookup_was_attempted and not (
+        certificate.status == "OK" and certificate.grade is not None
+    ):
+        watcher.log(
+            "Cert problem: technical lookup failure log-only "
+            f"({grader} #{serial} / {certificate.status or hunter.CERT_UNAVAILABLE}) | "
+            f"{inspected.url}"
         )
 
     return _DELEGATE_EVALUATE(
