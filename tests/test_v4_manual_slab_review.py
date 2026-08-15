@@ -11,6 +11,8 @@ import v4_mislisted_ocr_hardening as ocr
 import v4_mislisted_slab_hunter as hunter
 
 
+# PR66 canonical handoff is recorded in README.md; this comment intentionally
+# retriggers CI after the docs-only bot commit so the exact final PR head is validated.
 class ManualSlabReviewTests(unittest.TestCase):
     def _lot(self, grader: str = "PCA", grade: str = "9.5") -> watcher.Lot:
         return watcher.Lot(
