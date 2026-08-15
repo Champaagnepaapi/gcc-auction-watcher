@@ -5,16 +5,82 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
-# SAFE-OFF handoff after bounded provider benchmark.
-# No provider secret is passed and no external pricing API call is executed.
-# main and PR #8 remain untouched.
+# Branch-local bounded benchmark of the provider-recommended /search endpoint.
+# Basic eBay ASP plan is hard-limited at 50 requests/month. This workflow uses
+# at most 8 calls and stops if the remaining-quota header reaches 35.
+# No CMAPI/Pokemon-TCG key is passed. main and PR #8 remain untouched.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
+    env:
+      EBAY_ASP_RAPIDAPI_KEY: ${{ secrets.EBAY_ASP_RAPIDAPI_KEY }}
+      PYTHONDONTWRITEBYTECODE: "1"
+
     steps:
-      - name: Provider benchmark safe-off
+      - name: Checkout selected benchmark branch without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install read-only benchmark dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Compile eBay ASP search probe
         run: |
-          echo "Source Scout provider benchmark is SAFE-OFF."
-          echo "No CMAPI, Pokemon TCG RapidAPI, eBay ASP, purchase, bid, checkout, payment or grading call is executed."
+          python -m py_compile \
+            v5/source_scout_ebay_asp_rapidapi_probe.py \
+            v5/source_scout_ebay_asp_search_probe.py \
+            tests_v5/test_source_scout_ebay_asp_rapidapi_probe.py \
+            tests_v5/test_source_scout_ebay_asp_search_probe.py
+
+      - name: Run focused safety and price-confidence tests
+        run: |
+          python -m unittest \
+            tests_v5.test_source_scout_ebay_asp_rapidapi_probe \
+            tests_v5.test_source_scout_ebay_asp_search_probe -v
+
+      - name: Download old eBay ASP evidence without provider calls
+        uses: actions/download-artifact@v4
+        with:
+          name: ebay-asp-rapidapi-probe-31884480189
+          path: prior-asp
+          repository: Champaagnepaapi/gcc-auction-watcher
+          run-id: 31884480189
+          github-token: ${{ github.token }}
+
+      - name: Download prior CMAPI evidence without CMAPI calls
+        uses: actions/download-artifact@v4
+        with:
+          name: opportunity-source-benchmark-31871803238
+          path: prior-cmapi
+          repository: Champaagnepaapi/gcc-auction-watcher
+          run-id: 31871803238
+          github-token: ${{ github.token }}
+
+      - name: Run bounded eBay ASP search probe US UK
+        run: python -m v5.source_scout_ebay_asp_search_probe
+
+      - name: Publish benchmark summary
+        if: always() && hashFiles('ebay_asp_search_probe.md') != ''
+        shell: bash
+        run: cat ebay_asp_search_probe.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark evidence
+        if: always() && hashFiles('ebay_asp_search_probe.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ebay-asp-search-probe-${{ github.run_id }}
+          path: |
+            ebay_asp_search_probe.json
+            ebay_asp_search_probe.md
+          if-no-files-found: error
+          retention-days: 14
