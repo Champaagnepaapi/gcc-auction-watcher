@@ -134,6 +134,12 @@ jobs:
           V4_MISLISTED_CERT_TIMEOUT_SECONDS: "6"
           V4_MISLISTED_OCR_TIMEOUT_SECONDS: "8"
 
+          # PSA/PCA/CCC: every real cert problem gets a manual-review alert.
+          # A cert is declared missing only after API preservation + GCC
+          # Description -> Gradation fallback both fail. Lookup budget exhaustion
+          # alone is not mislabeled as a cert problem.
+          V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED: "true"
+
           EBAY_ENABLED: "true"
           EBAY_MAX_QUERIES_PER_CARD: "2"
           EBAY_MAX_CARDS_PER_RUN: "2"

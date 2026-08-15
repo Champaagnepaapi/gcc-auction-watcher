@@ -46,16 +46,96 @@ def _serial_from_api_result(result: dict) -> str:
     return ""
 
 
-def _fixed_api_lot_with_serial(result, item_url, coverage, *args, **kwargs):
-    lot = _ORIGINAL_FIXED_API_LOT(result, item_url, coverage, *args, **kwargs)
-    if lot is None:
-        return None
-    serial = _serial_from_api_result(result)
+def _lot_with_serial(lot: watcher.Lot, serial: str) -> watcher.Lot:
+    serial = _digits(serial)
     if not serial:
         return lot
     dimensions = dict(lot.commercial_dimensions)
     dimensions["cert_number"] = serial
     return replace(lot, commercial_dimensions=dimensions)
+
+
+def _fixed_api_lot_with_serial(result, item_url, coverage, *args, **kwargs):
+    lot = _ORIGINAL_FIXED_API_LOT(result, item_url, coverage, *args, **kwargs)
+    if lot is None:
+        return None
+    return _lot_with_serial(lot, _serial_from_api_result(result))
+
+
+def _preserve_serial_after_inspection(
+    inspected: watcher.Lot,
+    serial_before_inspection: str,
+) -> watcher.Lot:
+    """Restore the snapshotted API cert if in-place inspection erased it."""
+    serial = _digits(serial_before_inspection)
+    if not serial or hunter._serial_from_lot(inspected):
+        return inspected
+    return _lot_with_serial(inspected, serial)
+
+
+def _serial_from_text(text: str) -> str:
+    patterns = (
+        r"(?:Num[ée]ro de s[ée]rie|Serial Number|Certification Number|"
+        r"Num[ée]ro de certification|Cert(?:ification)?(?: Number)?)"
+        r"\s*:?\s*\n?\s*([0-9][0-9 ]{4,14})",
+        r"(?:Certification|Certificat)\s*\n\s*([0-9][0-9 ]{4,14})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text or "", re.I)
+        if match:
+            serial = _digits(match.group(1))
+            if serial:
+                return serial
+    return ""
+
+
+def _click_visible_text(page, pattern: str) -> bool:
+    rx = re.compile(pattern, re.I)
+    for locator in (
+        page.get_by_role("button", name=rx),
+        page.get_by_text(rx, exact=True),
+    ):
+        try:
+            count = min(locator.count(), 8)
+        except Exception:
+            continue
+        for index in range(count):
+            node = locator.nth(index)
+            try:
+                if node.is_visible():
+                    node.click(timeout=1200)
+                    page.wait_for_timeout(150)
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _serial_from_gradation_panel(page, lot_url: str) -> str:
+    """Last-resort GCC UI proof before declaring a certificate number missing.
+
+    GCC keeps the cert under Description -> Gradation while the collapsed body
+    omits it. This helper is read-only and is used only when no structured cert
+    survived from the API/detail data.
+    """
+    if page is None or not lot_url:
+        return ""
+    try:
+        current_url = str(getattr(page, "url", "") or "").split("?", 1)[0]
+        target_url = str(lot_url).split("?", 1)[0]
+        if current_url != target_url:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=watcher.NAV_TIMEOUT)
+            page.wait_for_timeout(250)
+        _click_visible_text(page, r"^(Description|Détails?|Details?)$")
+        _click_visible_text(page, r"^(Gradation|Grading)$")
+        text = page.locator("body").inner_text(timeout=2500)
+        return _serial_from_text(text)
+    except Exception as error:
+        watcher.log(
+            f"Cert problem: lecture Description/Gradation impossible "
+            f"({type(error).__name__}) | {lot_url}"
+        )
+        return ""
 
 
 def _normalized_grader(value: str) -> str:
@@ -158,11 +238,12 @@ def evaluate_with_cert_problem_notifications(
 ):
     """Alert immediately on every actual PSA/PCA/CCC certificate problem.
 
-    Missing certificate numbers alert immediately. A present certificate alerts
-    immediately when an official lookup was actually attempted (or reused from
-    cache) and did not return a readable grade. Per-run budget exhaustion alone
-    is not labelled as a certificate problem. The normal cert-first -> OCR -> V4
-    path then continues unchanged.
+    A structured GCC API certificate survives inspection. Only when no cert is
+    available do we explicitly open Description -> Gradation before declaring
+    CERT_NUMBER_MISSING. Present certs alert when an official lookup was actually
+    attempted (or reused from cache) and did not return a readable grade. Per-run
+    budget exhaustion alone is not labelled as a certificate problem. The normal
+    cert-first -> OCR -> V4 path then continues unchanged.
     """
     if _DELEGATE_EVALUATE is None:
         raise RuntimeError("cert problem notification hook not installed")
@@ -173,13 +254,24 @@ def evaluate_with_cert_problem_notifications(
             page, lot, position, state, seen_at, run_now, run_diagnostics
         )
 
+    # inspect_item mutates Lot in place. Snapshot the structured cert *before*
+    # inspection so a collapsed GCC body cannot erase the only cert evidence.
+    serial_before_inspection = hunter._serial_from_lot(lot)
     inspected = lot if lot.body else watcher.inspect_item(page, lot)
+    inspected = _preserve_serial_after_inspection(
+        inspected, serial_before_inspection
+    )
     if inspected.inspection_error:
         return _DELEGATE_EVALUATE(
             page, inspected, position, state, seen_at, run_now, run_diagnostics
         )
 
     serial = hunter._serial_from_lot(inspected)
+    if not serial:
+        serial = _serial_from_gradation_panel(page, inspected.url)
+        if serial:
+            inspected = _lot_with_serial(inspected, serial)
+
     if not serial:
         _send_cert_problem_review(
             inspected,

@@ -3,7 +3,7 @@
 > **Source de reprise canonique — à lire en premier dans toute nouvelle conversation.**
 > Après tout changement important de production, d’architecture V5, de provider, de benchmark ou de workflow, mettre ce README à jour avant de considérer la phase terminée.
 
-## État canonique — 14 août 2026
+## État canonique — 15 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -910,5 +910,24 @@ Validation PR #64 : run **`31838778755`**, job **`94890915083`** — **482/482 t
 - Déduplication persistante par `listing URL + grader + cert + type/statut du problème` ; un même problème n'est pas renotifié à chaque run.
 - La logique existante reste ensuite inchangée : certificat officiel d'abord, OCR ciblé PSA/PCA/CCC en fallback, mismatch officiel autoritaire, OCR seul manual-review, puis arbitrage V4 normal.
 - Une panne de lookup peut être purement technique (anti-bot, timeout, parsing) : **l'alerte n'est jamais une preuve de mislisting** et ne modifie ni fair value, ni prix max, ni décision économique.
+- Aucun achat, bid, checkout, paiement ou grading automatique.
+- **V5 PR #8 reste inchangée et non mergée.**
+
+---
+
+# PR #71 — correction des faux `CERT NUMBER MISSING` + réactivation des alertes cert
+
+- Cause racine confirmée : `watcher.inspect_item()` mute le `Lot` en place et remplaçait `commercial_dimensions` avec la fiche GCC repliée ; le `cert_number` structuré provenant de l'API était donc perdu avant le contrôle cert.
+- Correctif : snapshot du cert **avant** inspection puis restauration si la fiche repliée l'efface. Si aucun cert structuré n'existe réellement, V4 ouvre explicitement **Description → Gradation** et relit le numéro avant d'autoriser `CERT NUMBER MISSING`.
+- Retest live read-only sur **100 cartes PSA/PCA/CCC** : run **`31880785302`**, job **`95002943132`** :
+  * API cert présent **100/100** ;
+  * après inspection brute non protégée : **0/100** (reproduction exacte de l'ancien bug) ;
+  * après preservation : **100/100 présents, 100/100 identiques à l'API** ;
+  * Description → Gradation : **100/100 présents, 100/100 identiques à l'API** ;
+  * conflits API/Gradation **0** ; absences malgré API **0**.
+- Régressions ciblées : mutation in-place, preservation cert API, fallback Gradation, parser label/value séparés, vrai missing seulement après double échec, lookup failure, grade officiel illisible, budget non tenté et déduplication.
+- Validation propre finale après retrait du script diagnostic temporaire : run **`31881107036`**, job **`95003680246`** → **520/520 tests PASS**, compile PASS, `git diff --check` PASS, discovery live PASS (`legacy_only=0`, safety-net private sans échec).
+- Production demandée : `V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED=true` pour **PSA/PCA/CCC**. Notifications immédiates sur vrai `CERT_NUMBER_MISSING`, `CERT_LOOKUP_FAILED` après tentative réelle, ou `CERT_GRADE_UNREADABLE`; déduplication persistante. L'épuisement du budget sans tentative n'est pas une alerte cert.
+- Budget officiel reste borné à `V4_MISLISTED_CERT_MAX_PER_RUN=5` ; aucun contournement anti-bot/WAF.
 - Aucun achat, bid, checkout, paiement ou grading automatique.
 - **V5 PR #8 reste inchangée et non mergée.**
