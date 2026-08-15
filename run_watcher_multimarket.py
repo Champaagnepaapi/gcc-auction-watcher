@@ -27,6 +27,9 @@ from v4_mislisted_ocr_hardening import install_v4_mislisted_ocr_hardening
 from v4_mislisted_slab_hunter import install_v4_mislisted_slab_hunter
 from v4_multimarket_safety import install_multimarket_safety_hardening
 from v4_notification_semantics import install_v4_notification_semantics
+from v4_notification_signal_quality_guard import (
+    install_v4_notification_signal_quality_guard,
+)
 from v4_private_auction_coverage import install_v4_private_auction_coverage
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
@@ -63,6 +66,10 @@ if __name__ == "__main__":
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
+    # V4 is a graded-slab pipeline: RAW Cardmarket/TCGplayer cannot rescue
+    # opportunities. Install after Edge Hunter safety so identity fail-closed
+    # semantics stay underneath the notification-quality filter.
+    install_v4_notification_signal_quality_guard()
     # Reorders only scarce fixed external-provider calls. Auctions retain the
     # canonical ending-soon ordering and economics are untouched.
     install_v4_smart_external_priority()
