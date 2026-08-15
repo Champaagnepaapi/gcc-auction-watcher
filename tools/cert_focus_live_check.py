@@ -18,6 +18,7 @@ import v4_mislisted_cert_router as router
 import v4_mislisted_slab_hunter as hunter
 
 
+# Read-only smoke checks: no bid/buy/checkout and no notification.
 KNOWN = (
     ("PSA", "131216316", 10.0),
     ("CCC", "544340143", 9.0),
