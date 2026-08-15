@@ -59,7 +59,9 @@ def run_pipeline(item=None, session=None, config=None, **kwargs):
     diagnostic = LiveRawPipelineDiagnostic(
         "private-client-id",
         "private-client-secret",
-        config=config or LiveRawPipelineConfig(result_limit=20),
+        config=config or LiveRawPipelineConfig(
+            result_limit=20, marketplaces=("EBAY_US",)
+        ),
         session=session,
         **kwargs,
     )
@@ -95,6 +97,20 @@ def complete_market_values(identity):
     )
 
 
+def raw_only_market_values(identity):
+    return MarketValues(
+        source="offline raw sold fixture",
+        currency="USD",
+        ungraded_value=Decimal("25"),
+        grade8_generic_value=None,
+        grade9_generic_value=None,
+        psa10_value=None,
+        matched_identity=identity,
+        match_confidence=Decimal("1"),
+        matched_product_id="offline-raw-only",
+    )
+
+
 def complete_costs(listing):
     return CostModel(
         raw_purchase_price=listing.price,
@@ -113,6 +129,30 @@ def complete_costs(listing):
 
 
 class LiveRawPipelineFlowTests(unittest.TestCase):
+    def test_unmapped_identity_like_aspects_are_aggregate_only(self):
+        item = complete_item()
+        item["localizedAspects"].extend(
+            [
+                {
+                    "name": "Trading Card Display Name",
+                    "value": "private-name-value",
+                },
+                {
+                    "name": "Printed Card Identifier Number",
+                    "value": "private-number-value",
+                },
+            ]
+        )
+
+        _, summary, rendered, _, _ = run_pipeline(item)
+
+        self.assertEqual(summary.identity.unmapped_name_like_aspect_labels, 1)
+        self.assertEqual(summary.identity.unmapped_number_like_aspect_labels, 1)
+        self.assertIn("unmapped card-name-like aspect labels: 1", rendered)
+        self.assertIn("unmapped card-number-like aspect labels: 1", rendered)
+        self.assertNotIn("private-name-value", rendered)
+        self.assertNotIn("private-number-value", rendered)
+
     def test_real_browse_fixture_shape_reaches_full_manual_validation_path(self):
         diagnostic, summary, rendered, session, runtime = run_pipeline()
         self.assertTrue(summary.successful)
@@ -125,13 +165,16 @@ class LiveRawPipelineFlowTests(unittest.TestCase):
         search_calls = [call for call in session.gets if "item_summary/search" in call[0]]
         detail_calls = [call for call in session.gets if "/buy/browse/v1/item/" in call[0]]
         self.assertEqual(len(search_calls), 1)
-        self.assertEqual(search_calls[0][1]["params"]["filter"], "conditionIds:{4000}")
+        self.assertEqual(
+            search_calls[0][1]["params"]["filter"],
+            "conditionIds:{4000},deliveryCountry:CH",
+        )
         self.assertEqual(len(detail_calls), 1)
         self.assertIn(MANUAL_MARKET_VALIDATION_REQUIRED.lower().replace("_", " "), rendered.lower())
         self.assertEqual(diagnostic.pricecharting.live_calls, 0)
 
     def test_result_limit_is_configurable_and_sent_to_browse(self):
-        config = LiveRawPipelineConfig(result_limit=5)
+        config = LiveRawPipelineConfig(result_limit=5, marketplaces=("EBAY_US",))
         _, _, _, session, _ = run_pipeline(config=config)
         search = next(call for call in session.gets if "item_summary/search" in call[0])
         self.assertEqual(search[1]["params"]["limit"], "5")
@@ -235,6 +278,23 @@ class LiveRawPipelineFlowTests(unittest.TestCase):
         self.assertEqual(summary.economic.grade9_profitable, 1)
         self.assertNotIn("12.50", rendered)
 
+    def test_live_raw_mvp_counters_are_aggregate_only(self):
+        source = FixtureMarketSource(raw_only_market_values)
+        _, summary, rendered, _, _ = run_pipeline(
+            offline_market_sources=(source,), cost_factory=complete_costs
+        )
+        self.assertEqual(summary.economic.raw_market_sufficient, 1)
+        self.assertEqual(summary.economic.raw_path_evaluated, 1)
+        self.assertEqual(summary.economic.raw_profitable, 1)
+        self.assertEqual(summary.economic.raw_rejected, 0)
+        self.assertEqual(summary.economic.graded_comparison_available, 0)
+        self.assertEqual(summary.economic.raw_beats_grading, 0)
+        self.assertEqual(summary.economic.grading_beats_raw, 0)
+        self.assertEqual(summary.economic.graded_absent_but_raw_evaluable, 1)
+        self.assertIn("raw market sufficient: 1", rendered)
+        self.assertIn("graded absent but raw evaluable: 1", rendered)
+        self.assertNotIn("offline-raw-only", rendered)
+
     def test_listing_price_overrides_configured_raw_purchase_price_only(self):
         env = {
             "RAW_PURCHASE_PRICE": "999",
@@ -327,7 +387,10 @@ class MemoryAndPrivacyTests(unittest.TestCase):
     def test_no_ebay_payload_is_written_to_disk(self):
         session = FakeLiveSession()
         diagnostic = LiveRawPipelineDiagnostic(
-            "private-client", "private-secret", session=session
+            "private-client",
+            "private-secret",
+            config=LiveRawPipelineConfig(marketplaces=("EBAY_US", "EBAY_CH")),
+            session=session,
         )
         with patch.object(builtins, "open", wraps=builtins.open) as mocked_open:
             diagnostic.run()
@@ -376,7 +439,9 @@ class MemoryAndPrivacyTests(unittest.TestCase):
             },
             detail_payloads={item["itemId"]: item},
         )
-        config = LiveRawPipelineConfig(result_limit=20, include_ebay_ch=True)
+        config = LiveRawPipelineConfig(
+            result_limit=20, marketplaces=("EBAY_US", "EBAY_CH")
+        )
         _, summary, _, _, _ = run_pipeline(session=session, config=config)
         ch = next(
             value for value in summary.marketplaces if value.marketplace_id == "EBAY_CH"
@@ -387,14 +452,17 @@ class MemoryAndPrivacyTests(unittest.TestCase):
 
 
 class LiveRawWorkflowTests(unittest.TestCase):
-    def test_workflow_is_manual_read_only_and_has_no_persistence(self):
+    def test_workflow_is_manual_read_only_and_persists_only_gcc_catalog(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("name: V5 Live Raw Pipeline Diagnostic", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertNotIn("schedule:", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("persist-credentials: false", workflow)
-        self.assertNotIn("actions/cache", workflow)
+        self.assertIn("actions/cache/restore@v4", workflow)
+        self.assertIn("actions/cache/save@v4", workflow)
+        self.assertIn("path: gcc_catalog_index.json", workflow)
+        self.assertNotIn("state.json", workflow)
         self.assertNotIn("upload-artifact", workflow)
 
     def test_workflow_has_required_read_only_secrets_and_all_safety_locks(self):
@@ -402,6 +470,12 @@ class LiveRawWorkflowTests(unittest.TestCase):
         self.assertIn("secrets.EBAY_CLIENT_ID", workflow)
         self.assertIn("secrets.EBAY_CLIENT_SECRET", workflow)
         self.assertIn("secrets.GCC_SESSION_B64", workflow)
+        self.assertIn("secrets.POKETRACE_API_KEY", workflow)
+        self.assertIn('POKETRACE_PLAN: "pro"', workflow)
+        self.assertIn('POKETRACE_MIN_REQUEST_INTERVAL_SECONDS: "0.40"', workflow)
+        self.assertIn('30 requests / 10s burst', workflow)
+        self.assertIn("python -m v5.poketrace_preflight", workflow)
+        self.assertIn('POKETRACE_CARDMARKET_DISCOUNT_THRESHOLD: "0.30"', workflow)
         self.assertNotIn("PRICECHARTING_TOKEN", workflow)
         self.assertNotIn("CARDGRADER_API_KEY", workflow)
         self.assertIn('PRICECHARTING_ENABLED: "false"', workflow)
@@ -409,7 +483,11 @@ class LiveRawWorkflowTests(unittest.TestCase):
         self.assertIn('RAW_MAX_PAID_GRADINGS_PER_RUN: "0"', workflow)
         self.assertIn('CARDGRADER_V5_ALLOW_PAID_CALLS: "false"', workflow)
         self.assertIn('V5_LIVE_RAW_RESULT_LIMIT: "20"', workflow)
-        self.assertIn('V5_LIVE_INCLUDE_EBAY_CH: "false"', workflow)
+        self.assertIn(
+            'V5_LIVE_EBAY_MARKETPLACES: "EBAY_US,EBAY_DE,EBAY_FR,EBAY_IT,EBAY_ES"',
+            workflow,
+        )
+        self.assertNotIn("V5_LIVE_INCLUDE_EBAY_CH", workflow)
         self.assertIn('GCC_HISTORY_ENABLED: "true"', workflow)
         self.assertIn("rm -f gcc_session.json", workflow)
 

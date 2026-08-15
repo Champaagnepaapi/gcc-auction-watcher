@@ -154,7 +154,12 @@ class GCCCatalogIndex:
 
     def candidates(self, card_name: str | None) -> tuple[GCCCatalogCandidate, ...]:
         name = canonicalize_collectible(
-            CanonicalCollectible(card_name=card_name, category="pokemon")
+            CanonicalCollectible(
+                card_name=card_name,
+                set_name=None,
+                card_number=None,
+                category="pokemon",
+            )
         ).card_name
         if not name:
             return ()

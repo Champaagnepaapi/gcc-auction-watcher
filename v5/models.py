@@ -29,6 +29,11 @@ class ScanDecision(str, Enum):
 
 
 PSA10_DEPENDENT = "PSA10_DEPENDENT"
+RAW_RESALE = "RAW_RESALE"
+GRADING_AFTER_VISUAL_ASSESSMENT = "GRADING_AFTER_VISUAL_ASSESSMENT"
+NO_RECOMMENDED_PATH = "NONE"
+POKETRACE_PROVIDER = "POKETRACE"
+TCGDEX_EXACT_ENGLISH_TWIN = "TCGDEX_EXACT_ENGLISH_TWIN"
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,24 @@ class CardIdentity:
     def display_name(self) -> str:
         parts = [self.card_name or "Carte inconnue", self.set, self.card_number]
         return " · ".join(part for part in parts if part)
+
+
+@dataclass(frozen=True)
+class ProviderSearchAlias:
+    """Deterministic provider-only name backed by one exact catalogue twin.
+
+    The alias is deliberately separate from ``CardIdentity``: it may influence
+    provider retrieval, but it must never relabel the listing or weaken the
+    set, number, language, or variant evidence used for local acceptance.
+    """
+
+    provider: str
+    search_card_name: str
+    search_set_name: str
+    provenance: str
+    catalog_card_id: str
+    catalog_set_id: str
+    catalog_local_id: str
 
 
 @dataclass(frozen=True)
@@ -227,6 +250,30 @@ class CostInputs:
         )
         return tuple(name for name, value in pairs if value is None)
 
+    def raw_unknown_fields(self) -> Tuple[str, ...]:
+        """Couts requis pour une revente RAW, hors toute depense de grading."""
+
+        pairs = (
+            ("purchase_price", self.purchase_price),
+            ("shipping_to_buyer", self.shipping_to_buyer),
+            ("buyer_fees", self.buyer_fees),
+            ("marketplace_selling_fee_rate", self.marketplace_selling_fee_rate),
+            ("other_costs", self.other_costs),
+        )
+        return tuple(name for name, value in pairs if value is None)
+
+    def raw_fixed_total(self) -> Decimal:
+        missing = self.raw_unknown_fields()
+        if missing:
+            raise ValueError("Impossible de totaliser des couts RAW inconnus")
+        values = (
+            self.purchase_price,
+            self.shipping_to_buyer,
+            self.buyer_fees,
+            self.other_costs,
+        )
+        return sum((value for value in values if value is not None), ZERO)
+
     def fixed_total(self) -> Decimal:
         if self.unknown_fields():
             raise ValueError("Impossible de totaliser des couts inconnus")
@@ -266,6 +313,16 @@ class ValuationResult:
 
 
 @dataclass(frozen=True)
+class RawValuationResult:
+    prudent_market_value: Decimal
+    fixed_non_grading_costs: Decimal
+    selling_fees: Decimal
+    total_cost_basis: Decimal
+    net_profit: Decimal
+    roi_percent: Decimal
+
+
+@dataclass(frozen=True)
 class ScanDiagnostic:
     listing: EbayListing
     identity: CardIdentity
@@ -276,6 +333,10 @@ class ScanDiagnostic:
     probabilities: Optional[GradeProbabilities] = None
     market_values: Optional[MarketValues] = None
     valuation: Optional[ValuationResult] = None
+    raw_valuation: Optional[RawValuationResult] = None
+    recommended_path: str = NO_RECOMMENDED_PATH
+    graded_comparison_available: bool = False
+    grading_reasons: Tuple[str, ...] = ()
     costs: Optional[CostInputs] = None
     total_cost_if_graded: Optional[Decimal] = None
     psa10_profit: Optional[Decimal] = None

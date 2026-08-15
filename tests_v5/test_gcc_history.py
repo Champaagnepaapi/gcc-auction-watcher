@@ -217,7 +217,7 @@ class GCCIdentityMatchingTests(unittest.TestCase):
             variant="stamped regional print",
         )
         result = match_identity(target, candidate)
-        self.assertEqual(result.match_class, MatchClass.STRONG_MATCH)
+        self.assertEqual(result.match_class, MatchClass.AMBIGUOUS)
         self.assertIn("target_variant", result.missing_fields)
 
     def test_variant_and_edition_are_normalized_as_separate_discriminators(self):
@@ -660,7 +660,14 @@ class GCCProviderIntegrationTests(unittest.TestCase):
         market = PipelineMarketAggregate()
         economic = PipelineEconomicAggregate()
         diagnostic._evaluate_candidate(
-            _PipelineCandidate(listing, charizard(), "BACK_IMAGE_UNKNOWN"),
+            _PipelineCandidate(
+                listing,
+                charizard(),
+                "BACK_IMAGE_UNKNOWN",
+                "EBAY_US",
+                True,
+            ),
+            MarketplaceAggregate("EBAY_US"),
             market,
             economic,
         )
@@ -703,13 +710,8 @@ class GCCProviderIntegrationTests(unittest.TestCase):
         self.assertNotIn("FIXED_RATIO", ratios_source)
         self.assertNotIn("PCA_TO_PSA", ratios_source)
 
-    def test_gcc_diagnostic_workflow_is_manual_offline_and_has_no_secrets(self):
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("schedule:", workflow)
-        self.assertNotIn("secrets.", workflow)
-        self.assertIn("python -m v5.gcc_history_diagnostic", workflow)
-        self.assertIn('GCC_HISTORY_ENABLED: "false"', workflow)
+    def test_redundant_gcc_diagnostic_workflow_remains_removed(self):
+        self.assertFalse(WORKFLOW.exists())
 
     def test_live_workflow_enables_only_existing_v4_live_access(self):
         workflow = LIVE_WORKFLOW.read_text(encoding="utf-8")

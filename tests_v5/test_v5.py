@@ -36,7 +36,9 @@ from v5.grading import (
     parse_cardgrader_assessment,
 )
 from v5.models import (
+    GRADING_AFTER_VISUAL_ASSESSMENT,
     PSA10_DEPENDENT,
+    RAW_RESALE,
     CardIdentity,
     CostInputs,
     GradeAssessment,
@@ -55,6 +57,10 @@ from v5.scanner import (
     INSUFFICIENT_MAX_PLAUSIBLE_UPSIDE,
     INSUFFICIENT_PSA_DATA,
     NON_PROFITABLE_EV,
+    RAW_BEATS_GRADING,
+    RAW_MARKET_INSUFFICIENT,
+    RAW_PATH_NON_PROFITABLE,
+    RAW_PATH_PROFITABLE,
     RawCardScanner,
     SafeguardConfig,
     ScanRequest,
@@ -199,6 +205,51 @@ class EbayOfficialConnectorTests(unittest.TestCase):
         )
         self.assertFalse(identity.is_unambiguous_pokemon())
         self.assertIn("card_name", identity.ambiguities[0])
+
+    def test_additive_features_do_not_create_false_variant_ambiguity(self):
+        identity = card_identity_from_aspects(
+            {
+                "Game": ("Pokemon TCG",),
+                "Card Name": ("Dark Blastoise",),
+                "Set": ("Team Rocket",),
+                "Card Number": ("3/82",),
+                "Language": ("English",),
+                "Features": ("Holo", "1st Edition"),
+            }
+        )
+        self.assertEqual(identity.finish, "holofoil")
+        self.assertEqual(identity.edition, "first_edition")
+        self.assertEqual(identity.ambiguities, ())
+        self.assertTrue(identity.is_unambiguous_pokemon())
+
+    def test_additive_features_preserve_positive_promo_evidence(self):
+        identity = card_identity_from_aspects(
+            {
+                "Game": ("Pokemon TCG",),
+                "Card Name": ("Pikachu",),
+                "Set": ("Fixture Set",),
+                "Card Number": ("1/10",),
+                "Language": ("English",),
+                "Features": ("Holo", "Promo"),
+            }
+        )
+        self.assertEqual(identity.finish, "holofoil")
+        self.assertEqual(identity.variant, "promo")
+        self.assertEqual(identity.ambiguities, ())
+
+    def test_additive_features_promo_conflict_fails_closed(self):
+        identity = card_identity_from_aspects(
+            {
+                "Game": ("Pokemon TCG",),
+                "Card Name": ("Pikachu",),
+                "Set": ("Fixture Set",),
+                "Card Number": ("1/10",),
+                "Language": ("English",),
+                "Parallel/Variety": ("Master Ball Reverse",),
+                "Features": ("Promo",),
+            }
+        )
+        self.assertTrue(any(value.startswith("promo:") for value in identity.ambiguities))
 
     def test_browse_search_uses_official_raw_aspect_filter(self):
         session = FakeEbaySession(self.payload)
@@ -354,7 +405,7 @@ class ScannerSafeguardTests(unittest.TestCase):
             grade_provider=grade_provider,
             pair=GradeImagePair(listing.primary_image_url, None),
         )
-        self.assertIn(INSUFFICIENT_PHOTOS, diagnostic.reasons)
+        self.assertIn(INSUFFICIENT_PHOTOS, diagnostic.grading_reasons)
         self.assertEqual(grade_provider.calls, 0)
 
     def test_missing_explicit_back_is_rejected(self):
@@ -403,14 +454,17 @@ class ScannerSafeguardTests(unittest.TestCase):
         )
         self.assertIsNone(diagnostic.valuation)
         self.assertLess(diagnostic.psa10_profit, 0)
-        self.assertIn(INSUFFICIENT_MAX_PLAUSIBLE_UPSIDE, diagnostic.reasons)
+        self.assertIn(
+            INSUFFICIENT_MAX_PLAUSIBLE_UPSIDE, diagnostic.grading_reasons
+        )
         self.assertFalse(diagnostic.retained)
         self.assertEqual(grade_provider.calls, 0)
 
     def test_missing_psa9_value_never_creates_artificial_ev(self):
         values = replace(market_values("profitable_in_psa9"), psa9=None)
         diagnostic = self.evaluate(values)
-        self.assertIn(INSUFFICIENT_PSA_DATA, diagnostic.reasons)
+        self.assertIn(INSUFFICIENT_PSA_DATA, diagnostic.grading_reasons)
+        self.assertIn(RAW_PATH_NON_PROFITABLE, diagnostic.reasons)
         self.assertIsNone(diagnostic.valuation)
 
     def test_low_image_quality_is_rejected(self):
@@ -476,6 +530,7 @@ class CheapFilterPipelineTests(unittest.TestCase):
         request = self.request("2")
         low_values = replace(
             self.values,
+            raw=replace(self.values.raw, amount=Decimal("3")),
             psa8=replace(self.values.psa8, amount=Decimal("6")),
             psa9=replace(self.values.psa9, amount=Decimal("7")),
             psa10=replace(self.values.psa10, amount=Decimal("8")),
@@ -488,7 +543,10 @@ class CheapFilterPipelineTests(unittest.TestCase):
             request.listing, grade_provider, values=low_values
         ).cheap_filter(request)
         self.assertFalse(result.eligible_for_visual_grading)
-        self.assertIn(INSUFFICIENT_MAX_PLAUSIBLE_UPSIDE, result.reasons)
+        self.assertIn(
+            INSUFFICIENT_MAX_PLAUSIBLE_UPSIDE, result.grading_reasons
+        )
+        self.assertIn(RAW_PATH_NON_PROFITABLE, result.reasons)
         self.assertLess(result.psa10_profit, 0)
         self.assertEqual(grade_provider.calls, 0)
 
@@ -522,7 +580,9 @@ class CheapFilterPipelineTests(unittest.TestCase):
             safeguards=safeguards,
         )
         diagnostic = scanner.evaluate(request)
-        self.assertIn(VISUAL_GRADING_QUOTA_REACHED, diagnostic.reasons)
+        self.assertTrue(diagnostic.retained)
+        self.assertEqual(diagnostic.recommended_path, RAW_RESALE)
+        self.assertNotIn(VISUAL_GRADING_QUOTA_REACHED, diagnostic.reasons)
         self.assertEqual(grade_provider.calls, 0)
 
     def test_scan_run_never_exceeds_paid_grading_quota(self):
@@ -540,8 +600,217 @@ class CheapFilterPipelineTests(unittest.TestCase):
         diagnostics = scanner.scan_and_rank((first, second))
         self.assertEqual(grade_provider.calls, 1)
         self.assertEqual(len(diagnostics), 2)
+        self.assertTrue(all(item.retained for item in diagnostics))
         self.assertTrue(
-            any(VISUAL_GRADING_QUOTA_REACHED in item.reasons for item in diagnostics)
+            any(item.recommended_path == RAW_RESALE for item in diagnostics)
+        )
+        self.assertTrue(
+            all(VISUAL_GRADING_QUOTA_REACHED not in item.reasons for item in diagnostics)
+        )
+
+
+class RawResaleMvpTests(unittest.TestCase):
+    def setUp(self):
+        self.listing = replace(
+            parse_ebay_item(load_json("ebay_raw_item.json")),
+            price=Decimal("10"),
+        )
+
+    def values(self, raw="100", *, graded=False, confidence="high", samples=8):
+        value = lambda amount: MarketValue(
+            Decimal(amount), "EUR", samples, confidence, "offline fixture"
+        )
+        return MarketValues(
+            raw=value(raw) if raw is not None else None,
+            psa8=value("100") if graded else None,
+            psa9=value("150") if graded else None,
+            psa10=value("250") if graded else None,
+            psa7_or_lower=value("60") if graded else None,
+        )
+
+    def request(self, **cost_changes):
+        return ScanRequest(
+            self.listing,
+            image_pair(self.listing),
+            standard_costs(self.listing, **cost_changes),
+        )
+
+    def scanner(self, values, provider=None, **safeguards):
+        return provider_for(
+            self.listing,
+            values,
+            grade_provider=provider,
+            safeguards=SafeguardConfig(**safeguards),
+        )
+
+    def test_a_raw_only_profitable_is_retained_without_psa(self):
+        diagnostic = self.scanner(
+            self.values(), maximum_paid_gradings_per_run=0
+        ).evaluate(self.request(grading_fee=None, shipping_for_grading=None))
+        self.assertTrue(diagnostic.retained)
+        self.assertEqual(diagnostic.recommended_path, RAW_RESALE)
+        self.assertIn(RAW_PATH_PROFITABLE, diagnostic.reasons)
+        self.assertNotIn(INSUFFICIENT_PSA_DATA, diagnostic.reasons)
+        self.assertIsNone(diagnostic.valuation)
+        self.assertIsNotNone(diagnostic.raw_valuation)
+
+    def test_b_zero_paid_quota_retains_raw_and_never_calls_provider(self):
+        grade_provider = FakeGradeProvider()
+        diagnostic = self.scanner(
+            self.values(graded=True),
+            provider=grade_provider,
+            maximum_paid_gradings_per_run=0,
+        ).evaluate(self.request())
+        self.assertTrue(diagnostic.retained)
+        self.assertEqual(diagnostic.recommended_path, RAW_RESALE)
+        self.assertNotIn(VISUAL_GRADING_QUOTA_REACHED, diagnostic.reasons)
+        self.assertEqual(grade_provider.calls, 0)
+
+    def test_c_raw_cost_basis_excludes_grading_costs_exactly(self):
+        diagnostic = self.scanner(
+            self.values(), maximum_paid_gradings_per_run=0
+        ).evaluate(
+            self.request(
+                grading_fee=Decimal("999"),
+                shipping_for_grading=Decimal("888"),
+                marketplace_selling_fee_rate=Decimal("0.10"),
+            )
+        )
+        raw = diagnostic.raw_valuation
+        self.assertEqual(raw.fixed_non_grading_costs, Decimal("20"))
+        self.assertEqual(raw.selling_fees, Decimal("10.00"))
+        self.assertEqual(raw.total_cost_basis, Decimal("30.00"))
+        self.assertEqual(raw.net_profit, Decimal("70.00"))
+
+    def test_d_non_profitable_raw_without_graded_data_is_rejected(self):
+        diagnostic = self.scanner(
+            self.values(raw="10"), maximum_paid_gradings_per_run=0
+        ).evaluate(self.request(grading_fee=None, shipping_for_grading=None))
+        self.assertFalse(diagnostic.retained)
+        self.assertEqual(diagnostic.recommended_path, "NONE")
+        self.assertIn(RAW_PATH_NON_PROFITABLE, diagnostic.reasons)
+        self.assertNotIn(INSUFFICIENT_PSA_DATA, diagnostic.reasons)
+
+    def test_e_raw_ev_higher_than_supported_grading_recommends_raw(self):
+        values = self.values(raw="200", graded=True)
+        grade_provider = FakeGradeProvider()
+        diagnostic = self.scanner(
+            values,
+            provider=grade_provider,
+            maximum_paid_gradings_per_run=1,
+            maximum_psa10_ev_share=Decimal("1"),
+        ).evaluate(self.request())
+        self.assertTrue(diagnostic.graded_comparison_available)
+        self.assertEqual(diagnostic.recommended_path, RAW_RESALE)
+        self.assertIn(RAW_BEATS_GRADING, diagnostic.reasons)
+        self.assertGreater(
+            diagnostic.raw_valuation.net_profit,
+            diagnostic.valuation.expected_profit,
+        )
+
+    def test_f_higher_supported_grading_ev_can_be_recommended(self):
+        values = self.values(raw="40", graded=True)
+        grade_provider = FakeGradeProvider()
+        diagnostic = self.scanner(
+            values,
+            provider=grade_provider,
+            maximum_paid_gradings_per_run=1,
+            maximum_psa10_ev_share=Decimal("1"),
+        ).evaluate(self.request())
+        self.assertTrue(diagnostic.raw_valuation.net_profit > 0)
+        self.assertEqual(
+            diagnostic.recommended_path, GRADING_AFTER_VISUAL_ASSESSMENT
+        )
+        self.assertGreater(
+            diagnostic.valuation.expected_profit,
+            diagnostic.raw_valuation.net_profit,
+        )
+
+    def test_g_missing_raw_with_strong_psa_never_fabricates_raw(self):
+        diagnostic = self.scanner(
+            self.values(raw=None, graded=True),
+            maximum_paid_gradings_per_run=1,
+            maximum_psa10_ev_share=Decimal("1"),
+        ).evaluate(self.request())
+        self.assertIsNone(diagnostic.raw_valuation)
+        self.assertTrue(diagnostic.graded_comparison_available)
+        self.assertEqual(
+            diagnostic.recommended_path, GRADING_AFTER_VISUAL_ASSESSMENT
+        )
+
+    def test_h_ambiguous_identity_blocks_raw_and_grading(self):
+        listing = replace(
+            self.listing,
+            identity=replace(self.listing.identity, ambiguities=("set ambiguous",)),
+        )
+        provider = FakeGradeProvider()
+        scanner = provider_for(listing, self.values(graded=True), provider)
+        diagnostic = scanner.evaluate(
+            replace(self.request(), listing=listing)
+        )
+        self.assertFalse(diagnostic.retained)
+        self.assertIsNone(diagnostic.raw_valuation)
+        self.assertIn(IDENTITY_AMBIGUOUS, diagnostic.reasons)
+        self.assertEqual(provider.calls, 0)
+
+    def test_i_currency_mismatch_and_unknown_material_costs_block_raw(self):
+        foreign = replace(
+            self.values(),
+            raw=replace(self.values().raw, currency="USD"),
+        )
+        cases = (
+            (foreign, self.request(grading_fee=None, shipping_for_grading=None)),
+            (
+                self.values(),
+                self.request(
+                    buyer_fees=None,
+                    grading_fee=None,
+                    shipping_for_grading=None,
+                ),
+            ),
+        )
+        for values, request in cases:
+            with self.subTest(values=values):
+                diagnostic = self.scanner(
+                    values, maximum_paid_gradings_per_run=0
+                ).evaluate(request)
+                self.assertFalse(diagnostic.retained)
+                self.assertIsNone(diagnostic.raw_valuation)
+
+    def test_weak_raw_evidence_remains_non_actionable(self):
+        values = self.values(confidence="low", samples=1)
+        diagnostic = self.scanner(
+            values, maximum_paid_gradings_per_run=0
+        ).evaluate(self.request(grading_fee=None, shipping_for_grading=None))
+        self.assertFalse(diagnostic.retained)
+        self.assertIsNone(diagnostic.raw_valuation)
+        self.assertIn(RAW_MARKET_INSUFFICIENT, diagnostic.reasons)
+
+    def test_raw_only_results_rank_by_supported_raw_profit(self):
+        expensive = replace(self.listing, item_id="expensive", price=Decimal("20"))
+        cheap = replace(self.listing, item_id="cheap", price=Decimal("5"))
+        values = self.values(raw="100")
+        scanner = provider_for(
+            self.listing,
+            values,
+            safeguards=SafeguardConfig(maximum_paid_gradings_per_run=0),
+        )
+        requests = tuple(
+            ScanRequest(
+                listing,
+                image_pair(listing),
+                standard_costs(
+                    listing, grading_fee=None, shipping_for_grading=None
+                ),
+            )
+            for listing in (expensive, cheap)
+        )
+        diagnostics = scanner.scan_and_rank(requests)
+        self.assertEqual(
+            [item.listing.item_id for item in diagnostics], ["cheap", "expensive"]
+        )
+        self.assertTrue(
+            all(item.recommended_path == RAW_RESALE for item in diagnostics)
         )
 
 

@@ -16,6 +16,7 @@ from v5.market_values.economic import (
     GRADING_VISUAL_CONFIDENCE_REDUCED,
     PSA10_DEPENDENT,
     RAW_ARBITRAGE,
+    RAW_MARKET_INSUFFICIENT,
     CostModel,
     evaluate_economic_pre_filter,
 )
@@ -308,14 +309,62 @@ class EconomicPreFilterTests(unittest.TestCase):
         self.assertTrue(result.can_continue)
         self.assertIn(RAW_ARBITRAGE, result.signals)
         self.assertNotIn(MARKET_VALUES_MISSING, result.signals)
+        raw = result.scenarios[MarketLevel.UNGRADED]
+        self.assertEqual(raw.total_cost_basis, Decimal("10"))
+        self.assertEqual(raw.profit, Decimal("45"))
 
-    def test_incomplete_cost_model_is_blocking(self):
+    def test_raw_cost_formula_excludes_all_grading_and_vault_costs(self):
+        result = evaluate_economic_pre_filter(
+            self.aggregate(
+                values_for(identity(), raw="100", grade8=None, grade9=None, psa10=None)
+            ),
+            costs(
+                purchase="10",
+                grading="999",
+                grading_shipping="888",
+                buyer_fees=Decimal("2"),
+                domestic_shipping=Decimal("3"),
+                international_shipping=Decimal("4"),
+                vault_fee=Decimal("777"),
+                selling_fee_pct=Decimal("10"),
+                selling_fixed_fee=Decimal("1"),
+                fx_buffer_pct=Decimal("5"),
+                other_costs=Decimal("2"),
+            ),
+            BACK_IMAGE_CONFIRMED,
+        )
+        raw = result.scenarios[MarketLevel.UNGRADED]
+        self.assertEqual(raw.net_sale, Decimal("84"))
+        self.assertEqual(raw.total_cost_basis, Decimal("37"))
+        self.assertEqual(raw.profit, Decimal("63"))
+        self.assertTrue(result.raw_profitable)
+        self.assertEqual(result.recommended_path, "RAW_RESALE")
+
+    def test_low_confidence_raw_provider_evidence_is_not_actionable(self):
+        weak = replace(
+            values_for(identity(), grade8=None, grade9=None, psa10=None),
+            match_confidence=Decimal("0.80"),
+        )
+        result = evaluate_economic_pre_filter(
+            self.aggregate(weak),
+            replace(costs(), grading_fee=None, grading_shipping=None),
+            BACK_IMAGE_CONFIRMED,
+        )
+        self.assertFalse(result.raw_market_sufficient)
+        self.assertFalse(result.raw_path_evaluated)
+        self.assertFalse(result.can_continue)
+        self.assertIn(RAW_MARKET_INSUFFICIENT, result.signals)
+
+    def test_missing_grading_cost_does_not_block_profitable_raw_path(self):
         result = evaluate_economic_pre_filter(
             self.aggregate(values_for(identity())),
             replace(costs(), grading_fee=None),
             BACK_IMAGE_CONFIRMED,
         )
-        self.assertIn(COST_MODEL_INCOMPLETE, result.signals)
+        self.assertTrue(result.raw_path_evaluated)
+        self.assertTrue(result.raw_profitable)
+        self.assertIn(RAW_ARBITRAGE, result.signals)
+        self.assertNotIn(COST_MODEL_INCOMPLETE, result.signals)
 
     def test_back_absent_reduces_visual_confidence_but_economics_continue(self):
         result = evaluate_economic_pre_filter(
@@ -398,21 +447,14 @@ class PipelineAndSummarySafetyTests(unittest.TestCase):
         self.assertFalse(pricecharting.enabled)
         self.assertEqual(safeguards.maximum_paid_gradings_per_run, 0)
 
-    def test_market_workflow_is_manual_offline_and_contains_both_paid_locks(self):
+    def test_redundant_market_workflow_remains_removed(self):
         workflow = (
             Path(__file__).parents[1]
             / ".github"
             / "workflows"
             / "v5-market-valuation-diagnostic.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("name: V5 Market Valuation Diagnostic", workflow)
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("schedule:", workflow)
-        self.assertIn('PRICECHARTING_ENABLED: "false"', workflow)
-        self.assertIn('RAW_MAX_PAID_GRADINGS_PER_RUN: "0"', workflow)
-        self.assertIn('CARDGRADER_V5_ALLOW_PAID_CALLS: "false"', workflow)
-        self.assertNotIn("PRICECHARTING_TOKEN", workflow)
-        self.assertNotIn("EBAY_CLIENT", workflow)
+        )
+        self.assertFalse(workflow.exists())
 
 
 if __name__ == "__main__":

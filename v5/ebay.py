@@ -18,6 +18,7 @@ from .models import (
     StructuredGradingStatus,
     decimal_from,
 )
+from .variant_semantics import semantics_from_text
 
 
 PRODUCTION_IDENTITY_BASE = "https://api.ebay.com/identity/v1/oauth2"
@@ -349,24 +350,40 @@ def grading_status_from_ebay_data(
 
 
 IDENTITY_ALIASES = {
-    "game": ("Game", "Jeu", "Franchise", "Spiel", "Gioco"),
+    "game": ("Game", "Jeu", "Franchise", "Spiel", "Gioco", "Juego"),
     "set": (
         "Set",
+        "Set Name",
         "Card Set",
         "Series",
         "Serie",
         "Série",
         "Extension",
+        "Nom du set",
+        "Nom de l'extension",
         "Erweiterung",
         "Kartenset",
         "Espansione",
+        "Nome del set",
+        "Conjunto",
+        "Colección",
+        "Expansion",
+        "Expansión",
     ),
     "card_number": (
         "Card Number",
+        "Card No.",
+        "Collector Number",
         "Numero de carte",
         "Numéro de carte",
+        "N° de carte",
+        "Nº de carte",
         "Kartennummer",
+        "Nummer der Karte",
         "Numero della carta",
+        "Numero carta",
+        "Número de carta",
+        "N.º de carta",
     ),
     "year": (
         "Year Manufactured",
@@ -375,19 +392,24 @@ IDENTITY_ALIASES = {
         "Année",
         "Herstellungsjahr",
         "Anno di fabbricazione",
+        "Año de fabricación",
+        "Año",
     ),
-    "language": ("Language", "Langue", "Sprache", "Lingua"),
+    "language": ("Language", "Langue", "Sprache", "Lingua", "Idioma"),
     "variant": (
         "Parallel/Variety",
         "Variante",
         "Parallelita/Varieta",
-        "Features",
-        "Caracteristiques",
-        "Caractéristiques",
-        "Merkmale",
-        "Besonderheiten",
     ),
-    "rarity": ("Rarity", "Rareté", "Rarite", "Seltenheit", "Rarità", "Rarita"),
+    "rarity": (
+        "Rarity",
+        "Rareté",
+        "Rarite",
+        "Seltenheit",
+        "Rarità",
+        "Rarita",
+        "Rareza",
+    ),
     "finish": (
         "Finish",
         "Finition",
@@ -398,24 +420,73 @@ IDENTITY_ALIASES = {
         "Oberfläche",
         "Oberflache",
         "Finitura",
+        "Acabado",
+        "Card Finish",
+        "Surface Finish",
+        "Finition de la carte",
+        "Oberflächeneffekt",
+        "Effetto superficie",
+        "Efecto de superficie",
     ),
-    "edition": ("Edition", "Édition", "Edizione", "Ausgabe"),
-    "illustrator": ("Illustrator", "Illustrateur", "Illustratore"),
+    "edition": (
+        "Edition",
+        "Édition",
+        "Edizione",
+        "Ausgabe",
+        "Edición",
+        "Edition / Print",
+        "Edition/Print",
+        "Card Condition Edition",
+        "Druck",
+        "Auflage",
+        "Stampa",
+        "Printing",
+        "Print",
+        "Édition / Impression",
+        "Edizione / Stampa",
+        "Edición / Impresión",
+    ),
+    "illustrator": (
+        "Illustrator",
+        "Illustrateur",
+        "Illustratore",
+        "Ilustrador",
+    ),
 }
+
+# eBay "Features" is additive: Holo + 1st Edition are orthogonal dimensions.
+FEATURE_ASPECT_ALIASES = (
+    "Features",
+    "Caracteristiques",
+    "Caractéristiques",
+    "Merkmale",
+    "Besonderheiten",
+    "Características",
+    "Caratteristiche",
+)
+
 
 DIRECT_CARD_NAME_ALIASES = (
     "Card Name",
+    "Name of Card",
     "Nom de la carte",
+    "Nom de carte",
     "Pokémon",
     "Pokemon",
+    "Pokémon Name",
+    "Pokemon Name",
+    "Nom du Pokémon",
     "Kartenname",
     "Nome carta",
+    "Nome della carta",
+    "Nombre de la carta",
 )
 CHARACTER_CARD_NAME_ALIASES = (
     "Character",
     "Personnage",
     "Personaggio",
     "Charakter",
+    "Personaje",
 )
 CONTEXTUAL_CARD_NAME_ALIASES = (
     "Card",
@@ -480,6 +551,67 @@ class IdentityResolution:
     card_name_source: Optional[str]
 
 
+@dataclass(frozen=True)
+class IdentityAspectAudit:
+    unmapped_name_like_label: bool = False
+    unmapped_number_like_label: bool = False
+
+
+def identity_aspect_audit(payload: Mapping[str, object]) -> IdentityAspectAudit:
+    """Count potentially useful labels without logging labels or values.
+
+    This is diagnostic-only. Unknown labels are never promoted to identity
+    fields, so a future taxonomy alias still needs an explicit offline test.
+    """
+
+    aspects = _aspects(payload)
+    recognized_name_labels = {
+        _normalize(value)
+        for value in (
+            *DIRECT_CARD_NAME_ALIASES,
+            *CHARACTER_CARD_NAME_ALIASES,
+            *CONTEXTUAL_CARD_NAME_ALIASES,
+        )
+    }
+    recognized_number_labels = {
+        _normalize(value) for value in IDENTITY_ALIASES["card_number"]
+    }
+    unmapped_name = False
+    unmapped_number = False
+    for label in aspects:
+        normalized = _normalize(label)
+        tokens = set(normalized.split())
+        if normalized not in recognized_name_labels and (
+            tokens
+            & {
+                "name",
+                "nom",
+                "nome",
+                "nombre",
+                "character",
+                "personnage",
+                "personaggio",
+                "personaje",
+                "charakter",
+                "pokemon",
+            }
+        ):
+            unmapped_name = True
+        if normalized not in recognized_number_labels and (
+            tokens
+            & {
+                "number",
+                "numero",
+                "nummer",
+                "collector",
+            }
+        ) and (
+            tokens & {"card", "carte", "carta", "karte", "collector"}
+        ):
+            unmapped_number = True
+    return IdentityAspectAudit(unmapped_name, unmapped_number)
+
+
 def _single_card_name(
     aspects: Mapping[str, Tuple[str, ...]], aliases: Sequence[str]
 ) -> Tuple[Optional[str], bool]:
@@ -538,6 +670,37 @@ def _card_name_from_aspects(
     return None, ()
 
 
+def _feature_semantic_fields(
+    aspects: Mapping[str, Tuple[str, ...]]
+) -> Tuple[Dict[str, str], Tuple[str, ...], bool]:
+    values = _matching_values(aspects, FEATURE_ASPECT_ALIASES)
+    finishes = []
+    editions = []
+    promo_seen = False
+    for raw in values:
+        semantic = semantics_from_text(raw)
+        finish_value = semantic.special_finish or semantic.finish
+        if finish_value:
+            finishes.append(finish_value)
+        if semantic.edition:
+            editions.append(semantic.edition)
+        promo_seen = promo_seen or semantic.promo is True
+
+    finish_values = tuple(dict.fromkeys(finishes))
+    edition_values = tuple(dict.fromkeys(editions))
+    fields: Dict[str, str] = {}
+    ambiguities = []
+    if len(finish_values) == 1:
+        fields["finish"] = finish_values[0]
+    elif len(finish_values) > 1:
+        ambiguities.append("finish: valeurs contradictoires dans Features")
+    if len(edition_values) == 1:
+        fields["edition"] = edition_values[0]
+    elif len(edition_values) > 1:
+        ambiguities.append("edition: valeurs contradictoires dans Features")
+    return fields, tuple(ambiguities), promo_seen
+
+
 def card_identity_from_aspects(
     aspects: Mapping[str, Tuple[str, ...]]
 ) -> CardIdentity:
@@ -549,6 +712,39 @@ def card_identity_from_aspects(
         if len(distinct) > 1:
             ambiguities.append(f"{field_name}: valeurs contradictoires ({', '.join(distinct)})")
         extracted[field_name] = distinct[0] if len(distinct) == 1 else None
+
+    feature_fields, feature_ambiguities, feature_promo = _feature_semantic_fields(aspects)
+    ambiguities.extend(feature_ambiguities)
+    for field_name, feature_value in feature_fields.items():
+        existing = extracted.get(field_name)
+        if existing is None:
+            extracted[field_name] = feature_value
+            continue
+        semantic = semantics_from_text(existing)
+        existing_value = (
+            semantic.special_finish or semantic.finish
+            if field_name == "finish"
+            else semantic.edition
+        )
+        if existing_value and existing_value != feature_value:
+            ambiguities.append(
+                f"{field_name}: conflit entre aspect dédié et Features"
+            )
+
+    if feature_promo:
+        existing_variant = extracted.get("variant")
+        existing_variant_semantics = semantics_from_text(existing_variant)
+        set_promo = semantics_from_text(extracted.get("set")).promo is True
+        rarity_promo = semantics_from_text(extracted.get("rarity")).promo is True
+        if existing_variant_semantics.promo is not True and not (set_promo or rarity_promo):
+            if not existing_variant or _normalize(existing_variant) in {"normal", "standard"}:
+                # "Standard" is only absence of a named parallel on eBay; it does
+                # not negate an explicit Promo feature.
+                extracted["variant"] = "promo"
+            else:
+                ambiguities.append(
+                    "promo: explicit Features promo conflicts with unresolved variant semantics"
+                )
 
     year = None
     if extracted["year"]:
@@ -581,6 +777,79 @@ def card_identity_from_aspects(
     )
 
 
+_BUNDLE_OR_MULTI_CARD_TITLE_PATTERNS = (
+    # Choose-one / selection phrases
+    re.compile(r"\b(?:choose|pick|select)\s+(?:your|from|a|1|one|any)\b", re.IGNORECASE),
+    re.compile(r"\byou\s+(?:choose|pick|select)\b", re.IGNORECASE),
+    re.compile(r"\bchoisissez\s+votre\b", re.IGNORECASE),
+    re.compile(r"\bw[aä]hle(?:\s+deine|\s+aus)?\b", re.IGNORECASE),
+    re.compile(r"\bw[aä]hlen\s+sie\b", re.IGNORECASE),
+    re.compile(r"\bscegli\s+(?:la\s+tua|le\s+tue|il\s+tuo)\b", re.IGNORECASE),
+    re.compile(r"\belige\s+(?:tu|tus)?\b", re.IGNORECASE),
+
+    # Playsets / full sets / master sets
+    re.compile(r"\b(?:playset|play\s*set|master\s*set|complete\s*set|full\s*set|set\s*completo|set\s*complet)\b", re.IGNORECASE),
+
+    # Collection/Sammlung with of/de/di/von + quantity/cards or directly followed by quantity
+    re.compile(r"\b(?:collection|sammlung|collezione|coleccion)\s+(?:(?:of|de|di|von)\s+)?\d+\s+(?:[A-Za-z]+\s+)*(?:cards|cartes|karten|carte|cartas)\b", re.IGNORECASE),
+
+    # Lot of / lot de + quantity or cards
+    re.compile(r"\b(?:lot|bundle|lotto|lote)\s+(?:of|de|di|von|\d+)\s*(?:\d+|cards|cartes|karten|carte|cartas)?\b", re.IGNORECASE),
+
+    # Multi-card quantity forms: e.g. 4x Pikachu, Pikachu x4, 50 cards
+    re.compile(r"\b\d+\s*x\s+[A-Za-z]", re.IGNORECASE),
+    re.compile(r"\b[A-Za-z0-9]+\s+x\s*(?:[2-9]|\d{2,})\b", re.IGNORECASE),
+    re.compile(r"\b(?:[2-9]|\d{2,})\s*(?:cards|cartes|karten|carte|cartas|pcs|pieces|stuck|stueck|stk)\b", re.IGNORECASE),
+
+    # Explicit bulk lots / card lots
+    re.compile(r"\b(?:bulk\s+lot|card\s+lot|cartes\s+en\s+lot|kartensammlung|kartenlot)\b", re.IGNORECASE),
+
+    # Live multi-card forms where the quantity is separated from the card noun
+    # by an explicit Pokemon descriptor, plus explicit duo/trio card wording.
+    re.compile(
+        r"\b(?:[2-9]|\d{2,})\s+pok[eé]mon\s+(?:cards|cartes|karten|carte|cartas)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:duo|trio)\s+(?:de\s+)?(?:cards|cartes|karten|carte|cartas)\b",
+        re.IGNORECASE,
+    ),
+
+    # Sealed multi-pack booster boxes / displays / ETBs
+    re.compile(r"\b(?:booster\s*box|display\s*box|booster\s*display|elite\s*trainer\s*box|etb\s*sealed|display\s*\d+\s*boosters?)\b", re.IGNORECASE),
+)
+
+
+def is_bundle_or_multi_card_listing(
+    payload: Mapping[str, object],
+    aspects: Optional[Mapping[str, Sequence[str]]] = None,
+) -> bool:
+    """Detect obvious multi-card / lot / choose-one listings before identity resolution."""
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        return False
+    for pat in _BUNDLE_OR_MULTI_CARD_TITLE_PATTERNS:
+        if pat.search(title):
+            return True
+    asp = aspects if aspects is not None else _aspects(payload)
+    for name, values in asp.items():
+        norm_name = _normalize(name)
+        if norm_name in {"lot", "lot size", "bundle", "custom bundle"}:
+            for val in values:
+                if _normalize(val) in {"yes", "oui", "ja", "si", "true", "1"}:
+                    return True
+        if norm_name in {
+            "number of cards",
+            "card quantity",
+            "total cards",
+        }:
+            for val in values:
+                cleaned = re.sub(r"[^\d]", "", str(val))
+                if cleaned.isdigit() and int(cleaned) > 1:
+                    return True
+    return False
+
+
 _TITLE_LABELS = {
     "set": ("set", "series", "serie", "série", "extension", "erweiterung"),
     "card_number": (
@@ -594,6 +863,10 @@ _TITLE_LABELS = {
     "variant": ("variant", "variante", "parallel/variety"),
 }
 
+_CANONICAL_SET_NAMES = (
+    "Journey Together",
+)
+
 
 def _labelled_title_value(title: str, labels: Sequence[str]) -> Optional[str]:
     label_pattern = "|".join(re.escape(label) for label in labels)
@@ -603,6 +876,245 @@ def _labelled_title_value(title: str, labels: Sequence[str]) -> Optional[str]:
         flags=re.IGNORECASE,
     )
     return match.group(1).strip() if match else None
+
+
+_CHINESE_SET_CODE_PATTERN = re.compile(
+    r"^CSV?\d+(?:\.\d+)?[A-Za-z]{0,3}$", re.IGNORECASE
+)
+
+
+def canonicalize_chinese_card_number(
+    set_name: Optional[str], card_number: Optional[str]
+) -> Optional[str]:
+    """Strictly canonicalize Chinese collector numbers prefixed with their set code.
+
+    Applied only when:
+    * set_name matches explicitly recognized Chinese set codes (CS... / CSV...);
+    * the card_number prefix matches the exact set_name with separator - or _;
+    * the suffix is a valid bounded collector number (e.g. 233/208 or 014).
+    """
+    if not set_name or not card_number:
+        return card_number
+    raw_set = str(set_name).strip()
+    raw_num = str(card_number).strip()
+    if not _CHINESE_SET_CODE_PATTERN.fullmatch(raw_set):
+        return card_number
+    prefix_match = re.match(
+        rf"^{re.escape(raw_set)}[-_](.+)$",
+        raw_num,
+        flags=re.IGNORECASE,
+    )
+    if not prefix_match:
+        return card_number
+    suffix = prefix_match.group(1).strip()
+    if re.fullmatch(r"\d{1,4}(?:/\d{1,4})?", suffix):
+        return suffix
+    return card_number
+
+
+_TITLE_SPECIAL_FINISH_PATTERNS: Tuple[Tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "masterball_reverse",
+        "Master Ball Reverse",
+        re.compile(
+            r"\b(?:master[- ]?ball\s+reverse|reverse\s+master[- ]?ball)(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "pokeball_reverse",
+        "Poké Ball Reverse",
+        re.compile(
+            r"\b(?:pok[eé][- ]?ball\s+reverse|reverse\s+pok[eé][- ]?ball)(?:\s*(?:[- ]holo(?:foil)?|[- ]holofoil|[- ]foil))?\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "cosmos_holo",
+        "Cosmos Holo",
+        re.compile(
+            r"\bcosmos\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "galaxy_holo",
+        "Galaxy Holo",
+        re.compile(
+            r"\bgalaxy\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "cracked_ice_holo",
+        "Cracked Ice Holo",
+        re.compile(
+            r"\bcracked\s+ice\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "stamped_holo",
+        "Stamped Holo",
+        re.compile(
+            r"\bstamped\s+(?:holo(?:foil)?|holographic|holographique|holographisch|olografic[ao]|hologr[aá]fic[ao]|foil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+_TITLE_NON_HOLO_PATTERN = re.compile(
+    r"\b(?:non[- ]holo|nonholo|nicht[- ]holo|no[- ]holo|non[- ]holograph(?:ic|ique|isch)|non[- ]olografic[ao]|no[- ]hologr[aá]fic[ao])\b",
+    re.IGNORECASE,
+)
+_TITLE_REVERSE_HOLO_PATTERN = re.compile(
+    r"\b(?:reverse[- ]holo(?:foil)?|holo[- ]reverse|reverse[- ]holofoil|holofoil[- ]reverse|reverse[- ]holograph(?:ic|ique|isch)|holograph(?:ic|ique|isch)[- ]reverse|reverse[- ]olografic[ao]|olografic[ao][- ]reverse|reverse[- ]hologr[aá]fic[ao]|hologr[aá]fic[ao][- ]reverse)\b",
+    re.IGNORECASE,
+)
+_TITLE_HOLOFOIL_PATTERN = re.compile(
+    r"\b(?:holofoil|holographique|holographic|holographisch|holografisch|olografica|olografico|hologr[aá]fica|hologr[aá]fico)\b",
+    re.IGNORECASE,
+)
+_TITLE_STANDALONE_HOLO_PATTERN = re.compile(r"\bholo\b", re.IGNORECASE)
+
+
+def extract_title_finish(title: str) -> Tuple[Optional[str], bool]:
+    """Extract only explicit, unambiguous finish phrases using span masking.
+
+    Precedence order:
+    1. Special finishes (Master Ball Reverse, Poké Ball Reverse, Cosmos Holo, etc.)
+    2. Non-Holo / Non Holo / Nonholo -> "Non-Holo"
+    3. Reverse Holo / Reverse-Holo / Reverse Holofoil -> "Reverse Holo"
+    4. Holofoil / Holographic / Holographique -> "Holo"
+    5. Standalone Holo -> "Holo"
+
+    Words alone that are NOT accepted: foil, reverse, normal, standard.
+    Rarity labels (SAR, AR, SR, IR, SIR, UR, HR, CHR, CSR, TG, GG) alone
+    never produce finish evidence.
+    """
+    if not title:
+        return None, False
+
+    working = title
+    found: list[str] = []
+
+    def mask_span(match: re.Match[str]) -> str:
+        return " " * len(match.group(0))
+
+    # 1. Special finishes
+    for _canonical_special, display_name, pattern in _TITLE_SPECIAL_FINISH_PATTERNS:
+        for _match in pattern.finditer(working):
+            found.append(display_name)
+        working = pattern.sub(mask_span, working)
+
+    # 2. Non-Holo
+    for _match in _TITLE_NON_HOLO_PATTERN.finditer(working):
+        found.append("Non-Holo")
+    working = _TITLE_NON_HOLO_PATTERN.sub(mask_span, working)
+
+    # 3. Reverse Holo
+    for _match in _TITLE_REVERSE_HOLO_PATTERN.finditer(working):
+        found.append("Reverse Holo")
+    working = _TITLE_REVERSE_HOLO_PATTERN.sub(mask_span, working)
+
+    # 4. Holofoil / Holographic / Holographique
+    for _match in _TITLE_HOLOFOIL_PATTERN.finditer(working):
+        found.append("Holo")
+    working = _TITLE_HOLOFOIL_PATTERN.sub(mask_span, working)
+
+    # 5. Standalone Holo (on remaining unmasked text)
+    for _match in _TITLE_STANDALONE_HOLO_PATTERN.finditer(working):
+        found.append("Holo")
+    working = _TITLE_STANDALONE_HOLO_PATTERN.sub(mask_span, working)
+
+    if not found:
+        return None, False
+
+    distinct_semantics = tuple(dict.fromkeys(semantics_from_text(f) for f in found))
+    if len(distinct_semantics) > 1:
+        return None, True
+
+    return found[0], False
+
+
+_TITLE_FIRST_EDITION_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    # English
+    re.compile(r"\b(?:1st|first)\s+edition\b", re.IGNORECASE),
+    re.compile(r"\b1st\s+ed(?:\.|\b)", re.IGNORECASE),
+    # French
+    re.compile(r"\b1[èe]re?\s+[eé]dition\b", re.IGNORECASE),
+    re.compile(r"\bpremi[èe]re\s+[eé]dition\b", re.IGNORECASE),
+    # German
+    re.compile(r"\b1\.\s*(?:edition|auflage)\b", re.IGNORECASE),
+    re.compile(r"\b1\s+auflage\b", re.IGNORECASE),
+    re.compile(r"\berste\s+auflage\b", re.IGNORECASE),
+    # Italian
+    re.compile(r"\b1[ªa]\s+edizione\b", re.IGNORECASE),
+    re.compile(r"\bprima\s+edizione\b", re.IGNORECASE),
+    # Spanish
+    re.compile(r"\b1[ªa]\s+edici[oó]n\b", re.IGNORECASE),
+    re.compile(r"\bprimera\s+edici[oó]n\b", re.IGNORECASE),
+)
+
+_TITLE_SHADOWLESS_PATTERN = re.compile(r"\bshadowless\b", re.IGNORECASE)
+
+_TITLE_UNLIMITED_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bunlimited\b", re.IGNORECASE),
+    re.compile(r"\bunbegrenzt\b", re.IGNORECASE),
+    re.compile(r"\billimit[eé]e?\b", re.IGNORECASE),
+)
+
+
+def extract_title_edition(title: str) -> Tuple[Optional[str], bool]:
+    """Extract only explicit, unambiguous edition phrases using span masking.
+
+    Precedence order:
+    1. Shadowless -> "Shadowless"
+    2. 1st Edition / First Edition / 1ère Édition / 1. Auflage / etc. -> "1st Edition"
+    3. Unlimited / Unbegrenzt / Illimitée -> "Unlimited"
+
+    Words alone that are NOT accepted: edition, 1st, first, ed, auflage, print, printing.
+    """
+    if not title:
+        return None, False
+
+    working = title
+    found: list[str] = []
+
+    def mask_span(match: re.Match[str]) -> str:
+        return " " * len(match.group(0))
+
+    # 1. Shadowless (distinct vintage premium variant)
+    for _match in _TITLE_SHADOWLESS_PATTERN.finditer(working):
+        found.append("Shadowless")
+    working = _TITLE_SHADOWLESS_PATTERN.sub(mask_span, working)
+
+    # 2. 1st Edition
+    found_1st = False
+    for pat in _TITLE_FIRST_EDITION_PATTERNS:
+        for _match in pat.finditer(working):
+            if not found_1st:
+                found.append("1st Edition")
+                found_1st = True
+        working = pat.sub(mask_span, working)
+
+    # 3. Unlimited
+    found_unl = False
+    for pat in _TITLE_UNLIMITED_PATTERNS:
+        for _match in pat.finditer(working):
+            if not found_unl:
+                found.append("Unlimited")
+                found_unl = True
+        working = pat.sub(mask_span, working)
+
+    if not found:
+        return None, False
+
+    distinct_semantics = tuple(dict.fromkeys(semantics_from_text(f) for f in found))
+    if len(distinct_semantics) > 1:
+        return None, True
+
+    return found[0], False
 
 
 def _title_fallbacks(title: str) -> Dict[str, object]:
@@ -617,15 +1129,89 @@ def _title_fallbacks(title: str) -> Dict[str, object]:
         if value:
             values[field_name] = value
 
+    # Promo code extraction (e.g. SVP 027, SVP-027, SWSH027, SM027, etc.)
+    promo_match = re.search(
+        r"\b(SVP|SWSH|SM|XY|BW|DP|HGSS)\s*(?:EN\s*)?[-_]?\s*0*(\d{1,4})\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if promo_match:
+        promo_prefix = promo_match.group(1).upper()
+        promo_num = promo_match.group(2).zfill(3)
+        values.setdefault("set", promo_prefix)
+        values.setdefault(
+            "card_number",
+            promo_num if promo_prefix == "SVP" else f"{promo_prefix}{promo_num}",
+        )
+
+    # Set-code + number extraction (e.g. sv2a 025/165, sv2a 025, sv2a-025, s10b 025)
+    set_code_match = re.search(
+        r"\b(SV\d+[a-z]|S\d+[a-z]|SM\d+[a-z]|XY\d+[a-z])(?:\s+[-_]?|\s*[-_]\s*)\s*(\d{1,4}(?:/\d{1,4})?)\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if set_code_match:
+        values.setdefault("set", set_code_match.group(1).lower())
+        values.setdefault("card_number", set_code_match.group(2))
+
+    # Reversed collector-number + set-code form seen on eBay
+    # (e.g. 169/165 SV2a). This is still exact token evidence, not fuzzy set inference.
+    reversed_set_code_match = re.search(
+        r"\b(\d{1,4}(?:/\d{1,4})?)\s+(SV\d+[a-z]|S\d+[a-z]|SM\d+[a-z]|XY\d+[a-z])\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if reversed_set_code_match:
+        values.setdefault("set", reversed_set_code_match.group(2).lower())
+        values.setdefault("card_number", reversed_set_code_match.group(1))
+
+    # Asian/Chinese set code + number (e.g. CS4.1C-014, CS4aC-014, CS4.1C 014)
+    chinese_match = re.search(
+        # Exact code token + exact collector number. eBay sellers use either
+        # a dash/underscore or plain whitespace between the two.
+        r"\b(CSV?\d+(?:\.\d+)?[A-Za-z]{0,3})(?:\s*[-_]\s*|\s+)(\d{1,4}(?:/\d{1,4})?)\b",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if chinese_match:
+        values.setdefault("set", chinese_match.group(1))
+        values.setdefault("card_number", chinese_match.group(2))
+
+    # Fractional collector number
     if "card_number" not in values:
         number_match = re.search(
-            r"(?<![A-Za-z0-9])([A-Z]{0,4}\d{1,4}/\d{1,4})(?!\d)", title
+            (
+                r"(?<![A-Za-z0-9])"
+                r"([A-Z]{0,6}\d{1,4}[A-Z]?/"
+                r"(?:[A-Z]{0,6}\d{1,4}[A-Z]?|[A-Z]{1,6}(?:-[A-Z])?))"
+                r"(?![A-Za-z0-9])"
+            ),
+            title,
+            flags=re.IGNORECASE,
         )
         if number_match:
             values["card_number"] = number_match.group(1)
+
+    # Known canonical set name extraction from title
+    if "set" not in values:
+        matched_sets = []
+        for set_name in _CANONICAL_SET_NAMES:
+            if re.search(rf"\b{re.escape(set_name)}\b", title, flags=re.IGNORECASE):
+                matched_sets.append(set_name)
+        if len(matched_sets) == 1:
+            values["set"] = matched_sets[0]
+
     year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)
     if year_match:
         values["year"] = int(year_match.group(1))
+
+    title_finish, title_finish_contra = extract_title_finish(title)
+    if title_finish and not title_finish_contra:
+        values["finish"] = title_finish
+
+    title_edition, title_edition_contra = extract_title_edition(title)
+    if title_edition and not title_edition_contra:
+        values["edition"] = title_edition
 
     language_names = {
         "english": "English",
@@ -750,9 +1336,11 @@ def _identity_score(identity: CardIdentity) -> Tuple[int, Tuple[str, ...]]:
 
 def resolve_card_identity(
     payload: Mapping[str, object],
-    aspects: Optional[Mapping[str, Tuple[str, ...]]] = None,
+    aspects: Optional[Mapping[str, Sequence[str]]] = None,
     set_number_resolver: Optional[SetNumberCardNameResolver] = None,
 ) -> IdentityResolution:
+    """Combine structured and title aspects with strict fallback rules."""
+
     structured = card_identity_from_aspects(
         aspects if aspects is not None else _aspects(payload)
     )
@@ -782,14 +1370,128 @@ def resolve_card_identity(
         "edition": structured.edition,
         "illustrator": structured.illustrator,
     }
+    fallback_set = str(fallback.get("set") or "").strip()
+    structured_set_normalized = _normalize(fields["set"] or "")
+    if (
+        fallback_set
+        and structured_set_normalized
+        in {
+            "scarlet & violet",
+            "scarlet violet",
+            "ecarlate & violet",
+            "ecarlate et violet",
+            "karmesin & purpur",
+            "karmesin purpur",
+            "scarlatto & violetto",
+            "scarlatto e violetto",
+            "escarlata & purpura",
+            "escarlata y purpura",
+        }
+        and re.fullmatch(r"SV\d+[A-Za-z]", fallback_set, flags=re.IGNORECASE)
+    ):
+        fields["set"] = fallback_set
+
+    title_finishes: list[str] = []
+    title_finish_contradictory = False
+    for title in titles:
+        t_finish, t_contra = extract_title_finish(title)
+        if t_contra:
+            title_finish_contradictory = True
+        if t_finish:
+            title_finishes.append(t_finish)
+
+    distinct_title_finishes = tuple(dict.fromkeys(title_finishes))
+    distinct_title_semantics = tuple(
+        dict.fromkeys(semantics_from_text(f) for f in title_finishes)
+    )
+    ambiguities = list(structured.ambiguities)
+    if title_finish_contradictory or len(distinct_title_semantics) > 1:
+        ambiguities.append("finish: valeurs contradictoires dans le titre")
+
+    structured_finish = structured.finish
+    if structured_finish is not None:
+        fields["finish"] = structured_finish
+        if distinct_title_finishes and not title_finish_contradictory:
+            structured_sem = semantics_from_text(structured_finish)
+            title_sem = distinct_title_semantics[0]
+            finish_conflict = bool(
+                structured_sem.finish
+                and title_sem.finish
+                and structured_sem.finish != title_sem.finish
+            )
+            special_conflict = bool(
+                structured_sem.special_finish
+                and title_sem.special_finish
+                and structured_sem.special_finish != title_sem.special_finish
+            )
+            if finish_conflict or special_conflict:
+                ambiguities.append(
+                    f"finish: conflit entre aspect ({structured_finish}) et titre ({distinct_title_finishes[0]})"
+                )
+            elif (
+                title_sem.special_finish
+                and not structured_sem.special_finish
+                and not finish_conflict
+            ):
+                # When title carries an explicit compatible special finish and structured
+                # aspect only provided the generic base finish (e.g. Holo for Cosmos Holo,
+                # or Reverse Holo for Master Ball Reverse), preserve the material special finish.
+                fields["finish"] = distinct_title_finishes[0]
+    elif len(distinct_title_semantics) == 1 and not title_finish_contradictory:
+        fields["finish"] = distinct_title_finishes[0]
+
+    title_editions: list[str] = []
+    title_edition_contradictory = False
+    for title in titles:
+        t_edition, t_contra = extract_title_edition(title)
+        if t_contra:
+            title_edition_contradictory = True
+        if t_edition:
+            title_editions.append(t_edition)
+
+    distinct_title_editions = tuple(dict.fromkeys(title_editions))
+    distinct_title_edition_semantics = tuple(
+        dict.fromkeys(semantics_from_text(e) for e in title_editions)
+    )
+    if title_edition_contradictory or len(distinct_title_edition_semantics) > 1:
+        ambiguities.append("edition: valeurs contradictoires dans le titre")
+
+    structured_edition = structured.edition
+    if structured_edition is not None:
+        fields["edition"] = structured_edition
+        if distinct_title_editions and not title_edition_contradictory:
+            structured_sem = semantics_from_text(structured_edition)
+            title_sem = distinct_title_edition_semantics[0]
+            edition_conflict = bool(
+                structured_sem.edition
+                and title_sem.edition
+                and structured_sem.edition != title_sem.edition
+            )
+            if edition_conflict:
+                ambiguities.append(
+                    f"edition: conflit entre aspect ({structured_edition}) et titre ({distinct_title_editions[0]})"
+                )
+    elif len(distinct_title_edition_semantics) == 1 and not title_edition_contradictory:
+        fields["edition"] = distinct_title_editions[0]
+
     for name, value in fallback.items():
-        if name in fields and name != "card_name" and fields[name] is None:
+        if (
+            name in fields
+            and name != "card_name"
+            and name != "finish"
+            and name != "edition"
+            and fields[name] is None
+        ):
             fields[name] = value
+
+    fields["card_number"] = canonicalize_chinese_card_number(
+        str(fields["set"]) if fields.get("set") is not None else None,
+        str(fields["card_number"]) if fields.get("card_number") is not None else None,
+    )
 
     card_name_source = (
         CARD_NAME_SOURCE_LOCALIZED if structured.card_name is not None else None
     )
-    ambiguities = list(structured.ambiguities)
     resolver = set_number_resolver or NullSetNumberCardNameResolver()
     if fields["card_name"] is None and fields["set"] and fields["card_number"]:
         lookup = resolver.resolve(

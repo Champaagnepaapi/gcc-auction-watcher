@@ -10,6 +10,7 @@ from .models import (
     GradeProbabilities,
     MarketValue,
     MarketValues,
+    RawValuationResult,
     ValuationResult,
     decimal_from,
 )
@@ -62,6 +63,39 @@ def _profit_at_value(value: Decimal, costs: CostInputs) -> Decimal:
     if costs.marketplace_selling_fee_rate is None:
         raise IncompleteValuation("Taux de frais de vente inconnu")
     return value * (ONE - costs.marketplace_selling_fee_rate) - costs.fixed_total()
+
+
+def calculate_raw_resale_value(
+    raw_market_value: MarketValue, costs: CostInputs
+) -> RawValuationResult:
+    """Valorise une revente RAW sans jamais inclure un cout de grading."""
+
+    missing = costs.raw_unknown_fields()
+    if missing:
+        raise IncompleteValuation(
+            "Couts RAW significatifs inconnus: " + ", ".join(missing)
+        )
+    if raw_market_value.currency != costs.currency:
+        raise IncompleteValuation(
+            "Conversion de devise interdite sans provider de change explicite"
+        )
+    selling_rate = costs.marketplace_selling_fee_rate
+    if selling_rate is None or not Decimal("0") <= selling_rate < ONE:
+        raise IncompleteValuation("Taux de frais marketplace invalide")
+    fixed_costs = costs.raw_fixed_total()
+    selling_fees = raw_market_value.amount * selling_rate
+    total_basis = fixed_costs + selling_fees
+    if total_basis <= 0:
+        raise IncompleteValuation("Le cout total RAW doit etre strictement positif")
+    profit = raw_market_value.amount - total_basis
+    return RawValuationResult(
+        prudent_market_value=raw_market_value.amount,
+        fixed_non_grading_costs=fixed_costs,
+        selling_fees=selling_fees,
+        total_cost_basis=total_basis,
+        net_profit=profit,
+        roi_percent=profit / total_basis * HUNDRED,
+    )
 
 
 def grade_profit_scenarios(

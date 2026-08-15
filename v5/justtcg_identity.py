@@ -1,0 +1,563 @@
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass, replace
+from typing import Callable, Mapping, Optional, Sequence, Tuple
+
+import requests
+
+from .models import CardIdentity
+from .poketrace_matching import (
+    _card_number_parts,
+    _normalize,
+    _normalize_card_name,
+    _normalize_card_number,
+    _partial_card_number_equivalent,
+    _set_similarity,
+)
+from .variant_semantics import variant_compatibility
+
+
+JUSTTCG_CARDS_URL = "https://api.justtcg.com/v1/cards"
+JUSTTCG_SETS_URL = "https://api.justtcg.com/v1/sets"
+JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS = 6.25
+
+
+@dataclass
+class JustTCGCounters:
+    queries: int = 0
+    set_catalog_queries: int = 0
+    set_catalog_candidates: int = 0
+    set_catalog_resolved: int = 0
+    set_catalog_ambiguous: int = 0
+    set_catalog_no_match: int = 0
+    matches: int = 0
+    ambiguous: int = 0
+    no_match: int = 0
+    skipped_insufficient: int = 0
+    request_failures: int = 0
+    rate_limited: int = 0
+    retry_attempts: int = 0
+    bad_request: int = 0
+    unauthorized: int = 0
+    forbidden: int = 0
+    server_errors: int = 0
+    other_http_failures: int = 0
+    json_failures: int = 0
+    daily_limit_exceeded: int = 0
+    monthly_limit_exceeded: int = 0
+    candidates_received: int = 0
+    rejected_name: int = 0
+    rejected_set: int = 0
+    rejected_number: int = 0
+    rejected_language: int = 0
+    rejected_variant: int = 0
+    candidates_all_core_matched: int = 0
+    variant_supported: int = 0
+
+
+@dataclass(frozen=True)
+class JustTCGIdentityResolution:
+    identity: CardIdentity
+    matched: bool = False
+    ambiguous: bool = False
+    card_id: Optional[str] = None
+
+
+def _number_match(identity: CardIdentity, candidate_number: object, *, name_ok: bool, set_score: float) -> bool:
+    expected = _normalize_card_number(identity.card_number)
+    candidate = _normalize_card_number(candidate_number)
+    if not expected:
+        return True
+    if not candidate:
+        return False
+    if expected == candidate:
+        return True
+
+    expected_num, expected_den = _card_number_parts(identity.card_number)
+    candidate_num, candidate_den = _card_number_parts(candidate_number)
+    if expected_num and expected_num == candidate_num:
+        if expected_den is None or candidate_den is None:
+            return bool(name_ok and set_score >= 0.86)
+    return _partial_card_number_equivalent(
+        identity.card_number,
+        candidate_number,
+        exact_name=name_ok,
+        set_similarity=set_score,
+    )
+
+
+def _language_matches(expected: object, actual: object) -> bool:
+    expected_norm = _normalize(expected)
+    actual_norm = _normalize(actual)
+    if not expected_norm:
+        return True
+    if not actual_norm:
+        return False
+    aliases = {
+        "en": "english",
+        "anglais": "english",
+        "jp": "japanese",
+        "ja": "japanese",
+        "japonais": "japanese",
+        "fr": "french",
+        "francais": "french",
+        "français": "french",
+        "de": "german",
+        "es": "spanish",
+        "it": "italian",
+        "pt": "portuguese",
+    }
+    return aliases.get(expected_norm, expected_norm) == aliases.get(actual_norm, actual_norm)
+
+
+def _candidate_variant_supported(identity: CardIdentity, card: Mapping[str, object]) -> tuple[bool, bool]:
+    variants = card.get("variants")
+    if not isinstance(variants, Sequence) or isinstance(variants, (str, bytes)):
+        return False, False
+
+    relevant_language = False
+    relevant_variant = False
+    for variant in variants:
+        if not isinstance(variant, Mapping):
+            continue
+        if identity.language and not _language_matches(identity.language, variant.get("language")):
+            continue
+        relevant_language = True
+        printing = str(variant.get("printing") or "").strip()
+        if not printing:
+            continue
+        pseudo = {
+            "variant": printing,
+            "rarity": card.get("rarity"),
+            "set": {"name": card.get("set_name"), "slug": card.get("set")},
+        }
+        compatibility = variant_compatibility(identity, pseudo)
+        if compatibility.compatible:
+            relevant_variant = True
+            break
+
+    if identity.language and not relevant_language:
+        return False, False
+    if not relevant_variant:
+        return False, relevant_language
+    return True, relevant_variant
+
+
+def _resolved_identity(original: CardIdentity, card: Mapping[str, object]) -> CardIdentity:
+    return replace(
+        original,
+        game=original.game or "Pokémon TCG",
+        card_name=str(card.get("name") or "").strip() or original.card_name,
+        set=str(card.get("set_name") or "").strip() or original.set,
+        card_number=str(card.get("number") or "").strip() or original.card_number,
+        rarity=original.rarity or (str(card.get("rarity") or "").strip() or None),
+    )
+
+
+class JustTCGIdentityResolver:
+    """Strict card-identity resolver intended for same-sample benchmarking.
+
+    It deliberately does not expose price data to V5 economics. JustTCG's set
+    catalogue is loaded once per game and cached in memory. A listing set is
+    mapped locally to one unique stable JustTCG set ID before `/cards` retrieval,
+    allowing `q + set + number` without guessing a slug. Every returned card is
+    still revalidated locally against name, set, number, language and printing.
+
+    Free currently allows 10 requests/minute, so all live JustTCG requests are
+    spaced by at least 6.25 seconds. A transient minute-limit 429 may be retried
+    once after Retry-After; daily/monthly quota errors are never retried.
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: Optional[str] = None,
+        session: Optional[requests.Session] = None,
+        timeout_seconds: float = 12.0,
+        min_request_interval_seconds: float = JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+        use_set_catalog: bool = True,
+    ) -> None:
+        self.api_key = api_key if api_key is not None else os.getenv("JUSTTCG_API_KEY", "").strip()
+        self.session = session or requests.Session()
+        self.timeout_seconds = timeout_seconds
+        self.min_request_interval_seconds = max(
+            JUSTTCG_FREE_MIN_REQUEST_INTERVAL_SECONDS,
+            float(min_request_interval_seconds),
+        )
+        self.clock = clock
+        self.sleeper = sleeper
+        self.use_set_catalog = use_set_catalog
+        self.counters = JustTCGCounters()
+        self._cache: dict[Tuple[str, ...], JustTCGIdentityResolution] = {}
+        self._last_request_at: Optional[float] = None
+        self._set_catalog_cache: dict[str, Optional[tuple[tuple[str, str], ...]]] = {}
+        self._resolved_set_cache: dict[tuple[str, str], tuple[Optional[str], bool]] = {}
+
+    @staticmethod
+    def _key(identity: CardIdentity) -> Tuple[str, ...]:
+        return (
+            _normalize(identity.game),
+            _normalize_card_name(identity.card_name),
+            _normalize(identity.set),
+            _normalize_card_number(identity.card_number),
+            str(identity.year or ""),
+            _normalize(identity.language),
+            _normalize(identity.variant),
+            _normalize(identity.rarity),
+            _normalize(identity.finish),
+            _normalize(identity.edition),
+            _normalize(identity.illustrator),
+            "|".join(_normalize(value) for value in identity.ambiguities),
+        )
+
+    @staticmethod
+    def _game_id(identity: CardIdentity) -> str:
+        return (
+            "pokemon-japan"
+            if _normalize(identity.language) in {"japanese", "japonais", "ja", "jp"}
+            else "pokemon"
+        )
+
+    def _respect_rate_limit(self) -> None:
+        if self._last_request_at is not None:
+            elapsed = self.clock() - self._last_request_at
+            remaining = self.min_request_interval_seconds - elapsed
+            if remaining > 0:
+                self.sleeper(remaining)
+        self._last_request_at = self.clock()
+
+    @staticmethod
+    def _safe_error_code(response: object) -> Optional[str]:
+        try:
+            payload = response.json()
+        except Exception:
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        code = str(payload.get("code") or "").strip().upper()
+        return code or None
+
+    @staticmethod
+    def _retry_after_seconds(response: object) -> Optional[float]:
+        headers = getattr(response, "headers", None)
+        if isinstance(headers, Mapping):
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+            try:
+                if raw is not None:
+                    return max(0.0, float(str(raw).strip()))
+            except ValueError:
+                return None
+        return None
+
+    def _request_once(
+        self, url: str, params: Mapping[str, str]
+    ) -> tuple[Optional[object], Optional[str]]:
+        self._respect_rate_limit()
+        try:
+            response = self.session.get(
+                url,
+                headers={"Accept": "application/json", "x-api-key": self.api_key},
+                params=dict(params),
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException:
+            self.counters.request_failures += 1
+            return None, "TRANSPORT"
+
+        status = getattr(response, "status_code", None)
+        if status == 200:
+            return response, None
+        if status == 429:
+            self.counters.rate_limited += 1
+            code = self._safe_error_code(response)
+            if code == "DAILY_LIMIT_EXCEEDED":
+                self.counters.daily_limit_exceeded += 1
+            elif code == "REQUEST_LIMIT_EXCEEDED":
+                self.counters.monthly_limit_exceeded += 1
+            return response, code or "RATE_LIMIT_EXCEEDED"
+
+        self.counters.request_failures += 1
+        if status == 400:
+            self.counters.bad_request += 1
+        elif status == 401:
+            self.counters.unauthorized += 1
+        elif status == 403:
+            self.counters.forbidden += 1
+        elif isinstance(status, int) and status >= 500:
+            self.counters.server_errors += 1
+        else:
+            self.counters.other_http_failures += 1
+        return response, f"HTTP_{status}"
+
+    def _request(self, url: str, params: Mapping[str, str]) -> Optional[object]:
+        response, error = self._request_once(url, params)
+        if error is None:
+            return response
+        if error in {"DAILY_LIMIT_EXCEEDED", "REQUEST_LIMIT_EXCEEDED"}:
+            return None
+        if getattr(response, "status_code", None) != 429:
+            return None
+
+        wait_seconds = self._retry_after_seconds(response)
+        if wait_seconds is None:
+            wait_seconds = self.min_request_interval_seconds
+        if wait_seconds > 65:
+            return None
+        self.counters.retry_attempts += 1
+        self.sleeper(max(wait_seconds, self.min_request_interval_seconds))
+        retried, retry_error = self._request_once(url, params)
+        return retried if retry_error is None else None
+
+    def _load_set_catalog(self, game: str) -> Optional[tuple[tuple[str, str], ...]]:
+        if game in self._set_catalog_cache:
+            return self._set_catalog_cache[game]
+        self.counters.set_catalog_queries += 1
+        response = self._request(JUSTTCG_SETS_URL, {"game": game})
+        if response is None:
+            self._set_catalog_cache[game] = None
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            self.counters.request_failures += 1
+            self.counters.json_failures += 1
+            self._set_catalog_cache[game] = None
+            return None
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        rows = []
+        if isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+            for item in data:
+                if not isinstance(item, Mapping):
+                    continue
+                set_id = str(item.get("id") or "").strip()
+                set_name = str(item.get("name") or "").strip()
+                if set_id and set_name:
+                    rows.append((set_id, set_name))
+        result = tuple(dict.fromkeys(rows))
+        self.counters.set_catalog_candidates += len(result)
+        self._set_catalog_cache[game] = result
+        return result
+
+    def _resolve_set_id(self, game: str, set_name: Optional[str]) -> tuple[Optional[str], bool]:
+        normalized = _normalize(set_name)
+        if not normalized or not self.use_set_catalog:
+            return None, False
+        cache_key = (game, normalized)
+        cached = self._resolved_set_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        catalog = self._load_set_catalog(game)
+        if catalog is None:
+            result = (None, False)
+            self._resolved_set_cache[cache_key] = result
+            return result
+
+        exact = [
+            (set_id, human_name)
+            for set_id, human_name in catalog
+            if _normalize(human_name) == normalized or _normalize(set_id) == normalized
+        ]
+        if len(exact) == 1:
+            self.counters.set_catalog_resolved += 1
+            result = (exact[0][0], False)
+            self._resolved_set_cache[cache_key] = result
+            return result
+        if len(exact) > 1:
+            self.counters.set_catalog_ambiguous += 1
+            result = (None, True)
+            self._resolved_set_cache[cache_key] = result
+            return result
+
+        scored = []
+        for set_id, human_name in catalog:
+            # Prefer the human-readable name. The slug is accepted only as a
+            # secondary exact/strong alias, never as proof against a conflicting name.
+            score = max(
+                _set_similarity(set_name, human_name, None),
+                _set_similarity(set_name, None, set_id),
+            )
+            if score >= 0.86:
+                scored.append((score, set_id))
+        if not scored:
+            self.counters.set_catalog_no_match += 1
+            result = (None, False)
+        else:
+            best_score = max(score for score, _set_id in scored)
+            best_ids = sorted({set_id for score, set_id in scored if score == best_score})
+            if len(best_ids) == 1:
+                self.counters.set_catalog_resolved += 1
+                result = (best_ids[0], False)
+            else:
+                self.counters.set_catalog_ambiguous += 1
+                result = (None, True)
+        self._resolved_set_cache[cache_key] = result
+        return result
+
+    def resolve_identity(self, identity: CardIdentity) -> JustTCGIdentityResolution:
+        if not self.api_key:
+            return JustTCGIdentityResolution(identity)
+        supplied = sum(bool(value) for value in (identity.card_name, identity.set, identity.card_number))
+        if supplied < 2 or not identity.card_name:
+            self.counters.skipped_insufficient += 1
+            return JustTCGIdentityResolution(identity)
+
+        key = self._key(identity)
+        if key in self._cache:
+            return self._cache[key]
+
+        game = self._game_id(identity)
+        set_id, set_ambiguous = self._resolve_set_id(game, identity.set)
+        if set_ambiguous:
+            self.counters.ambiguous += 1
+            result = JustTCGIdentityResolution(identity, ambiguous=True)
+            self._cache[key] = result
+            return result
+        if self.use_set_catalog and identity.set and set_id is None:
+            # A loaded/attempted catalogue that cannot prove one stable set ID
+            # must not fall through to a broader quota-consuming card query.
+            self.counters.no_match += 1
+            result = JustTCGIdentityResolution(identity)
+            self._cache[key] = result
+            return result
+
+        params = {
+            "game": game,
+            "q": str(identity.card_name).strip(),
+            "limit": "20",
+            "include_null_prices": "true",
+            "include_price_history": "false",
+        }
+        if set_id:
+            params["set"] = set_id
+        numerator, _denominator = _card_number_parts(identity.card_number)
+        if numerator:
+            params["number"] = numerator
+
+        self.counters.queries += 1
+        response = self._request(JUSTTCG_CARDS_URL, params)
+        if response is None:
+            result = JustTCGIdentityResolution(identity)
+            self._cache[key] = result
+            return result
+
+        try:
+            payload = response.json()
+        except ValueError:
+            self.counters.request_failures += 1
+            self.counters.json_failures += 1
+            result = JustTCGIdentityResolution(identity)
+            self._cache[key] = result
+            return result
+
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        candidates = (
+            tuple(item for item in data if isinstance(item, Mapping))
+            if isinstance(data, Sequence) and not isinstance(data, (str, bytes))
+            else ()
+        )
+        self.counters.candidates_received += len(candidates)
+
+        accepted = []
+        for card in candidates:
+            name_ok = _normalize_card_name(card.get("name")) == _normalize_card_name(identity.card_name)
+            if not name_ok:
+                self.counters.rejected_name += 1
+                continue
+            candidate_set_name = card.get("set_name")
+            if _normalize(candidate_set_name):
+                set_score = _set_similarity(identity.set, candidate_set_name, None)
+            else:
+                set_score = _set_similarity(identity.set, None, card.get("set"))
+            if identity.set and set_score < 0.66:
+                self.counters.rejected_set += 1
+                continue
+            if identity.card_number and not _number_match(identity, card.get("number"), name_ok=name_ok, set_score=set_score):
+                self.counters.rejected_number += 1
+                continue
+
+            self.counters.candidates_all_core_matched += 1
+            variant_ok, variant_supported = _candidate_variant_supported(identity, card)
+            if not variant_ok:
+                variants = card.get("variants")
+                if identity.language:
+                    languages = [
+                        item.get("language")
+                        for item in variants
+                        if isinstance(item, Mapping)
+                    ] if (
+                        isinstance(variants, Sequence)
+                        and not isinstance(variants, (str, bytes))
+                    ) else []
+                    if not languages or not any(
+                        _language_matches(identity.language, value)
+                        for value in languages
+                    ):
+                        self.counters.rejected_language += 1
+                        continue
+                self.counters.rejected_variant += 1
+                continue
+            self.counters.variant_supported += int(variant_supported)
+            accepted.append(card)
+
+        if len(accepted) > 1:
+            self.counters.ambiguous += 1
+            result = JustTCGIdentityResolution(identity, ambiguous=True)
+        elif not accepted:
+            self.counters.no_match += 1
+            result = JustTCGIdentityResolution(identity)
+        else:
+            card = accepted[0]
+            self.counters.matches += 1
+            result = JustTCGIdentityResolution(
+                _resolved_identity(identity, card),
+                matched=True,
+                card_id=str(card.get("uuid") or card.get("id") or "").strip() or None,
+            )
+        self._cache[key] = result
+        return result
+
+
+def render_justtcg_counters(resolver: JustTCGIdentityResolver) -> str:
+    c = resolver.counters
+    return "\n".join(
+        (
+            "=== V5 JUSTTCG IDENTITY BENCHMARK ===",
+            "role: same-sample second opinion only; no economic value accepted",
+            f"enforced Free interval: >={resolver.min_request_interval_seconds:.2f}s",
+            f"set catalog queries: {c.set_catalog_queries}",
+            f"set catalog candidates cached: {c.set_catalog_candidates}",
+            f"set catalog unique resolutions: {c.set_catalog_resolved}",
+            f"set catalog ambiguous resolutions: {c.set_catalog_ambiguous}",
+            f"set catalog no match: {c.set_catalog_no_match}",
+            f"card queries: {c.queries}",
+            f"matches: {c.matches}",
+            f"ambiguous: {c.ambiguous}",
+            f"no match: {c.no_match}",
+            f"skipped insufficient: {c.skipped_insufficient}",
+            f"request failures: {c.request_failures}",
+            f"rate limited: {c.rate_limited}",
+            f"retry attempts: {c.retry_attempts}",
+            f"HTTP 400 bad request: {c.bad_request}",
+            f"HTTP 401 unauthorized: {c.unauthorized}",
+            f"HTTP 403 forbidden: {c.forbidden}",
+            f"HTTP 5xx server errors: {c.server_errors}",
+            f"other HTTP failures: {c.other_http_failures}",
+            f"JSON failures: {c.json_failures}",
+            f"daily quota exceeded: {c.daily_limit_exceeded}",
+            f"monthly quota exceeded: {c.monthly_limit_exceeded}",
+            f"candidates received: {c.candidates_received}",
+            f"candidates all core matched: {c.candidates_all_core_matched}",
+            f"rejected name: {c.rejected_name}",
+            f"rejected set: {c.rejected_set}",
+            f"rejected number: {c.rejected_number}",
+            f"rejected language: {c.rejected_language}",
+            f"rejected variant: {c.rejected_variant}",
+            f"variant supported: {c.variant_supported}",
+            "persisted cards/listings/prices: 0",
+        )
+    )

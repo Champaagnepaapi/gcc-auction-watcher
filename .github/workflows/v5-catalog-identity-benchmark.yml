@@ -1,0 +1,44 @@
+name: V5 Catalog Identity Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      JUSTTCG_API_KEY: ${{ secrets.JUSTTCG_API_KEY }}
+      V5_CATALOG_BENCHMARK_LIMIT: "20"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install read-only benchmark dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt Pillow==12.3.0
+
+      - name: Assert PokeTrace is unavailable to this job
+        shell: bash
+        run: |
+          if [ -n "${POKETRACE_API_KEY:-}" ]; then
+            echo "Unexpected PokeTrace secret in benchmark environment"
+            exit 1
+          fi
+          echo "PokeTrace secret injected: 0"
+
+      - name: Run same-sample TCGdex vs JustTCG benchmark
+        run: python -m v5.catalog_identity_benchmark
