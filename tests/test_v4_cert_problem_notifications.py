@@ -72,17 +72,18 @@ class CertProblemNotificationTests(unittest.TestCase):
             lot = cert_alerts._fixed_api_lot_with_serial(result, base_lot.url, object())
         self.assertEqual(lot.commercial_dimensions["cert_number"], "131216316")
 
-    def test_inspection_cannot_erase_structured_api_cert_number(self) -> None:
+    def test_in_place_inspection_cannot_erase_structured_api_cert_number(self) -> None:
         original = replace(self._lot(), body="")
-        inspected_without_cert = replace(
-            original,
-            body="Catégorie: Pokémon\nRéférence: #166/165\n",
-            commercial_dimensions={},
-        )
+
+        def mutate_in_place(_page, candidate):
+            candidate.body = "Catégorie: Pokémon\nRéférence: #166/165\n"
+            candidate.commercial_dimensions = {}
+            return candidate
+
         cert = hunter.GraderCertificate("131216316", 9.0, status="OK", grader="PSA")
         delegate = Mock(return_value="NORMAL")
         alert = Mock(return_value=True)
-        with patch.object(watcher, "inspect_item", return_value=inspected_without_cert), patch.object(
+        with patch.object(watcher, "inspect_item", side_effect=mutate_in_place), patch.object(
             cert_alerts, "_DELEGATE_EVALUATE", delegate
         ), patch.object(
             cert_alerts,
