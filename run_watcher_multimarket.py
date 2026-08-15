@@ -27,6 +27,7 @@ from v4_mislisted_slab_hunter import install_v4_mislisted_slab_hunter
 from v4_multimarket_safety import install_multimarket_safety_hardening
 from v4_notification_semantics import install_v4_notification_semantics
 from v4_private_auction_coverage import install_v4_private_auction_coverage
+from v4_smart_external_priority import install_v4_smart_external_priority
 
 
 def _mislisted_slab_hunter_enabled() -> bool:
@@ -59,6 +60,9 @@ if __name__ == "__main__":
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
+    # Reorders only scarce fixed external-provider calls. Auctions retain the
+    # canonical ending-soon ordering and economics are untouched.
+    install_v4_smart_external_priority()
     if _mislisted_slab_hunter_enabled():
         # Generic official-cert coverage stays available for supported graders.
         # PSA/PCA/CCC then receive the hardened browser/direct routes, followed
