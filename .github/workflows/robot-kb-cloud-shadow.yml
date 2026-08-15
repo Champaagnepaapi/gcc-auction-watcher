@@ -28,7 +28,7 @@ concurrency:
 jobs:
   collect-read-only:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     env:
       ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
       ROTATION_STATE: v4_kb_fixed_rotation_state.json
