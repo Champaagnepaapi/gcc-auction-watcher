@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Dispatch final V5 promo-alias diagnostic once
+      - name: Dispatch final V5 wPromo semantic diagnostic once
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -30,4 +30,4 @@ jobs:
             https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/v5-live-raw-pipeline-diagnostic.yml/dispatches \
             -d '{"ref":"agent/v5-post-macro-applicability-retry"}'
           echo "V5 live diagnostic dispatched once on agent/v5-post-macro-applicability-retry"
-          echo "Expected feature head: fadf83f1374aabfc8b2597b4bef68405f4eb1270"
+          echo "Expected feature head: 129799cbafdc6ff2306a4370c97f4aa030673e84"
