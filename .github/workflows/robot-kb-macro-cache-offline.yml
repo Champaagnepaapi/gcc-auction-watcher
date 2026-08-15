@@ -1,0 +1,40 @@
+name: Robot KB Macro Cache Offline Validation
+
+on:
+  push:
+    branches:
+      - agent/kb-tcgdex-macro-cache
+    paths:
+      - 'robot_kb/**'
+      - 'tests/test_robot_kb*.py'
+      - '.github/workflows/robot-kb-macro-cache-offline.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  offline-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Robot KB tests
+        run: python -m unittest discover -s tests -p 'test_robot_kb*.py'
+
+      - name: Compile Robot KB
+        run: python -m compileall -q robot_kb
+
+      - name: Check branch diff
+        shell: bash
+        run: git diff --check origin/agent/p0-card-knowledge-base-foundation...HEAD
