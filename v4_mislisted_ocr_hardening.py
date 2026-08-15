@@ -20,6 +20,15 @@ OCR_FOCUS_GRADERS = frozenset({"PSA", "PCA", "CCC"})
 OCR_MIN_CONSENSUS = 2
 OCR_TARGET_WIDTH = 1400
 
+# Structured marker propagated with the lot until final economic arbitration.
+# It is intentionally only a review signal: it never changes fair value, max
+# recommended price, or the normal V4 opportunity decision.
+MANUAL_SLAB_REVIEW_FLAG = "manual_slab_grade_review"
+MANUAL_SLAB_CERT_STATUS = "manual_slab_cert_status"
+MANUAL_SLAB_OCR_STATUS = "manual_slab_ocr_status"
+MANUAL_SLAB_CERT_NUMBER = "manual_slab_cert_number"
+MANUAL_SLAB_REVIEW_UNRESOLVED = "CERT_AND_OCR_UNRESOLVED"
+
 # Relative crop inside the slab image: (left, top, width, height).
 # The overall grade is on the right side of the top label for PSA/PCA/CCC.
 # These ROIs intentionally include enough label context for Tesseract while
@@ -277,6 +286,31 @@ def resolve_image_grade_from_page(page, grader: str) -> tuple[Optional[float], s
         return None, hunter.IMAGE_GRADE_UNAVAILABLE
 
 
+def _clear_unresolved_review_marker(lot: watcher.Lot) -> None:
+    dimensions = lot.commercial_dimensions
+    for key in (
+        MANUAL_SLAB_REVIEW_FLAG,
+        MANUAL_SLAB_CERT_STATUS,
+        MANUAL_SLAB_OCR_STATUS,
+        MANUAL_SLAB_CERT_NUMBER,
+    ):
+        dimensions.pop(key, None)
+
+
+def _mark_unresolved_review(
+    lot: watcher.Lot,
+    *,
+    cert_number: str,
+    cert_status: str,
+    ocr_status: str,
+) -> None:
+    dimensions = lot.commercial_dimensions
+    dimensions[MANUAL_SLAB_REVIEW_FLAG] = MANUAL_SLAB_REVIEW_UNRESOLVED
+    dimensions[MANUAL_SLAB_CERT_STATUS] = cert_status or hunter.CERT_UNAVAILABLE
+    dimensions[MANUAL_SLAB_OCR_STATUS] = ocr_status or hunter.IMAGE_GRADE_UNAVAILABLE
+    dimensions[MANUAL_SLAB_CERT_NUMBER] = cert_number
+
+
 def evaluate_with_mislisted_slab_guard(
     page,
     lot: watcher.Lot,
@@ -286,11 +320,16 @@ def evaluate_with_mislisted_slab_guard(
     run_now,
     run_diagnostics: watcher.RunDiagnostics,
 ):
-    """Cert-first guard with non-actionable, focused image-only fallback.
+    """Cert-first guard with conservative image fallback and review markers.
 
     Official certificate mismatches remain authoritative. OCR is only a lead:
     positive or negative IMAGE_ONLY mismatches notify for manual review but can
     never block, rewrite or otherwise change the normal V4 valuation path.
+
+    For PSA/PCA/CCC only, if both the official certificate and focused OCR fail
+    to resolve a grade, the lot is marked for a *later* manual-review alert. The
+    alert is emitted only if normal V4 arbitration ultimately decides that the
+    listing is economically interesting.
     """
     grader = _normalized_grader(lot.grader)
     if not grader:
@@ -311,7 +350,11 @@ def evaluate_with_mislisted_slab_guard(
             page, inspected, position, state, seen_at, run_now, run_diagnostics
         )
 
+    if grader in OCR_FOCUS_GRADERS:
+        _clear_unresolved_review_marker(inspected)
+
     certificate = hunter.resolve_grader_certificate(page, grader, serial)
+    image_grade = None
     image_status = hunter.IMAGE_GRADE_UNAVAILABLE
     if certificate.status == "OK" and certificate.grade is not None:
         mismatch = hunter.classify_grade_mismatch(
@@ -321,10 +364,26 @@ def evaluate_with_mislisted_slab_guard(
     else:
         image_grade, image_status = resolve_image_grade_from_page(page, grader)
         mismatch = hunter.classify_grade_mismatch(metadata_grade, image_grade=image_grade)
+        if (
+            grader in OCR_FOCUS_GRADERS
+            and image_grade is None
+            and image_status in {
+                hunter.IMAGE_GRADE_AMBIGUOUS,
+                hunter.IMAGE_GRADE_UNAVAILABLE,
+            }
+        ):
+            _mark_unresolved_review(
+                inspected,
+                cert_number=serial,
+                cert_status=certificate.status,
+                ocr_status=image_status,
+            )
+            watcher.log(
+                "Mislisted slab: cert + OCR non résolus -> marqueur MANUAL REVIEW "
+                f"si opportunité économique finale | {inspected.url}"
+            )
 
     if mismatch is None or mismatch.status in {hunter.GRADE_MATCH, hunter.CERT_UNAVAILABLE}:
-        if certificate.status != "OK" and image_status == hunter.IMAGE_GRADE_AMBIGUOUS:
-            watcher.log(f"Mislisted slab: focused OCR ambigu, aucune alerte | {inspected.url}")
         return hunter._ORIGINAL_EVALUATE(
             page, inspected, position, state, seen_at, run_now, run_diagnostics
         )

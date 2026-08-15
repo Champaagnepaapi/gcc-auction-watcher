@@ -881,3 +881,19 @@ Validation PR #64 : run **`31838778755`**, job **`94890915083`** — **482/482 t
 - Validation PR #65 initiale : run `31869485436`, job `94975774681` → **490/490 tests PASS**, compile PASS, `git diff --check` PASS, discovery live 49/49 vs legacy, `primary_only=0`, `legacy_only=0`, private failures 0.
 - Aucun achat, bid, checkout ou paiement automatique.
 - V5 PR #8 reste **inchangée et non mergée**. Pour une future transposition V5, concentrer d’abord le slab mismatch sur PSA/PCA/CCC sauf instruction contraire.
+
+---
+
+# PR #66 — Manual slab review sur cert + OCR non résolus
+
+- Branche : `agent/v4-unresolved-slab-manual-review`.
+- Scope : **PSA / PCA / CCC uniquement** pour ce nouveau signal de revue ; les autres graders gardent leur comportement existant.
+- Ordre inchangé : **certificat officiel du grader → OCR ciblé du label en haut à droite si le certificat ne résout pas le grade → arbitrage économique V4 normal**.
+- Si le certificat officiel reste indisponible/non lisible **et** que l'OCR ciblé reste `IMAGE_GRADE_AMBIGUOUS` ou `IMAGE_GRADE_UNAVAILABLE`, le lot reçoit un marqueur `CERT_AND_OCR_UNRESOLVED` ; ce marqueur ne change ni la fair value, ni le prix max, ni la décision économique.
+- Une notification dédiée **`MANUAL SLAB GRADE REVIEW`** n'est envoyée que si le lot marqué devient ensuite une **opportunité économique finale V4**. Elle contient identité, grader/grade GCC, numéro/statut cert, statut OCR, prix, fourchette/centrale V4, prix max conseillé, décote et URL.
+- Anti-spam : l'alerte de revue est persistée et envoyée une seule fois pour l'opportunité concernée ; une carte non retenue économiquement ne génère pas cette notification.
+- Interprétation : un échec du lookup certificat peut être technique (anti-bot, indisponibilité, parsing) et **n'est jamais traité seul comme preuve de mislisting**. La notification exige une vérification manuelle du cert officiel et de la photo du slab avant décision.
+- Sécurité inchangée : un mismatch négatif confirmé par **OFFICIAL_CERT** reste le seul safety gate de grade ; un signal OCR seul reste `IMAGE_ONLY` / manual review et ne réécrit jamais la valorisation.
+- Validation code au head **`a1f9409dba53d0b3c831cc3bead0bb581d241c5a`** : run **`31872649742`**, job **`94983553903`** → **498/498 tests PASS**, compile PASS, `git diff --check` PASS ; discovery live primaire **73** vs legacy **72**, `primary_only=1`, `legacy_only=0`, timers non résolus 0/0, safety-net private failures 0, PASS superset à horizon commun.
+- Aucun achat, bid, checkout ou paiement automatique.
+- V5 PR #8 reste **inchangée et non mergée**.

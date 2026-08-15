@@ -19,6 +19,7 @@ from v4_kb_shadow_bridge import (
     flush_capture_if_configured,
     install_v4_kb_shadow_capture,
 )
+from v4_manual_slab_review import install_v4_manual_slab_review_notifications
 from v4_mislisted_cert_router import install_v4_mislisted_cert_router
 from v4_mislisted_ocr_hardening import install_v4_mislisted_ocr_hardening
 from v4_mislisted_slab_hunter import install_v4_mislisted_slab_hunter
@@ -61,6 +62,10 @@ if __name__ == "__main__":
     install_fast_lane_notification_guard()
     # Only changes user-facing opportunity labels; economics and decisions stay intact.
     install_v4_notification_semantics()
+    # Install last in the notification stack: unresolved cert+OCR review alerts
+    # must not be overwritten by the ordinary external-confirmation title wrapper.
+    if _mislisted_slab_hunter_enabled():
+        install_v4_manual_slab_review_notifications()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
     exit_code = 1
