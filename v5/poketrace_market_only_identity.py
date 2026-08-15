@@ -6,8 +6,9 @@ or rescue card identity in the live V5 workflow.
 
 The identity adapter is still kept alive because exact TCGdex provenance and
 provider aliases are registered through it for later PokeTrace *market* lookup.
-No identity acceptance, ambiguity clearing, visual rescue, or microvariant proof
-is sourced from PokeTrace under this policy.
+No identity acceptance, ambiguity clearing, visual rescue, microvariant proof,
+or identity no-match cache propagation is sourced from PokeTrace under this
+policy.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ class MarketOnlyPokeTraceIdentityResolver(DetailedPokeTraceIdentityResolver):
     def __init__(self, provider) -> None:
         super().__init__(provider)
         self.identity_disabled_skips = 0
+        self.identity_cache_alias_skips = 0
 
     def resolve_identity(self, identity: CardIdentity) -> PokeTraceIdentityResolution:
         self.identity_disabled_skips += 1
@@ -56,6 +58,12 @@ class MarketOnlyPokeTraceIdentityResolver(DetailedPokeTraceIdentityResolver):
             ambiguous=False,
             provider_status=POKETRACE_MARKET_ONLY_STATUS,
         )
+
+    def alias_cached_result(self, source: CardIdentity, target: CardIdentity) -> None:
+        """Do not let disabled identity results prime or alias market snapshots."""
+
+        self.identity_cache_alias_skips += 1
+        return None
 
 
 class MarketOnlyPokeTraceVisualIdentityResolver(DetailedLocalVisualIdentityResolver):
@@ -85,6 +93,11 @@ def render_market_only_identity_counters(
             "identity lookups skipped before PokeTrace network: "
             f"{resolver.identity_disabled_skips}",
         )
+        rendered.insert(
+            4,
+            "identity cache aliases suppressed before market cache: "
+            f"{resolver.identity_cache_alias_skips}",
+        )
     return "\n".join(rendered)
 
 
@@ -102,6 +115,10 @@ def render_poketrace_market_only_policy(
             (
                 "identity lookups skipped before PokeTrace network: "
                 f"{identity_resolver.identity_disabled_skips}"
+            ),
+            (
+                "identity cache aliases suppressed before market cache: "
+                f"{identity_resolver.identity_cache_alias_skips}"
             ),
             (
                 "PokeTrace-backed visual identity search: DISABLED"
