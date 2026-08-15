@@ -32,8 +32,10 @@ jobs:
     env:
       ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
       ROTATION_STATE: v4_kb_fixed_rotation_state.json
+      TARGET_STATE: v4_kb_fixed_target_state.json
       ROTATION_FIXTURE: v4_kb_fixed_batch.json
-      ROTATION_MANIFEST: v4_kb_fixed_manifest.json
+      ROTATION_MANIFEST: v4_kb_fixed_rotation_manifest.json
+      HYBRID_MANIFEST: v4_kb_fixed_hybrid_manifest.json
       TCGDEX_CARD_1: ${{ inputs.tcgdex_card_1 }}
       TCGDEX_CARD_2: ${{ inputs.tcgdex_card_2 }}
       TCGDEX_CARD_3: ${{ inputs.tcgdex_card_3 }}
@@ -68,26 +70,32 @@ jobs:
             exit 1
           fi
 
-      - name: Restore independent fixed rotation cursor state
+      - name: Restore fixed hybrid coverage state
         uses: actions/cache/restore@v4
         with:
-          path: ${{ env.ROTATION_STATE }}
+          path: |
+            ${{ env.ROTATION_STATE }}
+            ${{ env.TARGET_STATE }}
           key: v4-kb-rotation-state-${{ github.run_id }}
           restore-keys: |
             v4-kb-rotation-state-
 
-      - name: Fetch 4-page fixed backup rotation batch (GET only)
+      - name: Fetch fixed hybrid batch — 100 recent + 200 rotation + up to 100 targeted (GET only)
         run: |
-          python v4_kb_fixed_rotation.py rotate \
+          python v4_kb_fixed_hybrid.py fetch \
             --rotation-state "$ROTATION_STATE" \
+            --target-state "$TARGET_STATE" \
             --output-fixture "$ROTATION_FIXTURE" \
-            --manifest "$ROTATION_MANIFEST" \
+            --manifest "$HYBRID_MANIFEST" \
+            --rotation-manifest "$ROTATION_MANIFEST" \
             --page-size 100 \
-            --pages 4
+            --recent-records 100 \
+            --rotation-pages 2 \
+            --target-records 100
 
-      - name: Ingest fixed rotation batch + live auction (GET only)
+      - name: Ingest fixed hybrid batch + live auction (GET only)
         run: |
-          observed_at=$(python -c 'import json; print(json.load(open("'"$ROTATION_MANIFEST"'"))["retrieved_at"])')
+          observed_at=$(python -c 'import json; print(json.load(open("'"$HYBRID_MANIFEST"'"))["retrieved_at"])')
           cd .robot-kb-shadow
           python -m robot_kb.sidecar \
             --allow-live-read-only \
@@ -108,14 +116,18 @@ jobs:
           cd .robot-kb-shadow
           python -m robot_kb.sidecar --allow-live-read-only "${arguments[@]}"
 
-      - name: Commit fixed rotation cursor only after successful ingest
+      - name: Commit fixed hybrid state only after successful ingest
         run: |
-          python v4_kb_fixed_rotation.py commit \
+          python v4_kb_fixed_hybrid.py commit \
             --rotation-state "$ROTATION_STATE" \
-            --manifest "$ROTATION_MANIFEST"
+            --target-state "$TARGET_STATE" \
+            --manifest "$HYBRID_MANIFEST" \
+            --rotation-manifest "$ROTATION_MANIFEST"
 
-      - name: Save independent fixed rotation cursor state
+      - name: Save fixed hybrid coverage state
         uses: actions/cache/save@v4
         with:
-          path: ${{ env.ROTATION_STATE }}
+          path: |
+            ${{ env.ROTATION_STATE }}
+            ${{ env.TARGET_STATE }}
           key: v4-kb-rotation-state-${{ github.run_id }}
