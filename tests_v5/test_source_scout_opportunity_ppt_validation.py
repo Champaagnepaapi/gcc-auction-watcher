@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import unittest
+from dataclasses import asdict
 
 from v5 import source_scout_benchmark as scout
 from v5 import source_scout_opportunity_ppt_validation as target
@@ -43,6 +45,14 @@ class OpportunityPptValidationTests(unittest.TestCase):
         self.assertEqual(copied.psa10_usd, 30.0)
         self.assertTrue(copied.graded_available)
         self.assertEqual(copied.history, "180D_RETURNED")
+
+    def test_observation_serializes_as_json_report_row(self) -> None:
+        row = scout.Observation("pokemonpricetracker", "Umbreon VMAX")
+        row.identity = "EXACT"
+        row.psa10_usd = 123.45
+        encoded = json.dumps(asdict(row))
+        self.assertIn('"identity": "EXACT"', encoded)
+        self.assertIn('"psa10_usd": 123.45', encoded)
 
 
 if __name__ == "__main__":
