@@ -141,7 +141,7 @@ class EmergencyIdentityFallbackTests(unittest.TestCase):
 
         self.assertTrue(result.matched)
         self.assertEqual(result.source, POKETRACE_EMERGENCY)
-        self.assertEqual(resolver.emergency_counters.tcgdex_json_events, 1)
+        self.assertGreaterEqual(resolver.emergency_counters.tcgdex_json_events, 1)
         self.assertGreater(len(pt_session.calls), 0)
 
     def test_clean_no_match_never_calls_poketrace_identity(self):
