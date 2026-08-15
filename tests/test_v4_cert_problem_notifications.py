@@ -156,18 +156,21 @@ class CertProblemNotificationTests(unittest.TestCase):
         self.assertEqual(alert.call_args.kwargs["issue"], cert_alerts.CERT_NUMBER_MISSING)
         delegate.assert_called_once()
 
-    def test_attempted_lookup_failure_alerts_even_when_v4_finds_no_opportunity(self) -> None:
+    def test_attempted_lookup_failure_is_log_only_even_when_v4_finds_no_opportunity(self) -> None:
         lot = self._lot()
         cert = hunter.GraderCertificate(
             "131216316", None, status=hunter.CERT_UNAVAILABLE, grader="PSA"
         )
-        result, delegate, alert = self._evaluate(
-            lot, resolved=cert, attempted=True, delegate_result=None
-        )
+        with patch.object(watcher, "log") as log:
+            result, delegate, alert = self._evaluate(
+                lot, resolved=cert, attempted=True, delegate_result=None
+            )
         self.assertIsNone(result)
-        alert.assert_called_once()
-        self.assertEqual(alert.call_args.kwargs["issue"], cert_alerts.CERT_LOOKUP_FAILED)
+        alert.assert_not_called()
         delegate.assert_called_once()
+        self.assertTrue(
+            any("technical lookup failure log-only" in str(call.args[0]) for call in log.call_args_list)
+        )
 
     def test_unreadable_official_grade_alerts_immediately(self) -> None:
         lot = self._lot(grader="CCC", cert_number="544340143")
