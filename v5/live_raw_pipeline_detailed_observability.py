@@ -19,6 +19,7 @@ from .detailed_identity_observability import (
 from .poketrace_market_only_identity import (
     MarketOnlyPokeTraceIdentityResolver,
     MarketOnlyPokeTraceVisualIdentityResolver,
+    render_market_only_identity_counters,
     render_poketrace_market_only_policy,
 )
 
@@ -71,6 +72,9 @@ catalog_pipeline.HybridPokemonCardResolver = (
 )
 catalog_pipeline.LocalVisualIdentityResolver = (
     MarketOnlyPokeTraceVisualIdentityResolver
+)
+catalog_pipeline.render_poketrace_identity_counters = (
+    render_market_only_identity_counters
 )
 catalog_pipeline.CatalogAwareLiveRawPipelineDiagnostic = (
     DetailedCatalogAwareLiveRawPipelineDiagnostic
