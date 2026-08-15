@@ -27,24 +27,35 @@ def _unavailable(grader: str, cert_number: str) -> hunter.GraderCertificate:
 
 
 def _safe_error(error: Exception) -> str:
-    """Short transport diagnostic; redact query strings and line breaks."""
+    """Short transport diagnostic; redact URLs/query strings and line breaks."""
     message = re.sub(r"\s+", " ", str(error or "")).strip()
     message = re.sub(r"https?://([^/?\s]+)[^\s]*", r"https://\1/<redacted>", message)
     return message[:220] or type(error).__name__
 
 
 def _new_verification_page(page, url: str):
-    verification_page = page.context.new_page()
-    verification_page.goto(url, wait_until="domcontentloaded", timeout=9000)
+    """Open verifier outside browser.new_page()'s single-page owned context."""
+    browser = page.context.browser
+    if browser is None:
+        raise RuntimeError("browser unavailable from listing page")
+    verification_context = browser.new_context(
+        viewport={"width": 1280, "height": 1100},
+        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/139 Safari/537.36",
+    )
+    verification_page = verification_context.new_page()
     try:
-        verification_page.wait_for_load_state("networkidle", timeout=4500)
+        verification_page.goto(url, wait_until="domcontentloaded", timeout=9000)
+        try:
+            verification_page.wait_for_load_state("networkidle", timeout=4500)
+        except Exception:
+            verification_page.wait_for_timeout(900)
+        return verification_context, verification_page
     except Exception:
-        verification_page.wait_for_timeout(900)
-    return verification_page
+        verification_context.close()
+        raise
 
 
 def resolve_psa_certificate(page, cert_number: str) -> hunter.GraderCertificate:
-    """Use a real browser page; GitHub Actions HTTP requests are WAF-blocked by PSA."""
     cert_number = _digits(cert_number)
     if not cert_number or page is None:
         return _unavailable("PSA", cert_number)
@@ -53,9 +64,9 @@ def resolve_psa_certificate(page, cert_number: str) -> hunter.GraderCertificate:
     if not allowed:
         return cached
 
-    verification_page = None
+    verification_context = None
     try:
-        verification_page = _new_verification_page(
+        verification_context, verification_page = _new_verification_page(
             page,
             PSA_DIRECT_URL.format(cert_number=cert_number),
         )
@@ -69,16 +80,16 @@ def resolve_psa_certificate(page, cert_number: str) -> hunter.GraderCertificate:
         )
         certificate = _unavailable("PSA", cert_number)
     finally:
-        if verification_page is not None:
+        if verification_context is not None:
             try:
-                verification_page.close()
+                verification_context.close()
             except Exception:
                 pass
     return router._cache_certificate(certificate)
 
 
 def resolve_pca_certificate(page, cert_number: str) -> hunter.GraderCertificate:
-    """PCA exposes a stable public direct certification URL."""
+    """PCA exposes a public direct certification URL."""
     cert_number = _digits(cert_number)
     if not cert_number or page is None:
         return _unavailable("PCA", cert_number)
@@ -87,9 +98,9 @@ def resolve_pca_certificate(page, cert_number: str) -> hunter.GraderCertificate:
     if not allowed:
         return cached
 
-    verification_page = None
+    verification_context = None
     try:
-        verification_page = _new_verification_page(
+        verification_context, verification_page = _new_verification_page(
             page,
             PCA_DIRECT_URL.format(cert_number=cert_number),
         )
@@ -101,9 +112,9 @@ def resolve_pca_certificate(page, cert_number: str) -> hunter.GraderCertificate:
         )
         certificate = _unavailable("PCA", cert_number)
     finally:
-        if verification_page is not None:
+        if verification_context is not None:
             try:
-                verification_page.close()
+                verification_context.close()
             except Exception:
                 pass
     return router._cache_certificate(certificate)
@@ -188,9 +199,12 @@ def resolve_ccc_certificate(page, cert_number: str) -> hunter.GraderCertificate:
     if not allowed:
         return cached
 
-    verification_page = None
+    verification_context = None
     try:
-        verification_page = _new_verification_page(page, CCC_VERIFY_URL)
+        verification_context, verification_page = _new_verification_page(
+            page,
+            CCC_VERIFY_URL,
+        )
         cert_input = _first_visible_cert_input(verification_page)
         if cert_input is None:
             raise RuntimeError("CCC cert input unavailable")
@@ -208,9 +222,9 @@ def resolve_ccc_certificate(page, cert_number: str) -> hunter.GraderCertificate:
         )
         certificate = _unavailable("CCC", cert_number)
     finally:
-        if verification_page is not None:
+        if verification_context is not None:
             try:
-                verification_page.close()
+                verification_context.close()
             except Exception:
                 pass
     return router._cache_certificate(certificate)
