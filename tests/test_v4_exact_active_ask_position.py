@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -60,7 +61,6 @@ class ExactActiveAskTests(unittest.TestCase):
 
     def test_ask_block_explicitly_says_not_a_sale(self):
         lot = self.lot()
-        estimate = SimpleNamespace(central=100.0, grade_arbitrage=False, confidence="medium", rationale="test")
         op = SimpleNamespace(lot=lot, exact_active_ask=active.ActiveAskEvidence(
             source="eBay BIN",
             price=90.0,
@@ -96,6 +96,58 @@ class ExactActiveAskTests(unittest.TestCase):
         self.assertIs(result, opportunities)
         self.assertEqual(seen, ["fixed-a", "fixed-b"])
         self.assertNotIn("auction", seen)
+
+    def test_positive_ask_cache_is_reused_by_exact_commercial_identity(self):
+        now = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+        state = {}
+        first = self.lot(url="fixed-a", current_price=70.0)
+        second = self.lot(url="fixed-b", current_price=60.0)
+        evidence = active.ActiveAskEvidence(
+            source="eBay BIN",
+            price=100.0,
+            url="https://www.ebay.fr/itm/123",
+            title="Celebi VMAX PSA 10",
+            gap_pct=30.0,
+            gcc_is_cheapest=True,
+        )
+        active._store_active_ask(state, first, evidence, now)
+        cached = active._cached_active_ask(state, second, now + timedelta(minutes=10))
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached.price, 100.0)
+        # Recomputed for the second GCC listing, not copied from the first one.
+        self.assertEqual(cached.gap_pct, 40.0)
+
+    def test_active_ask_cache_separates_grade_and_language(self):
+        now = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+        state = {}
+        original = self.lot()
+        evidence = active.ActiveAskEvidence(
+            source="eBay BIN", price=100.0, url="u", title="t",
+            gap_pct=30.0, gcc_is_cheapest=True,
+        )
+        active._store_active_ask(state, original, evidence, now)
+        self.assertIsNone(active._cached_active_ask(
+            state, self.lot(grade="9"), now + timedelta(minutes=5)
+        ))
+        self.assertIsNone(active._cached_active_ask(
+            state, self.lot(language="French"), now + timedelta(minutes=5)
+        ))
+
+    def test_active_ask_cache_expires_and_never_caches_no_match(self):
+        now = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+        state = {}
+        lot = self.lot()
+        self.assertIsNone(active._cached_active_ask(state, lot, now))
+        self.assertNotIn(active._ACTIVE_ASK_CACHE_STATE_KEY, state)
+        evidence = active.ActiveAskEvidence(
+            source="eBay BIN", price=100.0, url="u", title="t",
+            gap_pct=30.0, gcc_is_cheapest=True,
+        )
+        active._store_active_ask(state, lot, evidence, now)
+        with patch.object(active, "_cache_ttl_minutes", return_value=30):
+            self.assertIsNone(active._cached_active_ask(
+                state, lot, now + timedelta(minutes=31)
+            ))
 
     def test_cardmarket_raw_is_not_an_exact_graded_ask_source(self):
         self.assertEqual(active.ActiveAskEvidence.__annotations__["source"], "str")

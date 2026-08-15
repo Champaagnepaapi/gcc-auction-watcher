@@ -4,6 +4,11 @@ Active listings are ASK evidence only. They never become SOLD comparables, never
 create an opportunity, and never change fair value or max_recommended. The first
 production adapter is eBay Buy-It-Now because Cardmarket/TCGplayer data in V4 are
 RAW-card markets and must not masquerade as exact graded-slab asks.
+
+Positive active asks are cached briefly by the same strict commercial identity
+used by the SOLD external cache. A second GCC listing of the exact same card /
+grader / grade / language / variant can therefore reuse one eBay lookup without
+mixing identities. Negative/no-match results are deliberately not cached.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote_plus, urljoin
 
@@ -30,6 +36,8 @@ class ActiveAskEvidence:
 _ORIGINAL_PROCESS = None
 _ORIGINAL_NOTIFY = None
 _INSTALLED = False
+_ACTIVE_ASK_CACHE_STATE_KEY = "v4_exact_active_ask_cache"
+_ACTIVE_ASK_CACHE_SCHEMA_VERSION = 1
 
 
 def _enabled() -> bool:
@@ -43,6 +51,29 @@ def _max_cards() -> int:
         return max(0, int(os.getenv("V4_ACTIVE_ASK_MAX_CARDS_PER_RUN", "2")))
     except ValueError:
         return 2
+
+
+def _cache_ttl_minutes() -> int:
+    try:
+        return max(5, int(os.getenv("V4_ACTIVE_ASK_CACHE_TTL_MINUTES", "30")))
+    except ValueError:
+        return 30
+
+
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_datetime(value: object) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return _aware(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    except ValueError:
+        return None
 
 
 def _money_eur(text: str) -> Optional[float]:
@@ -134,6 +165,27 @@ def _exact_active_ask_candidate(lot: watcher.Lot, title: str, text: str) -> bool
     return watcher.external_comparable_is_exact(lot, comparable)
 
 
+def _evidence_for_lot(
+    lot: watcher.Lot,
+    *,
+    source: str,
+    price: float,
+    url: str,
+    title: str,
+) -> ActiveAskEvidence:
+    gcc_price = float(lot.current_price or 0.0)
+    gcc_is_cheapest = gcc_price > 0 and gcc_price <= price
+    gap_pct = ((price - gcc_price) / price * 100.0) if gcc_is_cheapest else 0.0
+    return ActiveAskEvidence(
+        source=source,
+        price=price,
+        url=url,
+        title=title,
+        gap_pct=round(max(0.0, gap_pct), 1),
+        gcc_is_cheapest=gcc_is_cheapest,
+    )
+
+
 def scrape_lowest_exact_ebay_ask(page, lot: watcher.Lot) -> Optional[ActiveAskEvidence]:
     if not watcher.commercial_identity_is_sufficient(lot):
         return None
@@ -187,17 +239,78 @@ def scrape_lowest_exact_ebay_ask(page, lot: watcher.Lot) -> Optional[ActiveAskEv
     if best is None:
         return None
     ask_price, ask_url, ask_title = best
-    gcc_price = float(lot.current_price or 0.0)
-    gcc_is_cheapest = gcc_price > 0 and gcc_price <= ask_price
-    gap_pct = ((ask_price - gcc_price) / ask_price * 100.0) if gcc_is_cheapest else 0.0
-    return ActiveAskEvidence(
+    return _evidence_for_lot(
+        lot,
         source="eBay BIN",
         price=ask_price,
         url=ask_url,
         title=ask_title,
-        gap_pct=round(max(0.0, gap_pct), 1),
-        gcc_is_cheapest=gcc_is_cheapest,
     )
+
+
+def _active_ask_cache(state: dict) -> dict:
+    cache = state.get(_ACTIVE_ASK_CACHE_STATE_KEY)
+    if not isinstance(cache, dict) or cache.get("schema_version") != _ACTIVE_ASK_CACHE_SCHEMA_VERSION:
+        cache = {"schema_version": _ACTIVE_ASK_CACHE_SCHEMA_VERSION, "entries": {}}
+        state[_ACTIVE_ASK_CACHE_STATE_KEY] = cache
+    entries = cache.get("entries")
+    if not isinstance(entries, dict):
+        cache["entries"] = {}
+    return cache
+
+
+def _cached_active_ask(
+    state: dict,
+    lot: watcher.Lot,
+    now: datetime,
+) -> Optional[ActiveAskEvidence]:
+    if not watcher.commercial_identity_is_sufficient(lot):
+        return None
+    identity_key = watcher.external_commercial_identity_key(lot)
+    cache = state.get(_ACTIVE_ASK_CACHE_STATE_KEY)
+    if not isinstance(cache, dict) or cache.get("schema_version") != _ACTIVE_ASK_CACHE_SCHEMA_VERSION:
+        return None
+    entries = cache.get("entries")
+    payload = entries.get(identity_key) if isinstance(entries, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    fetched_at = _parse_datetime(payload.get("fetched_at"))
+    if fetched_at is None:
+        return None
+    if _aware(now) - fetched_at >= timedelta(minutes=_cache_ttl_minutes()):
+        return None
+    try:
+        price = float(payload["price"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if price <= 0:
+        return None
+    return _evidence_for_lot(
+        lot,
+        source=str(payload.get("source") or "eBay BIN"),
+        price=price,
+        url=str(payload.get("url") or ""),
+        title=str(payload.get("title") or ""),
+    )
+
+
+def _store_active_ask(
+    state: dict,
+    lot: watcher.Lot,
+    evidence: ActiveAskEvidence,
+    now: datetime,
+) -> None:
+    if not watcher.commercial_identity_is_sufficient(lot) or evidence.price <= 0:
+        return
+    identity_key = watcher.external_commercial_identity_key(lot)
+    cache = _active_ask_cache(state)
+    cache["entries"][identity_key] = {
+        "fetched_at": _aware(now).isoformat(),
+        "source": evidence.source,
+        "price": evidence.price,
+        "url": evidence.url,
+        "title": evidence.title,
+    }
 
 
 def _process_with_active_ask(
@@ -213,14 +326,29 @@ def _process_with_active_ask(
     )
     if not _enabled() or _max_cards() <= 0:
         return opportunities
+
     fixed = [op for op in opportunities if op.lot.source_type == "fixed"]
     fixed.sort(key=lambda op: op.discount_pct, reverse=True)
-    for op in fixed[: _max_cards()]:
-        try:
-            evidence = scrape_lowest_exact_ebay_ask(page, op.lot)
-        except Exception as exc:
-            watcher.log(f"Active ASK exact: erreur isolée {type(exc).__name__} | {op.lot.url}")
+    network_lookups = 0
+    for op in fixed:
+        if not watcher.commercial_identity_is_sufficient(op.lot):
             continue
+
+        evidence = _cached_active_ask(state, op.lot, run_now)
+        if evidence is not None:
+            watcher.log(f"Active ASK exact: cache identité HIT | {op.lot.title}")
+        else:
+            if network_lookups >= _max_cards():
+                continue
+            network_lookups += 1
+            try:
+                evidence = scrape_lowest_exact_ebay_ask(page, op.lot)
+            except Exception as exc:
+                watcher.log(f"Active ASK exact: erreur isolée {type(exc).__name__} | {op.lot.url}")
+                continue
+            if evidence is not None:
+                _store_active_ask(state, op.lot, evidence, run_now)
+
         if evidence is not None:
             setattr(op, "exact_active_ask", evidence)
             relation = (
@@ -295,5 +423,5 @@ def install_v4_exact_active_ask_position() -> None:
     _INSTALLED = True
     watcher.log(
         "Exact active ASK: eBay BIN context enabled for final fixed opportunities; "
-        "ASK never treated as SOLD or valuation evidence"
+        "strict identity cache enabled; ASK never treated as SOLD or valuation evidence"
     )
