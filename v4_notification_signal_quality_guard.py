@@ -20,8 +20,9 @@ ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = max(
     0.0, float(os.getenv("V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR", "10"))
 )
 
-_BASE_COLLECT_PRICE_DISCOVERY_LEAD = multimarket._collect_price_discovery_lead
-_BASE_MANUAL_REVIEW_SHOULD_NOTIFY = multimarket._manual_review_should_notify
+_BASE_COLLECT_PRICE_DISCOVERY_LEAD = None
+_BASE_MANUAL_REVIEW_SHOULD_NOTIFY = None
+_INSTALLED = False
 
 
 def _stable_manual_review_key(lot: watcher.Lot) -> str:
@@ -49,7 +50,10 @@ def _manual_review_should_notify_with_legacy_migration(
             previous = entries.get(legacy_key)
             if isinstance(previous, dict):
                 entries[lead.identity_key] = dict(previous)
-    return _BASE_MANUAL_REVIEW_SHOULD_NOTIFY(state, lead, now)
+    base = _BASE_MANUAL_REVIEW_SHOULD_NOTIFY or multimarket._manual_review_should_notify
+    if base is _manual_review_should_notify_with_legacy_migration:
+        return False
+    return base(state, lead, now)
 
 
 def _is_auction(lot: watcher.Lot) -> bool:
@@ -125,7 +129,10 @@ def _guarded_collect_price_discovery_lead(
     now: Optional[datetime] = None,
 ) -> Optional[multimarket.ManualReviewLead]:
     # Explicitly discard RAW for V4 graded economics, even if a caller supplies it.
-    lead = _BASE_COLLECT_PRICE_DISCOVERY_LEAD(
+    base = _BASE_COLLECT_PRICE_DISCOVERY_LEAD
+    if base is None or base is _guarded_collect_price_discovery_lead:
+        return None
+    lead = base(
         candidate,
         canonical,
         None,
@@ -177,6 +184,17 @@ def actionable_technical_alert_required(
 
 def install_v4_notification_signal_quality_guard() -> None:
     """Install production-only notification quality rules without changing valuation math."""
+    global _BASE_COLLECT_PRICE_DISCOVERY_LEAD
+    global _BASE_MANUAL_REVIEW_SHOULD_NOTIFY
+    global _INSTALLED
+    if _INSTALLED:
+        return
+
+    # Capture the already-installed safety wrapper so this guard layers on top
+    # instead of bypassing canonical identity fail-closed behavior.
+    _BASE_COLLECT_PRICE_DISCOVERY_LEAD = multimarket._collect_price_discovery_lead
+    _BASE_MANUAL_REVIEW_SHOULD_NOTIFY = multimarket._manual_review_should_notify
+
     # Cardmarket/TCGplayer RAW remains available as library code, but is excluded
     # from the production V4 slab opportunity path.
     multimarket.raw_market_signal = _no_v4_raw_market_signal
@@ -192,3 +210,4 @@ def install_v4_notification_signal_quality_guard() -> None:
     # Supersede the broader technical guard: expected bounded economic queues are
     # diagnostic only; actual discovery loss and urgent P0/P1 backlog remain ntfy.
     watcher._technical_alert_required = actionable_technical_alert_required
+    _INSTALLED = True
