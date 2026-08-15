@@ -15,6 +15,7 @@ on:
       - "run_watcher_safe.py"
       - "run_watcher_multimarket.py"
       - "watcher.py"
+      - "diag_gcc_gradation_cert_100.py"
       - "tests/**"
       - ".github/workflows/watcher.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -58,6 +59,10 @@ jobs:
           python -m py_compile v4_edge_hunter_safety.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile run_watcher_multimarket.py
+          python -m py_compile diag_gcc_gradation_cert_100.py
+
+      - name: Run 100-card GCC cert / Gradation diagnostic (read-only)
+        run: python diag_gcc_gradation_cert_100.py
 
       - name: Compare augmented and legacy discovery live
         id: compare
