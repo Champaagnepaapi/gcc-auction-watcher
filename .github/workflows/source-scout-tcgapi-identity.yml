@@ -1,0 +1,57 @@
+name: Source Scout tcgapi.dev Identity Benchmark
+
+on:
+  push:
+    branches:
+      - agent/source-scout-tcgapi-identity-20260815
+    paths:
+      - 'v5/tcgapi_identity_benchmark.py'
+      - '.github/workflows/source-scout-tcgapi-identity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install minimal dependencies
+        run: python -m pip install --disable-pip-version-check requests==2.32.4
+
+      - name: Assert benchmark key is injected without exposing it
+        env:
+          TCGAPI_DEV_API_KEY: ${{ secrets.TCGAPI_DEV_API_KEY }}
+        shell: bash
+        run: |
+          test -n "$TCGAPI_DEV_API_KEY"
+          echo "TCGAPI_DEV_API_KEY present: yes"
+          echo "secret value printed: 0"
+
+      - name: Run bounded same-panel identity benchmark
+        env:
+          TCGAPI_DEV_API_KEY: ${{ secrets.TCGAPI_DEV_API_KEY }}
+        run: python -m v5.tcgapi_identity_benchmark
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcgapi-identity-benchmark
+          path: |
+            tcgapi_identity_benchmark.json
+            tcgapi_identity_benchmark.md
+          if-no-files-found: error
+          retention-days: 7
