@@ -6,15 +6,29 @@ import v4_mislisted_cert_router as router
 import v4_mislisted_slab_hunter as hunter
 
 
-PSA_DIRECT_URL = "https://www.psacard.com/cert/{cert_number}"
+PSA_DIRECT_URL = "https://www.psacard.com/cert/{cert_number}/psa"
 PCA_DIRECT_URL = "https://pcagrade.com/fr/check-certification/{cert_number}"
 CCC_VERIFY_URL = "https://cccgrading.com/fr/verification-carte-ccc"
 FOCUS_GRADERS = frozenset({"PSA", "PCA", "CCC"})
 _INSTALLED = False
+_GRADE_RE = re.compile(
+    r"(?<!\d)(10(?:\.0)?|9(?:[.,]5|\.0)?|8(?:[.,]5|\.0)?|7(?:[.,]5|\.0)?|"
+    r"6(?:[.,]5|\.0)?|5(?:[.,]5|\.0)?|4(?:[.,]5|\.0)?|3(?:[.,]5|\.0)?|"
+    r"2(?:[.,]5|\.0)?|1(?:[.,]5|\.0)?)(?!\d)"
+)
 
 
 def _digits(value: str) -> str:
     return re.sub(r"\D", "", value or "")
+
+
+def _lines(text: str) -> list[str]:
+    return [re.sub(r"\s+", " ", line).strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def _grade_from_text(value: str):
+    match = _GRADE_RE.search((value or "").replace(",", "."))
+    return hunter._numeric_grade(match.group(1)) if match else None
 
 
 def _unavailable(grader: str, cert_number: str) -> hunter.GraderCertificate:
@@ -55,6 +69,76 @@ def _new_verification_page(page, url: str):
         raise
 
 
+def parse_psa_verified_text(raw_text: str, cert_number: str) -> hunter.GraderCertificate:
+    cert_number = _digits(cert_number)
+    lines = _lines(raw_text)
+    folded = "\n".join(lines).casefold()
+    if cert_number and cert_number not in _digits("\n".join(lines)):
+        return _unavailable("PSA", cert_number)
+    if "requested certification number" in folded and "not found" in folded:
+        return _unavailable("PSA", cert_number)
+
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"item\s+grade", line, re.I):
+            for candidate in lines[index + 1 : index + 3]:
+                grade = _grade_from_text(candidate)
+                if grade is not None:
+                    return hunter.GraderCertificate(cert_number, grade, status="OK", grader="PSA")
+        match = re.match(r"item\s+grade\s*[:\-]?\s*(.+)$", line, re.I)
+        if match:
+            grade = _grade_from_text(match.group(1))
+            if grade is not None:
+                return hunter.GraderCertificate(cert_number, grade, status="OK", grader="PSA")
+
+    # PSA result headers commonly render e.g. "GEM MT 10" close to the cert.
+    for line in lines[:80]:
+        if re.search(r"\b(?:GEM\s*MT|MINT|NM-MT|EX-MT)\b", line, re.I):
+            grade = _grade_from_text(line)
+            if grade is not None:
+                return hunter.GraderCertificate(cert_number, grade, status="OK", grader="PSA")
+    return hunter.GraderCertificate(cert_number, None, status=hunter.CERT_GRADE_UNREADABLE, grader="PSA")
+
+
+def parse_ccc_verified_text(raw_text: str, cert_number: str) -> hunter.GraderCertificate:
+    """Parse CCC overall grade without ever promoting a subgrade."""
+    cert_number = _digits(cert_number)
+    lines = _lines(raw_text)
+    if cert_number and cert_number not in _digits("\n".join(lines)):
+        return _unavailable("CCC", cert_number)
+
+    parsed = hunter.parse_ccc_verification_text(raw_text, cert_number)
+    if parsed.status == "OK" and parsed.grade is not None:
+        return parsed
+
+    # Current CCC verifier renders the overall score as a standalone number
+    # immediately before the first subgrade label ("Note Centrage"). We only
+    # accept a standalone grade in that narrow structural position.
+    subgrade_label = re.compile(
+        r"^(?:Note\s+)?(?:Centrage|Centering|Coins?|Corners?|C[oô]t[ée]s?|Edges?|Surface)\b",
+        re.I,
+    )
+    for index, line in enumerate(lines):
+        if not subgrade_label.search(line):
+            continue
+        for previous in reversed(lines[max(0, index - 3) : index]):
+            normalized = previous.replace(",", ".")
+            if re.fullmatch(
+                r"10(?:\.0)?|9(?:\.5|\.0)?|8(?:\.5|\.0)?|7(?:\.5|\.0)?|"
+                r"6(?:\.5|\.0)?|5(?:\.5|\.0)?|4(?:\.5|\.0)?|3(?:\.5|\.0)?|"
+                r"2(?:\.5|\.0)?|1(?:\.5|\.0)?",
+                normalized,
+            ):
+                grade = hunter._numeric_grade(normalized)
+                if grade is not None:
+                    return hunter.GraderCertificate(cert_number, grade, status="OK", grader="CCC")
+            # Stop once we hit a non-value field label; do not search broadly.
+            if re.search(r"[A-Za-zÀ-ÿ]", previous):
+                break
+        break
+
+    return hunter.GraderCertificate(cert_number, None, status=hunter.CERT_GRADE_UNREADABLE, grader="CCC")
+
+
 def resolve_psa_certificate(page, cert_number: str) -> hunter.GraderCertificate:
     cert_number = _digits(cert_number)
     if not cert_number or page is None:
@@ -70,10 +154,8 @@ def resolve_psa_certificate(page, cert_number: str) -> hunter.GraderCertificate:
             page,
             PSA_DIRECT_URL.format(cert_number=cert_number),
         )
-        certificate = hunter.parse_psa_certificate_html(
-            verification_page.content(),
-            cert_number,
-        )
+        text = verification_page.locator("body").inner_text(timeout=3000)
+        certificate = parse_psa_verified_text(text, cert_number)
     except Exception as error:
         hunter.watcher.log(
             f"Mislisted slab: PSA browser cert indisponible ({type(error).__name__}: {_safe_error(error)})"
@@ -89,7 +171,7 @@ def resolve_psa_certificate(page, cert_number: str) -> hunter.GraderCertificate:
 
 
 def resolve_pca_certificate(page, cert_number: str) -> hunter.GraderCertificate:
-    """PCA exposes a public direct certification URL."""
+    """PCA direct cert page; bot challenges fail cleanly to OCR/manual review."""
     cert_number = _digits(cert_number)
     if not cert_number or page is None:
         return _unavailable("PCA", cert_number)
@@ -105,7 +187,11 @@ def resolve_pca_certificate(page, cert_number: str) -> hunter.GraderCertificate:
             PCA_DIRECT_URL.format(cert_number=cert_number),
         )
         text = verification_page.locator("body").inner_text(timeout=3000)
-        certificate = router.parse_official_grade_text(text, cert_number, "PCA")
+        folded = text.casefold()
+        if "security verification" in folded or "verify you are not a bot" in folded:
+            certificate = _unavailable("PCA", cert_number)
+        else:
+            certificate = router.parse_official_grade_text(text, cert_number, "PCA")
     except Exception as error:
         hunter.watcher.log(
             f"Mislisted slab: PCA direct cert indisponible ({type(error).__name__}: {_safe_error(error)})"
@@ -159,7 +245,6 @@ def _first_visible_cert_input(verification_page):
 
 
 def _submit_ccc_form(verification_page, input_locator) -> None:
-    # Enter is more robust than relying on a specific translated button tag.
     try:
         input_locator.press("Enter", timeout=2500)
         return
@@ -215,7 +300,7 @@ def resolve_ccc_certificate(page, cert_number: str) -> hunter.GraderCertificate:
         except Exception:
             verification_page.wait_for_timeout(1400)
         text = verification_page.locator("body").inner_text(timeout=3000)
-        certificate = hunter.parse_ccc_verification_text(text, cert_number)
+        certificate = parse_ccc_verified_text(text, cert_number)
     except Exception as error:
         hunter.watcher.log(
             f"Mislisted slab: CCC browser cert indisponible ({type(error).__name__}: {_safe_error(error)})"
