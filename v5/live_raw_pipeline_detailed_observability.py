@@ -1,9 +1,9 @@
-"""V5 live diagnostic entrypoint with passive per-record identity observability.
+"""V5 live diagnostic entrypoint with detailed identity observability.
 
 Import order is intentional: ``live_raw_pipeline_uniqueness`` first installs the
-current deterministic uniqueness resolver. This module then replaces only the
-constructed resolver/visual classes with subclasses that call the canonical V5
-logic unchanged and collect bounded diagnostics around it.
+current deterministic uniqueness resolver. This module then keeps that resolver
+and its safety gates, adds passive observability, and applies the V5 live policy
+that PokeTrace is market/pricing only rather than an identity source.
 """
 
 from __future__ import annotations
@@ -14,9 +14,12 @@ from . import live_raw_pipeline_uniqueness as _uniqueness_entrypoint  # noqa: F4
 from . import live_raw_pipeline_catalog as catalog_pipeline
 from .detailed_identity_observability import (
     DetailedDeterministicUniquenessHybridPokemonCardResolver,
-    DetailedLocalVisualIdentityResolver,
-    DetailedPokeTraceIdentityResolver,
     render_detailed_record,
+)
+from .poketrace_market_only_identity import (
+    MarketOnlyPokeTraceIdentityResolver,
+    MarketOnlyPokeTraceVisualIdentityResolver,
+    render_poketrace_market_only_policy,
 )
 
 
@@ -24,7 +27,7 @@ _BasePipelineDiagnostic = catalog_pipeline.CatalogAwareLiveRawPipelineDiagnostic
 
 
 class DetailedCatalogAwareLiveRawPipelineDiagnostic(_BasePipelineDiagnostic):
-    """Print richer diagnostics after the unchanged pipeline has finished."""
+    """Print richer diagnostics after the current deterministic pipeline."""
 
     def run(self):
         summary = super().run()
@@ -45,17 +48,30 @@ class DetailedCatalogAwareLiveRawPipelineDiagnostic(_BasePipelineDiagnostic):
                     )
                 )
         print("observability changes acceptance/valuation: false")
+        identity_resolver = getattr(
+            self.card_catalog_resolver, "poketrace_identity", None
+        )
+        if isinstance(identity_resolver, MarketOnlyPokeTraceIdentityResolver):
+            print(
+                render_poketrace_market_only_policy(
+                    identity_resolver,
+                    self.visual_identity,
+                )
+            )
         return summary
 
 
-# Patch only constructor symbols used by catalog_pipeline.main(). Matching,
-# thresholds, microvariant gates, market valuation and purchase safety remain in
-# the existing V5 implementation.
-catalog_pipeline.PokeTraceIdentityResolver = DetailedPokeTraceIdentityResolver
+# Patch only constructor symbols used by catalog_pipeline.main(). The catalogue
+# resolver, deterministic uniqueness and microvariant gates stay unchanged.
+# PokeTrace identity/visual search is deliberately replaced by market-only
+# no-ops; the PokeTrace market provider itself is not disabled or modified.
+catalog_pipeline.PokeTraceIdentityResolver = MarketOnlyPokeTraceIdentityResolver
 catalog_pipeline.HybridPokemonCardResolver = (
     DetailedDeterministicUniquenessHybridPokemonCardResolver
 )
-catalog_pipeline.LocalVisualIdentityResolver = DetailedLocalVisualIdentityResolver
+catalog_pipeline.LocalVisualIdentityResolver = (
+    MarketOnlyPokeTraceVisualIdentityResolver
+)
 catalog_pipeline.CatalogAwareLiveRawPipelineDiagnostic = (
     DetailedCatalogAwareLiveRawPipelineDiagnostic
 )
