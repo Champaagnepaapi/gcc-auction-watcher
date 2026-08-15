@@ -117,8 +117,8 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           echo "GCC authenticated session: READY"
 
-      - name: Run fast V5 hybrid identity + deterministic uniqueness + local visual/OCR diagnostic
-        run: python -m v5.live_raw_pipeline_uniqueness
+      - name: Run fast V5 hybrid identity + deterministic uniqueness + local visual/OCR + detailed observability diagnostic
+        run: python -m v5.live_raw_pipeline_detailed_observability
 
       - name: Save cumulative GCC catalogue even after diagnostic failure
         if: ${{ always() && hashFiles('gcc_catalog_index.json') != '' }}
