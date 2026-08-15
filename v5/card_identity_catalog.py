@@ -209,9 +209,10 @@ def _local_card_number_candidates(value: str) -> Tuple[str, ...]:
         if promo_like:
             prefix, digits, suffix = promo_like.groups()
             candidates.append(local.upper())
-            candidates.append(
-                f"{prefix.upper()}{int(digits)}{suffix.upper()}"
-            )
+            if prefix.upper() in _PROMO_PREFIX_TO_TCGDEX_SET_ID:
+                candidates.append(
+                    f"{prefix.upper()}{int(digits)}{suffix.upper()}"
+                )
     return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
