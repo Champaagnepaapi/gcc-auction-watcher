@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - "japan_edge_hunter.py"
+      - "japan_edge_hunter_v2.py"
       - "tests_japan/**"
       - ".github/workflows/japan-edge-hunter.yml"
       - ".github/workflows/japan-edge-offline-validation.yml"
@@ -34,7 +35,7 @@ jobs:
         run: python -m unittest discover -s tests_japan -p "test*.py" -v
 
       - name: Compile Japan Edge files
-        run: python -m py_compile japan_edge_hunter.py tests_japan/test_japan_edge_hunter.py
+        run: python -m py_compile japan_edge_hunter.py japan_edge_hunter_v2.py tests_japan/test_japan_edge_hunter.py tests_japan/test_japan_edge_hunter_v2.py
 
       - name: Check diff whitespace
         run: git diff --check origin/${{ github.base_ref }}...HEAD
