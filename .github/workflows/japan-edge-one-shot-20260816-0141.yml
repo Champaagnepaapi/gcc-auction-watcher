@@ -1,0 +1,52 @@
+name: Japan Edge One Shot 20260816 0141
+
+on:
+  push:
+    branches:
+      - ops/japan-edge-run-20260816-0141
+    paths:
+      - ".github/workflows/japan-edge-one-shot-20260816-0141.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      JAPAN_EDGE_GCC_PAGES: "20"
+      JAPAN_EDGE_MAX_SEEDS_PER_RUN: "12"
+      JAPAN_EDGE_MAX_ITEMS_PER_SEARCH: "25"
+      JAPAN_EDGE_MIN_DISCOUNT_PCT: "30"
+      JAPAN_EDGE_PROXY_FIXED_JPY: "500"
+      JAPAN_EDGE_LOGISTICS_BUFFER_PCT: "12"
+      JAPAN_EDGE_NOTIFY_ENABLED: "true"
+      NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run Japan Edge scan
+        run: python japan_edge_hunter_v2.py --state .japan-edge-one-shot/state.json --output japan_edge_one_shot_report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: japan-edge-one-shot-${{ github.run_id }}
+          path: japan_edge_one_shot_report.json
+          if-no-files-found: ignore
+          retention-days: 14
