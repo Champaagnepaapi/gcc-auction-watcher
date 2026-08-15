@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Callable
 
 import v4_mislisted_cert_router as router
 import v4_mislisted_slab_hunter as hunter
@@ -25,6 +24,13 @@ def _unavailable(grader: str, cert_number: str) -> hunter.GraderCertificate:
         status=hunter.CERT_UNAVAILABLE,
         grader=grader,
     )
+
+
+def _safe_error(error: Exception) -> str:
+    """Short transport diagnostic; redact query strings and line breaks."""
+    message = re.sub(r"\s+", " ", str(error or "")).strip()
+    message = re.sub(r"https?://([^/?\s]+)[^\s]*", r"https://\1/<redacted>", message)
+    return message[:220] or type(error).__name__
 
 
 def _new_verification_page(page, url: str):
@@ -59,7 +65,7 @@ def resolve_psa_certificate(page, cert_number: str) -> hunter.GraderCertificate:
         )
     except Exception as error:
         hunter.watcher.log(
-            f"Mislisted slab: PSA browser cert indisponible ({type(error).__name__})"
+            f"Mislisted slab: PSA browser cert indisponible ({type(error).__name__}: {_safe_error(error)})"
         )
         certificate = _unavailable("PSA", cert_number)
     finally:
@@ -91,7 +97,7 @@ def resolve_pca_certificate(page, cert_number: str) -> hunter.GraderCertificate:
         certificate = router.parse_official_grade_text(text, cert_number, "PCA")
     except Exception as error:
         hunter.watcher.log(
-            f"Mislisted slab: PCA direct cert indisponible ({type(error).__name__})"
+            f"Mislisted slab: PCA direct cert indisponible ({type(error).__name__}: {_safe_error(error)})"
         )
         certificate = _unavailable("PCA", cert_number)
     finally:
@@ -198,7 +204,7 @@ def resolve_ccc_certificate(page, cert_number: str) -> hunter.GraderCertificate:
         certificate = hunter.parse_ccc_verification_text(text, cert_number)
     except Exception as error:
         hunter.watcher.log(
-            f"Mislisted slab: CCC browser cert indisponible ({type(error).__name__})"
+            f"Mislisted slab: CCC browser cert indisponible ({type(error).__name__}: {_safe_error(error)})"
         )
         certificate = _unavailable("CCC", cert_number)
     finally:
