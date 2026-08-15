@@ -50,7 +50,7 @@ jobs:
             japan-edge-state-
 
       - name: Scan Japan asks against exact GCC SOLD
-        run: python japan_edge_hunter.py --state .japan-edge-state/state.json --output japan_edge_report.json
+        run: python japan_edge_hunter_v2.py --state .japan-edge-state/state.json --output japan_edge_report.json
 
       - name: Save Japan Edge state
         if: always()
