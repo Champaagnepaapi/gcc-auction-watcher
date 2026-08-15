@@ -2,25 +2,21 @@ name: V5 Live Raw Pipeline Diagnostic
 
 on:
   workflow_dispatch:
-    inputs:
-      pokemon_tcg_remaining_confirmed:
-        description: "RapidAPI Pokemon TCG requests remaining now (must be >=90)"
-        required: true
-        type: string
 
 permissions:
   contents: read
   actions: read
 
-# Branch-local provider benchmark. CMAPI key is deliberately absent, so this
-# workflow cannot consume CMAPI quota. main and PR #8 remain untouched.
+# Branch-local provider benchmark: eBay Average Selling Price via RapidAPI.
+# Basic plan is 50 requests/month with a hard request limit; this workflow is
+# capped at 6 calls. No CMAPI or Pokemon TCG RapidAPI secret is passed.
+# main and PR #8 remain untouched.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      POKEMON_TCG_RAPIDAPI_KEY: ${{ secrets.POKEMON_TCG_RAPIDAPI_KEY }}
-      POKEMON_TCG_REMAINING_CONFIRMED: ${{ inputs.pokemon_tcg_remaining_confirmed }}
+      EBAY_ASP_RAPIDAPI_KEY: ${{ secrets.EBAY_ASP_RAPIDAPI_KEY }}
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
@@ -38,14 +34,14 @@ jobs:
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Compile Pokemon TCG RapidAPI probe
+      - name: Compile eBay ASP RapidAPI probe
         run: |
           python -m py_compile \
-            v5/source_scout_pokemon_tcg_rapidapi_probe.py \
-            tests_v5/test_source_scout_pokemon_tcg_rapidapi_probe.py
+            v5/source_scout_ebay_asp_rapidapi_probe.py \
+            tests_v5/test_source_scout_ebay_asp_rapidapi_probe.py
 
-      - name: Run focused safety tests
-        run: python -m unittest tests_v5.test_source_scout_pokemon_tcg_rapidapi_probe -v
+      - name: Run focused safety and identity tests
+        run: python -m unittest tests_v5.test_source_scout_ebay_asp_rapidapi_probe -v
 
       - name: Download prior CMAPI benchmark evidence without new CMAPI calls
         uses: actions/download-artifact@v4
@@ -56,21 +52,21 @@ jobs:
           run-id: 31871803238
           github-token: ${{ github.token }}
 
-      - name: Run bounded Pokemon TCG RapidAPI probe
-        run: python -m v5.source_scout_pokemon_tcg_rapidapi_probe
+      - name: Run bounded eBay ASP US UK FR probe
+        run: python -m v5.source_scout_ebay_asp_rapidapi_probe
 
       - name: Publish benchmark summary
-        if: always() && hashFiles('pokemon_tcg_rapidapi_probe.md') != ''
+        if: always() && hashFiles('ebay_asp_rapidapi_probe.md') != ''
         shell: bash
-        run: cat pokemon_tcg_rapidapi_probe.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat ebay_asp_rapidapi_probe.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark evidence
-        if: always() && hashFiles('pokemon_tcg_rapidapi_probe.json') != ''
+        if: always() && hashFiles('ebay_asp_rapidapi_probe.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: pokemon-tcg-rapidapi-probe-${{ github.run_id }}
+          name: ebay-asp-rapidapi-probe-${{ github.run_id }}
           path: |
-            pokemon_tcg_rapidapi_probe.json
-            pokemon_tcg_rapidapi_probe.md
+            ebay_asp_rapidapi_probe.json
+            ebay_asp_rapidapi_probe.md
           if-no-files-found: error
           retention-days: 14
