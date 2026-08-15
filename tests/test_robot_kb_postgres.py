@@ -42,7 +42,7 @@ class PostgresBoundaryUnitTests(unittest.TestCase):
 
     def test_native_schema_covers_every_transfer_table_and_protection(self):
         catalog = _migration_catalog()
-        self.assertEqual(list(catalog), [1, 2])
+        self.assertEqual(list(catalog), [1, 2, 3])
         self.assertEqual(
             catalog[1][1],
             "c5357dc1dcfa99121c993c4d4567aae886990bf52ddcfb7ca93fe9266c04dffd",
@@ -79,10 +79,10 @@ class PostgresBoundaryUnitTests(unittest.TestCase):
 
         empty = _FakePostgresMigrationConnection()
         apply_postgres_migrations(empty)
-        self.assertEqual([version for version, _ in empty.scripts], [1, 2])
-        self.assertEqual(sorted(empty.applied), [1, 2])
+        self.assertEqual([version for version, _ in empty.scripts], [1, 2, 3])
+        self.assertEqual(sorted(empty.applied), [1, 2, 3])
         apply_postgres_migrations(empty)
-        self.assertEqual([version for version, _ in empty.scripts], [1, 2])
+        self.assertEqual([version for version, _ in empty.scripts], [1, 2, 3])
 
         version_1_path, version_1_checksum = catalog[1]
         existing = _FakePostgresMigrationConnection(
@@ -95,10 +95,10 @@ class PostgresBoundaryUnitTests(unittest.TestCase):
             }
         )
         apply_postgres_migrations(existing)
-        self.assertEqual([version for version, _ in existing.scripts], [2])
-        self.assertEqual(sorted(existing.applied), [1, 2])
+        self.assertEqual([version for version, _ in existing.scripts], [2, 3])
+        self.assertEqual(sorted(existing.applied), [1, 2, 3])
         apply_postgres_migrations(existing)
-        self.assertEqual([version for version, _ in existing.scripts], [2])
+        self.assertEqual([version for version, _ in existing.scripts], [2, 3])
 
     def test_backup_environment_keeps_password_out_of_database_name(self):
         url = (
