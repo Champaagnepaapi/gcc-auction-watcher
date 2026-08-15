@@ -1,0 +1,43 @@
+name: Docs V5 outage cache handoff
+
+on:
+  push:
+    branches:
+      - docs/v5-outage-cache-handoff-20260816
+    paths:
+      - 'scripts/patch_v5_outage_cache_readme.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-readme:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/v5-outage-cache-handoff-20260816
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply exact README replacement
+        run: python scripts/patch_v5_outage_cache_readme.py
+
+      - name: Verify docs-only diff and self-remove tooling
+        shell: bash
+        run: |
+          changed=$(git diff --name-only)
+          test "$changed" = "README.md"
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/patch_v5_outage_cache_readme.py
+          git rm .github/workflows/docs-v5-outage-cache-handoff.yml
+          git add README.md
+          git diff --cached --check
+          git commit -m "docs(v5): record outage fallback and Robot KB cache"
+          git push origin HEAD:docs/v5-outage-cache-handoff-20260816
