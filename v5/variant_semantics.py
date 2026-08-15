@@ -403,11 +403,9 @@ def tcgdex_variant_supports_identity(
         value = variants.get("normal")
         if isinstance(value, bool):
             checks.append(value)
-    if expected.promo is True:
-        value = variants.get("wPromo")
-        if isinstance(value, bool):
-            checks.append(value)
-
+    # TCGdex `wPromo` means a W-stamp variant, not generic promo-card
+    # membership. Generic promo status is proven from set/rarity semantics and
+    # must never be compared to this stamp-availability flag.
     if not checks:
         return None
     return all(checks)
