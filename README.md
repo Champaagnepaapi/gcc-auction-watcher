@@ -7,10 +7,10 @@
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
-Dernier merge fonctionnel V4/Robot KB de cette phase :
+Dernier merge fonctionnel V4 / Robot KB :
 
 ```text
-1eefc84b9015d8d57ef976166b24a56d8d9a791d
+0f0304635d131828d1d22d9f3ca7514ca33fe7dd
 ```
 
 ### Principes non négociables
@@ -67,18 +67,16 @@ Règles :
 - `state.json` reste propriété du Main Scanner ; `final_alerts.json` sert à la déduplication finale ;
 - aucune transaction automatique.
 
-## Discovery
-
-### Fixed
+## Discovery fixed
 
 - API GCC publique `/on-sale-items` ;
 - scope Pokémon cartes individuelles ;
 - prix discovery `0–100 €` ;
 - file économique : `NEW -> CHANGED -> NEVER_EVALUATED -> STALE` ;
 - budget d’évaluation borné en aval, jamais au niveau discovery ;
-- TTL fixed standard 24 h, avec refresh adaptatif plus rapide près du seuil.
+- TTL fixed standard 24 h, avec refresh adaptatif 1–6 h près du seuil.
 
-### Auctions
+## Discovery auctions
 
 Source primaire :
 
@@ -171,7 +169,7 @@ Titres ntfy :
 
 # V4 — priorité intelligente des budgets externes — PR #77
 
-Merge production :
+Merge :
 
 ```text
 f192623e6e286eac05daf45fa70b0c20824c57b2
@@ -181,29 +179,17 @@ Module : `v4_smart_external_priority.py`.
 
 Objectif : envoyer les requêtes externes rares d’abord vers les cartes à forte valeur d’information, **sans changer l’économie**.
 
-### Auctions
+- Auctions : ordre canonique `ending-soon` conservé bit-for-bit.
+- Fixed : le rang de file existant reste prioritaire ; à rang égal, bonus pour baisse de prix GCC réelle, historique exact rare, grader secondaire/non-PSA, prix GCC bas et branche GCC faible/récupérable.
+- Aucun changement de discovery, matching, fair value, `max_recommended`, seuils ntfy ou budgets providers.
 
-Ordre canonique `ending-soon` conservé **bit-for-bit**. Aucune heuristique fixed ne peut passer devant une auction.
-
-### Fixed
-
-Le rang de file existant reste prioritaire ; à rang égal, bonus pour :
-
-- baisse de prix GCC réelle ;
-- historique exact rare (`0/1/2` comps exacts) ;
-- grader secondaire/non-PSA ;
-- prix GCC bas ;
-- branche GCC faible/indisponible donc potentiellement sauvable par marché externe.
-
-Ce module ne change pas : discovery, matching, fair value, `max_recommended`, seuils ntfy ou budgets providers.
-
-Validation PR #77 : run `31889180022` — SUCCESS ; tests/compile/discovery live verts.
+Validation PR #77 : run `31889180022` — SUCCESS.
 
 ---
 
-# V4 — position de marché « actuellement achetable » — PR #78
+# V4 — position de marché actuellement achetable — PR #78 + cache PR #79
 
-Merge production :
+PR #78 merge :
 
 ```text
 1eefc84b9015d8d57ef976166b24a56d8d9a791d
@@ -211,27 +197,109 @@ Merge production :
 
 Module : `v4_exact_active_ask_position.py`.
 
-But : pour une **opportunité fixed déjà retenue par V4**, vérifier si GCC est actuellement moins cher qu’un slab exact achetable ailleurs.
+Pour une **opportunité fixed déjà retenue**, V4 peut vérifier le plus bas slab exact actuellement achetable ailleurs.
 
 Production actuelle :
 
-- première source exacte : **eBay Buy-It-Now** ;
-- max 2 opportunités fixed vérifiées/run par défaut ;
-- identité commerciale suffisante requise ;
-- même carte + grader + grade + dimensions sensibles via le gate externe strict existant ;
-- conserve le plus bas ask eBay exact trouvé ;
-- notification possible : `GCC est X % sous l'ASK eBay exact` ;
+- source graded listing-level : **eBay Buy-It-Now** ;
+- max 2 nouvelles recherches réseau/run par défaut ;
+- même carte + grader + grade + dimensions sensibles via le gate externe strict ;
+- résultat affichable : `GCC est X % sous l'ASK eBay exact` ;
 - texte obligatoire : **`ASK, PAS UNE VENTE`**.
 
-Sécurité :
+Depuis PR #79 :
 
-- un ask actif ne crée **jamais** une opportunité ;
-- un ask ne devient jamais un SOLD/comparable vendu ;
-- aucun changement de fair value ou `max_recommended` ;
-- Cardmarket/TCGplayer restent RAW et ne sont pas présentés comme asks exacts de slab tant qu’une source graded listing-level exacte n’est pas disponible ;
+- un ask positif est caché brièvement par **identité commerciale stricte**, pas par URL de listing GCC ;
+- TTL par défaut 30 min ;
+- deux annonces GCC exactement identiques peuvent donc réutiliser une seule recherche eBay ;
+- le gap est recalculé avec le prix GCC propre à chaque annonce ;
+- les `no-match` ne sont pas cachés ;
+- grader, grade, langue et dimensions sensibles restent séparés.
+
+Sécurité : un ask actif ne crée jamais une opportunité, ne devient jamais un SOLD, et ne modifie jamais fair value ou `max_recommended`.
+
+Validation PR #78 : run `31889490939`, job `95023537547` : **540/540 PASS**.
+
+---
+
+# V4 / Robot KB — ROI efficiency sans Expected Profit — PR #79
+
+Merge production :
+
+```text
+0f0304635d131828d1d22d9f3ca7514ca33fe7dd
+```
+
+Feature head validé :
+
+```text
+3eb069894ef29174d9d8b88cf43540e2d1c40d89
+```
+
+## Décision importante : pas de score Expected Profit
+
+Le score `Expected Profit` proposé précédemment **n’est pas implémenté**. Il n’existe aucun score synthétique susceptible de masquer la hiérarchie de preuves ou de modifier les décisions économiques V4.
+
+## Stale listing + momentum SOLD exact
+
+Module : `v4_roi_efficiency.py`.
+
+- V4 conserve le `createdAt` structuré de l’annonce fixed GCC ;
+- momentum calculé uniquement sur **SOLD exacts même carte + même grader + même grade**, datés, sans qualifier ;
+- fenêtre récente par défaut : 90 j ; baseline : jusqu’à 365 j ;
+- au moins 2 SOLD dans chaque fenêtre ;
+- signal par défaut si annonce ≥14 j, momentum ≥15 % et prix GCC ≥15 % sous la médiane récente ;
+- le signal sert uniquement à mieux ordonner les appels externes fixed **à rang de file égal** et à annoter une opportunité déjà retenue ;
+- il ne crée jamais une opportunité et ne change ni fair value, ni seuil, ni `max_recommended` ;
 - auctions/Fast Lane inchangées.
 
-Validation PR #78 : run `31889490939`, job `95023537547` : **540/540 tests PASS**, compile PASS, `git diff --check` PASS, discovery live PASS (`legacy_only=0`, unresolved=0, private failures=0).
+## KB-first : readiness seulement, aucun hard gate
+
+Le Robot KB est encore trop jeune pour devenir la source obligatoire avant les APIs externes.
+
+Audit Neon read-only effectué pendant PR #79 :
+
+- `337` `sale_transaction` au total ;
+- `100` ventes GCC finales prouvées dans l’échantillon alors présent ;
+- `85` tiers stricts carte + langue + édition + grader + grade ;
+- **0 tier avec ≥2 SOLD** ;
+- **0 tier KB-first-ready** selon la règle prudente `≥3 SOLD exacts dont ≥2 <90j` ;
+- **0 spread PSA ↔ grader secondaire** suffisamment profond pour apprentissage automatique à ce moment-là.
+
+Conclusion : **aucun hard gate KB-first en V4 pour l’instant**. Les providers externes continuent normalement. La readiness est mesurée en shadow pendant que le backfill grossit.
+
+## Analytics Robot KB read-only
+
+Module : `robot_kb_roi_analytics.py`.
+
+- transaction Neon explicitement `READ ONLY` ;
+- lit uniquement des ventes GCC `COMPLETED` prouvées ;
+- identité stricte issue des claims explicites, sans fuzzy ni valeur par défaut ;
+- mesure profondeur par tier exact et readiness KB-first ;
+- apprend éventuellement des ratios PSA ↔ grader secondaire uniquement si : même carte stricte, même grade, EUR, ≥2 SOLD de chaque côté et fenêtre combinée ≤365 j ;
+- aucune conversion FX inventée ;
+- output shadow `robot_kb_roi_snapshot.json` ;
+- champs explicites `v4_economic_use=false` et `expected_profit_score_enabled=false`.
+
+Le workflow SOLD lance cette analytics **après** ingestion, commit et sauvegarde des curseurs. Elle est `continue-on-error`, donc elle ne peut pas bloquer/falsifier la collecte SOLD ou le backfill.
+
+## Validation PR #79
+
+GitHub Actions :
+
+```text
+run 31891447216
+job 95028201210
+```
+
+Résultat :
+
+- **557/557 tests PASS** ;
+- compile PASS ;
+- `git diff --check` PASS ;
+- live discovery read-only : primary complete, rows/timers `336/336`, private failures `0`, `primary_only=34`, `legacy_only=0`, unresolved `0` ;
+- API + private safety-net = superset de legacy à horizon commun ;
+- comparaison : 0 achat, bid, checkout, ntfy économique ou mutation d’état.
 
 ---
 
@@ -250,8 +318,6 @@ cert GCC
 ```
 
 ## Certificat GCC
-
-Un bug historique effaçait le `cert_number` structuré lors de l’inspection de fiche. Correction validée :
 
 - préserver le cert API avant inspection ;
 - si réellement absent, ouvrir explicitement `Description -> Gradation` ;
@@ -282,7 +348,7 @@ OCR fallback uniquement PSA/PCA/CCC :
 - Pillow upscale/contraste/netteté ;
 - plusieurs passes Tesseract ;
 - au moins 2 lectures concordantes ;
-- exclusion explicite des subgrades (`SURFACE`, `CORNERS/COINS`, `EDGES/CÔTÉS`, `CENTERING/CENTRAGE`).
+- exclusion explicite des subgrades.
 
 Benchmark 50 cartes : 8 lisibles, 7 concordantes metadata, 1 conflit PSA suspect, 19 ambiguës, 23 indisponibles. Un mismatch `IMAGE_ONLY` reste **manual review**, jamais une preuve officielle et jamais une réécriture de la valorisation.
 
@@ -328,18 +394,7 @@ Chaque run hourly peut couvrir :
 - déduplication listing avant ingestion ;
 - état/cursor n’avance qu’après succès Neon.
 
-Le ciblage n’utilise jamais un badge GCC « bonne affaire » comme preuve économique.
-
-Validation live post-merge PR #75 : run `31888162893`, job `95020369028` — **SUCCESS** sur `caebf0e5865e6851c5240b80c8ba55e3cfa7f5d5` :
-
-- collecte fixed : `recent=100`, `rotation=200` (pages `1..2`), `targeted=100`, `unique_total=300` après déduplication ;
-- ciblage observé : English `+95` uniques, BGS `+4`, grade 5 `+1` ;
-- backup auction : 100 observations supplémentaires ;
-- sidecar Neon : `source_records_fetched=400`, `observations_accepted=400`, `source_failures=0`, `rejected_malformed_records=0`, `monetary_facts_rejected=0` ;
-- commit des curseurs exécuté **après** succès de l’ingestion : `last_page=2`, `target_cursor=3` ;
-- cache d’état durable sauvegardé avec succès.
-
-Ce run valide en production la stratégie `100 récents + 200 rotation + jusqu’à 100 ciblés` et le comportement fail-safe des curseurs.
+Validation live post-merge : run `31888162893`, job `95020369028` — SUCCESS ; 400 source records, 400 observations acceptées, 0 source failure.
 
 ## SOLD frais lossless
 
@@ -358,19 +413,28 @@ Merge :
 fda196283e3522de7c1eadca3c706c9c350dec8d
 ```
 
-Module : `v4_kb_sold_backfill.py`.
+Source : **API publique GCC**, requêtes GET-only sur le scope SOLD. Le robot remonte progressivement les pages historiques ; il ne scrape pas des asks et ne déduit jamais une vente depuis une enchère terminée.
 
-Le backfill remplit **rétroactivement** l’historique avant le bootstrap du 15/08/2026 :
+Contrat :
 
+```text
+status=SOLD
++ soldAt timezone-aware
++ prix final valide
+= SALE_TRANSACTION prouvée
+```
+
+Le backfill :
+
+- remplit rétroactivement l’historique avant le bootstrap du 15/08/2026 ;
 - cursor historique séparé de la lane fraîche ;
-- strictement `SOLD + soldAt timezone-aware + prix final` ;
-- recherche de la bonne zone historique par sondage exponentiel/binaire borné ;
+- recherche de la zone historique par sondage exponentiel/binaire borné ;
 - max 400 ventes historiques/run ;
-- `cursor_seen_ids` protège contre pertes/doublons lorsque plusieurs ventes ont exactement le même `soldAt` ;
-- `commit` du cursor seulement après ingestion Neon réussie ;
-- s’arrête seulement après avoir atteint la vraie fin de l’API historique.
+- `cursor_seen_ids` protège les frontières partageant le même `soldAt` ;
+- commit du cursor seulement après ingestion Neon réussie ;
+- s’arrête à la vraie fin de l’API historique.
 
-Validation PR #76 : run `31889075054`, job `95022529447` : **529 tests PASS**, compile/diff PASS, discovery live PASS (`legacy_only=0`, private failures=0).
+Validation PR #76 : run `31889075054`, job `95022529447` : **529 tests PASS**, compile/diff/discovery live PASS.
 
 ---
 
@@ -388,7 +452,7 @@ Règles :
 - pas d’achat/bid/checkout/CardGrader automatique ;
 - V4, V5 et Robot KB restent techniquement séparés.
 
-Les PR #75/#76/#77/#78 n’ont pas mergé PR #8 et ne doivent pas être utilisées comme prétexte pour la resynchroniser sans audit.
+Les PR #75/#76/#77/#78/#79 n’ont pas mergé PR #8 et ne doivent pas être utilisées comme prétexte pour la resynchroniser sans audit.
 
 ---
 
@@ -400,7 +464,7 @@ Les PR #75/#76/#77/#78 n’ont pas mergé PR #8 et ne doivent pas être utilisé
 4. `V4 GCC Coverage Audit`.
 5. `PSA Public API Diagnostic` — diagnostic historique.
 6. `Robot KB cloud shadow` — fixed/auction shadow.
-7. `Robot KB SOLD shadow` — fresh SOLD + backfill historique.
+7. `Robot KB SOLD shadow` — fresh SOLD + backfill historique + snapshot ROI/readiness **read-only**.
 8. workflows V5 diagnostics/benchmarks — expérimentaux uniquement.
 
 Éviter les workflows temporaires/redondants quand un workflow existant suffit.
@@ -425,6 +489,7 @@ PR #75  KB fixed hybrid                   caebf0e5865e6851c5240b80c8ba55e3cfa7f5
 PR #76  KB historical SOLD backfill       fda196283e3522de7c1eadca3c706c9c350dec8d
 PR #77  smart external priority           f192623e6e286eac05daf45fa70b0c20824c57b2
 PR #78  exact active eBay ASK position    1eefc84b9015d8d57ef976166b24a56d8d9a791d
+PR #79  ROI efficiency / KB readiness     0f0304635d131828d1d22d9f3ca7514ca33fe7dd
 ```
 
 ---
@@ -452,7 +517,8 @@ Pendant des enchères actives, éviter toute modification risquée du cœur V4 ;
 - jamais mélanger ask/live auction et SOLD ;
 - state cursor durable n’avance qu’après ingestion réussie ;
 - privilégier large couverture de cartes différentes + final SOLD prouvé ;
-- conserver l’historique immuable.
+- conserver l’historique immuable ;
+- **ne pas activer un hard gate KB-first tant que la profondeur exacte par tier n’est pas suffisante**.
 
 ## V5
 
