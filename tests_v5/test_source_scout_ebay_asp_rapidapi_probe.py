@@ -15,6 +15,11 @@ class EbayAspRapidApiProbeTests(unittest.TestCase):
         product = {"title": "2021 Pokemon Evolving Skies Umbreon VMAX 215/203 PSA 10 GEM MINT"}
         self.assertTrue(probe.strict_card_match(card, product))
 
+    def test_strict_match_accepts_psa_gem_mt_10(self) -> None:
+        card = probe.CARDS[0]
+        product = {"title": "PSA GEM MT 10 -2021 Pokémon UMBREON VMAX EVOLVING SKIES SWSH SECRET RARE-215/203"}
+        self.assertTrue(probe.strict_card_match(card, product))
+
     def test_strict_match_accepts_unique_name_and_numerator(self) -> None:
         card = probe.CARDS[1]
         product = {"title": "Pokemon Gengar VMAX #271 PSA 10 Gem Mint"}
