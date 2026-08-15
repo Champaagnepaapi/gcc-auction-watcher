@@ -8,6 +8,7 @@ on:
     paths:
       - "v4_ppt_shadow_model.py"
       - "v4_ppt_shadow_provider.py"
+      - "v4_ppt_shadow_language_bridge.py"
       - "run_watcher_multimarket.py"
       - "tests/test_v4_ppt_shadow*.py"
       - ".github/workflows/v4-ppt-shadow-offline-validation.yml"
@@ -61,10 +62,12 @@ jobs:
           python -m py_compile \
             v4_ppt_shadow_model.py \
             v4_ppt_shadow_provider.py \
+            v4_ppt_shadow_language_bridge.py \
             run_watcher_multimarket.py \
             tests/test_v4_ppt_shadow.py \
             tests/test_v4_ppt_shadow_language_gate.py \
-            tests/test_v4_ppt_shadow_install.py
+            tests/test_v4_ppt_shadow_install.py \
+            tests/test_v4_ppt_shadow_cross_language.py
 
       - name: Check diff whitespace
         run: git diff --check origin/main...HEAD
@@ -75,11 +78,16 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           provider = Path('v4_ppt_shadow_provider.py').read_text(encoding='utf-8')
+          bridge = Path('v4_ppt_shadow_language_bridge.py').read_text(encoding='utf-8')
           model = Path('v4_ppt_shadow_model.py').read_text(encoding='utf-8')
           assert 'SOLD_AGGREGATED' in provider or 'SOLD_AGGREGATED' in model
           assert 'SOLD_ITEM_LEVEL' not in provider
-          assert 'V4_PPT_SHADOW_ENABLED' in provider
-          assert 'production_economic_use' in provider
-          assert 'notification_use' in provider
-          print('PPT shadow safety assertions: PASS')
+          assert 'SOLD_ITEM_LEVEL' not in bridge
+          assert 'CROSS_LANGUAGE_EN_ANCHOR' in bridge
+          assert 'same-card + same-grader + same-grade' in bridge
+          assert 'V4_PPT_SHADOW_ENABLED' in provider or 'V4_PPT_SHADOW_ENABLED' in bridge
+          assert 'production_economic_use' in bridge
+          assert 'notification_use' in bridge
+          assert 'EXTERNAL_RESCUE' in bridge
+          print('PPT cross-language shadow safety assertions: PASS')
           PY
