@@ -18,7 +18,7 @@ import v4_mislisted_slab_hunter as hunter
 
 
 # Read-only smoke checks: no bid/buy/checkout and no notification.
-# PCA example is a public certification URL from a live marketplace listing.
+# Keep these exact public samples stable so transport diagnostics are comparable.
 KNOWN = (
     ("PSA", "131216316", 10.0),
     ("PCA", "76676760", 9.5),
