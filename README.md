@@ -505,6 +505,12 @@ Validation PR #76 : run `31889075054`, job `95022529447` : **529 tests PASS**, c
 PR : **#8**  
 Branche : `agent/v5-poketrace-cardmarket-market-data`
 
+Head V5 expérimental actuellement validé :
+
+```text
+dfeaec9088d8f53c789c21acdc2aa56b4595b753
+```
+
 Règles :
 
 - aucune intégration dans `main` sans autorisation explicite utilisateur ;
@@ -514,7 +520,39 @@ Règles :
 - pas d’achat/bid/checkout/CardGrader automatique ;
 - V4, V5 et Robot KB restent techniquement séparés.
 
-Les PR #75/#76/#77/#78/#79/#80 n’ont pas mergé PR #8 et ne doivent pas être utilisées comme prétexte pour la resynchroniser sans audit.
+## Observabilité identité détaillée — PR #81 + CI offline PR #82
+
+PR #82 a ajouté à la branche V5 un workflow `V5 Offline Validation` sans secrets/providers, destiné aux PR enfants V5. Il exécute la suite `tests_v5`, `compileall v5` et `git diff --check` sans live.
+
+PR #81 a ensuite porté la partie utile de l’ancien patch local d’observabilité sur la V5 actuelle, **sans réintroduire son ancienne logique de microvariantes** :
+
+- diagnostics TCGdex/Pokémon TCG par identité ;
+- diagnostics PokeTrace par stratégie, compteurs de candidats et exemples bornés de raisons de rejet ;
+- diagnostic visuel passif avec score/marge/seuils ;
+- JSON structuré par annonce unresolved / blocked ;
+- le `VariantDiagnostic` courant est sérialisé tel quel : l’overlay ne décide pas à la place des gates actuels ;
+- les wrappers appellent les resolvers courants via `super()` et ne changent ni matching, ni seuils, ni valuation ;
+- metadata provider seule ne devient jamais une preuve listing ni un motif de `SINGLE_COMPATIBLE`.
+
+Le workflow manuel `V5 Live Raw Pipeline Diagnostic` utilise maintenant `v5.live_raw_pipeline_detailed_observability`, qui charge d’abord la deterministic uniqueness existante puis ajoute uniquement la couche d’observabilité.
+
+Validation offline PR #81 :
+
+```text
+run 31898349431
+job 95045035673
+```
+
+Résultat :
+
+- **569/569 tests V5 PASS** ;
+- `compileall v5` PASS ;
+- `git diff --check` PASS ;
+- secrets commerciaux/providers injectés : **0** ;
+- aucun live V5 lancé pendant cette phase ;
+- aucun achat, bid, checkout ou paiement.
+
+Les PR #75/#76/#77/#78/#79/#80 n’ont pas mergé PR #8. Les PR #81/#82 ont été mergées **dans la branche V5 expérimentale uniquement**, jamais dans `main`.
 
 ---
 
@@ -527,7 +565,8 @@ Les PR #75/#76/#77/#78/#79/#80 n’ont pas mergé PR #8 et ne doivent pas être 
 5. `PSA Public API Diagnostic` — diagnostic historique.
 6. `Robot KB cloud shadow` — fixed/auction shadow.
 7. `Robot KB SOLD shadow` — fresh SOLD + backfill historique + snapshot ROI/readiness **read-only**.
-8. workflows V5 diagnostics/benchmarks — expérimentaux uniquement.
+8. `V5 Offline Validation` — CI offline sans secrets/providers pour les PR enfants ciblant la branche V5.
+9. workflows V5 diagnostics/benchmarks — expérimentaux uniquement ; les lives restent manuels.
 
 Éviter les workflows temporaires/redondants quand un workflow existant suffit.
 
