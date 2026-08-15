@@ -931,3 +931,21 @@ Validation PR #64 : run **`31838778755`**, job **`94890915083`** — **482/482 t
 - Budget officiel reste borné à `V4_MISLISTED_CERT_MAX_PER_RUN=5` ; aucun contournement anti-bot/WAF.
 - Aucun achat, bid, checkout, paiement ou grading automatique.
 - **V5 PR #8 reste inchangée et non mergée.**
+
+---
+
+# PR #73 — échecs techniques de lookup certificat en log-only
+
+- Cette règle **supersède uniquement la notification `CERT_LOOKUP_FAILED` de PR #67/#71** ; la détection de mismatch annonce ↔ certificat reste inchangée.
+- Premier run production après PR #71 : `31881375679` / job `95004339714` → les **5 lookups autorisés** du run ont retourné `CERT_UNAVAILABLE` (principalement PCA/PSA) et ont créé une rafale de notifications malgré des numéros de certificat présents.
+- Politique production actuelle PSA/PCA/CCC :
+  * vrai `CERT_NUMBER_MISSING` seulement après cert API absent + fallback **Description → Gradation** absent → **notification immédiate** ;
+  * `CERT_GRADE_UNREADABLE` lorsque le vérificateur répond mais que la note globale reste illisible → **notification immédiate** ;
+  * `CERT_UNAVAILABLE` / lookup bloqué, timeout, anti-bot ou panne technique → **log uniquement, aucune ntfy** ;
+  * `POSITIVE_GRADE_MISMATCH` confirmé par certificat officiel → **alerte manuelle** ;
+  * `NEGATIVE_GRADE_MISMATCH` confirmé par certificat officiel → **alerte + safety gate économique** ;
+  * OCR seul reste manual-review et ne réécrit jamais la valorisation.
+- Validation PR #73 : run **`31881786466`**, job **`95005298632`** → **520/520 tests PASS**, compile PASS, `git diff --check` PASS, discovery live PASS en superset (`primary_only=2`, `legacy_only=0`, unresolved=0, private safety-net failures=0).
+- Merge production PR #73 : **`8f584e0d72afed5c6afc06a4e2d25d9d6787a44e`**.
+- Aucun achat, bid, checkout, paiement ou grading automatique.
+- **V5 PR #8 reste inchangée et non mergée.**
