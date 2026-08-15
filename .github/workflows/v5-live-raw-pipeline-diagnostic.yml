@@ -45,6 +45,7 @@ jobs:
             v5/source_scout_cmapi_v3_entrypoint.py \
             v5/source_scout_opportunity_benchmark.py \
             v5/source_scout_opportunity_benchmark_v2.py \
+            v5/source_scout_opportunity_benchmark_v3.py \
             v5/neon_source_scout_ingest.py \
             v5/neon_source_scout_ingest_v2.py \
             v5/neon_cmapi_ingest.py \
@@ -53,6 +54,7 @@ jobs:
             tests_v5/test_source_scout_cmapi_v3.py \
             tests_v5/test_source_scout_opportunity_benchmark.py \
             tests_v5/test_source_scout_opportunity_benchmark_v2.py \
+            tests_v5/test_source_scout_opportunity_benchmark_v3.py \
             tests_v5/test_neon_cmapi_ingest.py \
             tests_v5/test_neon_cmapi_ingest_v2.py
 
@@ -63,11 +65,12 @@ jobs:
             tests_v5.test_source_scout_cmapi_v3 \
             tests_v5.test_source_scout_opportunity_benchmark \
             tests_v5.test_source_scout_opportunity_benchmark_v2 \
+            tests_v5.test_source_scout_opportunity_benchmark_v3 \
             tests_v5.test_neon_cmapi_ingest \
             tests_v5.test_neon_cmapi_ingest_v2 -v
 
       - name: Run bounded EN FR opportunity provider benchmark
-        run: python -m v5.source_scout_opportunity_benchmark_v2
+        run: python -m v5.source_scout_opportunity_benchmark_v3
 
       - name: Persist PokemonPriceTracker evidence to Neon
         if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
