@@ -295,10 +295,16 @@ def resolve_ccc_certificate(page, cert_number: str) -> hunter.GraderCertificate:
             raise RuntimeError("CCC cert input unavailable")
         cert_input.fill(cert_number)
         _submit_ccc_form(verification_page, cert_input)
+        # The result is rendered client-side. Wait for the certificate number to
+        # appear in visible body text; an input value alone is not innerText.
         try:
-            verification_page.wait_for_load_state("networkidle", timeout=5000)
+            verification_page.wait_for_function(
+                "cert => document.body && document.body.innerText.includes(cert)",
+                cert_number,
+                timeout=5500,
+            )
         except Exception:
-            verification_page.wait_for_timeout(1400)
+            verification_page.wait_for_timeout(1800)
         text = verification_page.locator("body").inner_text(timeout=3000)
         certificate = parse_ccc_verified_text(text, cert_number)
     except Exception as error:
