@@ -11,6 +11,7 @@ on:
       - "v4_canonical_multimarket.py"
       - "v4_edge_hunter_safety.py"
       - "v4_multimarket_safety.py"
+      - "v4_structural_edge_hunter.py"
       - "compare_auction_discovery.py"
       - "run_watcher_safe.py"
       - "run_watcher_multimarket.py"
@@ -57,6 +58,7 @@ jobs:
           python -m py_compile v4_canonical_multimarket.py
           python -m py_compile v4_edge_hunter_safety.py
           python -m py_compile v4_multimarket_safety.py
+          python -m py_compile v4_structural_edge_hunter.py
           python -m py_compile run_watcher_multimarket.py
 
       - name: Compare augmented and legacy discovery live
