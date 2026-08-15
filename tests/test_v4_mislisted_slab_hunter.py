@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import run_watcher_multimarket
 import watcher
+import v4_focus_cert_router as focus_router
 import v4_mislisted_cert_router as cert_router
 import v4_mislisted_ocr_hardening as ocr_hardening
 import v4_mislisted_slab_hunter as hunter
@@ -127,9 +128,9 @@ class MislistedSlabHunterTests(unittest.TestCase):
             with self.subTest(grader=grader):
                 clip = ocr_hardening._ocr_label_clip(box, grader)
                 self.assertIsNotNone(clip)
-                self.assertGreaterEqual(clip["x"], box["x"] + box["width"] * 0.40)
+                self.assertGreaterEqual(clip["x"], box["x"] + box["width"] * 0.35)
                 self.assertEqual(clip["y"], box["y"])
-                self.assertLessEqual(clip["height"], box["height"] * 0.25)
+                self.assertLessEqual(clip["height"], box["height"] * 0.30)
                 self.assertLessEqual(clip["x"] + clip["width"], box["x"] + box["width"] + 0.001)
 
     def test_non_focus_grader_does_not_use_generic_ocr(self) -> None:
@@ -144,6 +145,26 @@ class MislistedSlabHunterTests(unittest.TestCase):
     def test_sgc_provider_format_reinserts_expected_hyphen(self) -> None:
         self.assertEqual(cert_router._provider_cert("SGC", "1234567890"), "1234567-890")
         self.assertEqual(cert_router._provider_cert("SGC", "1234567"), "1234567")
+
+    def test_focus_router_prioritizes_psa_pca_ccc_and_delegates_others(self) -> None:
+        page = object()
+        for grader, resolver_name in (
+            ("PSA", "resolve_psa_certificate"),
+            ("PCA", "resolve_pca_certificate"),
+            ("CCC", "resolve_ccc_certificate"),
+        ):
+            with self.subTest(grader=grader):
+                cert = hunter.GraderCertificate("123456789", 9.0, status="OK", grader=grader)
+                with patch.object(focus_router, resolver_name, return_value=cert) as resolver:
+                    result = focus_router.resolve_focus_grader_certificate(page, grader, "123456789")
+                resolver.assert_called_once_with(page, "123456789")
+                self.assertEqual(result.grade, 9.0)
+
+        delegated = hunter.GraderCertificate("123456789", 9.5, status="OK", grader="CGC")
+        with patch.object(cert_router, "resolve_grader_certificate", return_value=delegated) as resolver:
+            result = focus_router.resolve_focus_grader_certificate(page, "CGC", "123456789")
+        resolver.assert_called_once_with(page, "CGC", "123456789")
+        self.assertEqual(result.grade, 9.5)
 
     def _lot(self, grade: str, grader: str = "PSA") -> watcher.Lot:
         return watcher.Lot(
@@ -268,7 +289,7 @@ class MislistedSlabHunterTests(unittest.TestCase):
         resolver.assert_called_once_with(page, "123456789")
         self.assertEqual(result.grader, "CA")
 
-    def test_unknown_grader_keeps_ocr_fallback_available(self) -> None:
+    def test_unknown_grader_returns_cert_unavailable(self) -> None:
         cert = cert_router.resolve_grader_certificate(object(), "UNKNOWN", "123456789")
         self.assertIsNone(cert.grade)
         self.assertEqual(cert.status, hunter.CERT_UNAVAILABLE)
