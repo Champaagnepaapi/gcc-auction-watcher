@@ -95,7 +95,8 @@ class StructuralEdgeHunterTests(unittest.TestCase):
             self.sale(120, days=20, source="ebay"),
         ]
         op = self.opportunity(lot, gcc, ebay)
-        signal = edge.cross_market_lag_signal(op, self.now)
+        with patch.object(watcher, "external_comparable_is_exact", return_value=True):
+            signal = edge.cross_market_lag_signal(op, self.now)
         self.assertIsNotNone(signal)
         self.assertGreater(signal.market_lag_pct, 30)
         self.assertGreater(signal.price_gap_pct, 40)
@@ -106,7 +107,9 @@ class StructuralEdgeHunterTests(unittest.TestCase):
             [self.sale(75, days=120), self.sale(80, days=150)],
             [self.sale(120, days=10, source="ebay")],
         )
-        self.assertIsNone(edge.cross_market_lag_signal(op, self.now))
+        with patch.object(watcher, "external_comparable_is_exact", return_value=True):
+            signal = edge.cross_market_lag_signal(op, self.now)
+        self.assertIsNone(signal)
 
     def test_grader_lag_requires_historical_spread_and_psa_momentum(self):
         lot = self.lot(grader="PCA", grade="9", price=70)
