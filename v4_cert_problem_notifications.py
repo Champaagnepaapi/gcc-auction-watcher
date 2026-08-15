@@ -63,11 +63,11 @@ def _fixed_api_lot_with_serial(result, item_url, coverage, *args, **kwargs):
 
 
 def _preserve_serial_after_inspection(
-    original: watcher.Lot,
     inspected: watcher.Lot,
+    serial_before_inspection: str,
 ) -> watcher.Lot:
-    """Never let the collapsed item page erase a structured GCC API cert number."""
-    serial = hunter._serial_from_lot(original)
+    """Restore the snapshotted API cert if in-place inspection erased it."""
+    serial = _digits(serial_before_inspection)
     if not serial or hunter._serial_from_lot(inspected):
         return inspected
     return _lot_with_serial(inspected, serial)
@@ -254,8 +254,13 @@ def evaluate_with_cert_problem_notifications(
             page, lot, position, state, seen_at, run_now, run_diagnostics
         )
 
+    # inspect_item mutates Lot in place. Snapshot the structured cert *before*
+    # inspection so a collapsed GCC body cannot erase the only cert evidence.
+    serial_before_inspection = hunter._serial_from_lot(lot)
     inspected = lot if lot.body else watcher.inspect_item(page, lot)
-    inspected = _preserve_serial_after_inspection(lot, inspected)
+    inspected = _preserve_serial_after_inspection(
+        inspected, serial_before_inspection
+    )
     if inspected.inspection_error:
         return _DELEGATE_EVALUATE(
             page, inspected, position, state, seen_at, run_now, run_diagnostics
