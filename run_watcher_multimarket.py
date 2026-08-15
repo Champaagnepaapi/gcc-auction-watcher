@@ -28,6 +28,7 @@ from v4_mislisted_slab_hunter import install_v4_mislisted_slab_hunter
 from v4_multimarket_safety import install_multimarket_safety_hardening
 from v4_notification_semantics import install_v4_notification_semantics
 from v4_private_auction_coverage import install_v4_private_auction_coverage
+from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
 
 
@@ -90,8 +91,12 @@ if __name__ == "__main__":
     # must not be overwritten by the ordinary external-confirmation title wrapper.
     if _mislisted_slab_hunter_enabled():
         install_v4_manual_slab_review_notifications()
+    # Adds read-only stale-listing/SOLD-momentum context and a fixed-queue
+    # information-value bonus. It cannot create an opportunity or alter FV/max.
+    install_v4_roi_efficiency()
     # Active asks are context only and must wrap the final opportunity/ntfy stack.
-    # They never create an opportunity or alter FV/max_recommended.
+    # They never create an opportunity or alter FV/max_recommended. Positive
+    # exact asks are briefly cached by strict commercial identity.
     install_v4_exact_active_ask_position()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
