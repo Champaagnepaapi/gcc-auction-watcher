@@ -19,6 +19,7 @@ from v4_kb_shadow_bridge import (
     install_v4_kb_shadow_capture,
 )
 from v4_mislisted_cert_router import install_v4_mislisted_cert_router
+from v4_mislisted_ocr_hardening import install_v4_mislisted_ocr_hardening
 from v4_mislisted_slab_hunter import install_v4_mislisted_slab_hunter
 from v4_multimarket_safety import install_multimarket_safety_hardening
 from v4_notification_semantics import install_v4_notification_semantics
@@ -47,9 +48,11 @@ if __name__ == "__main__":
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
     if _mislisted_slab_hunter_enabled():
-        # Cert-first routing: official grader verification first; image OCR is
-        # only a fallback when the official lookup is unavailable/unreadable.
+        # Cert-first routing: official grader verification first. The OCR
+        # hardening is installed after the cert router so PSA/PCA/CCC use a
+        # grader-specific top-label ROI and image-only results stay manual-only.
         install_v4_mislisted_cert_router()
+        install_v4_mislisted_ocr_hardening()
         install_v4_mislisted_slab_hunter()
     else:
         watcher.log("Mislisted slab hunter: safe-off (V4_MISLISTED_SLAB_HUNTER_ENABLED=false)")
