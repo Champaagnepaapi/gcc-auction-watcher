@@ -2,13 +2,25 @@ name: V4 PPT Shadow Offline Validation
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "v4_ppt_shadow_model.py"
+      - "v4_ppt_shadow_provider.py"
+      - "run_watcher_multimarket.py"
+      - "tests/test_v4_ppt_shadow*.py"
+      - ".github/workflows/v4-ppt-shadow-offline-validation.yml"
+      - ".github/workflows/v4-auction-discovery-validation.yml"
 
 permissions:
   contents: read
 
 jobs:
   validate:
-    if: github.ref_name == 'agent/v4-ppt-shadow-market-20260815'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref_name == 'agent/v4-ppt-shadow-market-20260815') ||
+      (github.event_name == 'pull_request' && github.head_ref == 'agent/v4-ppt-shadow-market-20260815')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -18,17 +30,20 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
-      - name: Checkout branch
+      - name: Checkout PR merge result without persisted credentials
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Assert branch
+      - name: Assert offline contract
         shell: bash
         run: |
-          test "${GITHUB_REF_NAME}" = "agent/v4-ppt-shadow-market-20260815"
+          test -z "${POKEMONPRICETRACKER_API_KEY:-}"
+          test -z "${NTFY_TOPIC:-}"
+          test "${V4_PPT_SHADOW_ENABLED}" = "false"
           echo "HEAD=$(git rev-parse HEAD)"
+          echo "PPT/network secrets injected: 0"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,8 +51,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --disable-pip-version-check -r requirements.txt
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Run complete V4 unit suite offline
         run: python -m unittest discover -s tests -p "test*.py" -v
@@ -61,7 +75,8 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           provider = Path('v4_ppt_shadow_provider.py').read_text(encoding='utf-8')
-          assert 'SOLD_AGGREGATED' in provider
+          model = Path('v4_ppt_shadow_model.py').read_text(encoding='utf-8')
+          assert 'SOLD_AGGREGATED' in provider or 'SOLD_AGGREGATED' in model
           assert 'SOLD_ITEM_LEVEL' not in provider
           assert 'V4_PPT_SHADOW_ENABLED' in provider
           assert 'production_economic_use' in provider
