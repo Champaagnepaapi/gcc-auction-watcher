@@ -1,0 +1,39 @@
+name: V5 Post-Macro Retry One-shot
+
+on:
+  push:
+    branches:
+      - agent/v5-post-macro-applicability-retry
+    paths:
+      - 'scripts/patch_v5_post_macro_retry.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v5-post-macro-applicability-retry
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact bounded patch
+        run: python scripts/patch_v5_post_macro_retry.py
+      - name: Commit only target code and remove one-shot tooling
+        shell: bash
+        run: |
+          test "$(git diff --name-only)" = "v5/live_raw_pipeline_catalog.py"
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/patch_v5_post_macro_retry.py
+          git rm .github/workflows/v5-post-macro-retry-one-shot.yml
+          git add v5/live_raw_pipeline_catalog.py
+          git diff --cached --check
+          git commit -m "fix(v5): wire exact post-macro TCGdex applicability retry"
+          git push origin HEAD:agent/v5-post-macro-applicability-retry
