@@ -80,14 +80,17 @@ jobs:
           provider = Path('v4_ppt_shadow_provider.py').read_text(encoding='utf-8')
           bridge = Path('v4_ppt_shadow_language_bridge.py').read_text(encoding='utf-8')
           model = Path('v4_ppt_shadow_model.py').read_text(encoding='utf-8')
+          entrypoint = Path('run_watcher_multimarket.py').read_text(encoding='utf-8')
           assert 'SOLD_AGGREGATED' in provider or 'SOLD_AGGREGATED' in model
           assert 'SOLD_ITEM_LEVEL' not in provider
           assert 'SOLD_ITEM_LEVEL' not in bridge
-          assert 'CROSS_LANGUAGE_EN_ANCHOR' in bridge
-          assert 'same-card + same-grader + same-grade' in bridge
-          assert 'V4_PPT_SHADOW_ENABLED' in provider or 'V4_PPT_SHADOW_ENABLED' in bridge
+          assert 'RELATION_CROSS_LANGUAGE_EN = "CROSS_LANGUAGE_EN_ANCHOR"' in bridge
+          assert 'estimate_fr_en_language_basis' in bridge
+          assert 'MIN_LANGUAGE_BASIS_PAIRS' in bridge
+          assert 'economic_eligible_in_shadow' in bridge
+          assert 'PPT_CROSS_LANGUAGE_ANCHOR_ONLY' in bridge
+          assert 'install_v4_ppt_shadow_language_bridge' in entrypoint
           assert 'production_economic_use' in bridge
           assert 'notification_use' in bridge
-          assert 'EXTERNAL_RESCUE' in bridge
           print('PPT cross-language shadow safety assertions: PASS')
           PY
