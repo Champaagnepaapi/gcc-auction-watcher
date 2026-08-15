@@ -41,3 +41,5 @@ jobs:
       - name: Check branch diff
         shell: bash
         run: git diff --check origin/agent/p0-card-knowledge-base-foundation...HEAD
+
+# Revalidated after advancing SQLite/PostgreSQL migration expectations.
