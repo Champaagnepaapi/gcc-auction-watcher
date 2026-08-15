@@ -27,6 +27,12 @@ jobs:
       ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
       V5_ROBOT_KB_IDENTITY_CACHE_ENABLED: "true"
       V5_POKETRACE_EMERGENCY_MAX_IDENTITIES_PER_RUN: "5"
+      # PokemonPriceTracker is observation-only and runs after all identity,
+      # microvariant and valuation decisions. It cannot rescue a record.
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      V5_PPT_IDENTITY_SHADOW_ENABLED: "true"
+      V5_PPT_IDENTITY_SHADOW_MAX_CALLS: "12"
+      V5_PPT_IDENTITY_SHADOW_MAX_CREDITS: "120"
       V5_PROGRESS_LOGS: "true"
       # One global sample: at most 20 unique listings across all marketplaces.
       V5_LIVE_RAW_RESULT_LIMIT: "20"
@@ -122,7 +128,7 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           echo "GCC authenticated session: READY"
 
-      - name: Run fast V5 hybrid identity + deterministic uniqueness + Robot KB outage cache + detailed observability diagnostic
+      - name: Run fast V5 identity + Robot KB/PokeTrace emergency + PPT shadow diagnostic
         run: python -m v5.live_raw_pipeline_detailed_observability
 
       - name: Save cumulative GCC catalogue even after diagnostic failure
