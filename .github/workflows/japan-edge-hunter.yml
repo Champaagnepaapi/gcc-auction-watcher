@@ -23,7 +23,7 @@ jobs:
       JAPAN_EDGE_MIN_DISCOUNT_PCT: "30"
       JAPAN_EDGE_PROXY_FIXED_JPY: "500"
       JAPAN_EDGE_LOGISTICS_BUFFER_PCT: "12"
-      JAPAN_EDGE_NOTIFY_ENABLED: ${{ vars.JAPAN_EDGE_NOTIFY_ENABLED || 'false' }}
+      JAPAN_EDGE_NOTIFY_ENABLED: ${{ vars.JAPAN_EDGE_NOTIFY_ENABLED || 'true' }}
       NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
