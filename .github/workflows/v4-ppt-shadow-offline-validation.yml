@@ -1,0 +1,70 @@
+name: V4 PPT Shadow Offline Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.ref_name == 'agent/v4-ppt-shadow-market-20260815'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      V4_PPT_SHADOW_ENABLED: "false"
+      POKEMONPRICETRACKER_API_KEY: ""
+      NTFY_TOPIC: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert branch
+        shell: bash
+        run: |
+          test "${GITHUB_REF_NAME}" = "agent/v4-ppt-shadow-market-20260815"
+          echo "HEAD=$(git rev-parse HEAD)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run complete V4 unit suite offline
+        run: python -m unittest discover -s tests -p "test*.py" -v
+
+      - name: Compile PPT shadow and V4 entrypoint
+        run: |
+          python -m py_compile \
+            v4_ppt_shadow_model.py \
+            v4_ppt_shadow_provider.py \
+            run_watcher_multimarket.py \
+            tests/test_v4_ppt_shadow.py \
+            tests/test_v4_ppt_shadow_language_gate.py \
+            tests/test_v4_ppt_shadow_install.py
+
+      - name: Check diff whitespace
+        run: git diff --check origin/main...HEAD
+
+      - name: Safety assertions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          provider = Path('v4_ppt_shadow_provider.py').read_text(encoding='utf-8')
+          assert 'SOLD_AGGREGATED' in provider
+          assert 'SOLD_ITEM_LEVEL' not in provider
+          assert 'V4_PPT_SHADOW_ENABLED' in provider
+          assert 'production_economic_use' in provider
+          assert 'notification_use' in provider
+          print('PPT shadow safety assertions: PASS')
+          PY
