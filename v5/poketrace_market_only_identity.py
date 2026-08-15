@@ -1,6 +1,6 @@
 """Market-only PokeTrace policy for the experimental V5 live diagnostic.
 
-PokeTrace remains the market-data provider.  This module deliberately prevents
+PokeTrace remains the market-data provider. This module deliberately prevents
 PokeTrace search results and PokeTrace canonical scans from being used to create
 or rescue card identity in the live V5 workflow.
 
@@ -16,11 +16,13 @@ from .detailed_identity_observability import (
     DetailedLocalVisualIdentityResolver,
     DetailedPokeTraceIdentityResolver,
     ProviderDiagnostic,
-    VISUAL_DISABLED,
     _identity_key,
 )
 from .models import CardIdentity
-from .poketrace_identity import PokeTraceIdentityResolution
+from .poketrace_identity import (
+    PokeTraceIdentityResolution,
+    render_poketrace_identity_counters,
+)
 
 
 POKETRACE_IDENTITY_MARKET_ONLY = "POKETRACE_IDENTITY_DISABLED_MARKET_ONLY"
@@ -64,6 +66,26 @@ class MarketOnlyPokeTraceVisualIdentityResolver(DetailedLocalVisualIdentityResol
         # V5_VISUAL_IDENTITY_ENABLED=true environment variable.
         kwargs["enabled"] = False
         super().__init__(*args, **kwargs)
+
+
+def render_market_only_identity_counters(
+    resolver: MarketOnlyPokeTraceIdentityResolver,
+) -> str:
+    """Keep legacy counters while making the new provider role unambiguous."""
+
+    rendered = render_poketrace_identity_counters(resolver).splitlines()
+    if len(rendered) >= 3:
+        rendered[1] = "role: MARKET/PRICING ONLY — identity retrieval disabled"
+        rendered[2] = (
+            "identity retrieval: 0 PokeTrace HTTP searches by policy; "
+            "TCGdex/catalogue evidence remains authoritative"
+        )
+        rendered.insert(
+            3,
+            "identity lookups skipped before PokeTrace network: "
+            f"{resolver.identity_disabled_skips}",
+        )
+    return "\n".join(rendered)
 
 
 def render_poketrace_market_only_policy(
