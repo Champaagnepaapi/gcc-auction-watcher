@@ -114,9 +114,12 @@ def main() -> int:
                 grade=grade or None,
                 commercial_dimensions=({"cert_number": api_cert} if api_cert else {}),
             )
+            serial_before = hunter._serial_from_lot(lot)
             inspected = watcher.inspect_item(page, lot, log_listing_errors=False)
             raw_post = hunter._serial_from_lot(inspected)
-            preserved = cert_alerts._preserve_serial_after_inspection(lot, inspected)
+            preserved = cert_alerts._preserve_serial_after_inspection(
+                inspected, serial_before
+            )
             preserved_cert = hunter._serial_from_lot(preserved)
             panel_cert = cert_alerts._serial_from_gradation_panel(page, url)
 
