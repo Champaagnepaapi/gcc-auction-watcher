@@ -47,10 +47,12 @@ jobs:
             v5/neon_source_scout_ingest.py \
             v5/neon_source_scout_ingest_v2.py \
             v5/neon_cmapi_ingest.py \
+            v5/neon_cmapi_ingest_v2.py \
             tests_v5/test_source_scout_benchmark.py \
             tests_v5/test_source_scout_cmapi_v3.py \
             tests_v5/test_source_scout_opportunity_benchmark.py \
-            tests_v5/test_neon_cmapi_ingest.py
+            tests_v5/test_neon_cmapi_ingest.py \
+            tests_v5/test_neon_cmapi_ingest_v2.py
 
       - name: Run focused source and safety tests
         run: |
@@ -58,7 +60,8 @@ jobs:
             tests_v5.test_source_scout_benchmark \
             tests_v5.test_source_scout_cmapi_v3 \
             tests_v5.test_source_scout_opportunity_benchmark \
-            tests_v5.test_neon_cmapi_ingest -v
+            tests_v5.test_neon_cmapi_ingest \
+            tests_v5.test_neon_cmapi_ingest_v2 -v
 
       - name: Run bounded EN FR opportunity provider benchmark
         run: python -m v5.source_scout_opportunity_benchmark
@@ -69,7 +72,7 @@ jobs:
 
       - name: Persist clean CMAPI evidence and proven SOLD to Neon
         if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('cmapi_opportunity_evidence.json') != '' }}
-        run: python -m v5.neon_cmapi_ingest
+        run: python -m v5.neon_cmapi_ingest_v2
 
       - name: Publish opportunity benchmark summary
         if: always() && hashFiles('source_scout_opportunity_report.md') != ''
