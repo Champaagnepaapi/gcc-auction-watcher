@@ -13,7 +13,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 from .repository import KnowledgeBase
@@ -56,6 +56,12 @@ def _canonical_json(value: object) -> str:
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
 
 
 def _validate_timestamp(value: str) -> str:
@@ -164,16 +170,18 @@ def store_tcgdex_macro_snapshot(
     kb: KnowledgeBase,
     snapshot: TCGdexMacroSnapshot,
 ) -> str:
-    """Append a changed TCGdex macro snapshot; identical content is idempotent."""
+    """Append only useful identity changes while preserving later reversions."""
 
     source_id = _source_id(kb)
+    source_native_id = _safe_text(snapshot.source_native_id)
     language = _language(snapshot.language_code)
     local_id = _local_id(snapshot.local_id)
+    observed_at = _validate_timestamp(snapshot.observed_at)
     variants_json = (
         _canonical_json(snapshot.variants) if snapshot.variants is not None else None
     )
     fingerprint_payload = {
-        "source_native_id": _safe_text(snapshot.source_native_id),
+        "source_native_id": source_native_id,
         "language_code": language,
         "provider_set_id": _safe_text(snapshot.provider_set_id),
         "provider_set_name": _safe_text(snapshot.provider_set_name),
@@ -189,18 +197,37 @@ def store_tcgdex_macro_snapshot(
         set_name=snapshot.provider_set_name,
         local_id=local_id,
     )
-    existing = kb.connection.execute(
+
+    latest = kb.connection.execute(
         """
-        SELECT id FROM catalog_identity_snapshot
-        WHERE source_system_id = ? AND source_native_id = ?
-          AND language_code = ? AND fingerprint_sha256 = ?
+        SELECT id, fingerprint_sha256
+        FROM catalog_identity_snapshot
+        WHERE source_system_id = ? AND source_native_id = ? AND language_code = ?
+        ORDER BY observed_at DESC, created_at DESC, id DESC
+        LIMIT 1
         """,
-        (source_id, _safe_text(snapshot.source_native_id), language, fingerprint),
+        (source_id, source_native_id, language),
+    ).fetchone()
+    if latest is not None and latest["fingerprint_sha256"] == fingerprint:
+        return latest["id"]
+
+    id_fingerprint = _sha256(
+        {
+            "source_system_id": source_id,
+            "source_native_id": source_native_id,
+            "language_code": language,
+            "fingerprint_sha256": fingerprint,
+            "observed_at": observed_at,
+        }
+    )
+    snapshot_id = f"catalog_{id_fingerprint[:24]}"
+    existing = kb.connection.execute(
+        "SELECT id FROM catalog_identity_snapshot WHERE id = ?",
+        (snapshot_id,),
     ).fetchone()
     if existing is not None:
         return existing["id"]
 
-    snapshot_id = f"catalog_{fingerprint[:24]}"
     kb.connection.execute(
         """
         INSERT INTO catalog_identity_snapshot(
@@ -213,7 +240,7 @@ def store_tcgdex_macro_snapshot(
         (
             snapshot_id,
             source_id,
-            _safe_text(snapshot.source_native_id),
+            source_native_id,
             language,
             _safe_text(snapshot.provider_set_id),
             _safe_text(snapshot.provider_set_name),
@@ -223,8 +250,8 @@ def store_tcgdex_macro_snapshot(
             variants_json,
             lookup_key,
             fingerprint,
-            _validate_timestamp(snapshot.observed_at),
-            _validate_timestamp(snapshot.observed_at),
+            observed_at,
+            _now(),
         ),
     )
     return snapshot_id
@@ -302,7 +329,6 @@ def lookup_tcgdex_macro(
             if candidate.official_card_count is None
         )
         if denominator_unknown:
-            # Unknown denominator remains a possible competing identity.
             return TCGdexMacroLookupResult(
                 DENOMINATOR_UNPROVEN,
                 candidates=tuple(sorted(candidates, key=lambda c: c.source_native_id)),
