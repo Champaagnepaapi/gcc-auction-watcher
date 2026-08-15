@@ -19,7 +19,13 @@ CREATE TABLE catalog_identity_snapshot (
     CHECK (length(provider_card_name) > 0),
     CHECK (length(local_id) > 0),
     CHECK (official_card_count IS NULL OR official_card_count > 0),
-    UNIQUE(source_system_id, source_native_id, language_code, fingerprint_sha256)
+    UNIQUE(
+        source_system_id,
+        source_native_id,
+        language_code,
+        fingerprint_sha256,
+        observed_at
+    )
 );
 
 CREATE INDEX catalog_identity_snapshot_lookup_idx
