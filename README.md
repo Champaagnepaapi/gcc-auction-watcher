@@ -10,7 +10,7 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 Dernier merge fonctionnel V4 / Robot KB :
 
 ```text
-89bff3ae114a42a5e716032717c5bbeeb8ca7d09
+0d62e9cfa3d32e5d832fd4cbb75fbcd3102f0fff
 ```
 
 ### Principes non négociables
@@ -108,7 +108,6 @@ GCC listing
      -> PokeTrace graded exact
      -> PSA APR exact grade
      -> eBay SOLD exact grader + grade
-     -> TCGdex Cardmarket / TCGplayer RAW
   -> arbitrage par force de preuve
   -> opportunity / pending / conflict / manual review
 ```
@@ -137,8 +136,8 @@ PSA <8 hors scope économique production ; ne pas fabriquer PSA 9.5.
 - PokeTrace : marché gradé externe, max 40 requêtes/run, exact card + grader + grade requis pour preuve forte ;
 - PSA : APR exact grade, eBay SOLD exact en fallback ;
 - non-PSA : eBay SOLD même grader + même grade ;
-- Cardmarket/TCGplayer en V4 = **RAW**, pas valeur automatique du slab ;
-- RAW ne crée jamais seul `max_recommended` ni opportunité gradée automatique.
+- depuis PR #84, Cardmarket/TCGplayer RAW est **exclu de la génération d’opportunités slabs V4 production** ;
+- RAW ne crée jamais `max_recommended`, fair value gradée ni opportunité slab V4.
 
 ## Arbitrage
 
@@ -366,6 +365,49 @@ Résultat :
 
 ---
 
+# V4 — qualité des notifications et signaux illiquides — PR #84
+
+Merge production :
+
+```text
+0d62e9cfa3d32e5d832fd4cbb75fbcd3102f0fff
+```
+
+Feature head validé :
+
+```text
+30cef835406956c7565b1f25c404975862ce7970
+```
+
+Module : `v4_notification_signal_quality_guard.py`.
+
+Objectif : réduire le bruit téléphone sans relâcher le matching ni supprimer les vraies anomalies de prix.
+
+- déduplication des manual reviews par **URL GCC stable**, avec migration de l’ancien état fondé sur l’identité enrichie ;
+- `ILLIQUID_PRICE_DISCOVERY` auction : aucun ntfy avant `≤5 min` ;
+- `ILLIQUID` fixed avec **GCC SOLD uniquement** : ntfy seulement si dislocation forte, par défaut `≥1.75x`, `≥10 €` d’upside absolu et `≥2` ancres GCC SOLD exactes ;
+- un signal illiquide modéré soutenu par une **vente externe gradée SOLD exacte** peut toujours notifier selon les seuils économiques existants ;
+- backlog aval attendu dû à un cap économique borné = diagnostic/log-only ; une vraie perte de discovery, un backlog urgent P0/P1, une panne ou un invariant comptable cassé restent alertables ;
+- Cardmarket/TCGplayer RAW ne participe plus à la génération d’opportunités slabs V4 production ;
+- l’Edge Hunter fail-closed reste installé sous ce guard : aucune relaxation d’identité, de microvariante ou de valorisation.
+
+Validation PR #84 :
+
+```text
+run 31900251729
+job 95049772805
+```
+
+Résultat :
+
+- **581/581 tests PASS** ;
+- compile des fichiers V4 modifiés PASS ;
+- `git diff --check` PASS ;
+- discovery live read-only : primary complete, `115` augmentées vs `114` legacy, `primary_only=1`, `legacy_only=0`, unresolved `0` ;
+- comparaison : 0 achat, bid, checkout, ntfy ou mutation d’état.
+
+---
+
 # Mislisted Slab Hunter — état production courant
 
 Scope prioritaire : **PSA / PCA / CCC**.
@@ -552,7 +594,7 @@ Résultat :
 - aucun live V5 lancé pendant cette phase ;
 - aucun achat, bid, checkout ou paiement.
 
-Les PR #75/#76/#77/#78/#79/#80 n’ont pas mergé PR #8. Les PR #81/#82 ont été mergées **dans la branche V5 expérimentale uniquement**, jamais dans `main`.
+Les PR #75/#76/#77/#78/#79/#80/#84 n’ont pas mergé PR #8. Les PR #81/#82 ont été mergées **dans la branche V5 expérimentale uniquement**, jamais dans `main`.
 
 ---
 
@@ -592,6 +634,7 @@ PR #77  smart external priority           f192623e6e286eac05daf45fa70b0c20824c57
 PR #78  exact active eBay ASK position    1eefc84b9015d8d57ef976166b24a56d8d9a791d
 PR #79  ROI efficiency / KB readiness     0f0304635d131828d1d22d9f3ca7514ca33fe7dd
 PR #80  Structural Edge Hunter V2         89bff3ae114a42a5e716032717c5bbeeb8ca7d09
+PR #84  notification signal quality       0d62e9cfa3d32e5d832fd4cbb75fbcd3102f0fff
 ```
 
 ---
