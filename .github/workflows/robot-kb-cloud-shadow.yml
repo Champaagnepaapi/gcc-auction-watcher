@@ -16,13 +16,13 @@ on:
         required: false
         type: string
   schedule:
-    - cron: "17 * * * *"
+    - cron: "32 * * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: robot-kb-cloud-shadow
+  group: robot-kb-neon-shadow
   cancel-in-progress: false
 
 jobs:
@@ -34,10 +34,6 @@ jobs:
       ROTATION_STATE: v4_kb_fixed_rotation_state.json
       ROTATION_FIXTURE: v4_kb_fixed_batch.json
       ROTATION_MANIFEST: v4_kb_fixed_manifest.json
-      SOLD_STATE: v4_kb_sold_watermark_state.json
-      SOLD_FIXTURE: v4_kb_sold_batch.json
-      SOLD_MANIFEST: v4_kb_sold_manifest.json
-      SOLD_BOOTSTRAP_SINCE: "2026-08-15T03:00:00Z"
       TCGDEX_CARD_1: ${{ inputs.tcgdex_card_1 }}
       TCGDEX_CARD_2: ${{ inputs.tcgdex_card_2 }}
       TCGDEX_CARD_3: ${{ inputs.tcgdex_card_3 }}
@@ -80,14 +76,6 @@ jobs:
           restore-keys: |
             v4-kb-rotation-state-
 
-      - name: Restore durable SOLD watermark/backlog state
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ env.SOLD_STATE }}
-          key: v4-kb-sold-watermark-${{ github.run_id }}
-          restore-keys: |
-            v4-kb-sold-watermark-
-
       - name: Fetch 4-page fixed backup rotation batch (GET only)
         run: |
           python v4_kb_fixed_rotation.py rotate \
@@ -97,40 +85,18 @@ jobs:
             --page-size 100 \
             --pages 4
 
-      - name: Fetch lossless SOLD catch-up slice (GET only)
+      - name: Ingest fixed rotation batch + live auction (GET only)
         run: |
-          python v4_kb_sold_watermark.py rotate \
-            --state "$SOLD_STATE" \
-            --output-fixture "$SOLD_FIXTURE" \
-            --manifest "$SOLD_MANIFEST" \
-            --bootstrap-since "$SOLD_BOOTSTRAP_SINCE" \
-            --page-size 100 \
-            --max-records 400 \
-            --max-scan-pages 200
-
-      - name: Ingest fixed + SOLD fixtures and live auction (GET only)
-        run: |
-          observed_at=$(python -c 'import json; print(json.load(open("'"$SOLD_MANIFEST"'"))["retrieved_at"])')
+          observed_at=$(python -c 'import json; print(json.load(open("'"$ROTATION_MANIFEST"'"))["retrieved_at"])')
           cd .robot-kb-shadow
           python -m robot_kb.sidecar \
             --allow-live-read-only \
             --gcc-fixture "../$ROTATION_FIXTURE" \
-            --gcc-fixture "../$SOLD_FIXTURE" \
             --live-gcc auction \
             --page-size 100 \
             --max-pages 2 \
             --max-records 100 \
             --observed-at "$observed_at"
-
-      - name: Fresh SOLD overlap safety-net (GET only)
-        run: |
-          cd .robot-kb-shadow
-          python -m robot_kb.sidecar \
-            --allow-live-read-only \
-            --live-gcc sold \
-            --page-size 20 \
-            --max-pages 1 \
-            --max-records 20
 
       - name: Collect optional bounded TCGdex cards (GET only)
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.tcgdex_card_1 != '' || inputs.tcgdex_card_2 != '' || inputs.tcgdex_card_3 != '') }}
@@ -148,20 +114,8 @@ jobs:
             --rotation-state "$ROTATION_STATE" \
             --manifest "$ROTATION_MANIFEST"
 
-      - name: Commit SOLD watermark/backlog only after successful ingest
-        run: |
-          python v4_kb_sold_watermark.py commit \
-            --state "$SOLD_STATE" \
-            --manifest "$SOLD_MANIFEST"
-
       - name: Save independent fixed rotation cursor state
         uses: actions/cache/save@v4
         with:
           path: ${{ env.ROTATION_STATE }}
           key: v4-kb-rotation-state-${{ github.run_id }}
-
-      - name: Save durable SOLD watermark/backlog state
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.SOLD_STATE }}
-          key: v4-kb-sold-watermark-${{ github.run_id }}

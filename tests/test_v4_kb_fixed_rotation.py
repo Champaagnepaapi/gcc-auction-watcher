@@ -69,7 +69,6 @@ class FixedRotationTests(unittest.TestCase):
             fixture_file = root / "fixture.json"
             manifest_file = root / "manifest.json"
 
-            # Run 1: starts at page 1, collects 1..4
             manifest1 = rotation.fetch_fixed_rotation_batch(
                 state_file,
                 fixture_file,
@@ -84,11 +83,9 @@ class FixedRotationTests(unittest.TestCase):
             self.assertEqual(manifest1["total_pages_seen"], 68)
             self.assertEqual([c["page"] for c in calls], [1, 2, 3, 4])
 
-            # Commit Run 1
             committed_state1 = rotation.commit_rotation_cursor(state_file, manifest_file)
             self.assertEqual(committed_state1["last_page"], 4)
 
-            # Run 2: starts at page 5, collects 5..8
             calls.clear()
             manifest2 = rotation.fetch_fixed_rotation_batch(
                 state_file,
@@ -102,7 +99,6 @@ class FixedRotationTests(unittest.TestCase):
             self.assertEqual(manifest2["last_page"], 8)
             self.assertEqual([c["page"] for c in calls], [5, 6, 7, 8])
 
-            # Commit Run 2
             committed_state2 = rotation.commit_rotation_cursor(state_file, manifest_file)
             self.assertEqual(committed_state2["last_page"], 8)
 
@@ -113,7 +109,7 @@ class FixedRotationTests(unittest.TestCase):
             params = dict(params or {})
             page = params.get("page", 1)
             calls.append(params)
-            total_items = 600  # 6 pages total
+            total_items = 600
             next_page = page + 1 if page < 6 else None
             return FakeResponse({
                 "info": {
@@ -130,7 +126,6 @@ class FixedRotationTests(unittest.TestCase):
             fixture_file = root / "fixture.json"
             manifest_file = root / "manifest.json"
 
-            # Set state to last_page=4 with total 6 pages seen
             state_file.write_text(
                 json.dumps({
                     "schema_version": 1,
@@ -218,13 +213,11 @@ class FixedRotationTests(unittest.TestCase):
                     http_get=fake_get,
                 )
 
-            # State was never touched
             current_state = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(current_state["last_page"], 0)
 
     def test_malformed_page_does_not_advance_cursor(self):
         def fake_get_wrong_page(url: str, params: Mapping[str, Any] = None, **kwargs: Any) -> FakeResponse:
-            # currentPage reported does not match requested
             return FakeResponse({
                 "info": {"currentPage": 99, "nextPage": None},
                 "results": [fake_gcc_row("c1")],
@@ -251,7 +244,6 @@ class FixedRotationTests(unittest.TestCase):
             self.assertEqual(current_state["last_page"], 2)
 
     def test_empty_results_within_known_inventory_raises_rotation_error(self):
-        """Regression test: empty results within known page range (page <= total_pages_seen) fails."""
         def fake_get(url: str, params: Mapping[str, Any] = None, **kwargs: Any) -> FakeResponse:
             page = params.get("page", 1) if params else 1
             if page == 3:
@@ -286,14 +278,12 @@ class FixedRotationTests(unittest.TestCase):
             self.assertEqual(current_state["last_page"], 0)
 
     def test_empty_results_beyond_refreshed_count_accepts_wrap(self):
-        """Accept empty results only when refreshed counts prove page is beyond current inventory."""
         calls: list[int] = []
 
         def fake_get(url: str, params: Mapping[str, Any] = None, **kwargs: Any) -> FakeResponse:
             page = params.get("page", 1) if params else 1
             calls.append(page)
             if page == 11:
-                # Count shrank: 800 items = 8 pages, so page 11 is beyond current inventory
                 return FakeResponse({
                     "info": {"currentPage": 11, "nextPage": None, "counts": {"fixedPriceCount": 800}},
                     "results": [],
@@ -306,7 +296,6 @@ class FixedRotationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state_file = root / "state.json"
-            # State starts with last_page=10, so next requested page is 11
             state_file.write_text(
                 json.dumps({"schema_version": 1, "last_page": 10, "total_pages_seen": 12}),
                 encoding="utf-8",
@@ -320,7 +309,6 @@ class FixedRotationTests(unittest.TestCase):
                 http_get=fake_get,
             )
 
-            # Page 11 empty accepted as wrap -> fetches pages 1, 2, 3, 4
             self.assertEqual(calls, [11, 1, 2, 3, 4])
             self.assertEqual(manifest["last_page"], 4)
             self.assertEqual(manifest["pages_fetched"], 4)
@@ -353,16 +341,16 @@ class FixedRotationTests(unittest.TestCase):
                 http_get=fake_get,
             )
 
-            # Simulated failure: sidecar / Neon ingest failed, so commit is NOT called
             current_state = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(current_state["last_page"], 4)
 
-    def test_existing_sold_collector_and_pin_preserved(self):
-        workflow_path = Path(".github/workflows/robot-kb-cloud-shadow.yml")
-        content = workflow_path.read_text(encoding="utf-8")
-        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", content)
-        self.assertIn("--live-gcc auction", content)
-        self.assertIn("--live-gcc sold", content)
+    def test_existing_collectors_and_pin_preserved_after_lane_split(self):
+        hourly = Path(".github/workflows/robot-kb-cloud-shadow.yml").read_text(encoding="utf-8")
+        sold = Path(".github/workflows/robot-kb-sold-shadow.yml").read_text(encoding="utf-8")
+        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", hourly)
+        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", sold)
+        self.assertIn("--live-gcc auction", hourly)
+        self.assertIn("--live-gcc sold", sold)
 
     def test_v4_economic_invariants_untouched(self):
         self.assertEqual(watcher.MAX_PRICE, 100)
