@@ -37,6 +37,15 @@ def _mislisted_slab_hunter_enabled() -> bool:
     }
 
 
+def _cert_problem_notifications_enabled() -> bool:
+    """Emergency-safe switch: immediate cert-problem alerts stay off unless explicitly enabled."""
+    return os.getenv("V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 if __name__ == "__main__":
     install_psa_apr_hydration_guard()
     install_grade_arbitrage_guard()
@@ -58,9 +67,15 @@ if __name__ == "__main__":
         install_v4_focus_cert_router()
         install_v4_mislisted_ocr_hardening()
         install_v4_mislisted_slab_hunter()
-        # Wrap the final slab-hunter evaluator: every actual PSA/PCA/CCC cert
-        # problem now produces an immediate, deduplicated manual-review alert.
-        install_v4_cert_problem_notifications()
+        # Immediate broad cert-problem alerts are intentionally safe-off after
+        # false CERT_NUMBER_MISSING spam from collapsed GCC Gradation panels.
+        if _cert_problem_notifications_enabled():
+            install_v4_cert_problem_notifications()
+        else:
+            watcher.log(
+                "Cert problem notifications: safe-off "
+                "(V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED=false)"
+            )
     else:
         watcher.log("Mislisted slab hunter: safe-off (V4_MISLISTED_SLAB_HUNTER_ENABLED=false)")
     install_fast_lane_notification_guard()

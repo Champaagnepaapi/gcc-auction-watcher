@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import datetime, timezone
 from email.header import Header
 from unittest.mock import Mock, patch
 
+import run_watcher_multimarket
 import watcher
 import v4_cert_problem_notifications as cert_alerts
 import v4_mislisted_slab_hunter as hunter
 
 
 class CertProblemNotificationTests(unittest.TestCase):
+    def test_immediate_cert_problem_notifications_are_safe_off_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED", None)
+            self.assertFalse(run_watcher_multimarket._cert_problem_notifications_enabled())
+        with patch.dict(os.environ, {"V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED": "true"}):
+            self.assertTrue(run_watcher_multimarket._cert_problem_notifications_enabled())
+
     def _lot(
         self,
         *,
