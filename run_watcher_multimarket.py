@@ -63,12 +63,13 @@ if __name__ == "__main__":
     install_current_auction_discovery_diagnostics()
     install_canonical_multimarket_pipeline()
     install_multimarket_safety_hardening()
-    # V4 is a graded-slab pipeline: RAW Cardmarket/TCGplayer cannot rescue
-    # opportunities. Also tighten illiquid/manual-review and technical ntfy noise.
-    install_v4_notification_signal_quality_guard()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
+    # V4 is a graded-slab pipeline: RAW Cardmarket/TCGplayer cannot rescue
+    # opportunities. Install after Edge Hunter safety so identity fail-closed
+    # semantics stay underneath the notification-quality filter.
+    install_v4_notification_signal_quality_guard()
     # Reorders only scarce fixed external-provider calls. Auctions retain the
     # canonical ending-soon ordering and economics are untouched.
     install_v4_smart_external_priority()
