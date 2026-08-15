@@ -29,3 +29,4 @@ replacement = '''    def test_wpromo_stamp_does_not_prove_generic_promo_or_finis
 coverage_path.write_text(coverage_text[:start] + replacement + coverage_text[end:], encoding='utf-8')
 
 print('corrected TCGdex wPromo semantics without changing generic promo/set evidence')
+# trigger after one-shot workflow exists
