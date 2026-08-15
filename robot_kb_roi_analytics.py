@@ -29,8 +29,6 @@ from pathlib import Path
 from statistics import median
 from typing import Iterable, Optional
 
-import psycopg
-
 
 FOCUS_CLAIMS = (
     "card_title_raw",
@@ -132,8 +130,9 @@ def strict_card_key(claims: dict[str, object]) -> str:
     }
     if any(not value for value in parts.values()):
         return ""
-    canonical = json.dumps(parts, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return canonical
+    return json.dumps(
+        parts, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
 
 
 def identity_hash(card_key: str) -> str:
@@ -216,7 +215,9 @@ def _depth_summary(rows: Iterable[SaleRow], now: datetime) -> dict:
         "tiers_with_3plus_sales": sum(count >= 3 for count in counts),
         "tiers_with_5plus_sales": sum(count >= 5 for count in counts),
         "kb_first_ready_tiers": ready,
-        "kb_first_ready_rule": "same strict card + grader + grade: >=3 proven GCC SOLD, >=2 within 90d",
+        "kb_first_ready_rule": (
+            "same strict card + grader + grade: >=3 proven GCC SOLD, >=2 within 90d"
+        ),
     }
 
 
@@ -303,7 +304,9 @@ def build_snapshot(connection, now: Optional[datetime] = None) -> dict:
         "identity_depth": depth,
         "kb_first_global_readiness": {
             "ready": global_ready,
-            "policy": "NO HARD GATE: use KB first only after enough exact tiers are individually ready",
+            "policy": (
+                "NO HARD GATE: use KB first only after enough exact tiers are individually ready"
+            ),
             "activation_floor_ready_tiers": 100,
         },
         "learned_grader_spreads_count": len(spreads),
@@ -318,6 +321,11 @@ def main() -> int:
     database_url = os.getenv("ROBOT_KB_DATABASE_URL", "").strip()
     if not database_url:
         raise SystemExit("ROBOT_KB_DATABASE_URL is required")
+
+    # psycopg is intentionally runtime-only: V4 CI can unit-test all pure
+    # analytics without installing the Robot KB PostgreSQL dependency.
+    import psycopg
+
     with psycopg.connect(database_url) as connection:
         # Explicit read-only transaction: this analytics job cannot mutate Neon.
         connection.execute("SET TRANSACTION READ ONLY")
