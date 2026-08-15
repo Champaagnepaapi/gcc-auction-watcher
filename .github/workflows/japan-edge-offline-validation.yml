@@ -29,13 +29,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install PyYAML
 
       - name: Run Japan Edge unit tests
         run: python -m unittest discover -s tests_japan -p "test*.py" -v
 
       - name: Compile Japan Edge files
         run: python -m py_compile japan_edge_hunter.py japan_edge_hunter_v2.py tests_japan/test_japan_edge_hunter.py tests_japan/test_japan_edge_hunter_v2.py
+
+      - name: Parse Japan Edge workflows
+        run: python -c 'import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in [".github/workflows/japan-edge-hunter.yml", ".github/workflows/japan-edge-offline-validation.yml"]]; print("YAML PASS")'
 
       - name: Check diff whitespace
         run: git diff --check origin/${{ github.base_ref }}...HEAD
