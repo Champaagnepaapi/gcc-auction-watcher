@@ -94,8 +94,10 @@ class ManualReviewSignalQualityTests(unittest.TestCase):
     def test_legacy_identity_dedupe_is_migrated_to_stable_listing_key(self):
         lot = make_lot()
         signal = make_signal()
-        lead = make_lead(lot, signal)
-        lead.identity_key = guard._stable_manual_review_key(lot)
+        lead = replace(
+            make_lead(lot, signal),
+            identity_key=guard._stable_manual_review_key(lot),
+        )
         legacy_key = watcher.external_commercial_identity_key(lot)
         now = datetime(2026, 8, 15, 18, 30, tzinfo=timezone.utc)
         state = {
@@ -111,12 +113,16 @@ class ManualReviewSignalQualityTests(unittest.TestCase):
                 },
             }
         }
-
-        self.assertFalse(
-            guard._manual_review_should_notify_with_legacy_migration(
-                state, lead, now
+        original = guard._BASE_MANUAL_REVIEW_SHOULD_NOTIFY
+        guard._BASE_MANUAL_REVIEW_SHOULD_NOTIFY = multimarket._manual_review_should_notify
+        try:
+            self.assertFalse(
+                guard._manual_review_should_notify_with_legacy_migration(
+                    state, lead, now
+                )
             )
-        )
+        finally:
+            guard._BASE_MANUAL_REVIEW_SHOULD_NOTIFY = original
         self.assertIn(
             lead.identity_key,
             state[multimarket.MANUAL_REVIEW_STATE_KEY]["entries"],
