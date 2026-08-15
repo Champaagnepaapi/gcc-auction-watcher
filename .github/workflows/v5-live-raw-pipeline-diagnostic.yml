@@ -2,28 +2,30 @@ name: V5 Live Raw Pipeline Diagnostic
 
 on:
   workflow_dispatch:
-    inputs:
-      cmapi_remaining_confirmed:
-        description: "RapidAPI CardMarket API TCG requests remaining today (must be >=90)"
-        required: true
-        type: number
 
 permissions:
   contents: read
 
-# Branch-local Source Scout override for one explicit benchmark phase.
-# 12 high-value/liquidity proxy prints x EN/FR; CMAPI hard-stops before overage.
-# main and PR #8 remain untouched.
+# Branch-local Source Scout override.
+# main and PR #8 keep their existing V5 live diagnostic unchanged.
+# CMAPI is explicitly disabled after the bounded opportunity benchmark.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
-      CMAPI_RAPIDAPI_KEY: ${{ secrets.CMAPI_RAPIDAPI_KEY }}
+      JUSTTCG_API_KEY: ${{ secrets.JUSTTCG_API_KEY }}
+      POKEWALLET_API_KEY: ${{ secrets.POKEWALLET_API_KEY }}
+      TCGAPI_DEV_API_KEY: ${{ secrets.TCGAPI_DEV_API_KEY }}
+      TCG_CARDMARKET_API_KEY: ${{ secrets.TCG_CARDMARKET_API_KEY }}
+      CARDTRADER_API_TOKEN: ${{ secrets.CARDTRADER_API_TOKEN }}
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-      CMAPI_REMAINING_CONFIRMED: ${{ inputs.cmapi_remaining_confirmed }}
+      SOURCE_SCOUT_PANEL_SIZE: "18"
+      SOURCE_SCOUT_ENABLE_CMAPI: "false"
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
@@ -41,77 +43,45 @@ jobs:
       - name: Install read-only benchmark dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Validate confirmed CMAPI free quota before any provider call
-        shell: bash
-        run: |
-          python - <<'PY'
-          import os
-          value = int(os.environ["CMAPI_REMAINING_CONFIRMED"])
-          if value < 90:
-              raise SystemExit(f"CMAPI safety stop before first call: confirmed remaining={value}, require >=90")
-          print(f"CMAPI_PRECHECK confirmed_remaining={value} required_minimum=90")
-          PY
-
-      - name: Compile opportunity benchmark and Neon ingesters
+      - name: Compile Source Scout benchmark
         run: |
           python -m py_compile \
             v5/source_scout_benchmark.py \
+            v5/source_scout_entrypoint.py \
             v5/source_scout_language_entrypoint.py \
+            v5/source_scout_paid_entrypoint.py \
             v5/source_scout_paid_v2_entrypoint.py \
-            v5/source_scout_cmapi_v2_entrypoint.py \
-            v5/source_scout_cmapi_v3_entrypoint.py \
-            v5/source_scout_opportunity_benchmark.py \
-            v5/source_scout_opportunity_benchmark_v2.py \
-            v5/source_scout_opportunity_benchmark_v3.py \
+            v5/source_scout_paid_v3_entrypoint.py \
+            v5/source_scout_paid_v4_entrypoint.py \
             v5/neon_source_scout_ingest.py \
             v5/neon_source_scout_ingest_v2.py \
-            v5/neon_cmapi_ingest.py \
-            v5/neon_cmapi_ingest_v2.py \
             tests_v5/test_source_scout_benchmark.py \
-            tests_v5/test_source_scout_cmapi_v3.py \
-            tests_v5/test_source_scout_opportunity_benchmark.py \
-            tests_v5/test_source_scout_opportunity_benchmark_v2.py \
-            tests_v5/test_source_scout_opportunity_benchmark_v3.py \
-            tests_v5/test_neon_cmapi_ingest.py \
-            tests_v5/test_neon_cmapi_ingest_v2.py
+            tests_v5/test_source_scout_entrypoint.py
 
-      - name: Run focused source and safety tests
-        run: |
-          python -m unittest \
-            tests_v5.test_source_scout_benchmark \
-            tests_v5.test_source_scout_cmapi_v3 \
-            tests_v5.test_source_scout_opportunity_benchmark \
-            tests_v5.test_source_scout_opportunity_benchmark_v2 \
-            tests_v5.test_source_scout_opportunity_benchmark_v3 \
-            tests_v5.test_neon_cmapi_ingest \
-            tests_v5.test_neon_cmapi_ingest_v2 -v
+      - name: Run Source Scout focused tests
+        run: python -m unittest tests_v5.test_source_scout_benchmark tests_v5.test_source_scout_entrypoint -v
 
-      - name: Run bounded EN FR opportunity provider benchmark
-        run: python -m v5.source_scout_opportunity_benchmark_v3
+      - name: Run throttled language-stratified read-only Source Scout benchmark
+        run: python -m v5.source_scout_paid_v4_entrypoint
 
       - name: Persist PokemonPriceTracker evidence to Neon
         if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('pokemonpricetracker_evidence.json') != '' }}
         run: python -m v5.neon_source_scout_ingest_v2
 
-      - name: Persist clean CMAPI evidence and proven SOLD to Neon
-        if: ${{ env.NEON_DATABASE_URL != '' && hashFiles('cmapi_opportunity_evidence.json') != '' }}
-        run: python -m v5.neon_cmapi_ingest_v2
-
-      - name: Publish opportunity benchmark summary
-        if: always() && hashFiles('source_scout_opportunity_report.md') != ''
+      - name: Publish report in workflow summary
+        if: always() && hashFiles('source_scout_report.md') != ''
         shell: bash
-        run: cat source_scout_opportunity_report.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat source_scout_report.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload provider comparison and raw evidence
-        if: always() && hashFiles('source_scout_opportunity_report.json') != ''
+      - name: Upload Source Scout reports and provider evidence
+        if: always() && hashFiles('source_scout_report.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: opportunity-source-benchmark-${{ github.run_id }}
+          name: source-scout-report-${{ github.run_id }}
           path: |
-            source_scout_opportunity_report.json
-            source_scout_opportunity_report.md
-            cmapi_opportunity_evidence.json
+            source_scout_report.json
+            source_scout_report.md
             pokemonpricetracker_evidence.json
-            pokemonpricetracker_jp_probe.json
+            pokemonpricetracker_probe.json
           if-no-files-found: error
           retention-days: 14
