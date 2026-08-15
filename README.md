@@ -10,7 +10,7 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 Dernier merge fonctionnel V4 / Robot KB :
 
 ```text
-0f0304635d131828d1d22d9f3ca7514ca33fe7dd
+89bff3ae114a42a5e716032717c5bbeeb8ca7d09
 ```
 
 ### Principes non négociables
@@ -222,7 +222,7 @@ Validation PR #78 : run `31889490939`, job `95023537547` : **540/540 PASS**.
 
 ---
 
-# V4 / Robot KB — ROI efficiency sans Expected Profit — PR #79
+# V4 / Robot KB — ROI efficiency — PR #79
 
 Merge production :
 
@@ -235,10 +235,6 @@ Feature head validé :
 ```text
 3eb069894ef29174d9d8b88cf43540e2d1c40d89
 ```
-
-## Décision importante : pas de score Expected Profit
-
-Le score `Expected Profit` proposé précédemment **n’est pas implémenté**. Il n’existe aucun score synthétique susceptible de masquer la hiérarchie de preuves ou de modifier les décisions économiques V4.
 
 ## Stale listing + momentum SOLD exact
 
@@ -279,7 +275,7 @@ Module : `robot_kb_roi_analytics.py`.
 - apprend éventuellement des ratios PSA ↔ grader secondaire uniquement si : même carte stricte, même grade, EUR, ≥2 SOLD de chaque côté et fenêtre combinée ≤365 j ;
 - aucune conversion FX inventée ;
 - output shadow `robot_kb_roi_snapshot.json` ;
-- champs explicites `v4_economic_use=false` et `expected_profit_score_enabled=false`.
+- champs explicites `v4_economic_use=false`.
 
 Le workflow SOLD lance cette analytics **après** ingestion, commit et sauvegarde des curseurs. Elle est `continue-on-error`, donc elle ne peut pas bloquer/falsifier la collecte SOLD ou le backfill.
 
@@ -299,6 +295,73 @@ Résultat :
 - `git diff --check` PASS ;
 - live discovery read-only : primary complete, rows/timers `336/336`, private failures `0`, `primary_only=34`, `legacy_only=0`, unresolved `0` ;
 - API + private safety-net = superset de legacy à horizon commun ;
+- comparaison : 0 achat, bid, checkout, ntfy économique ou mutation d’état.
+
+---
+
+# V4 — Structural Edge Hunter V2 — PR #80
+
+Merge production :
+
+```text
+89bff3ae114a42a5e716032717c5bbeeb8ca7d09
+```
+
+Feature head validé :
+
+```text
+f9516bb1e27ec8c30fe4a334b82e6be13bc44cc8
+```
+
+Module : `v4_structural_edge_hunter.py`.
+
+Objectif : détecter des inefficiences structurelles qui peuvent créer une vraie décote exploitable sans modifier les gates économiques V4.
+
+Signaux ajoutés :
+
+- **Cross-market lag** : GCC n’a pas encore suivi une hausse récente de SOLD gradés externes exacts ;
+- **Grader lag** : PCA/CCC reste en retard sur PSA même grade avec spread historique suffisamment prouvé ;
+- **Stale seller repricing** : plusieurs anciennes annonces fixed d’un vendeur explicitement identifié restent immobiles pendant que les SOLD exacts montent ;
+- **Liquidity breakout** : accélération récente du nombre de SOLD exacts sur un marché auparavant peu liquide ;
+- **Relative-grade anomaly** : inversion anormale au sein du même grader, par exemple 9.5 moins cher qu’un grade inférieur comparable ;
+- **Same-card inventory anomaly** : une annonce fixed exacte très sous les autres asks exacts, avec confirmation par SOLD récents.
+
+Le **grade/metadata mislisting** reste géré par le Mislisted Slab Hunter cert-first existant ; PR #80 ne duplique pas cette logique.
+
+## Expected Profit : information secondaire uniquement
+
+PR #80 introduit un calcul Expected Profit **informatif / de classement seulement**. Il est explicitement interdit de l’utiliser comme gate de suppression :
+
+- une forte décote reste notifiée même si l’Expected Profit est faible/incertain ;
+- il ne change jamais fair value, `max_recommended`, seuil de décote ou décision V4 ;
+- il ne peut jamais créer ni supprimer une opportunité ;
+- il sert uniquement à contextualiser/prioriser les opportunités déjà admissibles.
+
+## Sécurité des preuves
+
+- Cross-market lag exige des **SOLD gradés exacts et datés** ;
+- Cardmarket RAW n’est jamais traité comme SOLD gradé ;
+- active asks restent **ASK, PAS UNE VENTE** ;
+- same-card inventory exige identité commerciale stricte + confirmation SOLD ;
+- seller repricing exige une identité vendeur explicite, jamais inférée depuis un titre/URL ;
+- auctions gardent la priorité canonique ending-soon et ne reçoivent pas de bonus structural.
+
+## Validation PR #80
+
+GitHub Actions :
+
+```text
+run 31894158431
+job 95034745917
+```
+
+Résultat :
+
+- **571/571 tests PASS** ;
+- compilation explicite de `v4_structural_edge_hunter.py` PASS ;
+- `git diff --check` PASS ;
+- live discovery read-only : primary `160`, legacy `159`, `primary_only=1`, `legacy_only=0`, unresolved `0`, private failures `0` ;
+- API + private safety-net reste un superset de legacy à horizon commun ;
 - comparaison : 0 achat, bid, checkout, ntfy économique ou mutation d’état.
 
 ---
@@ -357,7 +420,6 @@ CCC cert live connu : `544340143` -> grade officiel global **9** ; les subgrades
 ---
 
 # Robot KB / Neon — historique durable
-
 Robot KB est séparé de V4/V5 et reste passif/GET-only côté GCC.
 
 Projet Neon : `robot-pokemon-kb`, branche production `main`, base `neondb`.
@@ -452,7 +514,7 @@ Règles :
 - pas d’achat/bid/checkout/CardGrader automatique ;
 - V4, V5 et Robot KB restent techniquement séparés.
 
-Les PR #75/#76/#77/#78/#79 n’ont pas mergé PR #8 et ne doivent pas être utilisées comme prétexte pour la resynchroniser sans audit.
+Les PR #75/#76/#77/#78/#79/#80 n’ont pas mergé PR #8 et ne doivent pas être utilisées comme prétexte pour la resynchroniser sans audit.
 
 ---
 
@@ -490,6 +552,7 @@ PR #76  KB historical SOLD backfill       fda196283e3522de7c1eadca3c706c9c350dec
 PR #77  smart external priority           f192623e6e286eac05daf45fa70b0c20824c57b2
 PR #78  exact active eBay ASK position    1eefc84b9015d8d57ef976166b24a56d8d9a791d
 PR #79  ROI efficiency / KB readiness     0f0304635d131828d1d22d9f3ca7514ca33fe7dd
+PR #80  Structural Edge Hunter V2         89bff3ae114a42a5e716032717c5bbeeb8ca7d09
 ```
 
 ---
