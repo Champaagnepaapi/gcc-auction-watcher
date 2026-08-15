@@ -1,0 +1,48 @@
+name: Japan Edge Live Once V2
+
+on:
+  pull_request:
+    paths:
+      - "japan_edge_live_nonce_v2.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  live-read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      JAPAN_EDGE_GCC_PAGES: "20"
+      JAPAN_EDGE_MAX_SEEDS_PER_RUN: "12"
+      JAPAN_EDGE_MAX_ITEMS_PER_SEARCH: "25"
+      JAPAN_EDGE_MIN_DISCOUNT_PCT: "30"
+      JAPAN_EDGE_PROXY_FIXED_JPY: "500"
+      JAPAN_EDGE_LOGISTICS_BUFFER_PCT: "12"
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run read-only Japan scan V2
+        run: python japan_edge_hunter_v2.py --state .japan-edge-live-once-v2/state.json --output japan_edge_live_v2_report.json
+
+      - name: Upload live report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: japan-edge-live-v2-${{ github.run_id }}
+          path: japan_edge_live_v2_report.json
+          if-no-files-found: ignore
+          retention-days: 14
