@@ -7,6 +7,7 @@ on:
     paths:
       - "tools/cert_focus_live_check.py"
       - ".github/workflows/v4-cert-focus-live-check.yml"
+      - "v4_focus_cert_router.py"
       - "v4_mislisted_cert_router.py"
       - "v4_mislisted_slab_hunter.py"
 
