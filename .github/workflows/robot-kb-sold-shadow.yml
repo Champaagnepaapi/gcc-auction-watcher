@@ -22,6 +22,9 @@ jobs:
       SOLD_FIXTURE: v4_kb_sold_batch.json
       SOLD_MANIFEST: v4_kb_sold_manifest.json
       SOLD_BOOTSTRAP_SINCE: "2026-08-15T03:00:00Z"
+      SOLD_BACKFILL_STATE: v4_kb_sold_backfill_state.json
+      SOLD_BACKFILL_FIXTURE: v4_kb_sold_backfill_batch.json
+      SOLD_BACKFILL_MANIFEST: v4_kb_sold_backfill_manifest.json
     steps:
       - name: Checkout production repository
         uses: actions/checkout@v4
@@ -53,10 +56,12 @@ jobs:
             exit 1
           fi
 
-      - name: Restore durable SOLD watermark/backlog state
+      - name: Restore durable SOLD fresh + historical state
         uses: actions/cache/restore@v4
         with:
-          path: ${{ env.SOLD_STATE }}
+          path: |
+            ${{ env.SOLD_STATE }}
+            ${{ env.SOLD_BACKFILL_STATE }}
           key: v4-kb-sold-watermark-${{ github.run_id }}
           restore-keys: |
             v4-kb-sold-watermark-
@@ -72,7 +77,7 @@ jobs:
             --max-records 400 \
             --max-scan-pages 200
 
-      - name: Ingest proven SOLD fixture (GET only)
+      - name: Ingest proven fresh SOLD fixture (GET only)
         run: |
           observed_at=$(python -c 'import json; print(json.load(open("'"$SOLD_MANIFEST"'"))["retrieved_at"])')
           cd .robot-kb-shadow
@@ -90,14 +95,44 @@ jobs:
             --max-pages 1 \
             --max-records 20
 
-      - name: Commit SOLD watermark/backlog only after successful ingest
+      - name: Fetch historical SOLD backfill slice (GET only)
+        run: |
+          python v4_kb_sold_backfill.py fetch \
+            --state "$SOLD_BACKFILL_STATE" \
+            --output-fixture "$SOLD_BACKFILL_FIXTURE" \
+            --manifest "$SOLD_BACKFILL_MANIFEST" \
+            --bootstrap-before "$SOLD_BOOTSTRAP_SINCE" \
+            --page-size 100 \
+            --max-records 400 \
+            --max-page-probes 40 \
+            --max-scan-pages 20
+
+      - name: Ingest proven historical SOLD fixture (GET only)
+        run: |
+          count=$(python -c 'import json; print(json.load(open("'"$SOLD_BACKFILL_MANIFEST"'"))["records_count"])')
+          if [ "$count" -gt 0 ]; then
+            observed_at=$(python -c 'import json; print(json.load(open("'"$SOLD_BACKFILL_MANIFEST"'"))["retrieved_at"])')
+            cd .robot-kb-shadow
+            python -m robot_kb.sidecar \
+              --gcc-fixture "../$SOLD_BACKFILL_FIXTURE" \
+              --observed-at "$observed_at"
+          else
+            echo "Historical SOLD backfill is already complete or this slice is empty."
+          fi
+
+      - name: Commit SOLD fresh + historical cursors only after successful ingest
         run: |
           python v4_kb_sold_watermark.py commit \
             --state "$SOLD_STATE" \
             --manifest "$SOLD_MANIFEST"
+          python v4_kb_sold_backfill.py commit \
+            --state "$SOLD_BACKFILL_STATE" \
+            --manifest "$SOLD_BACKFILL_MANIFEST"
 
-      - name: Save durable SOLD watermark/backlog state
+      - name: Save durable SOLD fresh + historical state
         uses: actions/cache/save@v4
         with:
-          path: ${{ env.SOLD_STATE }}
+          path: |
+            ${{ env.SOLD_STATE }}
+            ${{ env.SOLD_BACKFILL_STATE }}
           key: v4-kb-sold-watermark-${{ github.run_id }}
