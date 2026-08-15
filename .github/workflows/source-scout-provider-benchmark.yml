@@ -1,0 +1,77 @@
+name: Source Scout Provider Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      pokemon_tcg_remaining_confirmed:
+        description: "RapidAPI Pokemon TCG requests remaining now (must be >=90)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# Benchmark branch only. First provider: tcggopro Pokemon TCG API.
+# No CMAPI secret is passed, so this workflow cannot consume CMAPI quota.
+# No purchase, bid, checkout, payment or paid grading action exists here.
+jobs:
+  pokemon-tcg-rapidapi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      POKEMON_TCG_RAPIDAPI_KEY: ${{ secrets.POKEMON_TCG_RAPIDAPI_KEY }}
+      POKEMON_TCG_REMAINING_CONFIRMED: ${{ inputs.pokemon_tcg_remaining_confirmed }}
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Checkout selected benchmark branch without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Compile provider probe
+        run: |
+          python -m py_compile \
+            v5/source_scout_pokemon_tcg_rapidapi_probe.py \
+            tests_v5/test_source_scout_pokemon_tcg_rapidapi_probe.py
+
+      - name: Run focused safety tests
+        run: python -m unittest tests_v5.test_source_scout_pokemon_tcg_rapidapi_probe -v
+
+      - name: Download prior CMAPI benchmark evidence without CMAPI calls
+        uses: actions/download-artifact@v4
+        with:
+          name: opportunity-source-benchmark-31871803238
+          path: prior-cmapi
+          repository: Champaagnepaapi/gcc-auction-watcher
+          run-id: 31871803238
+          github-token: ${{ github.token }}
+
+      - name: Run bounded Pokemon TCG RapidAPI probe
+        run: python -m v5.source_scout_pokemon_tcg_rapidapi_probe
+
+      - name: Publish benchmark summary
+        if: always() && hashFiles('pokemon_tcg_rapidapi_probe.md') != ''
+        shell: bash
+        run: cat pokemon_tcg_rapidapi_probe.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark evidence
+        if: always() && hashFiles('pokemon_tcg_rapidapi_probe.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokemon-tcg-rapidapi-probe-${{ github.run_id }}
+          path: |
+            pokemon_tcg_rapidapi_probe.json
+            pokemon_tcg_rapidapi_probe.md
+          if-no-files-found: error
+          retention-days: 14
