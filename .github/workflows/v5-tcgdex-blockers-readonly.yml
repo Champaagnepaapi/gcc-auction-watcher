@@ -1,0 +1,103 @@
+name: V5 TCGdex Blockers Read-only
+
+on:
+  push:
+    branches:
+      - diag/v5-tcgdex-blockers-20260816
+    paths:
+      - '.github/workflows/v5-tcgdex-blockers-readonly.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install requests only
+        run: python -m pip install --disable-pip-version-check requests==2.32.4
+      - name: Query public TCGdex catalogue for current blockers
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import requests
+          from v5.microvariants import tcgdex_microvariant_applicability
+
+          BASE = 'https://api.tcgdex.net/v2'
+          cases = [
+              ('charizard_dp45', 'en', ['DP045', 'DP45', 'dp45']),
+              ('pokemon_center_lady_089', 'en', ['089', '89']),
+              ('magikarp_040_mp', 'ko', ['040/M-P', '40/M-P', '040MP', '40MP']),
+          ]
+
+          session = requests.Session()
+          session.headers.update({'Accept': 'application/json'})
+
+          def safe_get(url, params=None):
+              response = session.get(url, params=params, timeout=15)
+              print(f'HTTP {response.status_code} {response.url}')
+              response.raise_for_status()
+              return response.json()
+
+          for label, lang, local_ids in cases:
+              print(f'=== {label} lang={lang} ===')
+              seen = set()
+              for local_id in local_ids:
+                  payload = safe_get(
+                      f'{BASE}/{lang}/cards',
+                      {'localId': f'eq:{local_id}', 'pagination:itemsPerPage': '50'},
+                  )
+                  rows = payload if isinstance(payload, list) else []
+                  print(f'QUERY localId={local_id!r} rows={len(rows)}')
+                  for brief in rows:
+                      if not isinstance(brief, dict):
+                          continue
+                      card_id = str(brief.get('id') or '')
+                      if not card_id or card_id in seen:
+                          continue
+                      seen.add(card_id)
+                      detail = safe_get(f'{BASE}/{lang}/cards/{card_id}')
+                      app = tcgdex_microvariant_applicability(detail)
+                      set_payload = detail.get('set') if isinstance(detail, dict) else None
+                      set_payload = set_payload if isinstance(set_payload, dict) else {}
+                      print(json.dumps({
+                          'id': detail.get('id'),
+                          'name': detail.get('name'),
+                          'localId': detail.get('localId'),
+                          'set_id': set_payload.get('id'),
+                          'set_name': set_payload.get('name'),
+                          'official_count': (set_payload.get('cardCount') or {}).get('official') if isinstance(set_payload.get('cardCount'), dict) else None,
+                          'variants': detail.get('variants'),
+                          'applicability_status': app.status,
+                          'applicability_source': app.source,
+                          'single_finish': app.single_finish,
+                          'finish_proven_single': app.finish_proven_single,
+                          'finish_multiple_variants': app.finish_multiple_variants,
+                          'edition_proven_single': app.edition_proven_single,
+                          'edition_multiple_variants': app.edition_multiple_variants,
+                      }, ensure_ascii=False, sort_keys=True))
+              print(f'UNIQUE_CANDIDATES {label}={len(seen)}')
+
+          # Set catalogue hints only; no fuzzy result is used as proof.
+          for lang, needles in [('en', ['dp', 'pocket', 'promo']), ('ko', ['promo', 'mega', 'festa'])]:
+              print(f'=== SET_HINTS lang={lang} ===')
+              payload = safe_get(f'{BASE}/{lang}/sets')
+              rows = payload if isinstance(payload, list) else []
+              for row in rows:
+                  if not isinstance(row, dict):
+                      continue
+                  combined = f"{row.get('id','')} {row.get('name','')}".casefold()
+                  if any(needle in combined for needle in needles):
+                      print(json.dumps({'id': row.get('id'), 'name': row.get('name')}, ensure_ascii=False, sort_keys=True))
+          PY
