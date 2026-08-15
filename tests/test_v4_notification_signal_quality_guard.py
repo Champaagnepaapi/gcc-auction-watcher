@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import watcher
 import v4_canonical_multimarket as multimarket
@@ -88,6 +89,37 @@ class ManualReviewSignalQualityTests(unittest.TestCase):
         self.assertEqual(
             guard._stable_manual_review_key(first),
             guard._stable_manual_review_key(second),
+        )
+
+    def test_legacy_identity_dedupe_is_migrated_to_stable_listing_key(self):
+        lot = make_lot()
+        signal = make_signal()
+        lead = make_lead(lot, signal)
+        lead.identity_key = guard._stable_manual_review_key(lot)
+        legacy_key = watcher.external_commercial_identity_key(lot)
+        now = datetime(2026, 8, 15, 18, 30, tzinfo=timezone.utc)
+        state = {
+            multimarket.MANUAL_REVIEW_STATE_KEY: {
+                "schema_version": multimarket.MANUAL_REVIEW_SCHEMA_VERSION,
+                "entries": {
+                    legacy_key: {
+                        "sent_at": now.isoformat(),
+                        "price": 10.0,
+                        "gap_pct": 37.5,
+                        "tcgdex_card_id": "sv07-001",
+                    }
+                },
+            }
+        }
+
+        self.assertFalse(
+            guard._manual_review_should_notify_with_legacy_migration(
+                state, lead, now
+            )
+        )
+        self.assertIn(
+            lead.identity_key,
+            state[multimarket.MANUAL_REVIEW_STATE_KEY]["entries"],
         )
 
     def test_illiquid_auction_is_silent_before_last_five_minutes(self):
