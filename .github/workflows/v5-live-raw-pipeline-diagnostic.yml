@@ -5,68 +5,16 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
-# Branch-local provider benchmark: eBay Average Selling Price via RapidAPI.
-# Basic plan is 50 requests/month with a hard request limit; this workflow is
-# capped at 6 calls. No CMAPI or Pokemon TCG RapidAPI secret is passed.
+# SAFE-OFF handoff after bounded provider benchmark.
+# No provider secret is passed and no external pricing API call is executed.
 # main and PR #8 remain untouched.
 jobs:
   source-scout-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      EBAY_ASP_RAPIDAPI_KEY: ${{ secrets.EBAY_ASP_RAPIDAPI_KEY }}
-      PYTHONDONTWRITEBYTECODE: "1"
-
+    timeout-minutes: 2
     steps:
-      - name: Checkout selected benchmark branch without persisted credentials
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install read-only benchmark dependencies
-        run: python -m pip install --disable-pip-version-check -r requirements.txt
-
-      - name: Compile eBay ASP RapidAPI probe
+      - name: Provider benchmark safe-off
         run: |
-          python -m py_compile \
-            v5/source_scout_ebay_asp_rapidapi_probe.py \
-            tests_v5/test_source_scout_ebay_asp_rapidapi_probe.py
-
-      - name: Run focused safety and identity tests
-        run: python -m unittest tests_v5.test_source_scout_ebay_asp_rapidapi_probe -v
-
-      - name: Download prior CMAPI benchmark evidence without new CMAPI calls
-        uses: actions/download-artifact@v4
-        with:
-          name: opportunity-source-benchmark-31871803238
-          path: prior-cmapi
-          repository: Champaagnepaapi/gcc-auction-watcher
-          run-id: 31871803238
-          github-token: ${{ github.token }}
-
-      - name: Run bounded eBay ASP US UK FR probe
-        run: python -m v5.source_scout_ebay_asp_rapidapi_probe
-
-      - name: Publish benchmark summary
-        if: always() && hashFiles('ebay_asp_rapidapi_probe.md') != ''
-        shell: bash
-        run: cat ebay_asp_rapidapi_probe.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload benchmark evidence
-        if: always() && hashFiles('ebay_asp_rapidapi_probe.json') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: ebay-asp-rapidapi-probe-${{ github.run_id }}
-          path: |
-            ebay_asp_rapidapi_probe.json
-            ebay_asp_rapidapi_probe.md
-          if-no-files-found: error
-          retention-days: 14
+          echo "Source Scout provider benchmark is SAFE-OFF."
+          echo "No CMAPI, Pokemon TCG RapidAPI, eBay ASP, purchase, bid, checkout, payment or grading call is executed."
