@@ -1,0 +1,36 @@
+name: V4 PSA PCA CCC Cert Check (read-only)
+
+on:
+  push:
+    branches:
+      - agent/v4-psa-pca-ccc-ocr-hardening
+    paths:
+      - "tools/cert_focus_live_check.py"
+      - ".github/workflows/v4-cert-focus-live-check.yml"
+      - "v4_mislisted_cert_router.py"
+      - "v4_mislisted_slab_hunter.py"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v4-psa-pca-ccc-ocr-hardening
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - run: playwright install --with-deps chromium
+      - name: Check official cert routes
+        env:
+          V4_MISLISTED_CERT_MAX_PER_RUN: "10"
+          V4_MISLISTED_CERT_TIMEOUT_SECONDS: "6"
+          HEADLESS: "true"
+          NTFY_TOPIC: ""
+        run: python tools/cert_focus_live_check.py
