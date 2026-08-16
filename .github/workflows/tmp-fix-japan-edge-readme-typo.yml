@@ -1,0 +1,28 @@
+name: Temporary README typo fix
+
+on:
+  push:
+    branches:
+      - docs/fix-japan-edge-median-typo
+    paths:
+      - ".github/workflows/tmp-fix-japan-edge-readme-typo.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/fix-japan-edge-median-typo
+      - name: Fix typo and self-clean
+        run: |
+          sed -i 's/la iédiane/la médiane/' README.md
+          git rm .github/workflows/tmp-fix-japan-edge-readme-typo.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: fix Japan Edge median typo"
+          git push origin HEAD:docs/fix-japan-edge-median-typo
