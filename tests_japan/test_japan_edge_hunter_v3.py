@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import Mock, patch
 
 import japan_edge_full_market as full
 import japan_edge_hunter as base
@@ -76,6 +77,31 @@ class JapanEdgeV3Tests(unittest.TestCase):
         self.assertEqual(decision.status, "GCC_ONLY_UNCONFIRMED")
         self.assertTrue(decision.should_notify)
         self.assertIsNone(decision.external_fair_eur)
+
+    def test_notification_shows_japan_gcc_external_and_multimarket_prices_separately(self):
+        op = opportunity(fair=100, landed=50)
+        ext = v3.ExternalReference(
+            status="EXACT_SOLD_CONFIRMED",
+            fair_eur=80,
+            sold_count=7,
+            source="eBay SOLD family + PSA APR",
+        )
+        decision = v3.classify_market(op, ext, 30)
+        response = Mock()
+        response.raise_for_status.return_value = None
+        with patch.object(v3.requests, "post", return_value=response) as post:
+            v3.notify(op, ext, decision, "https://ntfy.sh", "topic")
+
+        body = post.call_args.kwargs["data"].decode()
+        self.assertIn("Prix Japon: ¥10,500 | rendu estimé 57 CHF", body)
+        self.assertIn("GCC exact JP PSA10: €100", body)
+        self.assertIn("→ décote vs GCC: -50%", body)
+        self.assertIn("Marché externe exact: €80", body)
+        self.assertIn("→ décote vs externe: -38%", body)
+        self.assertIn("Fair multi-marché: €90", body)
+        self.assertIn("→ décote globale: -44%", body)
+        self.assertIn("VERDICT: MULTIMARKET_CONFIRMED", body)
+        self.assertIn("ASK, PAS UNE VENTE", body)
 
     def test_psa_apr_requires_explicit_japanese_provenance(self):
         good = watcher.ComparableSale(
