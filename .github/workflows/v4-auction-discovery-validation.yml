@@ -11,6 +11,7 @@ on:
       - "v4_kb_shadow_bridge.py"
       - "v4_canonical_multimarket.py"
       - "v4_edge_hunter_safety.py"
+      - "v4_external_coverage_drain.py"
       - "v4_multimarket_safety.py"
       - "v4_structural_edge_hunter.py"
       - "compare_auction_discovery.py"
@@ -59,9 +60,14 @@ jobs:
           python -m py_compile run_watcher_safe.py
           python -m py_compile v4_canonical_multimarket.py
           python -m py_compile v4_edge_hunter_safety.py
+          python -m py_compile v4_external_coverage_drain.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile v4_structural_edge_hunter.py
           python -m py_compile run_watcher_multimarket.py
+
+      - name: Parse changed workflow YAML
+        run: |
+          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/watcher.yml"); YAML.load_file(".github/workflows/v4-auction-discovery-validation.yml"); puts "YAML parse PASS"'
 
       - name: Compare effective and legacy discovery live
         id: compare
