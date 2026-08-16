@@ -16,6 +16,9 @@ on:
         required: false
         type: boolean
         default: false
+  push:
+    branches:
+      - feat/v4-global-retrieval-hardening
 
 permissions:
   contents: read
@@ -53,16 +56,16 @@ jobs:
         run: |
           python v4_global_live_shadow_hardened.py \
             --output-dir global_shadow_out \
-            --max-identities "${{ inputs.max_identities }}" \
-            --market-candidates "${{ inputs.market_candidates }}"
+            --max-identities "${{ inputs.max_identities || '5' }}" \
+            --market-candidates "${{ inputs.market_candidates || '8' }}"
 
       - name: Run legacy read-only rejection diagnostics
         if: ${{ inputs.rejection_diagnostics }}
         run: |
           python v4_global_rejection_diagnostics.py \
             --output-dir global_shadow_out \
-            --max-identities "${{ inputs.max_identities }}" \
-            --market-candidates "${{ inputs.market_candidates }}"
+            --max-identities "${{ inputs.max_identities || '5' }}" \
+            --market-candidates "${{ inputs.market_candidates || '8' }}"
 
       - name: Assert no tracked runtime mutation
         run: |
