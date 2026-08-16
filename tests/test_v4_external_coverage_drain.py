@@ -195,6 +195,19 @@ class ExternalCoverageDrainTests(unittest.TestCase):
             (NOW + timedelta(hours=6)).isoformat(),
         )
 
+    def test_fresh_short_budget_pending_cooldown_is_not_erased_by_migration(self):
+        lot = make_lot("fresh-budget")
+        state, record = make_queue_state(lot)
+        record["retry_count"] = 0
+        expected_retry = NOW + timedelta(minutes=5)
+        record["retry_after"] = expected_retry.isoformat()
+
+        migrated = drain._normalize_legacy_budget_pending_backoff(state, NOW)
+
+        self.assertEqual(migrated, 0)
+        self.assertEqual(record["retry_count"], 0)
+        self.assertEqual(record["retry_after"], expected_retry.isoformat())
+
 
 class FrenchGccOpportunityPolicyTests(unittest.TestCase):
     def test_french_gcc_card_with_sufficient_exact_sold_history_is_eligible(self):
