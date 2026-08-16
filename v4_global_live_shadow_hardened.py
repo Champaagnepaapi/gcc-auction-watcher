@@ -6,10 +6,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 import v4_global_live_shadow as base
-from v4_global_retrieval_hardening import (
-    collect_comc_hardened,
-    collect_fanatics_hardened,
-    collect_magi_hardened,
+from v4_global_retrieval_hardening_v2 import (
+    collect_comc_v2,
+    collect_fanatics_v2,
+    collect_magi_v2,
+    traces_to_json,
 )
 
 
@@ -22,6 +23,7 @@ def run(args: argparse.Namespace) -> dict:
     fx = base._fx_map(fx_converter)
     rows = {}
     statuses = []
+    traces = []
 
     gcc_rows, gcc_status = base.fetch_gcc_live(
         seeds,
@@ -48,7 +50,7 @@ def run(args: argparse.Namespace) -> dict:
             context = browser.new_context(locale="en-US", user_agent="Mozilla/5.0")
             page = context.new_page()
 
-            magi_rows, magi_status = collect_magi_hardened(
+            magi_rows, magi_status, magi_trace = collect_magi_v2(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -56,8 +58,9 @@ def run(args: argparse.Namespace) -> dict:
             )
             rows["magi"] = magi_rows
             statuses.append(magi_status)
+            traces.append(magi_trace)
 
-            fanatics_rows, fanatics_status = collect_fanatics_hardened(
+            fanatics_rows, fanatics_status, fanatics_trace = collect_fanatics_v2(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -65,8 +68,9 @@ def run(args: argparse.Namespace) -> dict:
             )
             rows["fanatics"] = fanatics_rows
             statuses.append(fanatics_status)
+            traces.append(fanatics_trace)
 
-            comc_rows, comc_status = collect_comc_hardened(
+            comc_rows, comc_status, comc_trace = collect_comc_v2(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -74,6 +78,7 @@ def run(args: argparse.Namespace) -> dict:
             )
             rows["comc"] = comc_rows
             statuses.append(comc_status)
+            traces.append(comc_trace)
 
             context.close()
             browser.close()
@@ -84,12 +89,13 @@ def run(args: argparse.Namespace) -> dict:
 
     report = base.build_report(seeds, rows, fx=fx, statuses=statuses, observed_at=observed_at)
     report["retrieval_hardening"] = {
-        "version": 1,
-        "magi": "full collector number prefilter before cap + detail-only identity evidence",
-        "fanatics": "exact parsed set + localId fallback when denominator is absent",
-        "comc": "exact COMC set field + localId candidate proof when denominator is absent",
+        "version": 2,
+        "magi": "Pokemon/PSA10 priority before cap + detail rejection reasons",
+        "fanatics": "anchor + embedded buy-now/fixed route recovery + era-normalized exact set/localId proof",
+        "comc": "direct player fallback + exact metadata/localId + PSA10 row-bound price",
         "identity_gate_relaxed": False,
     }
+    report["retrieval_diagnostics"] = traces_to_json(*traces)
     report["gcc_sold_diagnostics"] = asdict(diagnostics)
     report["fx"] = {
         "provider": "ECB",
@@ -114,6 +120,13 @@ def main() -> int:
                 "cards": len(report.get("cards", [])),
                 "source_status": report.get("source_status", []),
                 "retrieval_hardening": report.get("retrieval_hardening"),
+                "retrieval_diagnostics": [
+                    {
+                        "market": row.get("market"),
+                        "reject_reasons": row.get("reject_reasons"),
+                    }
+                    for row in report.get("retrieval_diagnostics", [])
+                ],
                 "output": str(Path(args.output_dir).resolve()),
             },
             ensure_ascii=False,
