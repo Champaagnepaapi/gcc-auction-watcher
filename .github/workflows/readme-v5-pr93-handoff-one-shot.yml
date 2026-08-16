@@ -1,0 +1,41 @@
+name: README V5 PR93 Handoff One-shot
+
+on:
+  push:
+    branches:
+      - docs/v5-pr93-catalog-gap-handoff-20260816
+    paths:
+      - '.github/workflows/readme-v5-pr93-handoff-one-shot.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/v5-pr93-catalog-gap-handoff-20260816
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch canonical README
+        run: python scripts/patch_readme_v5_pr93_handoff.py
+      - name: Verify docs-only diff and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only | sort)"
+          test "$changed" = "README.md"
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/patch_readme_v5_pr93_handoff.py
+          git rm .github/workflows/readme-v5-pr93-handoff-one-shot.yml
+          git add README.md
+          git diff --cached --check
+          git commit -m "docs: update canonical V5 handoff after PR #93"
+          git push origin HEAD:docs/v5-pr93-catalog-gap-handoff-20260816
