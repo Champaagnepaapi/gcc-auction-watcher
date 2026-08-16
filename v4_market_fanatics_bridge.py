@@ -19,46 +19,18 @@ def fanatics_fixed_offer(
     logistics_usd: float = 0.0,
     note: str = "",
 ) -> PriceObservation:
-    if not identity_proven:
-        # Preserve the observation but make it non-actionable downstream.
-        identity = CommercialIdentity(
-            identity.name,
-            identity.set_name,
-            identity.number,
-            identity.language,
-            identity.grader,
-            identity.grade,
-            identity.edition,
-            identity.finish,
-            identity.variant,
-        )
-    row = verified_fixed_ask(
+    return verified_fixed_ask(
         market="fanatics",
         identity=identity,
         price=price_usd,
         currency="USD",
         observed_at=observed_at,
+        identity_proven=identity_proven,
         source_id=source_id,
         buyer_fee_rate=buyer_fee_rate,
         buyer_fee_flat=buyer_fee_flat_usd,
         logistics_cost=logistics_usd,
         note=note,
-    )
-    if identity_proven:
-        return row
-    return PriceObservation(
-        source=row.source,
-        identity=row.identity,
-        evidence_type=row.evidence_type,
-        price=row.price,
-        currency=row.currency,
-        observed_at=row.observed_at,
-        identity_proven=False,
-        buyer_fee_rate=row.buyer_fee_rate,
-        buyer_fee_flat=row.buyer_fee_flat,
-        logistics_cost=row.logistics_cost,
-        note=row.note,
-        source_id=row.source_id,
     )
 
 
@@ -76,7 +48,7 @@ def fanatics_auction_offer(
     logistics_usd: float = 0.0,
     note: str = "",
 ) -> PriceObservation:
-    row = verified_auction_snapshot(
+    return verified_auction_snapshot(
         market="fanatics",
         identity=identity,
         price=price_usd,
@@ -84,26 +56,10 @@ def fanatics_auction_offer(
         observed_at=observed_at,
         end_at=end_at,
         within_five_minutes=within_five_minutes,
+        identity_proven=identity_proven,
         source_id=source_id,
         buyer_fee_rate=buyer_fee_rate,
         buyer_fee_flat=buyer_fee_flat_usd,
         logistics_cost=logistics_usd,
         note=note,
-    )
-    if identity_proven:
-        return row
-    return PriceObservation(
-        source=row.source,
-        identity=row.identity,
-        evidence_type=row.evidence_type,
-        price=row.price,
-        currency=row.currency,
-        observed_at=row.observed_at,
-        identity_proven=False,
-        end_at=row.end_at,
-        buyer_fee_rate=row.buyer_fee_rate,
-        buyer_fee_flat=row.buyer_fee_flat,
-        logistics_cost=row.logistics_cost,
-        note=row.note,
-        source_id=row.source_id,
     )
