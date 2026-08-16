@@ -10,7 +10,7 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 Dernier merge fonctionnel V4 / Robot KB :
 
 ```text
-0d62e9cfa3d32e5d832fd4cbb75fbcd3102f0fff
+87d050e3c0d530786baa9c3e4d9395b99a4f8929
 ```
 
 ### Mise à jour V4 — discovery auctions + Mislisted Slab — 16 août 2026
@@ -21,6 +21,40 @@ Dernier merge fonctionnel V4 / Robot KB :
 - Validation code head `72172a07f0430da39a3231932de64f165baa28bc` : run `31948079857`, job `95167175133` — **575/575 tests PASS**, compile PASS, `git diff --check` PASS.
 - Validation live read-only : API publique non fiable sur ce run (`auction API ending-soon order invalid`), donc mode effectif `LEGACY_LIVE_SALES_FALLBACK_PLUS_STABLE_WEEKLY`; fallback failures `0`, supplemental failures `0`, `legacy_only=0`, timers legacy non résolus `0`.
 - Aucun changement de matching économique, fair value, `max_recommended`, seuils de décote, achat, bid, checkout ou paiement.
+
+### Phase V4 Global Multi-Vault — PR #108 — draft/shadow
+
+Objectif validé : faire évoluer V4 vers un **Edge Hunter global** où GCC, Cardova, magi, Fanatics et COMC alimentent une même compétition d'offres autour d'une fair value commune par identité commerciale exacte.
+
+État de la PR #108 :
+
+- branche `feat/v4-global-multivault-edge-foundation`, base `main` `87d050e3c0d530786baa9c3e4d9395b99a4f8929` ;
+- head validé `5684485ae1500e6cc36d0a941d4a57a36be59453` ;
+- **shadow/offline uniquement** : aucun wiring production et aucune notification live à ce stade ;
+- opportunités **EN + JAP uniquement** ; FR peut continuer à être collecté par Robot KB mais reste non actionnable / sans ntfy ;
+- identité stricte : carte + set + numéro + langue + grader + grade + dimensions sensibles explicites ; identité source non prouvée = fail-closed ;
+- fair value : priorité à ≥2 SOLD exacts item-level récents ; un SOLD exact peut être corroboré par un agrégat récent exact ; un agrégat exact récent/deep peut servir seul en l'absence d'item-level, mais reste explicitement `SOLD_AGGREGATED`, jamais une vente individuelle ;
+- **PPT et PokeTrace sont corrélés dans la famille `EBAY_GRADED_AGGREGATE`** et ne peuvent jamais être comptés comme deux marchés indépendants ;
+- ancien SOLD exact utilisable seulement avec ajustement temporel explicitement prouvé ;
+- les asks de GCC/Cardova/magi/Fanatics/COMC ne rentrent jamais dans la fair value ; ils servent à calculer prix all-in, décote et classement entre marchés ;
+- frais/logistique inconnus = prix all-in non prouvé, donc fail-closed ;
+- enchère active = signal faible, non classé comme meilleure offre et non notifiable ; snapshot `≤5 min` distinct, potentiellement actionnable, mais **jamais SOLD** ;
+- Cardova : Fixed direct individuel seulement ; bundles/sets exclus ; `finished=1` reste `FINISHED_UNPROVEN` tant qu'une vraie vente finale n'est pas prouvée ;
+- adapters/bridges shadow présents pour Cardova, GCC, magi, Fanatics, COMC, PPT et PokeTrace ; aucun achat/bid/checkout/paiement.
+
+Validation PR #108 :
+
+```text
+run 31953284717
+job 95179964122
+27/27 tests global-market PASS
+51/51 regressions V4 multimarket PASS
+compile PASS
+YAML PASS
+git diff --check PASS
+```
+
+PR #8 V5 reste expérimentale, draft et non mergée ; PR #108 ne la touche pas.
 
 ### Principes non négociables
 
@@ -147,7 +181,6 @@ PSA <8 hors scope économique production ; ne pas fabriquer PSA 9.5.
 - non-PSA : eBay SOLD même grader + même grade ;
 - depuis PR #84, Cardmarket/TCGplayer RAW est **exclu de la génération d’opportunités slabs V4 production** ;
 - RAW ne crée jamais `max_recommended`, fair value gradée ni opportunité slab V4.
-
 ## Arbitrage
 
 Chemins principaux :
@@ -297,7 +330,6 @@ job 95028201210
 ```
 
 Résultat :
-
 - **557/557 tests PASS** ;
 - compile PASS ;
 - `git diff --check` PASS ;
@@ -447,7 +479,6 @@ cert GCC
 - budget de lookup épuisé sans tentative ≠ problème cert.
 
 Merge PR #73 :
-
 ```text
 8f584e0d72afed5c6afc06a4e2d25d9d6787a44e
 ```
@@ -696,6 +727,7 @@ Les PR #75/#76/#77/#78/#79/#80/#84 n’ont pas mergé PR #8. Les PR #81/#82/#85/
 7. `Robot KB SOLD shadow` — fresh SOLD + backfill historique + snapshot ROI/readiness **read-only**.
 8. `V5 Offline Validation` — CI offline sans secrets/providers pour les PR enfants ciblant la branche V5.
 9. workflows V5 diagnostics/benchmarks — expérimentaux uniquement ; les lives restent manuels.
+10. `V4 Global Market Offline Validation` — CI shadow de la fondation multi-vault PR #108, sans achat/bid/checkout.
 
 Éviter les workflows temporaires/redondants quand un workflow existant suffit.
 
