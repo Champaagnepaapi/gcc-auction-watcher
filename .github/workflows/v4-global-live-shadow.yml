@@ -11,6 +11,9 @@ on:
         description: "Max listing candidates per market/identity"
         required: false
         default: "8"
+  push:
+    branches:
+      - feat/v4-global-live-shadow
 
 permissions:
   contents: read
@@ -47,8 +50,8 @@ jobs:
         run: |
           python v4_global_live_shadow.py \
             --output-dir global_shadow_out \
-            --max-identities "${{ inputs.max_identities }}" \
-            --market-candidates "${{ inputs.market_candidates }}"
+            --max-identities "${{ inputs.max_identities || '5' }}" \
+            --market-candidates "${{ inputs.market_candidates || '8' }}"
 
       - name: Assert no tracked runtime mutation
         run: |
