@@ -10,6 +10,8 @@ import v4_auction_item_discovery as item_discovery
 PRIVATE_AUCTION_PATH = "/filtres/auction/private/"
 WEEKLY_AUCTION_PATH = "/filtres/auction/weekly/"
 SUPPLEMENTAL_AUCTION_PATHS = (PRIVATE_AUCTION_PATH, WEEKLY_AUCTION_PATH)
+WEEKLY_STABILITY_MAX_PASSES = 3
+WEEKLY_STABILITY_FAILURE = "weekly auction legacy snapshot did not stabilize"
 AUGMENTED_MODE = "AUCTION_API_PLUS_LEGACY_SAFETY_NET"
 _INSTALLED = False
 
@@ -23,19 +25,71 @@ class PrivateAuctionAugmentResult:
     failures: int
 
 
+def _collect_weekly_sale_stable(
+    page,
+    sale: str,
+    diagnostics: watcher.RunDiagnostics,
+    *,
+    max_passes: int = WEEKLY_STABILITY_MAX_PASSES,
+) -> tuple[list[watcher.Lot], bool]:
+    """Union repeated weekly snapshots until one full reload adds no URL.
+
+    GCC weekly sale pages use dynamic/infinite-scroll rendering. Live comparison
+    repeatedly showed one card absent from an earlier load and present on a
+    later load of the same weekly sale. Two identical-growth states are not
+    required: after the initial snapshot, a later snapshot that adds no new URL
+    proves the bounded union has stabilized. Continued growth through the final
+    pass fails closed instead of silently claiming complete supplemental cover.
+    """
+
+    if max_passes < 2:
+        raise ValueError("weekly stability requires at least 2 passes")
+
+    union: dict[str, watcher.Lot] = {}
+    for pass_number in range(1, max_passes + 1):
+        snapshot = item_discovery._ORIGINAL_COLLECT_LOTS_FROM_LISTING(
+            page, sale, "auction", diagnostics
+        )
+        before = len(union)
+        for lot in snapshot:
+            if lot.url:
+                union.setdefault(lot.url, lot)
+        added = len(union) - before
+
+        if pass_number >= 2 and added == 0:
+            if pass_number > 2:
+                watcher.log(
+                    "Auction weekly stability guard: union stable after "
+                    f"{pass_number} pass(es), {len(union)} candidate(s) | {sale}"
+                )
+            return list(union.values()), True
+
+        if pass_number >= 2:
+            watcher.log(
+                "Auction weekly stability guard: snapshot drift detected, "
+                f"pass {pass_number} added {added} candidate(s) | {sale}"
+            )
+
+    watcher.log(
+        "Auction weekly stability guard: bounded snapshots still growing -> "
+        f"fail closed | {sale}"
+    )
+    return list(union.values()), False
+
+
 def discover_private_auction_lots(
     page,
     *,
     run_diagnostics: Optional[watcher.RunDiagnostics] = None,
     max_minutes: Optional[int] = None,
 ) -> PrivateAuctionAugmentResult:
-    """Read private + weekly sale pages that the generic auction API can omit.
+    """Read private + stabilized weekly sale pages omitted by the generic API.
 
-    Live validation showed occasional API omissions from the active weekly sale
-    while private sales were already known API gaps. The legacy safety net keeps
-    using an isolated diagnostics object so its page totals cannot corrupt the
-    primary API coverage ledger. Event/premium pages stay API-only unless a
-    reproducible omission is observed there.
+    Private sales are a known API gap and use one legacy pass. Weekly sales are
+    reloaded until their URL union stabilizes because GCC's dynamic infinite
+    scroll can omit a row on one snapshot. The diagnostics object is isolated so
+    supplemental page totals cannot corrupt the primary API coverage ledger.
+    Event/premium pages stay API-only unless a reproducible omission is observed.
     """
 
     previous_horizon = watcher.MAX_AUCTION_MINUTES
@@ -61,9 +115,21 @@ def discover_private_auction_lots(
         explicit_failures = 0
         for sale in supplemental_sales:
             try:
-                for lot in item_discovery._ORIGINAL_COLLECT_LOTS_FROM_LISTING(
-                    page, sale, "auction", supplemental_diagnostics
-                ):
+                if WEEKLY_AUCTION_PATH in str(sale):
+                    sale_lots, stable = _collect_weekly_sale_stable(
+                        page, sale, supplemental_diagnostics
+                    )
+                    if not stable:
+                        explicit_failures += 1
+                        supplemental_diagnostics.auction_coverage.mark_incomplete(
+                            f"{WEEKLY_STABILITY_FAILURE}: {sale}",
+                            watcher.END_NO_PROGRESS,
+                        )
+                else:
+                    sale_lots = item_discovery._ORIGINAL_COLLECT_LOTS_FROM_LISTING(
+                        page, sale, "auction", supplemental_diagnostics
+                    )
+                for lot in sale_lots:
                     lots.setdefault(lot.url, lot)
             except Exception as error:
                 explicit_failures += 1
@@ -102,7 +168,7 @@ def _merge_by_url(
 
 
 def install_v4_private_auction_coverage() -> None:
-    """Augment successful API discovery with private + weekly legacy pages."""
+    """Augment successful API discovery with private + stable weekly pages."""
 
     global _INSTALLED
     if _INSTALLED:
