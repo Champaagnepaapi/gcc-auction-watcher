@@ -15,7 +15,7 @@ Cette note documente la phase live shadow empilée sur la PR #108. Elle ne rempl
 - branche : `feat/v4-global-live-shadow`
 - base : PR #108 / `e2a6fafeaa4a607010f0bd7378bc70caa708f306`
 - head fonctionnel live validé : `aadc43e51f20e12d1eb36588aaa9a47a24c23a2a`
-- head final CI après retour du workflow en manuel-only : `a5ee6a92f7d3437b3609eb79a8cd37273c9d7e16`
+- head code/tests validé après retour du workflow en manuel-only : `cbf88c8f6872ac8d0afca5c6d6bc9e2be280b09b`
 
 ## Live read-only
 
@@ -49,15 +49,15 @@ Fair values du panel, toutes issues de `RECENT_EXACT_SOLD_MEDIAN` GCC :
 - Persian `75/64` JP PSA10 : fair €95 ; GCC fixed ASK €115 et €149.
 - Dragonite `246/193` JP PSA10 : fair €430 ; GCC fixed ASK €460.
 
-Les enchères actives ne peuvent pas gagner le classement. Les asks restent des `FIXED_ASK`, jamais des SOLD. Lorsqu’un coût all-in n’est pas prouvé, le rapport l’indique et peut seulement afficher un classement `RAW_ASK_ONLY`.
+Les enchères actives et les enchères terminées non prouvées ne peuvent pas gagner le classement. Les asks restent des `FIXED_ASK`, jamais des SOLD. Lorsqu’un coût all-in n’est pas prouvé, le rapport l’indique et peut seulement afficher un classement `RAW_ASK_ONLY`.
 
 ## Validation offline finale
 
-Run : `31954554108`
-Job : `95183060968`
+Run : `31954782257`
+Job : `95183635599`
 Conclusion : **SUCCESS**
 
-- 33/33 tests global-market PASS ;
+- 34/34 tests global-market PASS ;
 - 51/51 régressions V4 multimarket PASS ;
 - compilation PASS ;
 - parsing des deux workflows YAML PASS ;
