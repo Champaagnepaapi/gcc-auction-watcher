@@ -129,7 +129,9 @@ jobs:
           EBAY_MAX_CARDS_PER_RUN: "8"
           V4_EBAY_FIXED_RESERVE_CARDS_PER_RUN: "4"
           V4_EXTERNAL_PENDING_BUDGET_COOLDOWN_MINUTES: "5"
-          EBAY_NAV_TIMEOUT: "6000"
+          # Live benchmark #31973040904 cut eBay timeouts from 6/8 to 3/8
+          # versus 6s without increasing total runtime; keep the bounded 10s cap.
+          EBAY_NAV_TIMEOUT: "10000"
           EBAY_PAGE_WAIT_MS: "700"
 
           PSA_APR_ENABLED: "true"
