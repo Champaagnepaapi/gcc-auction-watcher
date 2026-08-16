@@ -1,0 +1,227 @@
+name: V4 External Budget Live Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/v4-external-budget-live-benchmark.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-external-budget-live-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    if: ${{ github.event.pull_request.head.ref == 'fix/v4-external-coverage-drain-fr-20260816' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MAX_PRICE_EUR: "100"
+      MIN_DISCOUNT_PCT: "30"
+      MAX_AUCTION_MINUTES: "60"
+      FIXED_REEVALUATION_TTL_HOURS: "24"
+      HEADLESS: "true"
+      NTFY_TOPIC: ""
+      GCC_SESSION_B64: ${{ secrets.GCC_SESSION_B64 }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      STATE_FILE: state.json
+      V4_KB_SHADOW_SPOOL_PATH: ""
+      V4_TCGDEX_ENABLED: "true"
+      V4_TCGDEX_REQUEST_TIMEOUT: "6"
+      V4_TCGDEX_CACHE_TTL_HOURS: "24"
+      V4_POKETRACE_ENABLED: "true"
+      V4_POKETRACE_MAX_REQUESTS_PER_RUN: "40"
+      V4_POKETRACE_REQUEST_TIMEOUT: "8"
+      V4_POKETRACE_PACING_SECONDS: "0.40"
+      V4_POKETRACE_MIN_SALES: "3"
+      V4_RAW_REVIEW_TTL_HOURS: "24"
+      EBAY_ENABLED: "true"
+      EBAY_MAX_QUERIES_PER_CARD: "2"
+      EBAY_MAX_CARDS_PER_RUN: "8"
+      V4_EBAY_FIXED_RESERVE_CARDS_PER_RUN: "4"
+      V4_EXTERNAL_PENDING_BUDGET_COOLDOWN_MINUTES: "5"
+      EBAY_NAV_TIMEOUT: "6000"
+      EBAY_PAGE_WAIT_MS: "700"
+      PSA_APR_ENABLED: "true"
+      PSA_APR_MIN_COMPS: "2"
+      PSA_APR_MAX_CARDS_PER_RUN: "2"
+      PSA_APR_MAX_RESULTS: "20"
+      PSA_APR_NAV_TIMEOUT: "6000"
+      PSA_APR_USD_PER_EUR_FALLBACK: ${{ vars.PSA_APR_USD_PER_EUR_FALLBACK }}
+
+    steps:
+      - name: Checkout PR head read-only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert benchmark lineage and safety switches
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 042f517f8156d264680b52109c80071b19296719 HEAD
+          grep -q 'EBAY_MAX_CARDS_PER_RUN: "8"' .github/workflows/watcher.yml
+          grep -q 'V4_EBAY_FIXED_RESERVE_CARDS_PER_RUN: "4"' .github/workflows/watcher.yml
+          test -z "$NTFY_TOPIC"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install runtime
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Restore production state read-only
+        id: restore-state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: gcc-state-benchmark-${{ github.run_id }}
+          restore-keys: |
+            gcc-state-
+
+      - name: Snapshot pre-run economic backlog
+        shell: bash
+        run: |
+          if [ -f state.json ]; then
+            cp state.json benchmark_state_before.json
+            echo "state_restored=true" > benchmark_state_restore.txt
+          else
+            echo '{}' > benchmark_state_before.json
+            echo "state_restored=false" > benchmark_state_restore.txt
+          fi
+
+      - name: Run live read-only benchmark
+        id: scan
+        shell: bash
+        run: |
+          started_at=$(date +%s)
+          set +e
+          printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
+          decode_status=$?
+          if [ "$decode_status" -eq 0 ]; then
+            python run_watcher_multimarket.py 2>&1 | tee benchmark.log
+            scan_status=${PIPESTATUS[0]}
+          else
+            scan_status=$decode_status
+            echo "GCC session decode failed" | tee benchmark.log
+          fi
+          set -e
+          finished_at=$(date +%s)
+          duration=$((finished_at - started_at))
+          echo "$duration" > benchmark_duration_seconds.txt
+          echo "duration_seconds=$duration" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$scan_status" >> "$GITHUB_OUTPUT"
+          rm -f gcc_session.json
+          exit "$scan_status"
+
+      - name: Build benchmark metrics
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+          import watcher
+
+          log = Path('benchmark.log').read_text(errors='replace') if Path('benchmark.log').exists() else ''
+          duration = int(Path('benchmark_duration_seconds.txt').read_text().strip() or 0) if Path('benchmark_duration_seconds.txt').exists() else None
+          state_restored = 'state_restored=true' in Path('benchmark_state_restore.txt').read_text() if Path('benchmark_state_restore.txt').exists() else False
+
+          card_lines = []
+          for line in log.splitlines():
+              m = re.search(r'\[eBay carte (\d+)/(\d+)\]', line)
+              if m:
+                  card_lines.append((int(m.group(1)), int(m.group(2)), line))
+
+          query_starts = 0
+          ebay_error_lines = []
+          ebay_block_lines = []
+          for line in log.splitlines():
+              if re.search(r'eBay q\d+: ', line):
+                  lower = line.lower()
+                  if not any(token in lower for token in ('résultats visibles', 'résultat visible', ' -> ')):
+                      query_starts += 1
+              lower = line.lower()
+              if 'ebay' in lower and any(token in lower for token in ('error', 'exception', 'timeouterror', 'navigation')):
+                  ebay_error_lines.append(line[-500:])
+              if 'ebay' in lower and any(token in lower for token in ('403', '429', 'captcha', 'challenge', 'too many requests', 'access denied')):
+                  ebay_block_lines.append(line[-500:])
+
+          def pending_count(path):
+              p = Path(path)
+              if not p.exists():
+                  return None
+              try:
+                  data = json.loads(p.read_text())
+              except Exception:
+                  return None
+              root = data.get(watcher.FIXED_QUEUE_STATE_KEY)
+              items = root.get('items') if isinstance(root, dict) else None
+              if not isinstance(items, dict):
+                  return None
+              return sum(
+                  1 for rec in items.values()
+                  if isinstance(rec, dict)
+                  and rec.get('last_evaluation_status') == watcher.REJECTION_EXTERNAL_PENDING
+                  and rec.get('active', True)
+              )
+
+          before = pending_count('benchmark_state_before.json')
+          after = pending_count('state.json')
+          auction_calls = sum(1 for _, den, _ in card_lines if den == 4)
+          fixed_calls = sum(1 for _, den, _ in card_lines if den == 8)
+          reserve_exercised = any(idx > 4 and den == 8 for idx, den, _ in card_lines) and any(den == 4 for _, den, _ in card_lines)
+          max_index = max((idx for idx, _, _ in card_lines), default=0)
+
+          metrics = {
+              'duration_seconds': duration,
+              'state_restored': state_restored,
+              'ebay_card_calls_total': len(card_lines),
+              'ebay_auction_cap4_calls': auction_calls,
+              'ebay_fixed_cap8_calls': fixed_calls,
+              'ebay_max_global_card_index_seen': max_index,
+              'ebay_query_starts': query_starts,
+              'ebay_error_line_count': len(ebay_error_lines),
+              'ebay_block_or_rate_limit_line_count': len(ebay_block_lines),
+              'reserve_exercised_live': reserve_exercised,
+              'external_pending_before': before,
+              'external_pending_after_local_only': after,
+              'external_pending_delta_local_only': (after - before) if before is not None and after is not None else None,
+              'ebay_error_lines_tail': ebay_error_lines[-10:],
+              'ebay_block_lines_tail': ebay_block_lines[-10:],
+              'safety': {
+                  'ntfy_disabled': True,
+                  'state_cache_saved': False,
+                  'purchase_bid_checkout_payment': False,
+              },
+          }
+          Path('benchmark_metrics.json').write_text(json.dumps(metrics, indent=2, ensure_ascii=False))
+          print(json.dumps(metrics, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Assert no tracked runtime mutation
+        if: always()
+        run: test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Upload benchmark artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-external-budget-live-benchmark-${{ github.run_id }}
+          path: |
+            benchmark.log
+            benchmark_metrics.json
+            benchmark_state_restore.txt
+            benchmark_duration_seconds.txt
+          if-no-files-found: warn
+          retention-days: 7
