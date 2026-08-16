@@ -10,8 +10,20 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 Dernier merge fonctionnel V4 / Robot KB :
 
 ```text
-0d62e9cfa3d32e5d832fd4cbb75fbcd3102f0fff
+79eb35232b30e1f02834233937461fe52a506d19
 ```
+
+### Mise à jour V4 — external coverage drain / FR — 16 août 2026
+
+- PR #116 prête pour production après benchmark live read-only.
+- eBay SOLD/Completed reste un fallback de validation externe, pas une source de discovery d’annonces à acheter.
+- budget eBay borné à **8 cartes/run**, avec **4 slots réservés aux fixed** lorsque les auctions consomment du budget ; timeout navigation eBay porté à `10s` après benchmark live.
+- `PENDING_BUDGET` est désormais traité comme pression de scheduling avec retry court (`5 min`) au lieu d’un backoff exponentiel de plusieurs heures ; les vraies erreurs provider (403/429/transient/provider failure) gardent le backoff exponentiel.
+- `TRUSTWORTHY:NO` reste inchangé tant qu’une vraie couverture externe reste incomplète.
+- les cartes **FR sur GCC restent éligibles** aux opportunités si l’historique SOLD exact FR compatible est suffisant ; EN/JA ne servent que d’ancres secondaires downweightées et ne remplacent jamais les ventes FR exactes.
+- validation finale head `60d6183286aed1f2df9a1473bbc2a66ab6b7a65f` : run `31973305164` — **602/602 tests PASS**, compile PASS, YAML PASS, `git diff --check` PASS, comparaison discovery live read-only PASS.
+- benchmark live read-only eBay 8 : run `31973040904`, 8 cartes tentées, 5 clean/insufficient, 3 timeouts, 0 eBay 403/429/challenge ; backlog P4 local 2261→2258 sans sauvegarde production.
+- aucun changement de fair value, `max_recommended`, seuil économique, identité/microvariante, achat, bid, checkout ou paiement.
 
 ### Mise à jour V4 — discovery auctions + Mislisted Slab — 16 août 2026
 
