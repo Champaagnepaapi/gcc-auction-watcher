@@ -25,19 +25,24 @@ def write_output(name: str, value: object) -> None:
         handle.write(f"{name}={value}\n")
 
 
-def collect_legacy(page, horizon: int) -> list[watcher.Lot]:
+def collect_legacy(
+    page, horizon: int
+) -> tuple[list[watcher.Lot], dict[str, str]]:
     diagnostics = watcher.RunDiagnostics()
     previous_horizon = watcher.MAX_AUCTION_MINUTES
     watcher.MAX_AUCTION_MINUTES = horizon
     try:
         sales = _ORIGINAL_COLLECT_LIVE_AUCTION_URLS(page, diagnostics)
         lots: dict[str, watcher.Lot] = {}
+        source_by_url: dict[str, str] = {}
         for sale in sales:
             for lot in _ORIGINAL_COLLECT_LOTS_FROM_LISTING(
                 page, sale, "auction", diagnostics
             ):
-                lots.setdefault(lot.url, lot)
-        return list(lots.values())
+                if lot.url not in lots:
+                    lots[lot.url] = lot
+                    source_by_url[lot.url] = sale
+        return list(lots.values()), source_by_url
     finally:
         watcher.MAX_AUCTION_MINUTES = previous_horizon
 
@@ -100,7 +105,7 @@ def main() -> int:
         }
         primary_ids.update(private_ids)
 
-        legacy_lots = collect_legacy(legacy_page, horizon)
+        legacy_lots, legacy_source_by_url = collect_legacy(legacy_page, horizon)
 
         # The stabilized API snapshot is taken first, while the private safety
         # net and full legacy collector need tens of seconds. Restrict the later
@@ -146,7 +151,8 @@ def main() -> int:
     for url in primary_only[:20]:
         print(f"PRIMARY_ONLY {url}", flush=True)
     for url in legacy_only[:20]:
-        print(f"LEGACY_ONLY {url}", flush=True)
+        source = legacy_source_by_url.get(url, "UNKNOWN_LEGACY_SOURCE")
+        print(f"LEGACY_ONLY {url} SOURCE {source}", flush=True)
 
     write_output("primary_complete", str(primary_result.complete).lower())
     write_output("primary_scope", primary_result.scope_status)
