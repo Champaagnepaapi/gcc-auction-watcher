@@ -17,7 +17,7 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             minutes_to_end=30,
         )
 
-    def test_only_private_sale_pages_are_opened(self):
+    def test_private_and_weekly_sale_pages_are_opened_but_event_is_not(self):
         opened = []
 
         def collect_sale(_page, sale, source_type, _diagnostics):
@@ -42,25 +42,32 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
 
         self.assertEqual(result.sales_seen, 3)
         self.assertEqual(result.private_sales_seen, 1)
+        self.assertEqual(result.weekly_sales_seen, 1)
         self.assertEqual(result.failures, 0)
-        self.assertEqual(len(result.lots), 1)
-        self.assertEqual(opened[0][1], "auction")
-        self.assertIn("/auction/private/", opened[0][0])
+        self.assertEqual(len(result.lots), 2)
+        self.assertTrue(all(source_type == "auction" for _, source_type in opened))
+        self.assertEqual(
+            {sale for sale, _ in opened},
+            {
+                sales[0],
+                sales[1],
+            },
+        )
 
-    def test_private_results_are_deduplicated_against_api_results(self):
+    def test_private_and_weekly_results_are_deduplicated_against_api_results(self):
         primary = [self.lot("same"), self.lot("api-only")]
-        private = [self.lot("same"), self.lot("private-only")]
-        merged, added = private_coverage._merge_by_url(primary, private)
+        supplemental = [self.lot("same"), self.lot("weekly-only")]
+        merged, added = private_coverage._merge_by_url(primary, supplemental)
         self.assertEqual(added, 1)
         self.assertEqual({lot.url for lot in merged}, {
             self.lot("same").url,
             self.lot("api-only").url,
-            self.lot("private-only").url,
+            self.lot("weekly-only").url,
         })
 
-    def test_private_page_failure_is_counted_without_dropping_other_sales(self):
+    def test_supplemental_page_failure_is_counted_without_dropping_other_sales(self):
         sales = [
-            "https://gradedcardcenter.com/filtres/auction/private/bad",
+            "https://gradedcardcenter.com/filtres/auction/weekly/bad",
             "https://gradedcardcenter.com/filtres/auction/private/good",
         ]
 
@@ -81,9 +88,11 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             result = private_coverage.discover_private_auction_lots(object())
 
         self.assertEqual(result.failures, 1)
+        self.assertEqual(result.private_sales_seen, 1)
+        self.assertEqual(result.weekly_sales_seen, 1)
         self.assertEqual(len(result.lots), 1)
 
-    def test_private_legacy_accounting_does_not_mutate_primary_api_ledger(self):
+    def test_supplemental_legacy_accounting_does_not_mutate_primary_api_ledger(self):
         primary = watcher.RunDiagnostics()
         primary.auction_coverage.expected_total = 14338
         primary.auction_coverage.expected_total_scope = watcher.EXPECTED_TOTAL_SAME_QUERY
@@ -94,20 +103,20 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
         def collect_sales(_page, diagnostics):
             diagnostics.auction_coverage.record_page_success(
                 "legacy-home",
-                ["private-sale"],
+                ["weekly-sale"],
                 expected_total=7,
                 expected_total_scope=watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE,
             )
-            return ["https://gradedcardcenter.com/filtres/auction/private/private-sale"]
+            return ["https://gradedcardcenter.com/filtres/auction/weekly/weekly-sale"]
 
         def collect_sale(_page, _sale, _source_type, diagnostics):
             diagnostics.auction_coverage.record_page_success(
-                "private-sale",
-                ["private-card"],
+                "weekly-sale",
+                ["weekly-card"],
                 expected_total=1,
                 expected_total_scope=watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE,
             )
-            return [self.lot("private-card")]
+            return [self.lot("weekly-card")]
 
         with patch.object(
             private_coverage.item_discovery,
@@ -123,6 +132,7 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             )
 
         self.assertEqual(result.failures, 0)
+        self.assertEqual(result.weekly_sales_seen, 1)
         self.assertEqual(primary.auction_coverage.expected_total, 14338)
         self.assertEqual(
             primary.auction_coverage.expected_total_scope,
