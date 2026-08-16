@@ -4,7 +4,9 @@ import japan_edge_hunter as japan
 import v4_global_retrieval_hardening_v3 as v3
 from v4_global_magi_registry_hardening import (
     _target_catalog_proof,
+    magi_listing_availability_check,
     magi_registry_identity_check,
+    magi_sold_text_reason,
 )
 from v4_tcgdex_japanese_set_registry import (
     REGISTRY_VERSION,
@@ -42,6 +44,17 @@ class FakeResolver:
         return self.result
 
 
+class FakeAvailabilityPage:
+    def __init__(self, marker=False, raises=False):
+        self.marker = marker
+        self.raises = raises
+
+    def evaluate(self, _script):
+        if self.raises:
+            raise RuntimeError("browser probe unavailable")
+        return self.marker
+
+
 class JapaneseSetRegistryTests(unittest.TestCase):
     def test_registry_is_versioned_and_maps_panel_sets_exactly(self):
         self.assertTrue(REGISTRY_VERSION)
@@ -69,6 +82,52 @@ class JapaneseSetRegistryTests(unittest.TestCase):
         entry, reason = resolve_japanese_set("Night Wanderer", "75/62")
         self.assertIsNone(entry)
         self.assertEqual(reason, "REGISTRY_TARGET_DENOMINATOR_CONFLICT")
+
+
+class MagiAvailabilityTests(unittest.TestCase):
+    def test_explicit_english_sold_marker_blocks_listing(self):
+        self.assertEqual(
+            magi_sold_text_reason("【PSA10】ミュウツー 183/165\nSOLD\n17,000円"),
+            "sold_listing",
+        )
+
+    def test_explicit_japanese_sold_marker_blocks_listing(self):
+        self.assertEqual(
+            magi_sold_text_reason("【PSA10】ミュウツー 183/165\n売り切れ\n17,000円"),
+            "sold_listing",
+        )
+
+    def test_unrelated_word_does_not_trigger_sold_filter(self):
+        self.assertEqual(
+            magi_sold_text_reason("【PSA10】ミュウツー 183/165\nSOLDIER artwork note\n17,000円"),
+            "",
+        )
+
+    def test_visible_dom_sold_badge_blocks_even_when_body_text_has_no_marker(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/926248132",
+            "【PSA10】ミュウツー AR 183/165 1枚の通販",
+            17000,
+            "17,000円",
+        )
+        self.assertEqual(
+            magi_listing_availability_check(FakeAvailabilityPage(marker=True), ask),
+            (False, "sold_listing_dom_marker"),
+        )
+
+    def test_dom_probe_failure_does_not_manufacture_sold_status(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/1",
+            "【PSA10】ミュウツー AR 183/165 1枚の通販",
+            17000,
+            "17,000円",
+        )
+        self.assertEqual(
+            magi_listing_availability_check(FakeAvailabilityPage(raises=True), ask),
+            (True, "no_sold_marker"),
+        )
 
 
 class MagiRegistryHardeningTests(unittest.TestCase):

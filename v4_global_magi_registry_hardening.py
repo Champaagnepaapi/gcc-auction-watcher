@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Sequence
 
@@ -13,6 +14,17 @@ from v4_tcgdex_japanese_set_registry import (
     REGISTRY_VERSION,
     JapaneseSetRegistryEntry,
     resolve_japanese_set,
+)
+
+
+MAGI_SOLD_TEXT_RE = re.compile(r"(?<![A-Z0-9])SOLD(?:\s+OUT)?(?![A-Z0-9])", re.I)
+MAGI_SOLD_JA_MARKERS = (
+    "売り切れ",
+    "売切れ",
+    "販売済み",
+    "取引完了",
+    "購入済み",
+    "この商品は売り切れました",
 )
 
 
@@ -58,6 +70,62 @@ def _target_catalog_proof(
     if not _jp_equal(proof.set_name_ja, entry.ja_set_name):
         return v3.JapaneseCatalogProof("CONFLICT", reason="REGISTRY_TCGDEX_SET_NAME_CONFLICT")
     return v3.JapaneseCatalogProof(**{**proof.__dict__, "reason": "REGISTRY_TCGDEX_EXACT_SET_LOCALID"})
+
+
+def magi_sold_text_reason(text: object) -> str:
+    """Return a blocking reason only for explicit SOLD/unavailable markers.
+
+    Search snippets are not enough to prove availability. This helper is applied
+    to the current detail page after related/recommended content has been cut.
+    """
+    current = japan.current_text(unicodedata.normalize("NFKC", str(text or "")))
+    if MAGI_SOLD_TEXT_RE.search(current):
+        return "sold_listing"
+    compact = current.replace(" ", "")
+    if any(marker in compact for marker in MAGI_SOLD_JA_MARKERS):
+        return "sold_listing"
+    return ""
+
+
+def magi_visible_sold_marker(page: Any) -> bool:
+    """Detect a visible SOLD badge near the primary Magi item area.
+
+    Magi can render SOLD as a visual badge that is not present in body innerText.
+    The probe is read-only and constrained to visible elements in the upper item
+    area so related products further down the page cannot poison availability.
+    """
+    try:
+        return bool(
+            page.evaluate(
+                r"""() => {
+                  const sold = /^(?:SOLD(?:\s+OUT)?|売り切れ|売切れ|販売済み|取引完了|購入済み)$/i;
+                  const nodes = Array.from(document.querySelectorAll('body *')).slice(0, 5000);
+                  return nodes.some(el => {
+                    const rect = el.getBoundingClientRect();
+                    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+                    const style = getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+                    const top = rect.top + window.scrollY;
+                    if (top < 0 || top > 1800) return false;
+                    const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (text.length <= 40 && sold.test(text)) return true;
+                    const alt = (el.getAttribute && (el.getAttribute('alt') || el.getAttribute('aria-label'))) || '';
+                    return alt.length <= 80 && sold.test(alt.trim());
+                  });
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+def magi_listing_availability_check(page: Any, ask: japan.Ask) -> tuple[bool, str]:
+    reason = magi_sold_text_reason("\n".join(x for x in (ask.title, ask.text) if x))
+    if reason:
+        return False, reason
+    if magi_visible_sold_marker(page):
+        return False, "sold_listing_dom_marker"
+    return True, "no_sold_marker"
 
 
 def magi_registry_identity_check(
@@ -196,6 +264,11 @@ def collect_magi_registry_hardened(
                     trace.reject(seed, "detail_error", title=ask.title, url=ask.url)
                     continue
 
+                available, availability_reason = magi_listing_availability_check(page, detailed)
+                if not available:
+                    trace.reject(seed, availability_reason, title=detailed.title, url=detailed.url)
+                    continue
+
                 ok, proof = magi_registry_identity_check(detailed, seed.source_identity, catalog, entry)
                 if not ok:
                     trace.reject(seed, proof, title=detailed.title, url=detailed.url)
@@ -210,6 +283,7 @@ def collect_magi_registry_hardened(
                     buyer_fee_rate=None,
                     note=(
                         f"magi fixed ASK; {proof}; registry={REGISTRY_VERSION}; "
+                        "explicit SOLD/unavailable marker absent at observation time; "
                         "buyer/logistics all-in intentionally unproven in global shadow"
                     ),
                 )
@@ -224,7 +298,7 @@ def collect_magi_registry_hardened(
         "OK",
         (
             f"public read-only; versioned TCGdex Japanese set registry {REGISTRY_VERSION} + exact set/localId/name; "
-            f"tcgdex_calls={resolver.requests_used}"
+            f"explicit SOLD/unavailable detail-page rejection; tcgdex_calls={resolver.requests_used}"
         ),
         searches,
         candidates,
