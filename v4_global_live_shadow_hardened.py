@@ -6,11 +6,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 import v4_global_live_shadow as base
-from v4_global_retrieval_hardening_v2 import (
-    collect_comc_v2,
-    collect_fanatics_v2,
-    collect_magi_v2,
-    traces_to_json,
+from v4_global_retrieval_hardening_v2 import traces_to_json
+from v4_global_retrieval_hardening_v3 import (
+    collect_comc_v3,
+    collect_fanatics_v3,
+    collect_magi_v3,
 )
 
 
@@ -50,7 +50,7 @@ def run(args: argparse.Namespace) -> dict:
             context = browser.new_context(locale="en-US", user_agent="Mozilla/5.0")
             page = context.new_page()
 
-            magi_rows, magi_status, magi_trace = collect_magi_v2(
+            magi_rows, magi_status, magi_trace = collect_magi_v3(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -60,7 +60,7 @@ def run(args: argparse.Namespace) -> dict:
             statuses.append(magi_status)
             traces.append(magi_trace)
 
-            fanatics_rows, fanatics_status, fanatics_trace = collect_fanatics_v2(
+            fanatics_rows, fanatics_status, fanatics_trace = collect_fanatics_v3(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -70,7 +70,7 @@ def run(args: argparse.Namespace) -> dict:
             statuses.append(fanatics_status)
             traces.append(fanatics_trace)
 
-            comc_rows, comc_status, comc_trace = collect_comc_v2(
+            comc_rows, comc_status, comc_trace = collect_comc_v3(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -89,10 +89,10 @@ def run(args: argparse.Namespace) -> dict:
 
     report = base.build_report(seeds, rows, fx=fx, statuses=statuses, observed_at=observed_at)
     report["retrieval_hardening"] = {
-        "version": 2,
-        "magi": "Pokemon/PSA10 priority before cap + detail rejection reasons",
-        "fanatics": "anchor + embedded buy-now/fixed route recovery + era-normalized exact set/localId proof",
-        "comc": "direct player fallback + exact metadata/localId + PSA10 row-bound price",
+        "version": 3,
+        "magi": "single-card quantity proven from product title; unrelated page recommendations cannot create bundle rejection",
+        "fanatics": "collector-number conflicts scoped to canonical H1; related/sales-history text cannot poison identity",
+        "comc": "text-view row binds set/language/number/name/PSA10 and its own ask price",
         "identity_gate_relaxed": False,
     }
     report["retrieval_diagnostics"] = traces_to_json(*traces)
