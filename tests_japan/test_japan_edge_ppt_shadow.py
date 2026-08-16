@@ -182,6 +182,8 @@ class JapanEdgePptShadowTests(unittest.TestCase):
         self.assertIn('workflow_dispatch:', workflow)
         self.assertNotIn('\n  schedule:', workflow)
         self.assertNotIn('\n  push:', workflow)
+        self.assertIn('persist-credentials: false', workflow)
+        self.assertIn('POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}', workflow)
         self.assertIn('JAPAN_EDGE_NOTIFY_ENABLED: "false"', workflow)
         self.assertIn('NTFY_TOPIC: ""', workflow)
         self.assertIn('JAPAN_EDGE_PPT_MAX_CANDIDATES: "4"', workflow)
