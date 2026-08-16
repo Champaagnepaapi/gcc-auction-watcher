@@ -5,6 +5,10 @@ current deterministic uniqueness resolver. This module then keeps those safety
 gates, keeps routine PokeTrace identity retrieval disabled, and permits a
 separate bounded PokeTrace identity lane only after a genuine TCGdex technical
 outage and an unresolved normal catalogue chain.
+
+PokemonPriceTracker is optionally queried *after* all live decisions as a
+shadow-only diagnostic. Its output cannot mutate identity, microvariant gates,
+or valuation.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from .poketrace_market_only_identity import (
     MarketOnlyPokeTraceVisualIdentityResolver,
     render_market_only_identity_counters,
 )
+from .pokemonpricetracker_identity_shadow import PokemonPriceTrackerIdentityShadow
 
 
 _BasePipelineDiagnostic = catalog_pipeline.CatalogAwareLiveRawPipelineDiagnostic
@@ -55,6 +60,12 @@ class DetailedCatalogAwareLiveRawPipelineDiagnostic(_BasePipelineDiagnostic):
             EmergencyFallbackDetailedPokemonCardResolver,
         ):
             print(render_emergency_identity_policy(self.card_catalog_resolver))
+
+        # This is deliberately last: every acceptance/valuation decision has
+        # already been made. PPT can only report what it might have found.
+        ppt_shadow = PokemonPriceTrackerIdentityShadow.from_env()
+        ppt_shadow.observe(tuple(self.unresolved_diagnostics))
+        print(ppt_shadow.render())
         return summary
 
 
