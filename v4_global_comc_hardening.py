@@ -87,17 +87,19 @@ def _local_matches(field: str, identity: japan.Identity) -> bool:
     if target is None:
         return False
     normalized = unicodedata.normalize("NFKC", str(field or "")).upper().replace(" ", "").lstrip("#")
-    full_candidate = v1._number(normalized)
-    if full_candidate:
-        return full_candidate == v1._number(identity.number)
-    local_candidate = normalized
-    if local_candidate.isdigit() and target.isdigit():
-        return int(local_candidate) == int(target)
-    return local_candidate.casefold() == target.casefold()
+    if "/" in normalized:
+        candidate = v1._number(normalized)
+        return bool(candidate) and candidate == v1._number(identity.number)
+    if normalized.isdigit() and target.isdigit():
+        return int(normalized) == int(target)
+    return normalized.casefold() == target.casefold()
 
 
 def _has_exact_full_number(field: str, identity: japan.Identity) -> bool:
-    candidate = v1._number(field)
+    normalized = unicodedata.normalize("NFKC", str(field or "")).upper().replace(" ", "").lstrip("#")
+    if "/" not in normalized:
+        return False
+    candidate = v1._number(normalized)
     return bool(candidate) and candidate == v1._number(identity.number)
 
 
