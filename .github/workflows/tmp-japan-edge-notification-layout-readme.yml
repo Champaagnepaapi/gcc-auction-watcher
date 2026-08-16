@@ -19,49 +19,7 @@ jobs:
           ref: docs/japan-edge-notification-layout-handoff
       - name: Append canonical handoff and self-clean
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path("README.md")
-          append = '''
-
----
-
-# Addendum canonique — 16 août 2026 — format comparatif notifications Japan Edge / PR #101
-
-Merge production :
-
-```text
-cf652027a767626829d6c3b6d115fb62f64f140c
-```
-
-Le contenu économique du Japan Edge n'a pas changé. La notification ntfy affiche désormais les éléments séparément pour lecture immédiate :
-
-```text
-Prix Japon: ¥... | rendu estimé ... CHF
-
-GCC exact JP PSA10: €...
-→ décote vs GCC: -...%
-
-Marché externe exact: €... | source(s) | n SOLD
-→ décote vs externe: -...%
-
-Fair multi-marché: €...
-→ décote globale: -...%
-
-VERDICT: ...
-ASK, PAS UNE VENTE
-```
-
-Si aucun marché externe exact n'est prouvable, la notification indique explicitement `Marché externe exact: non confirmé` et `Fair multi-marché: non confirmé — référence GCC seule`; elle ne fabrique pas de prix mondial.
-
-Validation PR #101 : run `31942800314`, job `95154297972` — tests Japan Edge PASS, compilation PASS, YAML PASS et `git diff --check` PASS.
-
-Aucun changement de discovery, identité, fair value, seuil économique, provider, achat, bid, checkout ou paiement. PR #8 reste expérimentale/non mergée.
-'''
-          text = path.read_text()
-          if "format comparatif notifications Japan Edge / PR #101" not in text:
-              path.write_text(text + append)
-          PY
+          python -c "import base64,pathlib; p=pathlib.Path('README.md'); a=base64.b64decode('CgotLS0KCiMgQWRkZW5kdW0gY2Fub25pcXVlIOKAlCAxNiBhb8O7dCAyMDI2IOKAlCBmb3JtYXQgY29tcGFyYXRpZiBub3RpZmljYXRpb25zIEphcGFuIEVkZ2UgLyBQUiAjMTAxCgpNZXJnZSBwcm9kdWN0aW9uIDoKCmBgYHRleHQKY2Y2NTIwMjdhNzY3NjI2ODI5ZDZjM2I2ZDExNWZiNjJmNjRmMTQwYwpgYGAKCkxlIGNvbnRlbnUgw6ljb25vbWlxdWUgZHUgSmFwYW4gRWRnZSBuJ2EgcGFzIGNoYW5nw6kuIExhIG5vdGlmaWNhdGlvbiBudGZ5IGFmZmljaGUgZMOpc29ybWFpcyBsZXMgw6lsw6ltZW50cyBzw6lwYXLDqW1lbnQgcG91ciBsZWN0dXJlIGltbcOpZGlhdGUgOgoKYGBgdGV4dApQcml4IEphcG9uOiDCpS4uLiB8IHJlbmR1IGVzdGltw6kgLi4uIENIRgoKR0NDIGV4YWN0IEpQIFBTQTEwOiDigqwuLi4K4oaSIGTDqWNvdGUgdnMgR0NDOiAtLi4uJQoKTWFyY2jDqSBleHRlcm5lIGV4YWN0OiDigqwuLi4gfCBzb3VyY2UocykgfCBuIFNPTEQK4oaSIGTDqWNvdGUgdnMgZXh0ZXJuZTogLS4uLiUKCkZhaXIgbXVsdGktbWFyY2jDqTog4oKsLi4uCuKGkiBkw6ljb3RlIGdsb2JhbGU6IC0uLi4lCgpWRVJESUNUOiAuLi4KQVNLLCBQQVMgVU5FIFZFTlRFCmBgYAoKU2kgYXVjdW4gbWFyY2jDqSBleHRlcm5lIGV4YWN0IG4nZXN0IHByb3V2YWJsZSwgbGEgbm90aWZpY2F0aW9uIGluZGlxdWUgZXhwbGljaXRlbWVudCBgTWFyY2jDqSBleHRlcm5lIGV4YWN0OiBub24gY29uZmlybcOpYCBldCBgRmFpciBtdWx0aS1tYXJjaMOpOiBub24gY29uZmlybcOpIOKAlCByw6lmw6lyZW5jZSBHQ0Mgc2V1bGVgOyBlbGxlIG5lIGZhYnJpcXVlIHBhcyBkZSBwcml4IG1vbmRpYWwuCgpWYWxpZGF0aW9uIFBSICMxMDEgOiBydW4gYDMxOTQyODAwMzE0YCwgam9iIGA5NTE1NDI5Nzk3MmAg4oCUIHRlc3RzIEphcGFuIEVkZ2UgUEFTUywgY29tcGlsYXRpb24gUEFTUywgWUFNTCBQQVNTIGV0IGBnaXQgZGlmZiAtLWNoZWNrYCBQQVNTLgoKQXVjdW4gY2hhbmdlbWVudCBkZSBkaXNjb3ZlcnksIGlkZW50aXTDqSwgZmFpciB2YWx1ZSwgc2V1aWwgw6ljb25vbWlxdWUsIHByb3ZpZGVyLCBhY2hhdCwgYmlkLCBjaGVja291dCBvdSBwYWllbWVudC4gUFIgIzggcmVzdGUgZXhww6lyaW1lbnRhbGUvbm9uIG1lcmfDqWUuCg==').decode(); t=p.read_text(); p.write_text(t if 'format comparatif notifications Japan Edge / PR #101' in t else t+a)"
           git rm .github/workflows/tmp-japan-edge-notification-layout-readme.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
