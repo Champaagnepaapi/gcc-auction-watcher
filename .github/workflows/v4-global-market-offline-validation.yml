@@ -9,6 +9,7 @@ on:
       - "v4_global_live_shadow.py"
       - "v4_global_live_shadow_hardened.py"
       - "v4_global_comc_hardening.py"
+      - "v4_global_comc_hardening_v2.py"
       - "v4_global_magi_registry_hardening.py"
       - "v4_global_magi_target_hardening.py"
       - "v4_global_magi_target_hardening_v2.py"
@@ -64,6 +65,7 @@ jobs:
           python -m py_compile v4_global_live_shadow.py
           python -m py_compile v4_global_live_shadow_hardened.py
           python -m py_compile v4_global_comc_hardening.py
+          python -m py_compile v4_global_comc_hardening_v2.py
           python -m py_compile v4_global_magi_registry_hardening.py
           python -m py_compile v4_global_magi_target_hardening.py
           python -m py_compile v4_global_magi_target_hardening_v2.py
@@ -83,6 +85,7 @@ jobs:
           python -m py_compile tests_global/test_v4_global_market_core.py
           python -m py_compile tests_global/test_v4_global_live_shadow.py
           python -m py_compile tests_global/test_v4_global_comc_hardening.py
+          python -m py_compile tests_global/test_v4_global_comc_hardening_v2.py
           python -m py_compile tests_global/test_v4_global_magi_registry_hardening.py
           python -m py_compile tests_global/test_v4_global_magi_target_hardening.py
           python -m py_compile tests_global/test_v4_global_magi_target_hardening_v2.py
