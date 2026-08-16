@@ -47,7 +47,7 @@ jobs:
           test -n "${POKEMONPRICETRACKER_API_KEY:-}"
           test "${JAPAN_EDGE_NOTIFY_ENABLED}" = "false"
           test -z "${NTFY_TOPIC:-}"
-          echo "Japan Edge PPT one-shot: exact-set shadow, ephemeral state, no ntfy"
+          echo "Japan Edge PPT one-shot: observed provider setId shadow, ephemeral state, no ntfy"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -68,10 +68,10 @@ jobs:
             --output japan_edge_ppt_live_baseline.json \
             2>&1 | tee japan_edge_ppt_live_baseline.log
 
-      - name: Enrich exact Japanese leads with PPT exact-set shadow
+      - name: Enrich exact Japanese leads with observed PPT catalog shadow
         shell: bash
         run: |
-          python japan_edge_ppt_exact_set_shadow.py \
+          python japan_edge_ppt_provider_catalog_fix.py \
             --input japan_edge_ppt_live_baseline.json \
             --output japan_edge_ppt_live_shadow_report.json \
             2>&1 | tee japan_edge_ppt_live_shadow.log
@@ -111,7 +111,7 @@ jobs:
               'run_head_sha': '${{ github.sha }}',
               'summary': summary,
           }, ensure_ascii=False))
-          print('Japan Edge PPT exact-set one-shot safety assertions: PASS')
+          print('Japan Edge PPT observed-catalog one-shot safety assertions: PASS')
           PY
 
       - name: Upload one-shot reports
