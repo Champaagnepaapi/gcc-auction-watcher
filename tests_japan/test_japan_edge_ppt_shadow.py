@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from decimal import Decimal
+from pathlib import Path
 
 import japan_edge_hunter as base
 import japan_edge_ppt_shadow as ppt
@@ -175,6 +176,18 @@ class JapanEdgePptShadowTests(unittest.TestCase):
         budget.record({})
         self.assertEqual(budget.blocked_reason, "CREDIT_HEADER_REQUIRED")
         self.assertFalse(budget.can_call())
+
+    def test_live_workflow_is_manual_bounded_and_notification_free(self):
+        workflow = Path('.github/workflows/japan-edge-ppt-live-once.yml').read_text(encoding='utf-8')
+        self.assertIn('workflow_dispatch:', workflow)
+        self.assertNotIn('\n  schedule:', workflow)
+        self.assertNotIn('\n  push:', workflow)
+        self.assertIn('JAPAN_EDGE_NOTIFY_ENABLED: "false"', workflow)
+        self.assertIn('NTFY_TOPIC: ""', workflow)
+        self.assertIn('JAPAN_EDGE_PPT_MAX_CANDIDATES: "4"', workflow)
+        self.assertIn('JAPAN_EDGE_PPT_MAX_HTTP_CALLS: "8"', workflow)
+        self.assertIn('JAPAN_EDGE_PPT_MAX_CREDITS: "40"', workflow)
+        self.assertIn('JAPAN_EDGE_PPT_DAILY_REMAINING_FLOOR: "15000"', workflow)
 
 
 if __name__ == "__main__":
