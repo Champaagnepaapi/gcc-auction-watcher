@@ -202,30 +202,48 @@ def _notification_fingerprint(op: base.Opportunity) -> str:
 def notify(op: base.Opportunity, external: ExternalReference, decision: MarketDecision, server: str, topic: str) -> None:
     landed = f"{op.landed_chf:.0f} CHF" if op.landed_chf is not None else f"€{op.landed_eur:.0f}"
     identity = op.identity
-    external_line = (
-        f"{external.source} exact JP PSA10: €{external.fair_eur:.0f} | {external.sold_count} SOLD"
-        if external.fair_eur is not None
-        else f"Marché externe exact JP PSA10: non confirmé ({external.status})"
-    )
-    discount_line = f"Décote vs GCC: {decision.discount_vs_gcc_pct:.0f}%"
-    if decision.discount_vs_external_pct is not None:
-        discount_line += f" | vs externe: {decision.discount_vs_external_pct:.0f}% | multi: {decision.discount_vs_global_pct:.0f}%"
     title = (
         "JAPAN EDGE GLOBAL >=30%"
         if decision.status == "MULTIMARKET_CONFIRMED"
         else "JAPAN EDGE GCC >=30% — EXTERNE À CONFIRMER"
     )
-    body = (
-        f"{identity.name} {identity.number} | {identity.set_name}\n"
-        f"Japanese | PSA 10\n"
-        f"{op.provider}: ¥{op.price_jpy:,} | rendu estimé {landed}\n"
-        f"GCC exact Japanese PSA10: €{decision.gcc_fair_eur:.0f} | {op.gcc_sold_count} SOLD ({op.gcc_recent_90} <90j)\n"
-        f"{external_line}\n"
-        f"Fair multi-marché: €{decision.global_fair_eur:.0f}\n"
-        f"{discount_line}\n"
-        f"Statut: {decision.status}\n"
-        "ASK, PAS UNE VENTE\n"
-        f"{op.url}"
+
+    market_lines = [
+        f"Prix Japon: ¥{op.price_jpy:,} | rendu estimé {landed}",
+        "",
+        f"GCC exact JP PSA10: €{decision.gcc_fair_eur:.0f} | {op.gcc_sold_count} SOLD ({op.gcc_recent_90} <90j)",
+        f"→ décote vs GCC: -{decision.discount_vs_gcc_pct:.0f}%",
+        "",
+    ]
+    if external.fair_eur is not None and decision.discount_vs_external_pct is not None:
+        market_lines.extend(
+            [
+                f"Marché externe exact: €{external.fair_eur:.0f} | {external.source} | {external.sold_count} SOLD",
+                f"→ décote vs externe: -{decision.discount_vs_external_pct:.0f}%",
+                "",
+                f"Fair multi-marché: €{decision.global_fair_eur:.0f}",
+                f"→ décote globale: -{decision.discount_vs_global_pct:.0f}%",
+            ]
+        )
+    else:
+        market_lines.extend(
+            [
+                f"Marché externe exact: non confirmé ({external.status})",
+                "Fair multi-marché: non confirmé — référence GCC seule",
+            ]
+        )
+
+    body = "\n".join(
+        [
+            f"{identity.name} {identity.number} | {identity.set_name}",
+            "Japanese | PSA 10",
+            "",
+            *market_lines,
+            "",
+            f"VERDICT: {decision.status}",
+            "ASK, PAS UNE VENTE",
+            op.url,
+        ]
     )
     requests.post(
         f"{server.rstrip('/')}/{topic}",
