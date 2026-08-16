@@ -2,7 +2,9 @@ import unittest
 from decimal import Decimal
 
 import japan_edge_hunter as base
-import japan_edge_ppt_exact_set_shadow as ppt
+import japan_edge_ppt_provider_catalog_fix as provider_fix
+
+ppt = provider_fix.shadow
 
 
 class FakeResponse:
@@ -61,12 +63,11 @@ def identity(
 
 class JapanEdgePptExactSetShadowTests(unittest.TestCase):
     def test_reviewed_set_id_mapping(self):
-        self.assertEqual(ppt.expected_provider_set_id(identity()), "sv2a")
-        self.assertEqual(
+        self.assertEqual(ppt.expected_provider_set_id(identity()), "23599")
+        self.assertIsNone(
             ppt.expected_provider_set_id(
                 identity("VSTAR Universe", "228/172", 2022)
-            ),
-            "s12a",
+            )
         )
         self.assertIsNone(
             ppt.expected_provider_set_id(identity("Unknown", "1/100", 2026))
@@ -90,31 +91,30 @@ class JapanEdgePptExactSetShadowTests(unittest.TestCase):
     def test_match_requires_japanese_exact_set_id_and_number(self):
         card = identity()
         exact = {
-            "language": "Japanese",
-            "setId": "sv2a",
-            "setName": "Pokemon Card 151",
+            "setId": 23599,
+            "setName": "SV2a: Pokemon Card 151",
             "cardNumber": "166/165",
             "name": "Bulbasaur",
         }
         self.assertEqual(
-            ppt.match_japanese_identity(card, [exact], "sv2a").status,
+            ppt.match_japanese_identity(card, [exact], "23599").status,
             "EXACT",
         )
         self.assertEqual(
             ppt.match_japanese_identity(
-                card, [dict(exact, setId="sv3")], "sv2a"
+                card, [dict(exact, setId=23908)], "23599"
             ).status,
             "CLEAN_NO_MATCH",
         )
         self.assertEqual(
             ppt.match_japanese_identity(
-                card, [dict(exact, cardNumber="167/165")], "sv2a"
+                card, [dict(exact, cardNumber="167/165")], "23599"
             ).status,
             "CLEAN_NO_MATCH",
         )
         self.assertEqual(
             ppt.match_japanese_identity(
-                card, [dict(exact, language="English")], "sv2a"
+                card, [dict(exact, language="English")], "23599"
             ).status,
             "CLEAN_NO_MATCH",
         )
@@ -122,23 +122,21 @@ class JapanEdgePptExactSetShadowTests(unittest.TestCase):
     def test_sensitive_variant_stays_fail_closed(self):
         card = identity(variety="Master Ball Reverse")
         row = {
-            "language": "Japanese",
-            "setId": "sv2a",
+            "setId": 23599,
             "cardNumber": "166/165",
             "name": "Bulbasaur",
             "variant": "Holo",
         }
-        match = ppt.match_japanese_identity(card, [row], "sv2a")
+        match = ppt.match_japanese_identity(card, [row], "23599")
         self.assertEqual(match.status, "MICROVARIANT_UNPROVEN")
 
     def test_scoped_request_uses_japanese_exact_set_id_and_small_limit(self):
         row = {
-            "language": "Japanese",
-            "setId": "sv2a",
-            "setName": "Pokemon Card 151",
+            "setId": 23599,
+            "setName": "SV2a: Pokemon Card 151",
             "cardNumber": "166/165",
             "name": "Bulbasaur",
-            # no tcgPlayerId -> stop after exact identity request
+            # no row-level language/tcgPlayerId: mirrors the observed PPT shape
         }
         session = FakeSession([FakeResponse({"data": [row]})])
         budget = ppt.PptBudget(interval_seconds=0)
@@ -153,19 +151,18 @@ class JapanEdgePptExactSetShadowTests(unittest.TestCase):
         self.assertEqual(len(session.calls), 1)
         params = session.calls[0][1]
         self.assertEqual(params["language"], "japanese")
-        self.assertEqual(params["setId"], "sv2a")
+        self.assertEqual(params["setId"], "23599")
         self.assertEqual(params["search"], "166")
         self.assertEqual(params["limit"], 5)
-        self.assertEqual(diagnostics["provider_set_id_expected"], "sv2a")
+        self.assertEqual(diagnostics["provider_set_id_expected"], "23599")
 
     def test_candidate_diagnostics_are_bounded_and_allow_listed(self):
         rows = [
             {
                 "name": f"Card {index}",
-                "setId": "sv2a",
-                "setName": "Pokemon Card 151",
+                "setId": 23599,
+                "setName": "SV2a: Pokemon Card 151",
                 "cardNumber": f"{index}/165",
-                "language": "Japanese",
                 "tcgPlayerId": str(index),
                 "secret": "must-not-leak",
             }
@@ -219,9 +216,8 @@ class JapanEdgePptExactSetShadowTests(unittest.TestCase):
 
     def test_full_match_parses_psa10_aggregate_without_independence(self):
         shallow = {
-            "language": "Japanese",
-            "setId": "sv2a",
-            "setName": "Pokemon Card 151",
+            "setId": 23599,
+            "setName": "SV2a: Pokemon Card 151",
             "cardNumber": "166/165",
             "name": "Bulbasaur",
             "tcgPlayerId": "123",
@@ -259,7 +255,7 @@ class JapanEdgePptExactSetShadowTests(unittest.TestCase):
         self.assertEqual(snapshot.sales_count, 12)
         self.assertEqual(snapshot.fair_value_usd, 102.0)
         self.assertEqual(snapshot.fair_value_eur, 102.0)
-        self.assertEqual(diagnostics["provider_set_id_expected"], "sv2a")
+        self.assertEqual(diagnostics["provider_set_id_expected"], "23599")
         safe = ppt._safe_payload(snapshot, diagnostics=diagnostics)
         self.assertEqual(safe["independent_market_increment"], 0)
         self.assertIs(safe["production_decision_use"], False)
