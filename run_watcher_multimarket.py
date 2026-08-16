@@ -30,6 +30,7 @@ from v4_notification_semantics import install_v4_notification_semantics
 from v4_notification_signal_quality_guard import (
     install_v4_notification_signal_quality_guard,
 )
+from v4_ppt_shadow_grader_guard import install_v4_ppt_shadow_grader_guard
 from v4_ppt_shadow_language_bridge import install_v4_ppt_shadow_language_bridge
 from v4_private_auction_coverage import install_v4_private_auction_coverage
 from v4_roi_efficiency import install_v4_roi_efficiency
@@ -110,6 +111,10 @@ if __name__ == "__main__":
     # Structural edges consume exact SOLD + active-ask context. Expected Profit
     # is secondary/ranking-only and can never suppress a V4 notification.
     install_v4_structural_edge_hunter()
+    # Shadow-only grader scheduler / network hard-stop. Unsupported graders such
+    # as PCA/CCC must consume zero PPT requests; supported PPT graders are tried
+    # PSA -> BGS -> CGC -> SGC without changing production candidate ordering.
+    install_v4_ppt_shadow_grader_guard()
     # Opt-in only. PPT observes EN exact cards directly. FR physical cards are
     # bridged deterministically to the same TCGdex EN card id for retrieval only;
     # the EN market remains a cross-language anchor until an empirical FR/EN
