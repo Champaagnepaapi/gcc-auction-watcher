@@ -26,8 +26,8 @@ jobs:
       JAPAN_EDGE_GLOBAL_MAX_CANDIDATES: "12"
       V4_POKETRACE_MAX_REQUESTS_PER_RUN: "20"
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
-      # Enabled by default after the authorized V2 live validation. An explicit
-      # repository variable can still fail-safe disable it without a code change.
+      # Enabled by default after authorized live validation. An explicit
+      # repository variable can fail-safe disable it without a code change.
       JAPAN_EDGE_NOTIFY_ENABLED: ${{ vars.JAPAN_EDGE_NOTIFY_ENABLED || 'true' }}
       NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -54,8 +54,8 @@ jobs:
           restore-keys: |
             japan-edge-state-
 
-      - name: Scan Japan asks against GCC and global exact SOLD markets
-        run: python japan_edge_hunter_v3.py --state .japan-edge-state/state.json --output japan_edge_report.json
+      - name: Scan Japan asks against GCC and full exact SOLD market context
+        run: python japan_edge_full_market.py --state .japan-edge-state/state.json --output japan_edge_report.json
 
       - name: Save Japan Edge state
         if: always()
