@@ -1,1 +1,1 @@
-authorized bounded Japan Edge PPT exact-set shadow diagnostic 2026-08-16
+authorized bounded Japan Edge PPT observed-catalog shadow diagnostic 2026-08-16 pass 2
