@@ -21,6 +21,7 @@ def verified_fixed_ask(
     price: float,
     currency: str,
     observed_at: datetime,
+    identity_proven: bool,
     source_id: str = "",
     buyer_fee_rate: Optional[float] = 0.0,
     buyer_fee_flat: float = 0.0,
@@ -37,7 +38,11 @@ def verified_fixed_ask(
         price=price,
         currency=currency,
         observed_at=observed_at,
-        identity_proven=identity.complete_for_exact_market and identity.opportunity_language,
+        identity_proven=bool(
+            identity_proven
+            and identity.complete_for_exact_market
+            and identity.opportunity_language
+        ),
         buyer_fee_rate=buyer_fee_rate,
         buyer_fee_flat=buyer_fee_flat,
         logistics_cost=logistics_cost,
@@ -55,6 +60,7 @@ def verified_auction_snapshot(
     observed_at: datetime,
     end_at: datetime,
     within_five_minutes: bool,
+    identity_proven: bool,
     source_id: str = "",
     buyer_fee_rate: Optional[float],
     buyer_fee_flat: float = 0.0,
@@ -71,7 +77,11 @@ def verified_auction_snapshot(
         price=price,
         currency=currency,
         observed_at=observed_at,
-        identity_proven=identity.complete_for_exact_market and identity.opportunity_language,
+        identity_proven=bool(
+            identity_proven
+            and identity.complete_for_exact_market
+            and identity.opportunity_language
+        ),
         end_at=end_at,
         buyer_fee_rate=buyer_fee_rate,
         buyer_fee_flat=buyer_fee_flat,
