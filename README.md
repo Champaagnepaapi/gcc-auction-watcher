@@ -829,7 +829,7 @@ Règles externes :
 - eBay direct n'est admis que si le comparable SOLD prouve explicitement Japanese + PSA 10 + carte exacte ;
 - PSA APR n'est admis que si la provenance de la Spec prouve explicitement `language:japanese` + PSA 10 exact ;
 - PokeTrace et eBay direct sont regroupés en une seule famille eBay afin d'éviter le double comptage ; PSA APR reste une famille indépendante ;
-- le centre externe est la iédiane des familles indépendantes disponibles ; le fair multi-marché combine GCC et ce centre externe ;
+- le centre externe est la médiane des familles indépendantes disponibles ; le fair multi-marché combine GCC et ce centre externe ;
 - un ask japonais n'entre jamais dans la fair value et reste **ASK, PAS UNE VENTE**.
 
 Sémantique notifications :
