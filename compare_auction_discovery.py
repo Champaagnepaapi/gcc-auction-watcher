@@ -8,13 +8,15 @@ from time import monotonic
 import watcher
 from playwright.sync_api import sync_playwright
 
-from v4_auction_item_discovery import (
-    PRIMARY_SCOPE_STATUS,
-    _ORIGINAL_COLLECT_LIVE_AUCTION_URLS,
-    _ORIGINAL_COLLECT_LOTS_FROM_LISTING,
-)
+import v4_auction_item_discovery as item_discovery
 from v4_auction_pagination_stability import discover_auction_api_lots_stable
-from v4_private_auction_coverage import discover_private_auction_lots
+from v4_private_auction_coverage import (
+    AUGMENTED_FALLBACK_MODE,
+    AUGMENTED_MODE,
+    PrivateAuctionAugmentResult,
+    _merge_by_url,
+    discover_private_auction_lots,
+)
 
 
 def write_output(name: str, value: object) -> None:
@@ -27,22 +29,42 @@ def write_output(name: str, value: object) -> None:
 
 def collect_legacy(
     page, horizon: int
-) -> tuple[list[watcher.Lot], dict[str, str]]:
+) -> tuple[list[watcher.Lot], dict[str, str], watcher.RunDiagnostics]:
     diagnostics = watcher.RunDiagnostics()
     previous_horizon = watcher.MAX_AUCTION_MINUTES
     watcher.MAX_AUCTION_MINUTES = horizon
     try:
-        sales = _ORIGINAL_COLLECT_LIVE_AUCTION_URLS(page, diagnostics)
+        sales = item_discovery._ORIGINAL_COLLECT_LIVE_AUCTION_URLS(page, diagnostics)
         lots: dict[str, watcher.Lot] = {}
         source_by_url: dict[str, str] = {}
         for sale in sales:
-            for lot in _ORIGINAL_COLLECT_LOTS_FROM_LISTING(
-                page, sale, "auction", diagnostics
-            ):
-                if lot.url not in lots:
-                    lots[lot.url] = lot
-                    source_by_url[lot.url] = sale
-        return list(lots.values()), source_by_url
+            try:
+                for lot in item_discovery._ORIGINAL_COLLECT_LOTS_FROM_LISTING(
+                    page, sale, "auction", diagnostics
+                ):
+                    if lot.url not in lots:
+                        lots[lot.url] = lot
+                        source_by_url[lot.url] = sale
+            except Exception as error:
+                diagnostics.auction_coverage.record_page_failure(
+                    f"legacy comparison sale exception: {type(error).__name__}"
+                )
+        return list(lots.values()), source_by_url, diagnostics
+    finally:
+        watcher.MAX_AUCTION_MINUTES = previous_horizon
+
+
+def collect_full_legacy_fallback(
+    page, horizon: int
+) -> tuple[list[watcher.Lot], watcher.RunDiagnostics]:
+    """Execute the same full legacy fallback used by V4 production."""
+
+    diagnostics = watcher.RunDiagnostics()
+    previous_horizon = watcher.MAX_AUCTION_MINUTES
+    watcher.MAX_AUCTION_MINUTES = horizon
+    try:
+        lots = item_discovery._legacy_fallback(page, diagnostics)
+        return lots, diagnostics
     finally:
         watcher.MAX_AUCTION_MINUTES = previous_horizon
 
@@ -74,75 +96,111 @@ def resolve_legacy_ids(
     return resolved, unresolved
 
 
+def _empty_supplemental_result() -> PrivateAuctionAugmentResult:
+    return PrivateAuctionAugmentResult([], 0, 0, 0, 0)
+
+
 def main() -> int:
     horizon = max(60, int(os.getenv("V4_AUCTION_COMPARE_MINUTES", "720")))
     print("=== V4 AUCTION DISCOVERY COMPARISON ===", flush=True)
     print(f"comparison horizon: {horizon} min (diagnostic only)", flush=True)
     print("economic/notification actions: 0", flush=True)
 
-    primary_result = discover_auction_api_lots_stable(max_minutes=horizon)
-    primary_snapshot_finished = monotonic()
-    primary_ids = {
-        lot.url
-        for lot in primary_result.lots
-        if lot.minutes_to_end is not None and lot.minutes_to_end <= horizon
-    }
+    api_result = discover_auction_api_lots_stable(max_minutes=horizon)
+    api_snapshot_finished = monotonic()
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         context = browser.new_context(locale="fr-FR", timezone_id="Europe/Zurich")
-        legacy_page = context.new_page()
-        legacy_page.set_default_timeout(watcher.TEXT_TIMEOUT)
-        legacy_page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
+        effective_page = context.new_page()
+        effective_page.set_default_timeout(watcher.TEXT_TIMEOUT)
+        effective_page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
+        comparison_page = context.new_page()
+        comparison_page.set_default_timeout(watcher.TEXT_TIMEOUT)
+        comparison_page.set_default_navigation_timeout(watcher.NAV_TIMEOUT)
 
-        supplemental_result = discover_private_auction_lots(
-            legacy_page, max_minutes=horizon
+        fallback_diagnostics = None
+        if api_result.complete:
+            effective_anchor = api_snapshot_finished
+            base_lots = list(api_result.lots)
+            effective_mode = AUGMENTED_MODE
+        else:
+            # This is the actual fail-closed V4 production behavior: when the
+            # public API cannot prove valid ordering/completeness, use the full
+            # legacy live-sale discovery rather than trusting partial API rows.
+            effective_anchor = monotonic()
+            base_lots, fallback_diagnostics = collect_full_legacy_fallback(
+                effective_page, horizon
+            )
+            effective_mode = AUGMENTED_FALLBACK_MODE
+
+        try:
+            supplemental_result = discover_private_auction_lots(
+                effective_page,
+                run_diagnostics=fallback_diagnostics,
+                max_minutes=horizon,
+            )
+        except Exception as error:
+            print(
+                "FAIL: supplemental private/weekly safety net raised "
+                f"{type(error).__name__}",
+                flush=True,
+            )
+            browser.close()
+            return 1
+
+        effective_lots, supplemental_added = _merge_by_url(
+            base_lots, supplemental_result.lots
         )
-        supplemental_ids = {
+        effective_ids = {
             lot.url
-            for lot in supplemental_result.lots
+            for lot in effective_lots
             if lot.minutes_to_end is not None and lot.minutes_to_end <= horizon
         }
-        primary_ids.update(supplemental_ids)
 
-        legacy_lots, legacy_source_by_url = collect_legacy(legacy_page, horizon)
+        legacy_lots, legacy_source_by_url, legacy_diagnostics = collect_legacy(
+            comparison_page, horizon
+        )
 
-        # The stabilized API snapshot is taken first, while the supplemental
-        # private/weekly safety net and full legacy collector need time. Restrict
-        # the later legacy sample to a horizon that was certainly already inside
-        # H at the earlier API anchor. One full minute is always reserved for
-        # integer countdown rounding.
-        elapsed_seconds = max(0.0, monotonic() - primary_snapshot_finished)
+        # Restrict the later independent legacy sample to cards that were
+        # certainly already inside H when the effective production path began.
+        # This removes false misses caused only by countdown time passing.
+        elapsed_seconds = max(0.0, monotonic() - effective_anchor)
         boundary_margin_minutes = max(1, ceil(elapsed_seconds / 60.0))
         legacy_comparable_horizon = max(0, horizon - boundary_margin_minutes)
         legacy_ids, legacy_unresolved = resolve_legacy_ids(
-            legacy_page, legacy_lots, legacy_comparable_horizon
+            comparison_page, legacy_lots, legacy_comparable_horizon
         )
         browser.close()
 
-    primary_only = sorted(primary_ids.difference(legacy_ids))
-    legacy_only = sorted(legacy_ids.difference(primary_ids))
+    effective_only = sorted(effective_ids.difference(legacy_ids))
+    legacy_only = sorted(legacy_ids.difference(effective_ids))
+    fallback_failures = (
+        fallback_diagnostics.auction_coverage.pages_failed
+        if fallback_diagnostics is not None
+        else 0
+    )
+    legacy_failures = legacy_diagnostics.auction_coverage.pages_failed
 
-    print(f"primary complete: {str(primary_result.complete).lower()}", flush=True)
-    print(f"primary scope: {primary_result.scope_status}", flush=True)
-    print(f"primary protocol: {primary_result.coverage.protocol}", flush=True)
-    print(f"primary API total: {primary_result.api_total}", flush=True)
-    print(f"primary pages requested: {primary_result.coverage.pages_requested}", flush=True)
-    print(f"primary rows seen: {primary_result.rows_seen}", flush=True)
-    print(f"primary timers parsed: {primary_result.timers_parsed}", flush=True)
-    print(f"primary threshold crossed: {str(primary_result.threshold_crossed).lower()}", flush=True)
+    print(f"API primary complete: {str(api_result.complete).lower()}", flush=True)
+    print(f"API primary scope: {api_result.scope_status}", flush=True)
+    print(f"API primary protocol: {api_result.coverage.protocol}", flush=True)
+    print(f"API primary reason: {api_result.reason}", flush=True)
+    print(f"API total: {api_result.api_total}", flush=True)
+    print(f"API pages requested: {api_result.coverage.pages_requested}", flush=True)
+    print(f"API rows seen: {api_result.rows_seen}", flush=True)
+    print(f"API timers parsed: {api_result.timers_parsed}", flush=True)
+    print(f"effective production mode: {effective_mode}", flush=True)
+    print(f"full fallback page failures: {fallback_failures}", flush=True)
     print(
         "supplemental sales checked: "
         f"{supplemental_result.private_sales_seen} private + "
         f"{supplemental_result.weekly_sales_seen} weekly",
         flush=True,
     )
-    print(
-        f"supplemental candidates <= {horizon} min: {len(supplemental_ids)}",
-        flush=True,
-    )
+    print(f"supplemental candidates added: {supplemental_added}", flush=True)
     print(f"supplemental safety-net failures: {supplemental_result.failures}", flush=True)
-    print(f"augmented candidates <= {horizon} min: {len(primary_ids)}", flush=True)
+    print(f"effective candidates <= {horizon} min: {len(effective_ids)}", flush=True)
     print(
         "legacy comparison horizon: "
         f"{legacy_comparable_horizon} min "
@@ -153,47 +211,62 @@ def main() -> int:
         f"legacy candidates <= {legacy_comparable_horizon} min: {len(legacy_ids)}",
         flush=True,
     )
-    print(f"primary only: {len(primary_only)}", flush=True)
+    print(f"legacy comparison page failures: {legacy_failures}", flush=True)
+    print(f"effective only: {len(effective_only)}", flush=True)
     print(f"legacy only: {len(legacy_only)}", flush=True)
     print(f"legacy unresolved timers: {len(legacy_unresolved)}", flush=True)
-    for url in primary_only[:20]:
-        print(f"PRIMARY_ONLY {url}", flush=True)
+    for url in effective_only[:20]:
+        print(f"EFFECTIVE_ONLY {url}", flush=True)
     for url in legacy_only[:20]:
         source = legacy_source_by_url.get(url, "UNKNOWN_LEGACY_SOURCE")
         print(f"LEGACY_ONLY {url} SOURCE {source}", flush=True)
 
-    write_output("primary_complete", str(primary_result.complete).lower())
-    write_output("primary_scope", primary_result.scope_status)
-    write_output("primary_rows_seen", primary_result.rows_seen)
-    write_output("primary_candidates", len(primary_ids))
+    write_output("primary_complete", str(api_result.complete).lower())
+    write_output("primary_scope", api_result.scope_status)
+    write_output("primary_rows_seen", api_result.rows_seen)
+    write_output("effective_mode", effective_mode)
+    write_output("primary_candidates", len(effective_ids))
     write_output("legacy_candidates", len(legacy_ids))
-    write_output("primary_only", len(primary_only))
+    write_output("primary_only", len(effective_only))
     write_output("legacy_only", len(legacy_only))
     write_output("primary_unresolved", 0)
     write_output("legacy_unresolved", len(legacy_unresolved))
 
-    if not primary_result.complete:
-        print(f"FAIL: primary API discovery incomplete: {primary_result.reason}", flush=True)
+    if api_result.complete and api_result.scope_status != item_discovery.PRIMARY_SCOPE_STATUS:
+        print("FAIL: complete API result has unexpected scope status", flush=True)
         return 1
-    if primary_result.scope_status != PRIMARY_SCOPE_STATUS:
-        print("FAIL: unexpected primary API scope status", flush=True)
+    if fallback_failures:
+        print("FAIL: full legacy fallback had page failures", flush=True)
         return 1
     if supplemental_result.failures:
         print("FAIL: supplemental private/weekly safety net had failures", flush=True)
         return 1
+    if legacy_failures:
+        print("FAIL: independent legacy comparison had page failures", flush=True)
+        return 1
+    if legacy_unresolved:
+        print("FAIL: independent legacy comparison has unresolved timers", flush=True)
+        return 1
     if legacy_only:
         print(
-            "FAIL: augmented discovery missed candidate(s) already inside the "
-            "common-time legacy horizon",
+            "FAIL: effective production discovery missed candidate(s) already "
+            "inside the common-time legacy horizon",
             flush=True,
         )
         return 1
 
-    print(
-        "PASS: stabilized API + private/stable-weekly safety net is a superset "
-        "of legacy at a common-time horizon",
-        flush=True,
-    )
+    if api_result.complete:
+        print(
+            "PASS: stabilized API + private/stable-weekly safety net is a "
+            "superset of independent legacy at a common-time horizon",
+            flush=True,
+        )
+    else:
+        print(
+            "PASS WITH FAIL-CLOSED FALLBACK: API was not trusted; full legacy "
+            "+ stable weekly safety net covered the independent legacy sample",
+            flush=True,
+        )
     return 0
 
 
