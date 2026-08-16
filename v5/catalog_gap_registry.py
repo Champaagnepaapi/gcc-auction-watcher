@@ -134,13 +134,16 @@ def resolve_curated_catalog_gap(identity: CardIdentity) -> Optional[CuratedCatal
         if identity.game and not _is_pokemon_tcg_game(identity.game):
             continue
 
+        remaining_ambiguities = _remove_resolved_game_ambiguity(identity)
+        if remaining_ambiguities:
+            continue
         resolved = replace(
             identity,
             game="Pokémon TCG",
             set=entry.canonical_set,
             card_number=entry.card_number,
             year=identity.year or entry.year,
-            ambiguities=_remove_resolved_game_ambiguity(identity),
+            ambiguities=remaining_ambiguities,
         )
         applicability = MicrovariantApplicability(
             status=MICROVARIANT_NOT_APPLICABLE,
