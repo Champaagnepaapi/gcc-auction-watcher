@@ -335,7 +335,7 @@ f9516bb1e27ec8c30fe4a334b82e6be13bc44cc8
 
 Module : `v4_structural_edge_hunter.py`.
 
-Objectif : détecter des inefficiences structurelles qui peuvent créer une vraie décote exploitable sans modifier les gates économiques V4.
+Objectif : détecter des inefficacités structurelles qui peuvent créer une vraie décote exploitable sans modifier les gates économiques V4.
 
 Signaux ajoutés :
 
