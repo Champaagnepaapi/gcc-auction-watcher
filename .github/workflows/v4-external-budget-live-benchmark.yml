@@ -43,7 +43,7 @@ jobs:
       EBAY_MAX_CARDS_PER_RUN: "8"
       V4_EBAY_FIXED_RESERVE_CARDS_PER_RUN: "4"
       V4_EXTERNAL_PENDING_BUDGET_COOLDOWN_MINUTES: "5"
-      EBAY_NAV_TIMEOUT: "6000"
+      EBAY_NAV_TIMEOUT: "10000"
       EBAY_PAGE_WAIT_MS: "700"
       PSA_APR_ENABLED: "true"
       PSA_APR_MIN_COMPS: "2"
@@ -137,12 +137,6 @@ jobs:
           duration = int(Path('benchmark_duration_seconds.txt').read_text().strip() or 0) if Path('benchmark_duration_seconds.txt').exists() else None
           state_restored = 'state_restored=true' in Path('benchmark_state_restore.txt').read_text() if Path('benchmark_state_restore.txt').exists() else False
 
-          card_lines = []
-          for line in log.splitlines():
-              m = re.search(r'\[eBay carte (\d+)/(\d+)\]', line)
-              if m:
-                  card_lines.append((int(m.group(1)), int(m.group(2)), line))
-
           query_starts = 0
           ebay_error_lines = []
           ebay_block_lines = []
@@ -156,6 +150,12 @@ jobs:
                   ebay_error_lines.append(line[-500:])
               if 'ebay' in lower and any(token in lower for token in ('403', '429', 'captcha', 'challenge', 'too many requests', 'access denied')):
                   ebay_block_lines.append(line[-500:])
+
+          summary = re.search(
+              r'eBay: attempted (\d+) \| sufficient (\d+) \| insufficient (\d+) \| unavailable (\d+) \| errors (\d+) \| transient (\d+) \| rate-limit (\d+)',
+              log,
+          )
+          ebay_summary = [int(v) for v in summary.groups()] if summary else [None] * 7
 
           def pending_count(path):
               p = Path(path)
@@ -178,22 +178,18 @@ jobs:
 
           before = pending_count('benchmark_state_before.json')
           after = pending_count('state.json')
-          auction_calls = sum(1 for _, den, _ in card_lines if den == 4)
-          fixed_calls = sum(1 for _, den, _ in card_lines if den == 8)
-          reserve_exercised = any(idx > 4 and den == 8 for idx, den, _ in card_lines) and any(den == 4 for _, den, _ in card_lines)
-          max_index = max((idx for idx, _, _ in card_lines), default=0)
-
           metrics = {
               'duration_seconds': duration,
               'state_restored': state_restored,
-              'ebay_card_calls_total': len(card_lines),
-              'ebay_auction_cap4_calls': auction_calls,
-              'ebay_fixed_cap8_calls': fixed_calls,
-              'ebay_max_global_card_index_seen': max_index,
+              'ebay_attempted': ebay_summary[0],
+              'ebay_sufficient': ebay_summary[1],
+              'ebay_insufficient': ebay_summary[2],
+              'ebay_unavailable': ebay_summary[3],
+              'ebay_errors': ebay_summary[4],
+              'ebay_transient': ebay_summary[5],
+              'ebay_rate_limit': ebay_summary[6],
               'ebay_query_starts': query_starts,
-              'ebay_error_line_count': len(ebay_error_lines),
               'ebay_block_or_rate_limit_line_count': len(ebay_block_lines),
-              'reserve_exercised_live': reserve_exercised,
               'external_pending_before': before,
               'external_pending_after_local_only': after,
               'external_pending_delta_local_only': (after - before) if before is not None and after is not None else None,
