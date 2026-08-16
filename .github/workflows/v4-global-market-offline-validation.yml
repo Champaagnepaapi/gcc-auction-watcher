@@ -7,7 +7,9 @@ on:
       - "README.md"
       - "v4_global_market_core.py"
       - "v4_global_live_shadow.py"
+      - "v4_global_live_shadow_hardened.py"
       - "v4_global_rejection_diagnostics.py"
+      - "v4_global_retrieval_hardening.py"
       - "v4_global_ppt_bridge.py"
       - "v4_global_poketrace_bridge.py"
       - "v4_market_cardova.py"
@@ -53,7 +55,9 @@ jobs:
         run: |
           python -m py_compile v4_global_market_core.py
           python -m py_compile v4_global_live_shadow.py
+          python -m py_compile v4_global_live_shadow_hardened.py
           python -m py_compile v4_global_rejection_diagnostics.py
+          python -m py_compile v4_global_retrieval_hardening.py
           python -m py_compile v4_global_ppt_bridge.py
           python -m py_compile v4_global_poketrace_bridge.py
           python -m py_compile v4_market_cardova.py
@@ -65,6 +69,7 @@ jobs:
           python -m py_compile tests_global/test_v4_global_market_core.py
           python -m py_compile tests_global/test_v4_global_live_shadow.py
           python -m py_compile tests_global/test_v4_global_rejection_diagnostics.py
+          python -m py_compile tests_global/test_v4_global_retrieval_hardening.py
           python -m py_compile tests_global/test_v4_global_evidence_bridges.py
           python -m py_compile tests_global/test_v4_market_cardova.py
           python -m py_compile tests_global/test_v4_market_verified_offer.py
