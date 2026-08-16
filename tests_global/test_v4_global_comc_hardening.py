@@ -2,6 +2,7 @@ import unittest
 
 import japan_edge_hunter as japan
 from v4_global_comc_hardening import (
+    COMC_SORT_MODES,
     _page_url,
     _player_base,
     comc_table_row_proof,
@@ -45,10 +46,17 @@ class ComcHardeningTests(unittest.TestCase):
             "https://www.comc.com/Players/Pokemon/Mewtwo/c78890/Cards/Pokemon",
         )
 
-    def test_pagination_route_is_bounded_and_explicit(self):
+    def test_sort_sweep_routes_are_explicit(self):
         base = "https://www.comc.com/Players/Pokemon/Mewtwo/c78890/Cards/Pokemon"
-        self.assertEqual(_page_url(base, 1), base + "%2Csn%2CvText%2Ci100")
-        self.assertEqual(_page_url(base, 3), base + "%2Csn%2CvText%2Ci100%2Cp3")
+        self.assertEqual(COMC_SORT_MODES, ("sn", "ss", "sh", "sd"))
+        self.assertEqual(_page_url(base, "sn", 1), base + "%2Csn%2CvText%2Ci100")
+        self.assertEqual(_page_url(base, "ss", 1), base + "%2Css%2CvText%2Ci100")
+        self.assertEqual(_page_url(base, "sh", 1), base + "%2Csh%2CvText%2Ci100")
+        self.assertEqual(_page_url(base, "sd", 2), base + "%2Csd%2CvText%2Ci100%2Cp2")
+
+    def test_unknown_sort_mode_fails_to_safe_default(self):
+        base = "https://www.comc.com/Players/Pokemon/Mewtwo/c78890/Cards/Pokemon"
+        self.assertEqual(_page_url(base, "bogus", 1), base + "%2Csn%2CvText%2Ci100")
 
     def test_mewtwo_local_id_plus_exact_set_is_exact(self):
         cells = [
