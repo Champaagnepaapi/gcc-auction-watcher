@@ -9,6 +9,7 @@ on:
       - "japan_edge_hunter_v3.py"
       - "japan_edge_full_market.py"
       - "japan_edge_ppt_exact_set_shadow.py"
+      - "japan_edge_ppt_provider_catalog_fix.py"
       - "tests_japan/**"
       - ".github/workflows/japan-edge-hunter.yml"
       - ".github/workflows/japan-edge-offline-validation.yml"
@@ -37,7 +38,7 @@ jobs:
           test -z "${POKEMONPRICETRACKER_API_KEY:-}"
           test "${JAPAN_EDGE_NOTIFY_ENABLED}" = "false"
           test -z "${NTFY_TOPIC:-}"
-          echo "Japan Edge PPT exact-set validation: offline, no provider secret, no ntfy"
+          echo "Japan Edge PPT observed-catalog validation: offline, no provider secret, no ntfy"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -60,21 +61,26 @@ jobs:
             japan_edge_hunter_v3.py \
             japan_edge_full_market.py \
             japan_edge_ppt_exact_set_shadow.py \
+            japan_edge_ppt_provider_catalog_fix.py \
             tests_japan/test_japan_edge_hunter.py \
             tests_japan/test_japan_edge_hunter_v2.py \
             tests_japan/test_japan_edge_hunter_v3.py \
-            tests_japan/test_japan_edge_ppt_exact_set_shadow.py
+            tests_japan/test_japan_edge_ppt_exact_set_shadow.py \
+            tests_japan/test_japan_edge_ppt_provider_catalog_fix.py
 
-      - name: PPT Japanese exact-set safety assertions
+      - name: PPT Japanese observed-catalog safety assertions
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           module = Path('japan_edge_ppt_exact_set_shadow.py').read_text(encoding='utf-8')
+          catalog_fix = Path('japan_edge_ppt_provider_catalog_fix.py').read_text(encoding='utf-8')
           workflow = Path('.github/workflows/japan-edge-offline-validation.yml').read_text(encoding='utf-8')
-          assert 'JP_SET_ID_MAP' in module
-          assert '("151", 2023): "sv2a"' in module
-          assert '("vstar universe", 2022): "s12a"' in module
+          assert 'OBSERVED_JP_SET_ID_MAP' in catalog_fix
+          assert '("151", 2023): "23599"' in catalog_fix
+          assert 'VSTAR Universe remains unmapped' in catalog_fix
+          assert 'shadow.JP_SET_ID_MAP = dict(OBSERVED_JP_SET_ID_MAP)' in catalog_fix
+          assert 'JP_QUERY_SCOPE_PROVIDER_SET_ID_NUMBER_AND_VARIANT' in catalog_fix
           assert '"setId": set_id' in module
           assert '"language": "japanese"' in module
           assert 'provider_candidates' in module
@@ -86,13 +92,14 @@ jobs:
           assert 'workflow_dispatch:' in workflow
           assert 'ppt-jp-live-shadow:' in workflow
           assert "github.ref_name == 'agent/japan-edge-ppt-exact-set-20260816'" in workflow
+          assert 'python japan_edge_ppt_provider_catalog_fix.py' in workflow
           assert 'JAPAN_EDGE_NOTIFY_ENABLED: "false"' in workflow
           assert 'NTFY_TOPIC: ""' in workflow
           assert 'JAPAN_EDGE_PPT_MAX_CANDIDATES: "4"' in workflow
           assert 'JAPAN_EDGE_PPT_MAX_HTTP_CALLS: "8"' in workflow
           assert 'JAPAN_EDGE_PPT_MAX_CREDITS: "40"' in workflow
           assert 'JAPAN_EDGE_PPT_DAILY_REMAINING_FLOOR: "15000"' in workflow
-          print('PPT JP exact-set + live-shadow safety assertions: PASS')
+          print('PPT JP observed-catalog + live-shadow safety assertions: PASS')
           PY
 
       - name: Parse Japan Edge workflows
@@ -137,7 +144,7 @@ jobs:
           test -n "${POKEMONPRICETRACKER_API_KEY:-}"
           test "${JAPAN_EDGE_NOTIFY_ENABLED}" = "false"
           test -z "${NTFY_TOPIC:-}"
-          echo "Japan Edge PPT exact-set live shadow: ephemeral state, no ntfy, no production decision use"
+          echo "Japan Edge PPT observed-catalog live shadow: ephemeral state, no ntfy, no production decision use"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -158,10 +165,10 @@ jobs:
             --output japan_edge_ppt_live_baseline.json \
             2>&1 | tee japan_edge_ppt_live_baseline.log
 
-      - name: Enrich exact Japanese leads with PPT exact-set shadow
+      - name: Enrich exact Japanese leads with observed PPT catalog shadow
         shell: bash
         run: |
-          python japan_edge_ppt_exact_set_shadow.py \
+          python japan_edge_ppt_provider_catalog_fix.py \
             --input japan_edge_ppt_live_baseline.json \
             --output japan_edge_ppt_live_shadow_report.json \
             2>&1 | tee japan_edge_ppt_live_shadow.log
@@ -198,14 +205,14 @@ jobs:
           assert 'Notification ntfy' not in baseline_log
           assert 'Notification ntfy' not in shadow_log
           print(json.dumps(summary, ensure_ascii=False))
-          print('Japan Edge PPT exact-set live shadow safety assertions: PASS')
+          print('Japan Edge PPT observed-catalog live shadow safety assertions: PASS')
           PY
 
       - name: Upload Japan Edge PPT live-shadow reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: japan-edge-ppt-exact-set-live-shadow-${{ github.run_id }}
+          name: japan-edge-ppt-observed-catalog-live-shadow-${{ github.run_id }}
           path: |
             japan_edge_ppt_live_baseline.json
             japan_edge_ppt_live_shadow_report.json
