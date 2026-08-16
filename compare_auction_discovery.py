@@ -12,8 +12,8 @@ from v4_auction_item_discovery import (
     PRIMARY_SCOPE_STATUS,
     _ORIGINAL_COLLECT_LIVE_AUCTION_URLS,
     _ORIGINAL_COLLECT_LOTS_FROM_LISTING,
-    discover_auction_api_lots,
 )
+from v4_auction_pagination_stability import discover_auction_api_lots_stable
 from v4_private_auction_coverage import discover_private_auction_lots
 
 
@@ -75,7 +75,7 @@ def main() -> int:
     print(f"comparison horizon: {horizon} min (diagnostic only)", flush=True)
     print("economic/notification actions: 0", flush=True)
 
-    primary_result = discover_auction_api_lots(max_minutes=horizon)
+    primary_result = discover_auction_api_lots_stable(max_minutes=horizon)
     primary_snapshot_finished = monotonic()
     primary_ids = {
         lot.url
@@ -102,11 +102,11 @@ def main() -> int:
 
         legacy_lots = collect_legacy(legacy_page, horizon)
 
-        # The API snapshot is taken first, while the private safety net and full
-        # legacy collector need tens of seconds. Restrict the later legacy sample
-        # to a horizon that was certainly already inside H at the earlier API
-        # snapshot. One full minute is always reserved for integer countdown
-        # rounding.
+        # The stabilized API snapshot is taken first, while the private safety
+        # net and full legacy collector need tens of seconds. Restrict the later
+        # legacy sample to a horizon that was certainly already inside H at the
+        # earlier API anchor. One full minute is always reserved for integer
+        # countdown rounding.
         elapsed_seconds = max(0.0, monotonic() - primary_snapshot_finished)
         boundary_margin_minutes = max(1, ceil(elapsed_seconds / 60.0))
         legacy_comparable_horizon = max(0, horizon - boundary_margin_minutes)
@@ -176,8 +176,8 @@ def main() -> int:
         return 1
 
     print(
-        "PASS: API + private-auction safety net is a superset of legacy at a "
-        "common-time horizon",
+        "PASS: stabilized API + private-auction safety net is a superset of "
+        "legacy at a common-time horizon",
         flush=True,
     )
     return 0
