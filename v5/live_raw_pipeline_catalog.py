@@ -69,7 +69,11 @@ from .market_values.poketrace_free import (
     render_free_poketrace_counters,
 )
 from .models import StructuredGradingStatus
-from .microvariants import LocalMicrovariantValidator, MicrovariantApplicability
+from .microvariants import (
+    LocalMicrovariantValidator,
+    MicrovariantApplicability,
+    MICROVARIANT_APPLICABILITY_UNKNOWN,
+)
 from .poketrace_identity import (
     PokeTraceIdentityResolver,
     render_poketrace_identity_counters,
@@ -151,6 +155,28 @@ def _render_poketrace(provider: PokeTraceProvider) -> str:
 def _progress(message: str) -> None:
     if os.getenv("V5_PROGRESS_LOGS", "false").strip().casefold() == "true":
         print(f"[V5] {message}", flush=True)
+
+
+def _refresh_post_macro_applicability(resolver, identity, applicability):
+    """Retry exact TCGdex microvariant proof after macro identity is complete.
+
+    This is deliberately narrower than identity resolution: only an exact
+    TCGdex catalogue result may replace an UNKNOWN/UNAVAILABLE applicability.
+    Provider-market metadata and other fallback sources cannot unblock the
+    microvariant gate through this path.
+    """
+
+    if applicability.status != MICROVARIANT_APPLICABILITY_UNKNOWN:
+        return applicability
+    resolve = getattr(resolver, "resolve_microvariant_applicability", None)
+    if not callable(resolve):
+        return applicability
+    refreshed = resolve(identity)
+    if not isinstance(refreshed, MicrovariantApplicability):
+        return applicability
+    if refreshed.source != "TCGDEX_EXACT":
+        return applicability
+    return refreshed
 
 
 class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
@@ -412,6 +438,14 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
             return None, True
 
         if microvariant is None:
+            # A structured identity may already be macro-complete even when the
+            # first exact set lookup did not prove microvariant applicability.
+            # Reuse the deterministic post-macro TCGdex retry before blocking.
+            microvariant_applicability = _refresh_post_macro_applicability(
+                self.card_catalog_resolver,
+                identity,
+                microvariant_applicability,
+            )
             microvariant = self.microvariant_validator.resolve(
                 identity,
                 microvariant_applicability,

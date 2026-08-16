@@ -176,19 +176,12 @@ def tcgdex_microvariant_applicability(
     finish_multiple = (len(true_finishes) >= 2)
     single_finish = true_finishes[0] if finish_proven_single else None
 
-    w_promo = variants.get("wPromo")
-    if w_promo is True:
-        single_promo = True
-        promo_proven_single = True
-        if len(true_finishes) == 0:
-            finish_proven_single = True
-            finish_multiple = False
-    elif w_promo is False:
-        single_promo = False
-        promo_proven_single = True
-    else:
-        single_promo = None
-        promo_proven_single = False
+    # TCGdex documents `wPromo` as a W-stamp availability flag. It is not
+    # generic promo-card membership and it is not a physical finish family by
+    # itself. Until V5 models W stamps as a dedicated special-finish dimension,
+    # do not let this field prove generic promo status or unblock finish.
+    single_promo = None
+    promo_proven_single = False
 
     return MicrovariantApplicability(
         status=edition_status,

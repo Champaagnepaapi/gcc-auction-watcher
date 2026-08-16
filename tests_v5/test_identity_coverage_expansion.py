@@ -1430,8 +1430,8 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
         self.assertEqual(finish_ol, "Holo")
         self.assertFalse(contra_ol)
 
-    def test_pure_wpromo_single_finish_applicability(self):
-        """TCGdex cards with wPromo=True and no normal/reverse/holo flags are single-variant finish."""
+    def test_wpromo_stamp_does_not_prove_generic_promo_or_finish(self):
+        """TCGdex wPromo is W-stamp availability, not generic promo/finish proof."""
         card_promo = {
             "id": "svp-001",
             "name": "Pikachu",
@@ -1444,10 +1444,11 @@ class IdentityCoverageExpansionTests(unittest.TestCase):
             },
         }
         app = tcgdex_microvariant_applicability(card_promo)
-        self.assertTrue(app.finish_proven_single)
+        self.assertFalse(app.finish_proven_single)
         self.assertFalse(app.finish_multiple_variants)
-        self.assertTrue(app.promo_proven_single)
-        self.assertTrue(app.single_promo)
+        self.assertFalse(app.promo_proven_single)
+        self.assertIsNone(app.single_promo)
+
 
 
 if __name__ == "__main__":

@@ -29,6 +29,19 @@ TCGDEX_BASE = "https://api.tcgdex.net/v2"
 POKEMON_TCG_BASE = "https://api.pokemontcg.io/v2"
 
 
+# Explicit, versioned eBay/collector promo prefixes -> exact TCGdex set IDs.
+# A mapping is usable only when the collector number carries the same prefix;
+# the short set label alone is never sufficient identity proof.
+_PROMO_PREFIX_TO_TCGDEX_SET_ID = {
+    "DP": "dpp",
+    "HGSS": "hgssp",
+    "BW": "bwp",
+    "XY": "xyp",
+    "SM": "smp",
+    "SWSH": "swshp",
+}
+
+
 # Only languages currently exposed by the TCGdex API are used as direct
 # endpoints. Unsupported/ambiguous languages fall back to English catalogue
 # metadata while the original CardIdentity.language remains untouched.
@@ -191,9 +204,32 @@ def _local_card_number_candidates(value: str) -> Tuple[str, ...]:
     candidates = [local]
     if re.fullmatch(r"0*\d+", local):
         candidates.append(str(int(local)))
-    elif re.fullmatch(r"[A-Za-z]+\d+[A-Za-z]*", local):
-        candidates.append(local.upper())
+    else:
+        promo_like = re.fullmatch(r"([A-Za-z]+)0*(\d+)([A-Za-z]*)", local)
+        if promo_like:
+            prefix, digits, suffix = promo_like.groups()
+            candidates.append(local.upper())
+            if prefix.upper() in _PROMO_PREFIX_TO_TCGDEX_SET_ID:
+                candidates.append(
+                    f"{prefix.upper()}{int(digits)}{suffix.upper()}"
+                )
     return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _deterministic_promo_set_id(
+    set_name: object, card_number: object
+) -> Optional[str]:
+    """Map a short promo set label only when the number proves the same prefix."""
+
+    set_code = str(set_name or "").strip().upper()
+    target_set_id = _PROMO_PREFIX_TO_TCGDEX_SET_ID.get(set_code)
+    if not target_set_id:
+        return None
+    local_number = _local_card_number(str(card_number or "")).upper()
+    match = re.fullmatch(r"([A-Z]+)0*\d+[A-Z]*", local_number)
+    if not match or match.group(1) != set_code:
+        return None
+    return target_set_id
 
 
 def _safe_year_from_release_date(value: object) -> Optional[int]:
@@ -725,8 +761,16 @@ class MultilingualPokemonCardResolver(SetNumberCardNameResolver):
         normalized_set = _normalize(identity.set)
         exact_ids: dict[str, str] = {}
         loose_ids: dict[str, str] = {}
+        promo_set_id = _deterministic_promo_set_id(
+            identity.set, identity.card_number
+        )
 
         for language in lookup_languages:
+            if promo_set_id:
+                for set_id, name in self._tcgdex_all_sets(language):
+                    if str(set_id).strip().casefold() == promo_set_id.casefold():
+                        exact_ids.setdefault(set_id, name)
+                continue
             for set_id, name in self._tcgdex_sets(language, identity.set or ""):
                 loose_ids.setdefault(set_id, name)
                 if (
