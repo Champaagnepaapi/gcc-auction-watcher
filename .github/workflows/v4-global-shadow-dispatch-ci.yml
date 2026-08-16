@@ -1,0 +1,55 @@
+name: V4 Global Shadow Dispatcher CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/v4-global-live-shadow.yml"
+      - ".github/workflows/v4-global-shadow-dispatch-ci.yml"
+      - "docs/v4-global-shadow-dispatch-20260816.md"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Parse workflow YAML
+        run: |
+          python - <<'PY'
+          import pathlib
+          import yaml
+          for path in (
+              pathlib.Path('.github/workflows/v4-global-live-shadow.yml'),
+              pathlib.Path('.github/workflows/v4-global-shadow-dispatch-ci.yml'),
+          ):
+              yaml.safe_load(path.read_text())
+              print(f'YAML PASS: {path}')
+          PY
+
+      - name: Assert dispatcher is manual-only and read-only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/v4-global-live-shadow.yml').read_text()
+          required = [
+              'workflow_dispatch:',
+              'contents: read',
+              'persist-credentials: false',
+              'NTFY_TOPIC: ""',
+              'JAPAN_EDGE_NOTIFY_ENABLED: "false"',
+          ]
+          for token in required:
+              assert token in text, token
+          assert '\n  push:' not in text
+          assert '\n  schedule:' not in text
+          print('SAFETY PASS')
+          PY
+
+      - name: Diff whitespace
+        run: git diff --check origin/${{ github.base_ref }}...HEAD
