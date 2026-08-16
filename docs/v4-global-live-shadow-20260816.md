@@ -19,8 +19,8 @@ Cette note documente la phase live shadow empilée sur la PR #108. Elle ne rempl
 
 ## Live read-only
 
-Run : `31954247131`  
-Job : `95182311878`  
+Run : `31954247131`
+Job : `95182311878`
 Conclusion : **SUCCESS**
 
 Le run a utilisé 5 identités Japanese PSA10 disposant d’une fair value issue de SOLD GCC exacts récents. Aucun ntfy, aucune écriture Neon, aucun achat/bid/checkout/paiement et aucune mutation de fichier suivi.
@@ -53,8 +53,8 @@ Les enchères actives ne peuvent pas gagner le classement. Les asks restent des 
 
 ## Validation offline finale
 
-Run : `31954554108`  
-Job : `95183060968`  
+Run : `31954554108`
+Job : `95183060968`
 Conclusion : **SUCCESS**
 
 - 33/33 tests global-market PASS ;
