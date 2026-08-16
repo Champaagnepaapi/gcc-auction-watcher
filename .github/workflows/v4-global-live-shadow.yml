@@ -11,6 +11,11 @@ on:
         description: "Max listing candidates per market/identity"
         required: false
         default: "8"
+      rejection_diagnostics:
+        description: "Explain why magi/Fanatics/COMC candidates fail exact proof"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,8 +49,17 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run read-only multi-market shadow
+        if: ${{ !inputs.rejection_diagnostics }}
         run: |
           python v4_global_live_shadow.py \
+            --output-dir global_shadow_out \
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
+
+      - name: Run read-only rejection diagnostics
+        if: ${{ inputs.rejection_diagnostics }}
+        run: |
+          python v4_global_rejection_diagnostics.py \
             --output-dir global_shadow_out \
             --max-identities "${{ inputs.max_identities }}" \
             --market-candidates "${{ inputs.market_candidates }}"
@@ -54,7 +68,7 @@ jobs:
         run: |
           test -z "$(git status --porcelain --untracked-files=no)"
 
-      - name: Upload shadow table
+      - name: Upload shadow artifact
         uses: actions/upload-artifact@v4
         with:
           name: v4-global-market-live-shadow-${{ github.run_id }}
