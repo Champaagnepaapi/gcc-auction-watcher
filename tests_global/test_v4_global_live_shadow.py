@@ -11,7 +11,7 @@ from v4_global_live_shadow import (
     global_identity,
     strict_text_identity,
 )
-from v4_global_market_core import ACTIVE_AUCTION, FIXED_ASK, PriceObservation
+from v4_global_market_core import ACTIVE_AUCTION, FINISHED_UNPROVEN, FIXED_ASK, PriceObservation
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 SOURCE_ID = japan.Identity(
@@ -81,6 +81,16 @@ class GlobalLiveShadowTests(unittest.TestCase):
         market, discount, basis = best_offer(offers)
         self.assertEqual(market, "magi")
         self.assertEqual(discount, 40)
+        self.assertEqual(basis, "RAW_ASK_ONLY")
+
+    def test_finished_unproven_auction_never_wins_best_offer(self):
+        offers = [
+            ShadowOffer("cardova", FINISHED_UNPROVEN, "a", "", "", "JPY", 1, 1, 99, 1, 99, "UNKNOWN", ""),
+            ShadowOffer("gcc", FIXED_ASK, "b", "", "", "EUR", 70, 70, 30, None, None, "RAW", ""),
+        ]
+        market, discount, basis = best_offer(offers)
+        self.assertEqual(market, "gcc")
+        self.assertEqual(discount, 30)
         self.assertEqual(basis, "RAW_ASK_ONLY")
 
     def test_proven_all_in_basis_beats_raw_only_ranking(self):
