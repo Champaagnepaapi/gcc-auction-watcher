@@ -17,6 +17,7 @@ from v4_canonical_multimarket import install_canonical_multimarket_pipeline
 from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
 from v4_exact_active_ask_position import install_v4_exact_active_ask_position
+from v4_external_coverage_drain import install_v4_external_coverage_drain
 from v4_focus_cert_router import install_v4_focus_cert_router
 from v4_kb_shadow_bridge import (
     flush_capture_if_configured,
@@ -78,6 +79,10 @@ if __name__ == "__main__":
     # Reorders only scarce fixed external-provider calls. Auctions retain the
     # canonical ending-soon ordering and economics are untouched.
     install_v4_smart_external_priority()
+    # Keep auction ordering intact but reserve bounded eBay SOLD capacity for
+    # fixed cards, and treat provider-budget exhaustion as scheduling pressure
+    # rather than a six-hour provider failure backoff.
+    install_v4_external_coverage_drain()
     if _mislisted_slab_hunter_enabled():
         # Generic official-cert coverage stays available for supported graders.
         # PSA/PCA/CCC then receive the hardened browser/direct routes, followed
