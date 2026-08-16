@@ -67,7 +67,8 @@ jobs:
             tests/test_v4_ppt_shadow.py \
             tests/test_v4_ppt_shadow_language_gate.py \
             tests/test_v4_ppt_shadow_install.py \
-            tests/test_v4_ppt_shadow_cross_language.py
+            tests/test_v4_ppt_shadow_cross_language.py \
+            tests/test_v4_ppt_shadow_physical_language.py
 
       - name: Check diff whitespace
         run: git diff --check origin/main...HEAD
