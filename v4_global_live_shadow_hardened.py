@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import v4_global_live_shadow as base
-from v4_global_comc_hardening import collect_comc_v4
+from v4_global_comc_hardening_v2 import collect_comc_v5
 from v4_global_magi_registry_hardening import collect_magi_registry_hardened
 from v4_global_retrieval_hardening_v2 import traces_to_json
 from v4_global_retrieval_hardening_v3 import collect_fanatics_v3
@@ -69,7 +69,7 @@ def run(args: argparse.Namespace) -> dict:
             statuses.append(fanatics_status)
             traces.append(fanatics_trace)
 
-            comc_rows, comc_status, comc_trace = collect_comc_v4(
+            comc_rows, comc_status, comc_trace = collect_comc_v5(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -88,13 +88,13 @@ def run(args: argparse.Namespace) -> dict:
 
     report = base.build_report(seeds, rows, fx=fx, statuses=statuses, observed_at=observed_at)
     report["retrieval_hardening"] = {
-        "version": 7,
+        "version": 8,
         "magi": (
             f"versioned TCGdex Japanese set registry {REGISTRY_VERSION}; exact target set/localId/Japanese card name; "
             "candidate set-code conflicts fail closed"
         ),
         "fanatics": "canonical H1 exact set/localId proof; related text cannot poison identity",
-        "comc": "bounded multi-sort sweep + exact PSA10 row + fixed All Sellers ask",
+        "comc": "PSA10-filter-first player sweep + bounded broad fallback; exact table-row identity proof + fixed All Sellers ask",
         "identity_gate_relaxed": False,
     }
     report["retrieval_diagnostics"] = traces_to_json(*traces)
