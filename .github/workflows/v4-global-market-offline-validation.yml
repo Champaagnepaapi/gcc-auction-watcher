@@ -10,6 +10,8 @@ on:
       - "v4_market_cardova.py"
       - "v4_market_gcc_bridge.py"
       - "v4_market_magi_bridge.py"
+      - "v4_market_fanatics_bridge.py"
+      - "v4_market_comc_bridge.py"
       - "v4_market_verified_offer.py"
       - "tests_global/**"
       - ".github/workflows/v4-global-market-offline-validation.yml"
@@ -51,6 +53,8 @@ jobs:
           python -m py_compile v4_market_cardova.py
           python -m py_compile v4_market_gcc_bridge.py
           python -m py_compile v4_market_magi_bridge.py
+          python -m py_compile v4_market_fanatics_bridge.py
+          python -m py_compile v4_market_comc_bridge.py
           python -m py_compile v4_market_verified_offer.py
           python -m py_compile tests_global/test_v4_global_market_core.py
           python -m py_compile tests_global/test_v4_global_evidence_bridges.py
