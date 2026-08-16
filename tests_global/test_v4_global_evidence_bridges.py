@@ -11,13 +11,15 @@ from v4_global_market_core import (
 )
 from v4_global_poketrace_bridge import poketrace_estimate_to_aggregate
 from v4_global_ppt_bridge import ppt_metrics_to_aggregate
+from v4_market_comc_bridge import comc_fixed_offer
+from v4_market_fanatics_bridge import fanatics_auction_offer, fanatics_fixed_offer
 from v4_market_gcc_bridge import gcc_offer_to_observation
 from v4_market_magi_bridge import magi_fixed_ask_to_observation
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 ID = CommercialIdentity("Pikachu", "Pokemon 151", "173/165", "ja", "PSA", "10")
 FR = CommercialIdentity("Pikachu", "Pokemon 151", "173/165", "fr", "PSA", "10")
-FX = {"JPY": 170.0}
+FX = {"JPY": 170.0, "USD": 1.10}
 
 
 class GlobalEvidenceBridgeTests(unittest.TestCase):
@@ -97,6 +99,41 @@ class GlobalEvidenceBridgeTests(unittest.TestCase):
         )
         self.assertEqual(row.evidence_type, FIXED_ASK)
         self.assertAlmostEqual(all_in_eur(row, FX), (10000 * 1.03 + 500) / 170)
+
+    def test_fanatics_and_comc_require_explicit_identity_proof(self):
+        fanatics = fanatics_fixed_offer(
+            identity=ID,
+            price_usd=60,
+            observed_at=NOW,
+            source_id="fanatics-1",
+            identity_proven=True,
+            buyer_fee_rate=0.0,
+        )
+        comc = comc_fixed_offer(
+            identity=ID,
+            price_usd=65,
+            observed_at=NOW,
+            source_id="comc-1",
+            identity_proven=False,
+            buyer_fee_rate=0.0,
+        )
+        self.assertTrue(fanatics.identity_proven)
+        self.assertFalse(comc.identity_proven)
+        self.assertAlmostEqual(all_in_eur(fanatics, FX), 60 / 1.10)
+
+    def test_fanatics_active_auction_is_not_actionable(self):
+        row = fanatics_auction_offer(
+            identity=ID,
+            price_usd=40,
+            observed_at=NOW,
+            end_at=NOW + timedelta(hours=2),
+            source_id="fanatics-a",
+            identity_proven=True,
+            within_five_minutes=False,
+            buyer_fee_rate=0.20,
+        )
+        self.assertEqual(row.evidence_type, ACTIVE_AUCTION)
+        self.assertFalse(row.is_actionable_offer)
 
 
 if __name__ == "__main__":
