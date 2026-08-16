@@ -40,23 +40,17 @@ def _exact_player_anchor(page: Any, name: str) -> Optional[str]:
 
 
 def resolve_comc_player_base(page: Any, name: str) -> tuple[Optional[str], str]:
-    # Reuse the already validated player-link lookup first.
     legacy = v1._comc_player_url(page, name)
     base = _player_base(legacy or "")
     if base:
         return base, "PLAYER_LINK_CATEGORY"
 
-    # The graded index exposes a much broader player facet than the default
-    # Pokemon page and avoids guessing COMC's numeric player id.
     page.goto(COMC_GRADED_INDEX, wait_until="domcontentloaded", timeout=25000)
     page.wait_for_timeout(700)
     graded = _exact_player_anchor(page, name)
     if graded:
         return graded, "PLAYER_LINK_GRADED_INDEX"
 
-    # Last read-only fallback: COMC accepts semantic player routes for some
-    # names and redirects to the canonical cNNNNN URL. We only accept the
-    # redirect when it resolves back to the exact player and canonical path.
     semantic = f"https://www.comc.com/Players/Pokemon/{quote(str(name or '').strip(), safe='')}"
     try:
         page.goto(semantic, wait_until="domcontentloaded", timeout=25000)
@@ -92,20 +86,23 @@ def _local_matches(field: str, identity: japan.Identity) -> bool:
     target = v1.target_local_id(identity)
     if target is None:
         return False
-    candidate = japan.number(field)
-    if candidate == japan.number(identity.number):
-        return True
-    if candidate.isdigit() and target.isdigit():
-        return int(candidate) == int(target)
-    return candidate.casefold() == target.casefold()
+    normalized = unicodedata.normalize("NFKC", str(field or "")).upper().replace(" ", "").lstrip("#")
+    full_candidate = v1._number(normalized)
+    if full_candidate:
+        return full_candidate == v1._number(identity.number)
+    local_candidate = normalized
+    if local_candidate.isdigit() and target.isdigit():
+        return int(local_candidate) == int(target)
+    return local_candidate.casefold() == target.casefold()
 
 
 def _has_exact_full_number(field: str, identity: japan.Identity) -> bool:
-    return japan.number(field) == japan.number(identity.number)
+    candidate = v1._number(field)
+    return bool(candidate) and candidate == v1._number(identity.number)
 
 
 def _alpha_denominator(identity: japan.Identity) -> bool:
-    value = japan.number(identity.number)
+    value = v1._number(identity.number)
     return "/" in value and bool(re.search(r"[A-Za-z]", value.split("/", 1)[1]))
 
 
@@ -157,8 +154,6 @@ def _fixed_ask_from_product(page: Any, url: str) -> tuple[Optional[float], str]:
     upper = body.upper()
     if "0 RESULTS" in upper or "SOLD OUT" in upper:
         return None, "sold_out"
-    # `All Sellers` is the fixed-price inventory aggregate on COMC's exact
-    # card/grade product page. Auction-only rows therefore do not become asks.
     price = _comc_ask_price(body)
     if price is None:
         return None, "fixed_all_sellers_price_unproven"
@@ -251,8 +246,6 @@ def collect_comc_v4(
             )
             if stop:
                 break
-            # COMC text view is 100 listings/page. A shorter data page proves
-            # we reached the end for this player and prevents pointless calls.
             if data_rows < 95:
                 break
 
