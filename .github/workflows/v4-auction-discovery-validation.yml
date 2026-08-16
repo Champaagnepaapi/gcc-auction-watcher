@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "v4_auction_item_discovery.py"
+      - "v4_auction_pagination_stability.py"
       - "v4_private_auction_coverage.py"
       - "v4_kb_shadow_bridge.py"
       - "v4_canonical_multimarket.py"
@@ -51,6 +52,7 @@ jobs:
       - name: Compile changed V4 Python files
         run: |
           python -m py_compile v4_auction_item_discovery.py
+          python -m py_compile v4_auction_pagination_stability.py
           python -m py_compile v4_private_auction_coverage.py
           python -m py_compile v4_kb_shadow_bridge.py
           python -m py_compile compare_auction_discovery.py
@@ -61,7 +63,7 @@ jobs:
           python -m py_compile v4_structural_edge_hunter.py
           python -m py_compile run_watcher_multimarket.py
 
-      - name: Compare augmented and legacy discovery live
+      - name: Compare effective and legacy discovery live
         id: compare
         env:
           V4_AUCTION_COMPARE_MINUTES: "720"
@@ -77,6 +79,7 @@ jobs:
           PRIMARY_COMPLETE: ${{ steps.compare.outputs.primary_complete }}
           PRIMARY_SCOPE: ${{ steps.compare.outputs.primary_scope }}
           PRIMARY_ROWS: ${{ steps.compare.outputs.primary_rows_seen }}
+          EFFECTIVE_MODE: ${{ steps.compare.outputs.effective_mode }}
           PRIMARY_CANDIDATES: ${{ steps.compare.outputs.primary_candidates }}
           LEGACY_CANDIDATES: ${{ steps.compare.outputs.legacy_candidates }}
           PRIMARY_ONLY: ${{ steps.compare.outputs.primary_only }}
@@ -90,15 +93,17 @@ jobs:
               "### V4 auction discovery live comparison",
               `run_id=${context.runId}`,
               "diagnostic_horizon_minutes=720",
-              `primary_complete=${process.env.PRIMARY_COMPLETE || "unavailable"}`,
-              `primary_scope=${process.env.PRIMARY_SCOPE || "unavailable"}`,
-              `primary_rows_seen=${process.env.PRIMARY_ROWS || "unavailable"}`,
-              `primary_candidates=${process.env.PRIMARY_CANDIDATES || "unavailable"}`,
+              `api_primary_complete=${process.env.PRIMARY_COMPLETE || "unavailable"}`,
+              `api_primary_scope=${process.env.PRIMARY_SCOPE || "unavailable"}`,
+              `api_rows_seen=${process.env.PRIMARY_ROWS || "unavailable"}`,
+              `effective_production_mode=${process.env.EFFECTIVE_MODE || "unavailable"}`,
+              `effective_candidates=${process.env.PRIMARY_CANDIDATES || "unavailable"}`,
               `legacy_candidates=${process.env.LEGACY_CANDIDATES || "unavailable"}`,
-              `primary_only=${process.env.PRIMARY_ONLY || "unavailable"}`,
+              `effective_only=${process.env.PRIMARY_ONLY || "unavailable"}`,
               `legacy_only=${process.env.LEGACY_ONLY || "unavailable"}`,
-              `primary_unresolved=${process.env.PRIMARY_UNRESOLVED || "unavailable"}`,
+              `effective_unresolved=${process.env.PRIMARY_UNRESOLVED || "unavailable"}`,
               `legacy_unresolved=${process.env.LEGACY_UNRESOLVED || "unavailable"}`,
+              "An invalid/incomplete public API is not trusted: V4 must prove coverage through the full legacy fallback plus the stable weekly safety net.",
               "No bids, purchases, checkout, ntfy notification, or state mutation are performed by this comparison.",
             ].join("\n");
 
