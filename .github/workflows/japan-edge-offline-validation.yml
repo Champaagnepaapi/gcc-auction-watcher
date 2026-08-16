@@ -11,6 +11,7 @@ on:
       - "tests_japan/**"
       - ".github/workflows/japan-edge-hunter.yml"
       - ".github/workflows/japan-edge-offline-validation.yml"
+      - ".github/workflows/japan-edge-ppt-live-once.yml"
 
 permissions:
   contents: read
@@ -68,17 +69,27 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           code = Path('japan_edge_ppt_shadow.py').read_text(encoding='utf-8')
+          live = Path('.github/workflows/japan-edge-ppt-live-once.yml').read_text(encoding='utf-8')
           assert 'language": "japanese"' in code
           assert 'SOLD_AGGREGATED' in code
           assert 'EBAY_GRADED_AGGREGATE' in code
           assert 'independent_market_increment' in code
           assert 'notification_use' in code
           assert 'production_decision_use' in code
-          print('PPT JP shadow safety assertions: PASS')
+          assert 'workflow_dispatch:' in live
+          assert 'schedule:' not in live
+          assert '\n  push:' not in live
+          assert 'JAPAN_EDGE_NOTIFY_ENABLED: "false"' in live
+          assert 'NTFY_TOPIC: ""' in live
+          assert 'JAPAN_EDGE_PPT_MAX_CANDIDATES: "4"' in live
+          assert 'JAPAN_EDGE_PPT_MAX_HTTP_CALLS: "8"' in live
+          assert 'JAPAN_EDGE_PPT_MAX_CREDITS: "40"' in live
+          assert 'JAPAN_EDGE_PPT_DAILY_REMAINING_FLOOR: "15000"' in live
+          print('PPT JP + live-shadow safety assertions: PASS')
           PY
 
       - name: Parse Japan Edge workflows
-        run: python -c 'import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in [".github/workflows/japan-edge-hunter.yml", ".github/workflows/japan-edge-offline-validation.yml"]]; print("YAML PASS")'
+        run: python -c 'import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in [".github/workflows/japan-edge-hunter.yml", ".github/workflows/japan-edge-offline-validation.yml", ".github/workflows/japan-edge-ppt-live-once.yml"]]; print("YAML PASS")'
 
       - name: Check diff whitespace
         run: git diff --check origin/${{ github.base_ref }}...HEAD
