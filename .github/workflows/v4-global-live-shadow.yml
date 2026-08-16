@@ -16,9 +16,6 @@ on:
         required: false
         type: boolean
         default: false
-  push:
-    branches:
-      - feat/v4-global-rejection-diagnostics
 
 permissions:
   contents: read
@@ -52,20 +49,20 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run read-only multi-market shadow
-        if: ${{ github.event_name != 'push' && !inputs.rejection_diagnostics }}
+        if: ${{ !inputs.rejection_diagnostics }}
         run: |
           python v4_global_live_shadow.py \
             --output-dir global_shadow_out \
-            --max-identities "${{ inputs.max_identities || '5' }}" \
-            --market-candidates "${{ inputs.market_candidates || '8' }}"
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
 
       - name: Run read-only rejection diagnostics
-        if: ${{ github.event_name == 'push' || inputs.rejection_diagnostics }}
+        if: ${{ inputs.rejection_diagnostics }}
         run: |
           python v4_global_rejection_diagnostics.py \
             --output-dir global_shadow_out \
-            --max-identities "${{ inputs.max_identities || '5' }}" \
-            --market-candidates "${{ inputs.market_candidates || '8' }}"
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
 
       - name: Assert no tracked runtime mutation
         run: |
