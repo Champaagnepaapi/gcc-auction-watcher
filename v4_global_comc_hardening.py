@@ -14,6 +14,7 @@ from v4_market_comc_bridge import comc_fixed_offer
 
 
 COMC_GRADED_INDEX = "https://www.comc.com/Cards/Pokemon%2CaGraded"
+COMC_SORT_MODES = ("sn", "ss", "sh", "sd")
 PSA10_RE = re.compile(r"(?<![A-Z0-9])PSA\s*(?:GEM\s*MT\s*)?10(?:\.0)?(?![0-9])", re.I)
 PLAYER_BASE_RE = re.compile(r"^(https://www\.comc\.com/Players/Pokemon/[^/]+/c\d+/Cards/Pokemon)", re.I)
 
@@ -65,8 +66,9 @@ def resolve_comc_player_base(page: Any, name: str) -> tuple[Optional[str], str]:
     return None, "PLAYER_UNRESOLVED"
 
 
-def _page_url(base: str, page_number: int) -> str:
-    suffix = "%2Csn%2CvText%2Ci100"
+def _page_url(base: str, sort_mode: str, page_number: int = 1) -> str:
+    mode = sort_mode if sort_mode in COMC_SORT_MODES else "sn"
+    suffix = f"%2C{mode}%2CvText%2Ci100"
     if page_number > 1:
         suffix += f"%2Cp{page_number}"
     return base + suffix
@@ -106,6 +108,26 @@ def _has_exact_full_number(field: str, identity: japan.Identity) -> bool:
 def _alpha_denominator(identity: japan.Identity) -> bool:
     value = v1._number(identity.number)
     return "/" in value and bool(re.search(r"[A-Za-z]", value.split("/", 1)[1]))
+
+
+def _set_and_name_proven(cells: Sequence[str], identity: japan.Identity) -> bool:
+    if len(cells) < 3:
+        return False
+    set_field = unicodedata.normalize("NFKC", str(cells[0] or ""))
+    number_field = unicodedata.normalize("NFKC", str(cells[1] or ""))
+    description = unicodedata.normalize("NFKC", str(cells[2] or ""))
+    if "japanese" not in _norm(set_field) or not _local_matches(number_field, identity):
+        return False
+    full_number = _has_exact_full_number(number_field, identity)
+    if (not full_number or not _alpha_denominator(identity)) and _norm(identity.set_name) not in _norm(set_field):
+        return False
+    return bool(
+        re.search(
+            rf"(?<![A-Za-z0-9]){v1._source_name_pattern(identity.name)}(?![A-Za-z0-9])",
+            description,
+            re.I,
+        )
+    )
 
 
 def comc_table_row_proof(cells: Sequence[str], identity: japan.Identity) -> tuple[bool, str]:
@@ -170,7 +192,7 @@ def collect_comc_v4(
     *,
     observed_at,
     max_candidates: int = 8,
-    max_pages_per_player: int = 5,
+    sort_modes: Sequence[str] = COMC_SORT_MODES,
 ):
     found = {seed.identity.strict_key: [] for seed in seeds}
     searches = candidates = exact = 0
@@ -191,9 +213,11 @@ def collect_comc_v4(
 
         exact_rows: list[tuple[str, str]] = []
         seen_products: set[str] = set()
-        stop = False
-        for page_number in range(1, max(1, max_pages_per_player) + 1):
-            url = _page_url(player_base, page_number)
+        targetish_examples: list[str] = []
+        for sort_mode in tuple(dict.fromkeys(mode for mode in sort_modes if mode in COMC_SORT_MODES)):
+            if len(exact_rows) >= max_candidates:
+                break
+            url = _page_url(player_base, sort_mode, 1)
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=25000)
                 page.wait_for_timeout(650)
@@ -203,11 +227,12 @@ def collect_comc_v4(
             except Exception as error:
                 trace.reject(seed, f"page_error:{type(error).__name__}", url=url)
                 searches += 1
-                break
+                continue
             searches += 1
             reasons: Counter[str] = Counter()
             matched_on_page = 0
             data_rows = 0
+            targetish_on_page = 0
             for row in table_rows:
                 cells = row.get("cells")
                 hrefs = row.get("hrefs")
@@ -215,8 +240,13 @@ def collect_comc_v4(
                     continue
                 if cells and _norm(cells[0]) == "set name":
                     continue
+                cell_text = [str(x or "") for x in cells]
                 data_rows += 1
-                ok, proof = comc_table_row_proof([str(x or "") for x in cells], seed.source_identity)
+                if _set_and_name_proven(cell_text, seed.source_identity):
+                    targetish_on_page += 1
+                    if len(targetish_examples) < 4:
+                        targetish_examples.append(" | ".join(cell_text[:7])[:500])
+                ok, proof = comc_table_row_proof(cell_text, seed.source_identity)
                 if not ok:
                     reasons[proof] += 1
                     continue
@@ -227,31 +257,36 @@ def collect_comc_v4(
                 if product in seen_products:
                     continue
                 seen_products.add(product)
-                exact_rows.append((product, " | ".join(str(x or "") for x in cells[:7])))
+                exact_rows.append((product, " | ".join(cell_text[:7])))
                 matched_on_page += 1
                 if len(exact_rows) >= max_candidates:
-                    stop = True
                     break
             trace.query_pages.append(
                 {
                     "identity": trace._label(seed),
                     "player_proof": player_proof,
                     "player_base": player_base,
-                    "page": page_number,
+                    "sort_mode": sort_mode,
+                    "page": 1,
                     "url": url,
                     "final_url": str(final_url)[:500],
                     "title": str(title)[:200],
                     "rows_seen": data_rows,
+                    "targetish_rows": targetish_on_page,
                     "exact_rows": matched_on_page,
                     "row_reject_reasons": dict(reasons.most_common(8)),
                 }
             )
-            if stop:
-                break
-            if data_rows < 95:
-                break
 
         trace.retrieved(seed, len(exact_rows))
+        if targetish_examples:
+            trace.query_pages.append(
+                {
+                    "identity": trace._label(seed),
+                    "targetish_examples": targetish_examples,
+                    "note": "Exact card/set/language rows seen before grade/actionability gate; useful to distinguish no PSA10 stock from retrieval failure.",
+                }
+            )
         if not exact_rows:
             trace.reject(seed, "search_no_exact_psa10_row")
             continue
@@ -278,7 +313,7 @@ def collect_comc_v4(
     return found, SourceStatus(
         "comc",
         "OK",
-        "public read-only; exhaustive bounded player pagination + exact PSA10 row + fixed All Sellers price",
+        "public read-only; bounded multi-sort sweep + exact PSA10 row + fixed All Sellers price",
         searches,
         candidates,
         exact,
