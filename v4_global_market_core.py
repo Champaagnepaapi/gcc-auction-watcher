@@ -10,10 +10,13 @@ from typing import Iterable, Mapping, Optional, Sequence
 SUPPORTED_OPPORTUNITY_LANGUAGES = frozenset({"en", "ja"})
 
 SOLD_EXACT = "SOLD_EXACT"
+SOLD_AGGREGATED = "SOLD_AGGREGATED"
 FIXED_ASK = "FIXED_ASK"
 AUCTION_SNAPSHOT_LE5 = "AUCTION_SNAPSHOT_LE5"
 ACTIVE_AUCTION = "ACTIVE_AUCTION"
 FINISHED_UNPROVEN = "FINISHED_UNPROVEN"
+
+EBAY_GRADED_AGGREGATE = "EBAY_GRADED_AGGREGATE"
 
 
 def _norm(value: object) -> str:
@@ -160,6 +163,48 @@ class PriceObservation:
         return self.evidence_type in {FIXED_ASK, AUCTION_SNAPSHOT_LE5}
 
 
+@dataclass(frozen=True)
+class AggregatedSoldEvidence:
+    """Exact-card/grade sold aggregate, never an item-level SOLD transaction."""
+
+    source: str
+    identity: CommercialIdentity
+    central: float
+    currency: str
+    observed_at: datetime
+    identity_proven: bool
+    sale_count: int
+    last_sale_at: Optional[datetime]
+    correlation_family: str
+    low: Optional[float] = None
+    high: Optional[float] = None
+    recent_90_count: int = 0
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if self.central <= 0:
+            raise ValueError("aggregate central must be positive")
+        if self.low is not None and self.low <= 0:
+            raise ValueError("aggregate low must be positive")
+        if self.high is not None and self.high <= 0:
+            raise ValueError("aggregate high must be positive")
+        if self.sale_count < 0 or self.recent_90_count < 0:
+            raise ValueError("aggregate counts cannot be negative")
+        if not str(self.correlation_family or "").strip():
+            raise ValueError("correlation_family is required")
+        _as_utc(self.observed_at)
+        if self.last_sale_at is not None:
+            _as_utc(self.last_sale_at)
+
+    @property
+    def is_exact_aggregate(self) -> bool:
+        return (
+            self.identity_proven
+            and self.identity.complete_for_exact_market
+            and self.sale_count > 0
+        )
+
+
 def to_eur(value: float, currency: str, currency_per_eur: Mapping[str, float]) -> Optional[float]:
     code = str(currency or "").strip().upper()
     if code == "EUR":
@@ -193,6 +238,51 @@ class FairValue:
     evidence_quality: str
     notification_safe: bool
     sources: tuple[str, ...]
+    correlation_families: tuple[str, ...] = ()
+    note: str = ""
+
+
+def _aggregate_age_days(item: AggregatedSoldEvidence, now_utc: datetime) -> Optional[float]:
+    if item.last_sale_at is None:
+        return None
+    age = (now_utc - _as_utc(item.last_sale_at)).total_seconds() / 86400.0
+    return age if age >= 0 else None
+
+
+def _best_recent_aggregate(
+    identity: CommercialIdentity,
+    aggregate_evidence: Iterable[AggregatedSoldEvidence],
+    *,
+    now_utc: datetime,
+    currency_per_eur: Mapping[str, float],
+    recent_days: int,
+) -> Optional[tuple[AggregatedSoldEvidence, float, float, float]]:
+    """Select one provider per correlated upstream family, never double-counting it."""
+    by_family: dict[str, list[tuple[AggregatedSoldEvidence, float, float, float, float]]] = {}
+    for item in aggregate_evidence:
+        if item.identity.strict_key != identity.strict_key or not item.is_exact_aggregate:
+            continue
+        age = _aggregate_age_days(item, now_utc)
+        if age is None or age > recent_days:
+            continue
+        central = to_eur(item.central, item.currency, currency_per_eur)
+        low = to_eur(item.low if item.low is not None else item.central, item.currency, currency_per_eur)
+        high = to_eur(item.high if item.high is not None else item.central, item.currency, currency_per_eur)
+        if central is None or low is None or high is None or min(central, low, high) <= 0:
+            continue
+        family = str(item.correlation_family).strip().upper()
+        by_family.setdefault(family, []).append((item, age, central, low, high))
+
+    representatives: list[tuple[AggregatedSoldEvidence, float, float, float, float]] = []
+    for rows in by_family.values():
+        rows.sort(key=lambda row: (row[1], -row[0].sale_count, row[0].source))
+        representatives.append(rows[0])
+    if not representatives:
+        return None
+
+    representatives.sort(key=lambda row: (row[1], -row[0].sale_count, row[0].source))
+    item, _age, central, low, high = representatives[0]
+    return item, central, low, high
 
 
 def build_fair_value(
@@ -201,6 +291,7 @@ def build_fair_value(
     *,
     now: datetime,
     currency_per_eur: Mapping[str, float],
+    aggregate_evidence: Iterable[AggregatedSoldEvidence] = (),
     recent_days: int = 90,
     history_days: int = 365,
 ) -> Optional[FairValue]:
@@ -217,27 +308,69 @@ def build_fair_value(
             continue
         rows.append((item, age_days, eur))
 
-    if not rows:
-        return None
-
     rows.sort(key=lambda row: row[1])
     recent = [row for row in rows if row[1] <= recent_days]
-    if recent:
+    recent_aggregate = _best_recent_aggregate(
+        identity,
+        aggregate_evidence,
+        now_utc=now_utc,
+        currency_per_eur=currency_per_eur,
+        recent_days=min(recent_days, 30),
+    )
+
+    if len(recent) >= 2:
         basis = recent[:10]
         values = [row[2] for row in basis]
-        count = len(basis)
-        quality = "STRONG" if count >= 2 else "MODERATE"
         return FairValue(
             identity=identity,
             central_eur=round(float(median(values)), 2),
             low_eur=round(min(values), 2),
             high_eur=round(max(values), 2),
-            evidence_count=count,
-            recent_90_count=count,
+            evidence_count=len(basis),
+            recent_90_count=len(basis),
             method="RECENT_EXACT_SOLD_MEDIAN",
-            evidence_quality=quality,
-            notification_safe=count >= 2,
+            evidence_quality="STRONG",
+            notification_safe=True,
             sources=tuple(dict.fromkeys(row[0].source for row in basis)),
+        )
+
+    if len(recent) == 1 and recent_aggregate is not None:
+        agg, agg_central, agg_low, agg_high = recent_aggregate
+        item_value = recent[0][2]
+        agreement_ratio = max(item_value, agg_central) / min(item_value, agg_central)
+        if agg.sale_count >= 3 and agreement_ratio <= 1.25:
+            central = float(median((item_value, agg_central)))
+            return FairValue(
+                identity=identity,
+                central_eur=round(central, 2),
+                low_eur=round(min(item_value, agg_low), 2),
+                high_eur=round(max(item_value, agg_high), 2),
+                evidence_count=1 + agg.sale_count,
+                recent_90_count=1 + max(agg.recent_90_count, min(agg.sale_count, 1)),
+                method="RECENT_EXACT_SOLD_PLUS_AGGREGATE",
+                evidence_quality="STRONG",
+                notification_safe=True,
+                sources=(recent[0][0].source, agg.source),
+                correlation_families=(agg.correlation_family,),
+                note=f"aggregate/item agreement ratio {agreement_ratio:.3f}",
+            )
+
+    if recent_aggregate is not None:
+        agg, central, low, high = recent_aggregate
+        strong = agg.sale_count >= 3
+        return FairValue(
+            identity=identity,
+            central_eur=round(central, 2),
+            low_eur=round(min(low, central), 2),
+            high_eur=round(max(high, central), 2),
+            evidence_count=agg.sale_count,
+            recent_90_count=agg.recent_90_count,
+            method="RECENT_EXACT_SOLD_AGGREGATE",
+            evidence_quality="STRONG" if strong else "WEAK",
+            notification_safe=strong,
+            sources=(agg.source,),
+            correlation_families=(agg.correlation_family,),
+            note="SOLD_AGGREGATED; not item-level SOLD",
         )
 
     adjusted: list[tuple[PriceObservation, float]] = []
@@ -315,17 +448,21 @@ def compare_market_offers(
             reason = "NOT_AN_ACTIONABLE_OFFER"
         staged.append((item, landed, discount, reason))
 
-    ranked_rows = sorted(
-        [row for row in staged if row[1] is not None],
+    actionable_rows = sorted(
+        [row for row in staged if row[1] is not None and row[0].is_actionable_offer],
         key=lambda row: (float(row[1]), row[0].source, row[0].source_id),
     )
-    ranks = {id(row[0]): index + 1 for index, row in enumerate(ranked_rows)}
-    best = float(ranked_rows[0][1]) if ranked_rows else None
+    ranks = {id(row[0]): index + 1 for index, row in enumerate(actionable_rows)}
+    best = float(actionable_rows[0][1]) if actionable_rows else None
 
     output: list[OfferAnalysis] = []
     for item, landed, discount, reason in staged:
         rank = ranks.get(id(item)) if landed is not None else None
-        gap = ((float(landed) - best) / best * 100.0) if landed is not None and best else None
+        gap = (
+            (float(landed) - best) / best * 100.0
+            if landed is not None and best is not None and item.is_actionable_offer
+            else None
+        )
         notify = bool(
             landed is not None
             and discount is not None
@@ -346,7 +483,7 @@ def compare_market_offers(
         )
 
     output.sort(key=lambda row: (row.rank is None, row.rank or 10**9, row.observation.source))
-    best_source = ranked_rows[0][0].source if ranked_rows else ""
+    best_source = actionable_rows[0][0].source if actionable_rows else ""
     return MarketCompetition(
         fair_value=fair_value,
         offers=tuple(output),
