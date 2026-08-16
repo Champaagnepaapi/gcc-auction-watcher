@@ -7,9 +7,10 @@ from pathlib import Path
 
 import v4_global_live_shadow as base
 from v4_global_comc_hardening import collect_comc_v4
-from v4_global_magi_target_hardening_v2 import collect_magi_target_hardened_v2
+from v4_global_magi_registry_hardening import collect_magi_registry_hardened
 from v4_global_retrieval_hardening_v2 import traces_to_json
 from v4_global_retrieval_hardening_v3 import collect_fanatics_v3
+from v4_tcgdex_japanese_set_registry import REGISTRY_VERSION
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -48,7 +49,7 @@ def run(args: argparse.Namespace) -> dict:
             context = browser.new_context(locale="en-US", user_agent="Mozilla/5.0")
             page = context.new_page()
 
-            magi_rows, magi_status, magi_trace = collect_magi_target_hardened_v2(
+            magi_rows, magi_status, magi_trace = collect_magi_registry_hardened(
                 page,
                 seeds,
                 observed_at=observed_at,
@@ -87,8 +88,11 @@ def run(args: argparse.Namespace) -> dict:
 
     report = base.build_report(seeds, rows, fx=fx, statuses=statuses, observed_at=observed_at)
     report["retrieval_hardening"] = {
-        "version": 6,
-        "magi": "Japanese TCGdex candidate proof bridged to the same card ID in EN; target name+set+number remain exact",
+        "version": 7,
+        "magi": (
+            f"versioned TCGdex Japanese set registry {REGISTRY_VERSION}; exact target set/localId/Japanese card name; "
+            "candidate set-code conflicts fail closed"
+        ),
         "fanatics": "canonical H1 exact set/localId proof; related text cannot poison identity",
         "comc": "bounded multi-sort sweep + exact PSA10 row + fixed All Sellers ask",
         "identity_gate_relaxed": False,
