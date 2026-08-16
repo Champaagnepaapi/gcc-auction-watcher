@@ -66,7 +66,7 @@ def _normalize_legacy_budget_pending_backoff(
     state: dict,
     run_now: datetime,
 ) -> int:
-    """Make old budget-only P4 rows eligible again without touching provider errors."""
+    """Make old exponential budget-only P4 rows eligible without touching fresh cooldowns/provider errors."""
     root = state.get(watcher.FIXED_QUEUE_STATE_KEY)
     items = root.get("items") if isinstance(root, dict) else None
     if not isinstance(items, dict):
@@ -79,12 +79,12 @@ def _normalize_legacy_budget_pending_backoff(
         if record.get("last_evaluation_status") != watcher.REJECTION_EXTERNAL_PENDING:
             continue
         retry_count = int(record.get("retry_count") or 0)
-        retry_after = watcher._parse_state_datetime(record.get("retry_after"))
-        if retry_count == 0 and (retry_after is None or retry_after <= run_now):
+        # The legacy implementation incremented retry_count for every budget
+        # pending event. The new semantics always write retry_count=0, so this is
+        # a deterministic one-way migration marker that does not erase the new
+        # short 5-minute cooldown on subsequent runs.
+        if retry_count <= 0:
             continue
-        # Budget exhaustion is scheduling pressure, not a provider failure.
-        # Clear the historical exponential penalty so the normal oldest-first P4
-        # rotation can choose this row immediately on the current run.
         record["retry_count"] = 0
         record["retry_after"] = run_now.isoformat()
         changed += 1
