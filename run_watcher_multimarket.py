@@ -12,6 +12,7 @@ from run_watcher_safe import (
 )
 from v4_auction_item_discovery import install_v4_auction_item_discovery
 from v4_auction_last_chance import install_fast_lane_notification_guard
+from v4_auction_pagination_stability import install_v4_auction_pagination_stability
 from v4_canonical_multimarket import install_canonical_multimarket_pipeline
 from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
@@ -37,11 +38,12 @@ from v4_structural_edge_hunter import install_v4_structural_edge_hunter
 
 
 def _mislisted_slab_hunter_enabled() -> bool:
-    return os.getenv("V4_MISLISTED_SLAB_HUNTER_ENABLED", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    """User-disabled in V4 production after repeated OCR/manual-review false positives.
+
+    Keep the implementation available for future diagnostics, but never install it
+    in the production watcher regardless of workflow environment overrides.
+    """
+    return False
 
 
 def _cert_problem_notifications_enabled() -> bool:
@@ -59,6 +61,9 @@ if __name__ == "__main__":
     install_technical_alert_guard()
     install_fixed_queue_backlog_diagnostics()
     install_v4_auction_item_discovery()
+    # GCC's ENDING_SOON inventory is live. Stabilize page-number pagination
+    # across anchored snapshots before the private legacy safety net augments it.
+    install_v4_auction_pagination_stability()
     install_v4_private_auction_coverage()
     install_current_auction_discovery_diagnostics()
     install_canonical_multimarket_pipeline()
@@ -91,7 +96,7 @@ if __name__ == "__main__":
                 "(V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED=false)"
             )
     else:
-        watcher.log("Mislisted slab hunter: safe-off (V4_MISLISTED_SLAB_HUNTER_ENABLED=false)")
+        watcher.log("Mislisted slab hunter: disabled by production policy")
     install_fast_lane_notification_guard()
     # Only changes user-facing opportunity labels; economics and decisions stay intact.
     install_v4_notification_semantics()

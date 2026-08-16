@@ -17,7 +17,92 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             minutes_to_end=30,
         )
 
-    def test_only_private_sale_pages_are_opened(self):
+    def test_weekly_second_snapshot_recovers_missing_row_then_stabilizes(self):
+        snapshots = [
+            [self.lot("a"), self.lot("c")],
+            [self.lot("a"), self.lot("b"), self.lot("c")],
+            [self.lot("a"), self.lot("b"), self.lot("c")],
+        ]
+        calls = 0
+
+        def collect_sale(_page, _sale, _source_type, _diagnostics):
+            nonlocal calls
+            result = snapshots[calls]
+            calls += 1
+            return result
+
+        with patch.object(
+            private_coverage.item_discovery,
+            "_ORIGINAL_COLLECT_LOTS_FROM_LISTING",
+            side_effect=collect_sale,
+        ):
+            lots, stable = private_coverage._collect_weekly_sale_stable(
+                object(),
+                "https://gradedcardcenter.com/filtres/auction/weekly/weekly-a",
+                watcher.RunDiagnostics(),
+            )
+
+        self.assertTrue(stable)
+        self.assertEqual(calls, 3)
+        self.assertEqual({lot.url for lot in lots}, {
+            self.lot("a").url,
+            self.lot("b").url,
+            self.lot("c").url,
+        })
+
+    def test_weekly_identical_second_snapshot_stops_after_two_passes(self):
+        calls = 0
+
+        def collect_sale(_page, _sale, _source_type, _diagnostics):
+            nonlocal calls
+            calls += 1
+            return [self.lot("a"), self.lot("b")]
+
+        with patch.object(
+            private_coverage.item_discovery,
+            "_ORIGINAL_COLLECT_LOTS_FROM_LISTING",
+            side_effect=collect_sale,
+        ):
+            lots, stable = private_coverage._collect_weekly_sale_stable(
+                object(),
+                "https://gradedcardcenter.com/filtres/auction/weekly/weekly-a",
+                watcher.RunDiagnostics(),
+            )
+
+        self.assertTrue(stable)
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(lots), 2)
+
+    def test_weekly_continued_growth_fails_closed(self):
+        snapshots = [
+            [self.lot("a")],
+            [self.lot("a"), self.lot("b")],
+            [self.lot("a"), self.lot("b"), self.lot("c")],
+        ]
+        calls = 0
+
+        def collect_sale(_page, _sale, _source_type, _diagnostics):
+            nonlocal calls
+            result = snapshots[calls]
+            calls += 1
+            return result
+
+        with patch.object(
+            private_coverage.item_discovery,
+            "_ORIGINAL_COLLECT_LOTS_FROM_LISTING",
+            side_effect=collect_sale,
+        ):
+            lots, stable = private_coverage._collect_weekly_sale_stable(
+                object(),
+                "https://gradedcardcenter.com/filtres/auction/weekly/weekly-a",
+                watcher.RunDiagnostics(),
+            )
+
+        self.assertFalse(stable)
+        self.assertEqual(calls, private_coverage.WEEKLY_STABILITY_MAX_PASSES)
+        self.assertEqual(len(lots), 3)
+
+    def test_private_and_weekly_sale_pages_are_opened_but_event_is_not(self):
         opened = []
 
         def collect_sale(_page, sale, source_type, _diagnostics):
@@ -42,25 +127,34 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
 
         self.assertEqual(result.sales_seen, 3)
         self.assertEqual(result.private_sales_seen, 1)
+        self.assertEqual(result.weekly_sales_seen, 1)
         self.assertEqual(result.failures, 0)
-        self.assertEqual(len(result.lots), 1)
-        self.assertEqual(opened[0][1], "auction")
-        self.assertIn("/auction/private/", opened[0][0])
+        self.assertEqual(len(result.lots), 2)
+        self.assertTrue(all(source_type == "auction" for _, source_type in opened))
+        self.assertEqual(
+            {sale for sale, _ in opened},
+            {
+                sales[0],
+                sales[1],
+            },
+        )
+        self.assertEqual(sum(sale == sales[0] for sale, _ in opened), 1)
+        self.assertEqual(sum(sale == sales[1] for sale, _ in opened), 2)
 
-    def test_private_results_are_deduplicated_against_api_results(self):
+    def test_private_and_weekly_results_are_deduplicated_against_api_results(self):
         primary = [self.lot("same"), self.lot("api-only")]
-        private = [self.lot("same"), self.lot("private-only")]
-        merged, added = private_coverage._merge_by_url(primary, private)
+        supplemental = [self.lot("same"), self.lot("weekly-only")]
+        merged, added = private_coverage._merge_by_url(primary, supplemental)
         self.assertEqual(added, 1)
         self.assertEqual({lot.url for lot in merged}, {
             self.lot("same").url,
             self.lot("api-only").url,
-            self.lot("private-only").url,
+            self.lot("weekly-only").url,
         })
 
-    def test_private_page_failure_is_counted_without_dropping_other_sales(self):
+    def test_supplemental_page_failure_is_counted_without_dropping_other_sales(self):
         sales = [
-            "https://gradedcardcenter.com/filtres/auction/private/bad",
+            "https://gradedcardcenter.com/filtres/auction/weekly/bad",
             "https://gradedcardcenter.com/filtres/auction/private/good",
         ]
 
@@ -81,9 +175,49 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             result = private_coverage.discover_private_auction_lots(object())
 
         self.assertEqual(result.failures, 1)
+        self.assertEqual(result.private_sales_seen, 1)
+        self.assertEqual(result.weekly_sales_seen, 1)
         self.assertEqual(len(result.lots), 1)
 
-    def test_private_legacy_accounting_does_not_mutate_primary_api_ledger(self):
+    def test_unstable_weekly_snapshot_marks_supplemental_failure(self):
+        sales = [
+            "https://gradedcardcenter.com/filtres/auction/weekly/weekly-a",
+        ]
+        snapshots = [
+            [self.lot("a")],
+            [self.lot("a"), self.lot("b")],
+            [self.lot("a"), self.lot("b"), self.lot("c")],
+        ]
+        calls = 0
+
+        def collect_sale(_page, _sale, _source_type, _diagnostics):
+            nonlocal calls
+            result = snapshots[calls]
+            calls += 1
+            return result
+
+        primary = watcher.RunDiagnostics()
+        with patch.object(
+            private_coverage.item_discovery,
+            "_ORIGINAL_COLLECT_LIVE_AUCTION_URLS",
+            return_value=sales,
+        ), patch.object(
+            private_coverage.item_discovery,
+            "_ORIGINAL_COLLECT_LOTS_FROM_LISTING",
+            side_effect=collect_sale,
+        ):
+            result = private_coverage.discover_private_auction_lots(
+                object(), run_diagnostics=primary
+            )
+
+        self.assertEqual(result.failures, 1)
+        self.assertGreaterEqual(primary.auction_coverage.pages_failed, 1)
+        self.assertTrue(any(
+            "auction legacy safety-net page failures" in reason
+            for reason in primary.auction_coverage.incomplete_reasons
+        ))
+
+    def test_supplemental_legacy_accounting_does_not_mutate_primary_api_ledger(self):
         primary = watcher.RunDiagnostics()
         primary.auction_coverage.expected_total = 14338
         primary.auction_coverage.expected_total_scope = watcher.EXPECTED_TOTAL_SAME_QUERY
@@ -94,20 +228,20 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
         def collect_sales(_page, diagnostics):
             diagnostics.auction_coverage.record_page_success(
                 "legacy-home",
-                ["private-sale"],
+                ["weekly-sale"],
                 expected_total=7,
                 expected_total_scope=watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE,
             )
-            return ["https://gradedcardcenter.com/filtres/auction/private/private-sale"]
+            return ["https://gradedcardcenter.com/filtres/auction/weekly/weekly-sale"]
 
         def collect_sale(_page, _sale, _source_type, diagnostics):
             diagnostics.auction_coverage.record_page_success(
-                "private-sale",
-                ["private-card"],
+                "weekly-sale",
+                ["weekly-card"],
                 expected_total=1,
                 expected_total_scope=watcher.EXPECTED_TOTAL_DIFFERENT_SCOPE,
             )
-            return [self.lot("private-card")]
+            return [self.lot("weekly-card")]
 
         with patch.object(
             private_coverage.item_discovery,
@@ -123,6 +257,7 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             )
 
         self.assertEqual(result.failures, 0)
+        self.assertEqual(result.weekly_sales_seen, 1)
         self.assertEqual(primary.auction_coverage.expected_total, 14338)
         self.assertEqual(
             primary.auction_coverage.expected_total_scope,
@@ -135,6 +270,82 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             "conflicting expected_total scopes",
             primary.auction_coverage.incomplete_reasons,
         )
+
+    def test_augmented_mode_distinguishes_api_and_full_legacy_fallback(self):
+        self.assertEqual(
+            private_coverage._augmented_mode(
+                private_coverage.item_discovery.PRIMARY_MODE
+            ),
+            private_coverage.AUGMENTED_MODE,
+        )
+        self.assertEqual(
+            private_coverage._augmented_mode(
+                private_coverage.item_discovery.FALLBACK_MODE
+            ),
+            private_coverage.AUGMENTED_FALLBACK_MODE,
+        )
+        self.assertIsNone(private_coverage._augmented_mode("UNKNOWN"))
+
+    def test_installed_guard_augments_full_legacy_fallback(self):
+        saved_collect = watcher.collect_lots_from_listing
+        saved_installed = private_coverage._INSTALLED
+        diagnostics = watcher.RunDiagnostics()
+
+        def fallback_collect(
+            _page,
+            _url,
+            _source_type,
+            run_diagnostics=None,
+            **_kwargs,
+        ):
+            setattr(
+                run_diagnostics,
+                "auction_discovery_mode",
+                private_coverage.item_discovery.FALLBACK_MODE,
+            )
+            setattr(run_diagnostics, "auction_fallback_used", True)
+            return [self.lot("legacy-first-pass")]
+
+        supplemental = private_coverage.PrivateAuctionAugmentResult(
+            lots=[self.lot("weekly-recovered")],
+            sales_seen=10,
+            private_sales_seen=7,
+            weekly_sales_seen=3,
+            failures=0,
+        )
+
+        try:
+            private_coverage._INSTALLED = False
+            watcher.collect_lots_from_listing = fallback_collect
+            with patch.object(
+                private_coverage,
+                "discover_private_auction_lots",
+                return_value=supplemental,
+            ):
+                private_coverage.install_v4_private_auction_coverage()
+                result = watcher.collect_lots_from_listing(
+                    object(),
+                    private_coverage.item_discovery.AUCTION_INDEX_URL,
+                    "auction",
+                    diagnostics,
+                )
+
+            self.assertEqual(
+                {lot.url for lot in result},
+                {
+                    self.lot("legacy-first-pass").url,
+                    self.lot("weekly-recovered").url,
+                },
+            )
+            self.assertTrue(diagnostics.auction_fallback_used)
+            self.assertEqual(
+                diagnostics.auction_discovery_mode,
+                private_coverage.AUGMENTED_FALLBACK_MODE,
+            )
+            self.assertEqual(diagnostics.auction_private_candidates_added, 1)
+        finally:
+            watcher.collect_lots_from_listing = saved_collect
+            private_coverage._INSTALLED = saved_installed
 
     def test_temporary_diagnostic_horizon_is_restored(self):
         old = watcher.MAX_AUCTION_MINUTES

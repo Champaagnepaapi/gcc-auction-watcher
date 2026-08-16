@@ -39,15 +39,6 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Ensure OCR runtime for mislisted slab fallback
-        shell: bash
-        run: |
-          if ! command -v tesseract >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends tesseract-ocr
-          fi
-          tesseract --version | head -n 1
-
       - name: Ensure Chromium runtime is usable
         shell: bash
         run: |
@@ -126,19 +117,9 @@ jobs:
           V4_POKETRACE_MIN_SALES: "3"
           V4_RAW_REVIEW_TTL_HOURS: "24"
 
-          # Mislisted slab hunter: official grader cert first, image OCR only
-          # when official verification is unavailable/unreadable.
-          V4_MISLISTED_SLAB_HUNTER_ENABLED: "true"
-          V4_MISLISTED_IMAGE_OCR_ENABLED: "true"
-          V4_MISLISTED_CERT_MAX_PER_RUN: "5"
-          V4_MISLISTED_CERT_TIMEOUT_SECONDS: "6"
-          V4_MISLISTED_OCR_TIMEOUT_SECONDS: "8"
-
-          # PSA/PCA/CCC: every real cert problem gets a manual-review alert.
-          # A cert is declared missing only after API preservation + GCC
-          # Description -> Gradation fallback both fail. Lookup budget exhaustion
-          # alone is not mislabeled as a cert problem.
-          V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED: "true"
+          # Mislisted Slab / image OCR notification lane is disabled by V4
+          # production policy in run_watcher_multimarket.py. No workflow env can
+          # re-enable it, and no Tesseract runtime is installed for this lane.
 
           EBAY_ENABLED: "true"
           EBAY_MAX_QUERIES_PER_CARD: "2"

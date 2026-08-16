@@ -3,7 +3,7 @@
 > **Source de reprise technique canonique — à lire en premier dans toute nouvelle conversation.**
 > Ce README décrit l’état courant. L’historique détaillé antérieur reste disponible dans Git/GitHub ; ne pas réintroduire un comportement ancien simplement parce qu’il apparaît dans un vieux commit.
 
-## État canonique — 15 août 2026
+## État canonique — 16 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -12,6 +12,15 @@ Dernier merge fonctionnel V4 / Robot KB :
 ```text
 0d62e9cfa3d32e5d832fd4cbb75fbcd3102f0fff
 ```
+
+### Mise à jour V4 — discovery auctions + Mislisted Slab — 16 août 2026
+
+- **Mislisted Slab Hunter / image OCR désactivé en production V4** : `run_watcher_multimarket.py` force la lane à OFF, aucun override workflow ne peut la réactiver, le runtime Tesseract dédié a été retiré du workflow principal. Les anciennes sections historiques décrivant cette lane restent de l'historique, pas l'état production courant.
+- Discovery auctions durcie contre les omissions live : snapshots API `ENDING_SOON` ancrés et répétés ; si l'ordre/completude API n'est pas prouvé, V4 **fail-closed** vers le fallback legacy complet.
+- Safety-net legacy : pages `private` + `weekly`; les pages weekly dynamiques sont relues jusqu'à stabilisation de l'union des URLs. Ce safety-net s'applique aussi après le fallback legacy complet.
+- Validation code head `72172a07f0430da39a3231932de64f165baa28bc` : run `31948079857`, job `95167175133` — **575/575 tests PASS**, compile PASS, `git diff --check` PASS.
+- Validation live read-only : API publique non fiable sur ce run (`auction API ending-soon order invalid`), donc mode effectif `LEGACY_LIVE_SALES_FALLBACK_PLUS_STABLE_WEEKLY`; fallback failures `0`, supplemental failures `0`, `legacy_only=0`, timers legacy non résolus `0`.
+- Aucun changement de matching économique, fair value, `max_recommended`, seuils de décote, achat, bid, checkout ou paiement.
 
 ### Principes non négociables
 
