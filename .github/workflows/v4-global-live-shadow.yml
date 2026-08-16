@@ -12,7 +12,7 @@ on:
         required: false
         default: "8"
       rejection_diagnostics:
-        description: "Explain why magi/Fanatics/COMC candidates fail exact proof"
+        description: "Run legacy rejection diagnostic instead of hardened shadow"
         required: false
         type: boolean
         default: false
@@ -48,15 +48,15 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
-      - name: Run read-only multi-market shadow
+      - name: Run hardened read-only multi-market shadow
         if: ${{ !inputs.rejection_diagnostics }}
         run: |
-          python v4_global_live_shadow.py \
+          python v4_global_live_shadow_hardened.py \
             --output-dir global_shadow_out \
             --max-identities "${{ inputs.max_identities }}" \
             --market-candidates "${{ inputs.market_candidates }}"
 
-      - name: Run read-only rejection diagnostics
+      - name: Run legacy read-only rejection diagnostics
         if: ${{ inputs.rejection_diagnostics }}
         run: |
           python v4_global_rejection_diagnostics.py \
