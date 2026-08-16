@@ -7,6 +7,7 @@ on:
       - "japan_edge_hunter.py"
       - "japan_edge_hunter_v2.py"
       - "japan_edge_hunter_v3.py"
+      - "japan_edge_ppt_shadow.py"
       - "tests_japan/**"
       - ".github/workflows/japan-edge-hunter.yml"
       - ".github/workflows/japan-edge-offline-validation.yml"
@@ -18,11 +19,23 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      POKEMONPRICETRACKER_API_KEY: ""
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+      NTFY_TOPIC: ""
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Assert offline safety contract
+        shell: bash
+        run: |
+          test -z "${POKEMONPRICETRACKER_API_KEY:-}"
+          test "${JAPAN_EDGE_NOTIFY_ENABLED}" = "false"
+          test -z "${NTFY_TOPIC:-}"
+          echo "Japan Edge PPT validation: offline, no provider secret, no ntfy"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -38,7 +51,31 @@ jobs:
         run: python -m unittest discover -s tests_japan -p "test*.py" -v
 
       - name: Compile Japan Edge files
-        run: python -m py_compile japan_edge_hunter.py japan_edge_hunter_v2.py japan_edge_hunter_v3.py tests_japan/test_japan_edge_hunter.py tests_japan/test_japan_edge_hunter_v2.py tests_japan/test_japan_edge_hunter_v3.py
+        run: |
+          python -m py_compile \
+            japan_edge_hunter.py \
+            japan_edge_hunter_v2.py \
+            japan_edge_hunter_v3.py \
+            japan_edge_ppt_shadow.py \
+            tests_japan/test_japan_edge_hunter.py \
+            tests_japan/test_japan_edge_hunter_v2.py \
+            tests_japan/test_japan_edge_hunter_v3.py \
+            tests_japan/test_japan_edge_ppt_shadow.py
+
+      - name: PPT Japanese safety assertions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          code = Path('japan_edge_ppt_shadow.py').read_text(encoding='utf-8')
+          assert 'language": "japanese"' in code
+          assert 'SOLD_AGGREGATED' in code
+          assert 'EBAY_GRADED_AGGREGATE' in code
+          assert 'independent_market_increment' in code
+          assert 'notification_use' in code
+          assert 'production_decision_use' in code
+          print('PPT JP shadow safety assertions: PASS')
+          PY
 
       - name: Parse Japan Edge workflows
         run: python -c 'import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in [".github/workflows/japan-edge-hunter.yml", ".github/workflows/japan-edge-offline-validation.yml"]]; print("YAML PASS")'
