@@ -12,6 +12,7 @@ from run_watcher_safe import (
 )
 from v4_auction_item_discovery import install_v4_auction_item_discovery
 from v4_auction_last_chance import install_fast_lane_notification_guard
+from v4_auction_pagination_stability import install_v4_auction_pagination_stability
 from v4_canonical_multimarket import install_canonical_multimarket_pipeline
 from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
@@ -60,6 +61,9 @@ if __name__ == "__main__":
     install_technical_alert_guard()
     install_fixed_queue_backlog_diagnostics()
     install_v4_auction_item_discovery()
+    # GCC's ENDING_SOON inventory is live. Stabilize page-number pagination
+    # across anchored snapshots before the private legacy safety net augments it.
+    install_v4_auction_pagination_stability()
     install_v4_private_auction_coverage()
     install_current_auction_discovery_diagnostics()
     install_canonical_multimarket_pipeline()
