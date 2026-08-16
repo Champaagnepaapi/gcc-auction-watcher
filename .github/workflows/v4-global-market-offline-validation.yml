@@ -1,0 +1,55 @@
+name: V4 Global Market Offline Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "v4_global_market_core.py"
+      - "v4_market_cardova.py"
+      - "v4_market_verified_offer.py"
+      - "tests_global/**"
+      - ".github/workflows/v4-global-market-offline-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install PyYAML
+
+      - name: Run focused global-market tests
+        run: python -m unittest discover -s tests_global -p "test*.py" -v
+
+      - name: Run existing V4 multimarket regression tests
+        run: python -m unittest discover -s tests -p "test_v4_*multimarket*.py" -v
+
+      - name: Compile changed Python files
+        run: |
+          python -m py_compile v4_global_market_core.py
+          python -m py_compile v4_market_cardova.py
+          python -m py_compile v4_market_verified_offer.py
+          python -m py_compile tests_global/test_v4_global_market_core.py
+          python -m py_compile tests_global/test_v4_market_cardova.py
+          python -m py_compile tests_global/test_v4_market_verified_offer.py
+
+      - name: Parse workflow YAML
+        run: python -c 'import pathlib,yaml; yaml.safe_load(pathlib.Path(".github/workflows/v4-global-market-offline-validation.yml").read_text()); print("YAML PASS")'
+
+      - name: Check diff whitespace
+        run: git diff --check origin/${{ github.base_ref }}...HEAD
