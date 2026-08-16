@@ -1,0 +1,92 @@
+name: V4 Global Market Live Shadow
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_identities:
+        description: "Max strict JP PSA10 identities to benchmark"
+        required: false
+        default: "5"
+      market_candidates:
+        description: "Max listing candidates per market/identity"
+        required: false
+        default: "8"
+      rejection_diagnostics:
+        description: "Explain why magi/Fanatics/COMC candidates fail exact proof"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-global-live-shadow
+  cancel-in-progress: false
+
+jobs:
+  live-shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NTFY_TOPIC: ""
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fail closed on branches without shadow code
+        shell: bash
+        run: |
+          test -f v4_global_live_shadow.py || {
+            echo "::error::This branch does not contain v4_global_live_shadow.py. Select feat/v4-global-live-shadow or feat/v4-global-rejection-diagnostics."
+            exit 1
+          }
+          if [[ "${{ inputs.rejection_diagnostics }}" == "true" ]]; then
+            test -f v4_global_rejection_diagnostics.py || {
+              echo "::error::Rejection diagnostics require feat/v4-global-rejection-diagnostics."
+              exit 1
+            }
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run read-only multi-market shadow
+        if: ${{ !inputs.rejection_diagnostics }}
+        run: |
+          python v4_global_live_shadow.py \
+            --output-dir global_shadow_out \
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
+
+      - name: Run read-only rejection diagnostics
+        if: ${{ inputs.rejection_diagnostics }}
+        run: |
+          python v4_global_rejection_diagnostics.py \
+            --output-dir global_shadow_out \
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
+
+      - name: Assert no tracked runtime mutation
+        run: |
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Upload shadow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-global-market-live-shadow-${{ github.run_id }}
+          path: global_shadow_out/
+          if-no-files-found: error
+          retention-days: 7
