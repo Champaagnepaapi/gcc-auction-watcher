@@ -23,33 +23,25 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-
           path = Path("README.md")
           text = path.read_text(encoding="utf-8")
           marker = "### Mise à jour V4 — discovery auctions + Mislisted Slab — 16 août 2026"
-          if marker in text:
-              raise SystemExit(0)
-
-          text = text.replace(
-              "## État canonique — 15 août 2026",
-              "## État canonique — 16 août 2026",
-              1,
-          )
-          block = '''### Mise à jour V4 — discovery auctions + Mislisted Slab — 16 août 2026
-
-- **Mislisted Slab Hunter / image OCR désactivé en production V4** : `run_watcher_multimarket.py` force la lane à OFF, aucun override workflow ne peut la réactiver, le runtime Tesseract dédié a été retiré du workflow principal. Les anciennes sections historiques décrivant cette lane restent de l'historique, pas l'état production courant.
-- Discovery auctions durcie contre les omissions live : snapshots API `ENDING_SOON` ancrés et répétés ; si l'ordre/completude API n'est pas prouvé, V4 **fail-closed** vers le fallback legacy complet.
-- Safety-net legacy : pages `private` + `weekly`; les pages weekly dynamiques sont relues jusqu'à stabilisation de l'union des URLs. Ce safety-net s'applique aussi après le fallback legacy complet.
-- Validation code head `72172a07f0430da39a3231932de64f165baa28bc` : run `31948079857`, job `95167175133` — **575/575 tests PASS**, compile PASS, `git diff --check` PASS.
-- Validation live read-only : API publique non fiable sur ce run (`auction API ending-soon order invalid`), donc mode effectif `LEGACY_LIVE_SALES_FALLBACK_PLUS_STABLE_WEEKLY`; fallback failures `0`, supplemental failures `0`, `legacy_only=0`, timers legacy non résolus `0`.
-- Aucun changement de matching économique, fair value, `max_recommended`, seuils de décote, achat, bid, checkout ou paiement.
-
-'''
-          needle = "### Principes non négociables\n"
-          if needle not in text:
-              raise SystemExit("README insertion point not found")
-          text = text.replace(needle, block + needle, 1)
-          path.write_text(text, encoding="utf-8")
+          if marker not in text:
+              text = text.replace("## État canonique — 15 août 2026", "## État canonique — 16 août 2026", 1)
+              block = (
+                  "### Mise à jour V4 — discovery auctions + Mislisted Slab — 16 août 2026\n\n"
+                  "- **Mislisted Slab Hunter / image OCR désactivé en production V4** : `run_watcher_multimarket.py` force la lane à OFF, aucun override workflow ne peut la réactiver, le runtime Tesseract dédié a été retiré du workflow principal. Les anciennes sections historiques décrivant cette lane restent de l'historique, pas l'état production courant.\n"
+                  "- Discovery auctions durcie contre les omissions live : snapshots API `ENDING_SOON` ancrés et répétés ; si l'ordre/completude API n'est pas prouvé, V4 **fail-closed** vers le fallback legacy complet.\n"
+                  "- Safety-net legacy : pages `private` + `weekly`; les pages weekly dynamiques sont relues jusqu'à stabilisation de l'union des URLs. Ce safety-net s'applique aussi après le fallback legacy complet.\n"
+                  "- Validation code head `72172a07f0430da39a3231932de64f165baa28bc` : run `31948079857`, job `95167175133` — **575/575 tests PASS**, compile PASS, `git diff --check` PASS.\n"
+                  "- Validation live read-only : API publique non fiable sur ce run (`auction API ending-soon order invalid`), donc mode effectif `LEGACY_LIVE_SALES_FALLBACK_PLUS_STABLE_WEEKLY`; fallback failures `0`, supplemental failures `0`, `legacy_only=0`, timers legacy non résolus `0`.\n"
+                  "- Aucun changement de matching économique, fair value, `max_recommended`, seuils de décote, achat, bid, checkout ou paiement.\n\n"
+              )
+              needle = "### Principes non négociables\n"
+              if needle not in text:
+                  raise SystemExit("README insertion point not found")
+              text = text.replace(needle, block + needle, 1)
+              path.write_text(text, encoding="utf-8")
           PY
 
           if git diff --quiet -- README.md; then
