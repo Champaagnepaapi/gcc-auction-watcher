@@ -1,0 +1,106 @@
+name: V4 PPT Shadow Offline Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "v4_ppt_shadow_model.py"
+      - "v4_ppt_shadow_provider.py"
+      - "v4_ppt_shadow_language_bridge.py"
+      - "v4_ppt_shadow_grader_guard.py"
+      - "run_watcher_multimarket.py"
+      - "tests/test_v4_ppt_shadow*.py"
+      - ".github/workflows/v4-ppt-shadow-offline-validation.yml"
+      - ".github/workflows/v4-auction-discovery-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.head_ref == 'agent/v4-ppt-clean-20260816'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      V4_PPT_SHADOW_ENABLED: "false"
+      POKEMONPRICETRACKER_API_KEY: ""
+      NTFY_TOPIC: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Checkout PR merge result without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert offline contract
+        shell: bash
+        run: |
+          test -z "${POKEMONPRICETRACKER_API_KEY:-}"
+          test -z "${NTFY_TOPIC:-}"
+          test "${V4_PPT_SHADOW_ENABLED}" = "false"
+          echo "PPT/network secrets injected: 0"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check PyYAML
+
+      - name: Run complete V4 unit suite offline
+        run: python -m unittest discover -s tests -p "test*.py" -v
+
+      - name: Compile PPT shadow and current V4 entrypoint
+        run: |
+          python -m py_compile \
+            v4_ppt_shadow_model.py \
+            v4_ppt_shadow_provider.py \
+            v4_ppt_shadow_language_bridge.py \
+            v4_ppt_shadow_grader_guard.py \
+            run_watcher_multimarket.py \
+            tests/test_v4_ppt_shadow.py \
+            tests/test_v4_ppt_shadow_language_gate.py \
+            tests/test_v4_ppt_shadow_install.py \
+            tests/test_v4_ppt_shadow_cross_language.py \
+            tests/test_v4_ppt_shadow_physical_language.py \
+            tests/test_v4_ppt_shadow_grader_guard.py
+
+      - name: Parse workflow YAML
+        run: python -c 'import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in [".github/workflows/v4-auction-discovery-validation.yml", ".github/workflows/v4-ppt-shadow-offline-validation.yml"]]; print("YAML PASS")'
+
+      - name: Check diff whitespace
+        run: git diff --check origin/main...HEAD
+
+      - name: Safety assertions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          provider = Path('v4_ppt_shadow_provider.py').read_text(encoding='utf-8')
+          bridge = Path('v4_ppt_shadow_language_bridge.py').read_text(encoding='utf-8')
+          guard = Path('v4_ppt_shadow_grader_guard.py').read_text(encoding='utf-8')
+          entrypoint = Path('run_watcher_multimarket.py').read_text(encoding='utf-8')
+          live = Path('.github/workflows/v4-auction-discovery-validation.yml').read_text(encoding='utf-8')
+          assert 'SOLD_AGGREGATED' in provider
+          assert 'SOLD_ITEM_LEVEL' not in provider
+          assert 'RELATION_CROSS_LANGUAGE_EN = "CROSS_LANGUAGE_EN_ANCHOR"' in bridge
+          assert 'estimate_fr_en_language_basis' in bridge
+          assert 'PPT_CROSS_LANGUAGE_ANCHOR_ONLY' in bridge
+          assert 'SUPPORTED_PPT_GRADERS = ("PSA", "BGS", "CGC", "SGC")' in guard
+          assert 'UNSUPPORTED_GRADER' in guard
+          assert 'install_v4_ppt_shadow_grader_guard' in entrypoint
+          assert 'install_v4_ppt_shadow_language_bridge' in entrypoint
+          assert "github.ref_name == 'agent/v4-ppt-clean-20260816'" in live
+          assert 'NTFY_TOPIC: ""' in live
+          assert 'V4_KB_SHADOW_SPOOL_PATH: ""' in live
+          assert 'V4_PPT_SHADOW_MAX_HTTP_CALLS_PER_RUN: "12"' in live
+          assert 'V4_PPT_SHADOW_CREDIT_CAP_PER_RUN: "60"' in live
+          assert 'V4_PPT_SHADOW_DAILY_REMAINING_FLOOR: "15000"' in live
+          print('V4 PPT clean safety assertions: PASS')
+          PY

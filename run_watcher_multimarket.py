@@ -31,6 +31,8 @@ from v4_notification_semantics import install_v4_notification_semantics
 from v4_notification_signal_quality_guard import (
     install_v4_notification_signal_quality_guard,
 )
+from v4_ppt_shadow_grader_guard import install_v4_ppt_shadow_grader_guard
+from v4_ppt_shadow_language_bridge import install_v4_ppt_shadow_language_bridge
 from v4_private_auction_coverage import install_v4_private_auction_coverage
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
@@ -114,6 +116,15 @@ if __name__ == "__main__":
     # Structural edges consume exact SOLD + active-ask context. Expected Profit
     # is secondary/ranking-only and can never suppress a V4 notification.
     install_v4_structural_edge_hunter()
+    # Shadow-only provider coverage guard: PPT calls are restricted to graders
+    # with an actual graded eBay bucket (PSA/BGS/CGC/SGC). Unsupported graders
+    # are rejected before network, so they consume zero PPT requests/credits.
+    install_v4_ppt_shadow_grader_guard()
+    # Opt-in shadow only. English physical cards use PPT EN directly. French
+    # physical cards may use a deterministic same-card TCGdex EN alias only for
+    # retrieval; the EN price stays a cross-language anchor unless a same-card,
+    # same-grader, same-grade temporal FR/EN basis is empirically calibrated.
+    install_v4_ppt_shadow_language_bridge()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
     exit_code = 1
