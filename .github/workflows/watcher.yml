@@ -121,9 +121,14 @@ jobs:
           # production policy in run_watcher_multimarket.py. No workflow env can
           # re-enable it, and no Tesseract runtime is installed for this lane.
 
+          # Public eBay SOLD/Completed pages: this is an internal bounded runtime
+          # cap, not an eBay API quota. Eight cards/run remains conservative while
+          # four slots are kept available for fixed cards when auctions are busy.
           EBAY_ENABLED: "true"
           EBAY_MAX_QUERIES_PER_CARD: "2"
-          EBAY_MAX_CARDS_PER_RUN: "2"
+          EBAY_MAX_CARDS_PER_RUN: "8"
+          V4_EBAY_FIXED_RESERVE_CARDS_PER_RUN: "4"
+          V4_EXTERNAL_PENDING_BUDGET_COOLDOWN_MINUTES: "5"
           EBAY_NAV_TIMEOUT: "6000"
           EBAY_PAGE_WAIT_MS: "700"
 
