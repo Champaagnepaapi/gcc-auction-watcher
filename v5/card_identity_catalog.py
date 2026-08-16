@@ -8,6 +8,7 @@ from typing import Mapping, Optional, Tuple
 
 import requests
 
+from .catalog_gap_registry import resolve_curated_catalog_gap
 from .ebay import CardNameLookupResult, SetNumberCardNameResolver
 from .models import (
     POKETRACE_PROVIDER,
@@ -16,6 +17,7 @@ from .models import (
     ProviderSearchAlias,
 )
 from .microvariants import (
+    CURATED_EXACT_CATALOG_SOURCE,
     MicrovariantApplicability,
     tcgdex_microvariant_applicability,
 )
@@ -145,6 +147,7 @@ class CardCatalogCounters:
     deterministic_english_aliases_found: int = 0
     alias_unavailable_no_exact_english_twin: int = 0
     alias_identity_calls_avoided_by_tcgdex_exact: int = 0
+    curated_exact_gap_hits: int = 0
     post_macro_applicability_attempts: int = 0
     post_macro_applicability_cache_hits: int = 0
     post_macro_applicability_resolved: int = 0
@@ -1121,6 +1124,21 @@ class HybridPokemonCardResolver(MultilingualPokemonCardResolver):
             self._identity_cache[key] = tcgdex
             return tcgdex
 
+        if not tcgdex.ambiguous:
+            curated = resolve_curated_catalog_gap(identity)
+            if curated is not None:
+                result = CatalogIdentityResult(
+                    identity=curated.identity,
+                    source=CURATED_EXACT_CATALOG_SOURCE,
+                    matched=True,
+                    ambiguous=False,
+                    blocking=False,
+                    microvariant_applicability=curated.applicability,
+                )
+                self.counters.curated_exact_gap_hits += 1
+                self._identity_cache[key] = result
+                return result
+
         poketrace = None
         supplied_core_fields = sum(
             bool(value)
@@ -1174,6 +1192,7 @@ def render_card_catalog_counters(resolver: MultilingualPokemonCardResolver) -> s
             ),
             f"TCGdex requests: {counters.tcgdex_requests}",
             f"TCGdex hits: {counters.tcgdex_hits}",
+            f"curated exact catalog-gap hits: {counters.curated_exact_gap_hits}",
             f"Pokémon TCG API requests: {counters.pokemon_tcg_requests}",
             f"Pokémon TCG API hits: {counters.pokemon_tcg_hits}",
             f"ambiguous catalog resolutions: {counters.ambiguous}",

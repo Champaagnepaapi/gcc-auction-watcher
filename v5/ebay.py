@@ -850,6 +850,48 @@ def is_bundle_or_multi_card_listing(
     return False
 
 
+_DIGITAL_TCG_POCKET_TITLE_PATTERN = re.compile(
+    r"\bpok[eé]mon\s+tcg\s+pocket\b", re.IGNORECASE
+)
+_DIGITAL_TCG_POCKET_TITLE_MARKERS = (
+    re.compile(r"\baccount\b", re.IGNORECASE),
+    re.compile(r"\bhourglass(?:es)?\b", re.IGNORECASE),
+    re.compile(r"\binstant\b", re.IGNORECASE),
+    re.compile(r"\bfast\b", re.IGNORECASE),
+    re.compile(r"\btrade|trading\b", re.IGNORECASE),
+)
+
+
+def is_non_physical_pokemon_listing(
+    payload: Mapping[str, object],
+    aspects: Optional[Mapping[str, Sequence[str]]] = None,
+) -> bool:
+    """Reject deterministic digital Pokémon TCG Pocket listings.
+
+    The project is physical single-card only.  We require an explicit Pocket
+    game/set signal or the exact product name plus a digital-delivery marker;
+    a generic word such as ``pocket`` alone is never sufficient.
+    """
+
+    title = str(payload.get("title") or "").strip()
+    asp = aspects if aspects is not None else _aspects(payload)
+    game_values = _matching_values(asp, IDENTITY_ALIASES["game"])
+    set_values = _matching_values(asp, IDENTITY_ALIASES["set"])
+
+    if any(_normalize(value) == "pokemon tcg pocket" for value in game_values):
+        return True
+    if (
+        _DIGITAL_TCG_POCKET_TITLE_PATTERN.search(title)
+        and any(_normalize(value) in {"tcg pocket", "shining revelry"} for value in set_values)
+    ):
+        return True
+    if _DIGITAL_TCG_POCKET_TITLE_PATTERN.search(title) and any(
+        pattern.search(title) for pattern in _DIGITAL_TCG_POCKET_TITLE_MARKERS
+    ):
+        return True
+    return False
+
+
 _TITLE_LABELS = {
     "set": ("set", "series", "serie", "série", "extension", "erweiterung"),
     "card_number": (

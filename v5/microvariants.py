@@ -27,6 +27,11 @@ from .variant_semantics import (
 MICROVARIANT_APPLICABLE = "MICROVARIANT_APPLICABLE"
 MICROVARIANT_NOT_APPLICABLE = "MICROVARIANT_NOT_APPLICABLE"
 MICROVARIANT_APPLICABILITY_UNKNOWN = "MICROVARIANT_APPLICABILITY_UNKNOWN"
+CURATED_EXACT_CATALOG_SOURCE = "CURATED_EXACT_CATALOG"
+TRUSTED_EXACT_CATALOG_SOURCES = frozenset({
+    "TCGDEX_EXACT",
+    CURATED_EXACT_CATALOG_SOURCE,
+})
 
 FIRST_EDITION_CONFIRMED = "FIRST_EDITION_CONFIRMED"
 UNLIMITED_CONFIRMED = "UNLIMITED_CONFIRMED"
@@ -451,7 +456,7 @@ class LocalMicrovariantValidator:
         # Microvariant is UNKNOWN on listing - evaluate whether catalog proves single compatible variant
         # UNKNOWN / missing / malformed catalog applicability MUST remain blocks_economics=True.
         has_catalog_proof = (
-            applicability.source == "TCGDEX_EXACT"
+            applicability.source in TRUSTED_EXACT_CATALOG_SOURCES
             and applicability.status in {MICROVARIANT_APPLICABLE, MICROVARIANT_NOT_APPLICABLE}
         )
 

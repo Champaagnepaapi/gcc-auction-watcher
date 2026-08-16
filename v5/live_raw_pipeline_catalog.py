@@ -28,6 +28,7 @@ from .ebay import (
     RAW_CONDITION_ID,
     identity_aspect_audit,
     is_bundle_or_multi_card_listing,
+    is_non_physical_pokemon_listing,
     parse_ebay_item,
     resolve_card_identity,
 )
@@ -286,6 +287,12 @@ class CatalogAwareLiveRawPipelineDiagnostic(LiveRawPipelineDiagnostic):
         self._identity_records_seen += 1
         if record.item_id:
             self._sample_item_ids.add(record.item_id)
+
+        if is_non_physical_pokemon_listing(record.enriched):
+            _progress(
+                f"identity record {self._identity_records_seen}: early non-physical/digital reject"
+            )
+            return None, False
 
         if is_bundle_or_multi_card_listing(record.enriched):
             _progress(
