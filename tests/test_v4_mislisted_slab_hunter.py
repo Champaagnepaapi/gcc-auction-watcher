@@ -14,12 +14,12 @@ import v4_mislisted_slab_hunter as hunter
 
 
 class MislistedSlabHunterTests(unittest.TestCase):
-    def test_safe_off_default_and_explicit_enable(self) -> None:
+    def test_production_policy_keeps_lane_disabled_even_when_legacy_env_true(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("V4_MISLISTED_SLAB_HUNTER_ENABLED", None)
             self.assertFalse(run_watcher_multimarket._mislisted_slab_hunter_enabled())
         with patch.dict(os.environ, {"V4_MISLISTED_SLAB_HUNTER_ENABLED": "true"}):
-            self.assertTrue(run_watcher_multimarket._mislisted_slab_hunter_enabled())
+            self.assertFalse(run_watcher_multimarket._mislisted_slab_hunter_enabled())
 
     def test_parse_official_psa_cert_grade(self) -> None:
         raw = """
