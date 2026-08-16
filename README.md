@@ -852,3 +852,38 @@ SUCCESS
 Live : 2 000 GCC SOLD, 361 ventes japonaises PSA 10 éligibles, 64 groupes de références exactes, 12 seeds, 36 recherches Japon, 503 ASK observés, 232 candidats potentiellement ≥30 % avant preuve stricte, 5 candidats exacts retenus, 227 rejets identité. Dans ce run, PSA APR a répondu HTTP 403, eBay direct n'a exposé aucun SOLD structuré exact et PokeTrace n'a pas produit de match japonais PSA 10 fort : les 5 leads sont donc restés `GCC_ONLY_UNCONFIRMED`, sans fabrication d'une fair value mondiale.
 
 Sécurité inchangée : aucun achat, bid, checkout, paiement ou grading automatique. PR #8 reste expérimentale/non mergée. PR #87 reste séparée.
+
+
+---
+
+# Addendum canonique — 16 août 2026 — format comparatif notifications Japan Edge / PR #101
+
+Merge production :
+
+```text
+cf652027a767626829d6c3b6d115fb62f64f140c
+```
+
+Le contenu économique du Japan Edge n'a pas changé. La notification ntfy affiche désormais les éléments séparément pour lecture immédiate :
+
+```text
+Prix Japon: ¥... | rendu estimé ... CHF
+
+GCC exact JP PSA10: €...
+→ décote vs GCC: -...%
+
+Marché externe exact: €... | source(s) | n SOLD
+→ décote vs externe: -...%
+
+Fair multi-marché: €...
+→ décote globale: -...%
+
+VERDICT: ...
+ASK, PAS UNE VENTE
+```
+
+Si aucun marché externe exact n'est prouvable, la notification indique explicitement `Marché externe exact: non confirmé` et `Fair multi-marché: non confirmé — référence GCC seule`; elle ne fabrique pas de prix mondial.
+
+Validation PR #101 : run `31942800314`, job `95154297972` — tests Japan Edge PASS, compilation PASS, YAML PASS et `git diff --check` PASS.
+
+Aucun changement de discovery, identité, fair value, seuil économique, provider, achat, bid, checkout ou paiement. PR #8 reste expérimentale/non mergée.
