@@ -8,7 +8,9 @@ import v4_auction_item_discovery as item_discovery
 
 
 PRIVATE_AUCTION_PATH = "/filtres/auction/private/"
-AUGMENTED_MODE = "AUCTION_API_PLUS_PRIVATE_LEGACY"
+WEEKLY_AUCTION_PATH = "/filtres/auction/weekly/"
+SUPPLEMENTAL_AUCTION_PATHS = (PRIVATE_AUCTION_PATH, WEEKLY_AUCTION_PATH)
+AUGMENTED_MODE = "AUCTION_API_PLUS_LEGACY_SAFETY_NET"
 _INSTALLED = False
 
 
@@ -17,6 +19,7 @@ class PrivateAuctionAugmentResult:
     lots: list[watcher.Lot]
     sales_seen: int
     private_sales_seen: int
+    weekly_sales_seen: int
     failures: int
 
 
@@ -26,47 +29,62 @@ def discover_private_auction_lots(
     run_diagnostics: Optional[watcher.RunDiagnostics] = None,
     max_minutes: Optional[int] = None,
 ) -> PrivateAuctionAugmentResult:
-    """Read only the private-sale pages that the generic auction API can omit.
+    """Read private + weekly sale pages that the generic auction API can omit.
 
-    The legacy safety net uses an isolated diagnostics object so its page totals
-    cannot corrupt the primary API coverage ledger. Only real private-page
-    failures are propagated to the production coverage object.
+    Live validation showed occasional API omissions from the active weekly sale
+    while private sales were already known API gaps. The legacy safety net keeps
+    using an isolated diagnostics object so its page totals cannot corrupt the
+    primary API coverage ledger. Event/premium pages stay API-only unless a
+    reproducible omission is observed there.
     """
 
     previous_horizon = watcher.MAX_AUCTION_MINUTES
-    private_diagnostics = watcher.RunDiagnostics()
+    supplemental_diagnostics = watcher.RunDiagnostics()
     if max_minutes is not None:
         watcher.MAX_AUCTION_MINUTES = max(0, int(max_minutes))
     try:
         sales = item_discovery._ORIGINAL_COLLECT_LIVE_AUCTION_URLS(
-            page, private_diagnostics
+            page, supplemental_diagnostics
         )
-        private_sales = [
-            sale for sale in sales if PRIVATE_AUCTION_PATH in str(sale)
+        supplemental_sales = [
+            sale
+            for sale in sales
+            if any(path in str(sale) for path in SUPPLEMENTAL_AUCTION_PATHS)
         ]
+        private_sales_seen = sum(
+            1 for sale in supplemental_sales if PRIVATE_AUCTION_PATH in str(sale)
+        )
+        weekly_sales_seen = sum(
+            1 for sale in supplemental_sales if WEEKLY_AUCTION_PATH in str(sale)
+        )
         lots: dict[str, watcher.Lot] = {}
         explicit_failures = 0
-        for sale in private_sales:
+        for sale in supplemental_sales:
             try:
                 for lot in item_discovery._ORIGINAL_COLLECT_LOTS_FROM_LISTING(
-                    page, sale, "auction", private_diagnostics
+                    page, sale, "auction", supplemental_diagnostics
                 ):
                     lots.setdefault(lot.url, lot)
             except Exception as error:
                 explicit_failures += 1
                 watcher.log(
-                    f"Private auction safety-net error {type(error).__name__}: {sale}"
+                    "Auction legacy safety-net error "
+                    f"{type(error).__name__}: {sale}"
                 )
 
-        recorded_failures = private_diagnostics.auction_coverage.pages_failed
+        recorded_failures = supplemental_diagnostics.auction_coverage.pages_failed
         failures = max(explicit_failures, recorded_failures)
         if failures and run_diagnostics is not None:
             run_diagnostics.auction_coverage.record_page_failure(
-                f"private auction safety-net page failures: {failures}"
+                f"auction legacy safety-net page failures: {failures}"
             )
 
         return PrivateAuctionAugmentResult(
-            list(lots.values()), len(sales), len(private_sales), failures
+            list(lots.values()),
+            len(sales),
+            private_sales_seen,
+            weekly_sales_seen,
+            failures,
         )
     finally:
         watcher.MAX_AUCTION_MINUTES = previous_horizon
@@ -74,17 +92,17 @@ def discover_private_auction_lots(
 
 def _merge_by_url(
     primary: list[watcher.Lot],
-    private: list[watcher.Lot],
+    supplemental: list[watcher.Lot],
 ) -> tuple[list[watcher.Lot], int]:
     merged = {lot.url: lot for lot in primary}
     before = len(merged)
-    for lot in private:
+    for lot in supplemental:
         merged.setdefault(lot.url, lot)
     return list(merged.values()), len(merged) - before
 
 
 def install_v4_private_auction_coverage() -> None:
-    """Augment a successful API discovery with live private-auction pages."""
+    """Augment successful API discovery with private + weekly legacy pages."""
 
     global _INSTALLED
     if _INSTALLED:
@@ -109,40 +127,47 @@ def install_v4_private_auction_coverage() -> None:
             return primary
 
         try:
-            private_result = discover_private_auction_lots(
+            supplemental_result = discover_private_auction_lots(
                 page, run_diagnostics=run_diagnostics
             )
         except Exception as error:
             watcher.log(
-                "Private auction safety-net discovery failed: "
+                "Auction legacy safety-net discovery failed: "
                 f"{type(error).__name__}"
             )
             if run_diagnostics is not None:
                 run_diagnostics.auction_coverage.record_page_failure(
-                    f"private auction safety-net discovery failed: {type(error).__name__}"
+                    "auction legacy safety-net discovery failed: "
+                    f"{type(error).__name__}"
                 )
                 setattr(run_diagnostics, "auction_discovery_mode", AUGMENTED_MODE)
                 setattr(run_diagnostics, "auction_private_augment_failed", True)
             return primary
 
-        merged, added = _merge_by_url(primary, private_result.lots)
+        merged, added = _merge_by_url(primary, supplemental_result.lots)
         watcher.log(
-            "Private auction safety-net: "
-            f"{private_result.private_sales_seen} private sale(s) checked, "
-            f"{added} candidate(s) added, {private_result.failures} failure(s)"
+            "Auction legacy safety-net: "
+            f"{supplemental_result.private_sales_seen} private + "
+            f"{supplemental_result.weekly_sales_seen} weekly sale(s) checked, "
+            f"{added} candidate(s) added, {supplemental_result.failures} failure(s)"
         )
         if run_diagnostics is not None:
             setattr(run_diagnostics, "auction_discovery_mode", AUGMENTED_MODE)
             setattr(
                 run_diagnostics,
                 "auction_private_sales_checked",
-                private_result.private_sales_seen,
+                supplemental_result.private_sales_seen,
+            )
+            setattr(
+                run_diagnostics,
+                "auction_weekly_sales_checked",
+                supplemental_result.weekly_sales_seen,
             )
             setattr(run_diagnostics, "auction_private_candidates_added", added)
             setattr(
                 run_diagnostics,
                 "auction_private_augment_failed",
-                bool(private_result.failures),
+                bool(supplemental_result.failures),
             )
         return merged
 
