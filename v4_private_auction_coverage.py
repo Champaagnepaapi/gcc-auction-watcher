@@ -13,6 +13,7 @@ SUPPLEMENTAL_AUCTION_PATHS = (PRIVATE_AUCTION_PATH, WEEKLY_AUCTION_PATH)
 WEEKLY_STABILITY_MAX_PASSES = 3
 WEEKLY_STABILITY_FAILURE = "weekly auction legacy snapshot did not stabilize"
 AUGMENTED_MODE = "AUCTION_API_PLUS_LEGACY_SAFETY_NET"
+AUGMENTED_FALLBACK_MODE = "LEGACY_LIVE_SALES_FALLBACK_PLUS_STABLE_WEEKLY"
 _INSTALLED = False
 
 
@@ -83,13 +84,14 @@ def discover_private_auction_lots(
     run_diagnostics: Optional[watcher.RunDiagnostics] = None,
     max_minutes: Optional[int] = None,
 ) -> PrivateAuctionAugmentResult:
-    """Read private + stabilized weekly sale pages omitted by the generic API.
+    """Read private + stabilized weekly sale pages omitted by one live snapshot.
 
     Private sales are a known API gap and use one legacy pass. Weekly sales are
     reloaded until their URL union stabilizes because GCC's dynamic infinite
     scroll can omit a row on one snapshot. The diagnostics object is isolated so
     supplemental page totals cannot corrupt the primary API coverage ledger.
-    Event/premium pages stay API-only unless a reproducible omission is observed.
+    The same guard is also applied after the full legacy fallback, so an invalid
+    public API cannot reintroduce the weekly one-row omission.
     """
 
     previous_horizon = watcher.MAX_AUCTION_MINUTES
@@ -167,8 +169,16 @@ def _merge_by_url(
     return list(merged.values()), len(merged) - before
 
 
+def _augmented_mode(base_mode: str) -> Optional[str]:
+    if base_mode == item_discovery.PRIMARY_MODE:
+        return AUGMENTED_MODE
+    if base_mode == item_discovery.FALLBACK_MODE:
+        return AUGMENTED_FALLBACK_MODE
+    return None
+
+
 def install_v4_private_auction_coverage() -> None:
-    """Augment successful API discovery with private + stable weekly pages."""
+    """Augment API and full legacy fallback with stable private/weekly coverage."""
 
     global _INSTALLED
     if _INSTALLED:
@@ -187,9 +197,13 @@ def install_v4_private_auction_coverage() -> None:
         if source_type != "auction" or url != item_discovery.AUCTION_INDEX_URL:
             return primary
 
-        mode = getattr(run_diagnostics, "auction_discovery_mode", "") if run_diagnostics else ""
-        if mode != item_discovery.PRIMARY_MODE:
-            # API failure already switched to the complete legacy fallback.
+        base_mode = (
+            getattr(run_diagnostics, "auction_discovery_mode", "")
+            if run_diagnostics
+            else ""
+        )
+        effective_mode = _augmented_mode(base_mode)
+        if effective_mode is None:
             return primary
 
         try:
@@ -206,7 +220,7 @@ def install_v4_private_auction_coverage() -> None:
                     "auction legacy safety-net discovery failed: "
                     f"{type(error).__name__}"
                 )
-                setattr(run_diagnostics, "auction_discovery_mode", AUGMENTED_MODE)
+                setattr(run_diagnostics, "auction_discovery_mode", effective_mode)
                 setattr(run_diagnostics, "auction_private_augment_failed", True)
             return primary
 
@@ -218,7 +232,7 @@ def install_v4_private_auction_coverage() -> None:
             f"{added} candidate(s) added, {supplemental_result.failures} failure(s)"
         )
         if run_diagnostics is not None:
-            setattr(run_diagnostics, "auction_discovery_mode", AUGMENTED_MODE)
+            setattr(run_diagnostics, "auction_discovery_mode", effective_mode)
             setattr(
                 run_diagnostics,
                 "auction_private_sales_checked",
