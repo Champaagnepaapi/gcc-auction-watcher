@@ -1,0 +1,42 @@
+name: V5 Catalog Gap Hardening One-shot
+
+on:
+  push:
+    branches:
+      - agent/v5-catalog-gap-hardening
+    paths:
+      - '.github/workflows/v5-catalog-gap-hardening-one-shot.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/v5-catalog-gap-hardening
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact bounded patch
+        run: python scripts/patch_v5_catalog_gap_hardening.py
+      - name: Validate patch shape and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only | sort)"
+          expected=$'v5/card_identity_catalog.py\nv5/catalog_gap_registry.py\nv5/ebay.py\nv5/live_raw_pipeline_catalog.py\nv5/microvariants.py'
+          test "$changed" = "$expected"
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/patch_v5_catalog_gap_hardening.py
+          git rm .github/workflows/v5-catalog-gap-hardening-one-shot.yml
+          git add v5/card_identity_catalog.py v5/catalog_gap_registry.py v5/ebay.py v5/live_raw_pipeline_catalog.py v5/microvariants.py tests_v5/test_catalog_gap_hardening.py
+          git diff --cached --check
+          git commit -m "feat(v5): harden catalog gaps and reject digital Pocket listings"
+          git push origin HEAD:agent/v5-catalog-gap-hardening
