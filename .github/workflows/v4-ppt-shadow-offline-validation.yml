@@ -12,7 +12,6 @@ on:
       - "run_watcher_multimarket.py"
       - "tests/test_v4_ppt_shadow*.py"
       - ".github/workflows/v4-ppt-shadow-offline-validation.yml"
-      - ".github/workflows/v4-ppt-shadow-live-once.yml"
       - ".github/workflows/v4-auction-discovery-validation.yml"
 
 permissions:
@@ -73,8 +72,8 @@ jobs:
             tests/test_v4_ppt_shadow_cross_language.py \
             tests/test_v4_ppt_shadow_physical_language.py
 
-      - name: Parse live-shadow workflow YAML
-        run: python -c 'import pathlib,yaml; yaml.safe_load(pathlib.Path(".github/workflows/v4-ppt-shadow-live-once.yml").read_text()); print("V4 PPT live YAML PASS")'
+      - name: Parse visible Actions workflow YAML
+        run: python -c 'import pathlib,yaml; yaml.safe_load(pathlib.Path(".github/workflows/v4-auction-discovery-validation.yml").read_text()); print("V4 visible workflow YAML PASS")'
 
       - name: Check diff whitespace
         run: git diff --check origin/main...HEAD
@@ -88,7 +87,7 @@ jobs:
           bridge = Path('v4_ppt_shadow_language_bridge.py').read_text(encoding='utf-8')
           model = Path('v4_ppt_shadow_model.py').read_text(encoding='utf-8')
           entrypoint = Path('run_watcher_multimarket.py').read_text(encoding='utf-8')
-          live = Path('.github/workflows/v4-ppt-shadow-live-once.yml').read_text(encoding='utf-8')
+          live = Path('.github/workflows/v4-auction-discovery-validation.yml').read_text(encoding='utf-8')
           assert 'SOLD_AGGREGATED' in provider or 'SOLD_AGGREGATED' in model
           assert 'SOLD_ITEM_LEVEL' not in provider
           assert 'SOLD_ITEM_LEVEL' not in bridge
@@ -101,12 +100,12 @@ jobs:
           assert 'production_economic_use' in bridge
           assert 'notification_use' in bridge
           assert 'workflow_dispatch:' in live
-          assert 'schedule:' not in live
-          assert '\n  push:' not in live
+          assert 'ppt-live-shadow:' in live
+          assert "github.ref_name == 'agent/v4-ppt-shadow-market-20260815'" in live
           assert 'NTFY_TOPIC: ""' in live
           assert 'STATE_FILE: ".v4-ppt-live/state.json"' in live
           assert 'V4_PPT_SHADOW_MAX_HTTP_CALLS_PER_RUN: "12"' in live
           assert 'V4_PPT_SHADOW_CREDIT_CAP_PER_RUN: "60"' in live
           assert 'V4_PPT_SHADOW_DAILY_REMAINING_FLOOR: "15000"' in live
-          print('PPT cross-language + live-shadow safety assertions: PASS')
+          print('PPT cross-language + visible live-shadow safety assertions: PASS')
           PY
