@@ -92,7 +92,10 @@ jobs:
         run: python -c 'import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in [".github/workflows/japan-edge-hunter.yml", ".github/workflows/japan-edge-offline-validation.yml"]]; print("YAML PASS")'
 
       - name: Check diff whitespace
-        run: git diff --check origin/${{ github.base_ref }}...HEAD
+        run: |
+          base_ref="${{ github.base_ref }}"
+          if [ -z "${base_ref}" ]; then base_ref="main"; fi
+          git diff --check "origin/${base_ref}...HEAD"
 
   ppt-jp-live-shadow:
     if: github.event_name == 'workflow_dispatch' && github.ref_name == 'agent/japan-edge-ppt-jp-shadow-20260816'
