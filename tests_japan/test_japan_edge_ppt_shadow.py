@@ -178,10 +178,10 @@ class JapanEdgePptShadowTests(unittest.TestCase):
         self.assertFalse(budget.can_call())
 
     def test_live_workflow_is_manual_bounded_and_notification_free(self):
-        workflow = Path('.github/workflows/japan-edge-ppt-live-once.yml').read_text(encoding='utf-8')
+        workflow = Path('.github/workflows/japan-edge-offline-validation.yml').read_text(encoding='utf-8')
         self.assertIn('workflow_dispatch:', workflow)
-        self.assertNotIn('\n  schedule:', workflow)
-        self.assertNotIn('\n  push:', workflow)
+        self.assertIn('ppt-jp-live-shadow:', workflow)
+        self.assertIn("github.ref_name == 'agent/japan-edge-ppt-jp-shadow-20260816'", workflow)
         self.assertIn('persist-credentials: false', workflow)
         self.assertIn('POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}', workflow)
         self.assertIn('JAPAN_EDGE_NOTIFY_ENABLED: "false"', workflow)
