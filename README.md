@@ -805,3 +805,50 @@ L’avis officiel établit qu’une erreur de **traitement de surface** existe s
 Le workflow `.github/workflows/japan-edge-hunter.yml` a les notifications `JAPAN EDGE >=30%` activées par défaut après la validation live V2. Il utilise le canal ntfy existant si `NTFY_TOPIC` est disponible ; une variable repo explicite `JAPAN_EDGE_NOTIFY_ENABLED=false` peut servir de coupe-circuit fail-safe.
 
 PR #8 reste expérimentale et non mergée. PR #87 reste séparée du Japan Edge Hunter et n’est pas mergée par PR #89.
+
+---
+
+# Addendum canonique — 16 août 2026 — Japan Edge multi-marché / PR #94
+
+Merge production :
+
+```text
+2a405ff9bdf5aa62bf3c2a074ce1b2a9ab210b2e
+```
+
+Le Japan Edge Hunter compare désormais chaque ASK japonais exact retenu à deux niveaux de marché :
+
+1. **GCC SOLD exacts de la même carte japonaise PSA 10** ;
+2. **marché externe gradé SOLD exact** lorsque prouvable, via PokeTrace/eBay SOLD et PSA Auction Prices Realized.
+
+Identité : la référence GCC exige toujours même carte, `language=Japanese`, `grader=PSA`, `grade=10`, avec set/numéro/édition/attribut/variante/microvariante compatibles. Le nom Pokémon peut être affiché en anglais parce que GCC expose `character.englishName`, mais la langue commerciale de la carte de référence reste japonaise.
+
+Règles externes :
+
+- PokeTrace doit produire un match exact japonais PSA 10 ;
+- eBay direct n'est admis que si le comparable SOLD prouve explicitement Japanese + PSA 10 + carte exacte ;
+- PSA APR n'est admis que si la provenance de la Spec prouve explicitement `language:japanese` + PSA 10 exact ;
+- PokeTrace et eBay direct sont regroupés en une seule famille eBay afin d'éviter le double comptage ; PSA APR reste une famille indépendante ;
+- le centre externe est la iédiane des familles indépendantes disponibles ; le fair multi-marché combine GCC et ce centre externe ;
+- un ask japonais n'entre jamais dans la fair value et reste **ASK, PAS UNE VENTE**.
+
+Sémantique notifications :
+
+- `MULTIMARKET_CONFIRMED` : décote ≥30 % versus marché externe exact **et** fair multi-marché -> notification haute priorité ;
+- `GCC_EDGE_NOT_GLOBAL` : GCC montre ≥30 %, mais le marché externe exact ne confirme pas -> pas de notification ;
+- `MARKET_CONFLICT_BLOCKED` : divergence GCC/externe >1.35x -> fail-closed ;
+- `GCC_ONLY_UNCONFIRMED` : aucun SOLD externe exact prouvable -> la décote GCC peut encore notifier, mais l'absence de confirmation externe est explicitement indiquée. Une absence de données externes n'est jamais traitée comme preuve négative.
+
+Validation :
+
+```text
+Offline CI : run 31937493250 / job 95141590710
+22/22 tests PASS + compile PASS + YAML PASS + git diff --check PASS
+
+Live read-only : run 31937491360 / job 95141585970
+SUCCESS
+```
+
+Live : 2 000 GCC SOLD, 361 ventes japonaises PSA 10 éligibles, 64 groupes de références exactes, 12 seeds, 36 recherches Japon, 503 ASK observés, 232 candidats potentiellement ≥30 % avant preuve stricte, 5 candidats exacts retenus, 227 rejets identité. Dans ce run, PSA APR a répondu HTTP 403, eBay direct n'a exposé aucun SOLD structuré exact et PokeTrace n'a pas produit de match japonais PSA 10 fort : les 5 leads sont donc restés `GCC_ONLY_UNCONFIRMED`, sans fabrication d'une fair value mondiale.
+
+Sécurité inchangée : aucun achat, bid, checkout, paiement ou grading automatique. PR #8 reste expérimentale/non mergée. PR #87 reste séparée.
