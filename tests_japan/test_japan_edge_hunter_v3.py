@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import unittest
 
+import japan_edge_full_market as full
 import japan_edge_hunter as base
 import japan_edge_hunter_v3 as v3
+import watcher
 
 
 def opportunity(*, fair=100.0, landed=60.0):
@@ -74,6 +76,35 @@ class JapanEdgeV3Tests(unittest.TestCase):
         self.assertEqual(decision.status, "GCC_ONLY_UNCONFIRMED")
         self.assertTrue(decision.should_notify)
         self.assertIsNone(decision.external_fair_eur)
+
+    def test_psa_apr_requires_explicit_japanese_provenance(self):
+        good = watcher.ComparableSale(
+            100, source="psa", grader="PSA", grade=10, exact_card=True,
+            proven_commercial_dimensions=("language:japanese",),
+        )
+        missing_language = watcher.ComparableSale(
+            100, source="psa", grader="PSA", grade=10, exact_card=True,
+            proven_commercial_dimensions=(),
+        )
+        self.assertTrue(full._exact_japanese_psa10_sale(good, require_provenance=True))
+        self.assertFalse(full._exact_japanese_psa10_sale(missing_language, require_provenance=True))
+
+    def test_direct_ebay_requires_explicit_japanese_psa10(self):
+        good = watcher.ComparableSale(
+            100, source="ebay", grader="PSA", grade=10, exact_card=True,
+            match_score=90, context="eBay SOLD | Pokemon 151 Bulbasaur 166/165 Japanese PSA 10",
+        )
+        wrong_language = watcher.ComparableSale(
+            100, source="ebay", grader="PSA", grade=10, exact_card=True,
+            match_score=90, context="eBay SOLD | Pokemon 151 Bulbasaur 166/165 English PSA 10",
+        )
+        wrong_grade = watcher.ComparableSale(
+            100, source="ebay", grader="PSA", grade=9, exact_card=True,
+            match_score=90, context="eBay SOLD | Pokemon 151 Bulbasaur 166/165 Japanese PSA 9",
+        )
+        self.assertTrue(full._exact_japanese_psa10_sale(good, require_provenance=False))
+        self.assertFalse(full._exact_japanese_psa10_sale(wrong_language, require_provenance=False))
+        self.assertFalse(full._exact_japanese_psa10_sale(wrong_grade, require_provenance=False))
 
 
 if __name__ == "__main__":
