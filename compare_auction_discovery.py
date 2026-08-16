@@ -4,6 +4,7 @@ import os
 from math import ceil
 from pathlib import Path
 from time import monotonic
+from typing import Callable, Optional
 
 import watcher
 from playwright.sync_api import sync_playwright
@@ -17,6 +18,10 @@ from v4_private_auction_coverage import (
     _merge_by_url,
     discover_private_auction_lots,
 )
+
+
+LEGACY_TIMER_INSPECTION_ATTEMPTS = 2
+LEGACY_TIMER_RETRY_WAIT_MS = 300
 
 
 def write_output(name: str, value: object) -> None:
@@ -73,17 +78,43 @@ def resolve_legacy_ids(
     page,
     lots: list[watcher.Lot],
     horizon: int,
+    *,
+    inspection_attempts: int = LEGACY_TIMER_INSPECTION_ATTEMPTS,
+    inspect_func: Optional[Callable] = None,
 ) -> tuple[set[str], set[str]]:
+    """Resolve legacy candidates with one bounded retry for transient timer reads.
+
+    This is validation-only. A timer that remains unreadable after the bounded
+    retry is still unresolved and keeps the comparison red; no candidate is
+    silently dropped or assumed to be outside the horizon.
+    """
+
+    if inspection_attempts < 1:
+        raise ValueError("inspection_attempts must be >= 1")
+
+    inspector = inspect_func or watcher.inspect_item
     resolved: set[str] = set()
     unresolved: set[str] = set()
     for lot in lots:
         current = lot
-        if current.minutes_to_end is None:
-            try:
-                current = watcher.inspect_item(page, current)
-            except Exception:
-                unresolved.add(lot.url)
-                continue
+        if current.minutes_to_end is None or current.inspection_error:
+            for attempt in range(inspection_attempts):
+                try:
+                    current = inspector(page, current)
+                except Exception:
+                    # Keep the previous state and retry once. A second failure
+                    # remains unresolved and fails the live validation below.
+                    pass
+
+                if not current.inspection_error and current.minutes_to_end is not None:
+                    break
+
+                if attempt + 1 < inspection_attempts:
+                    try:
+                        page.wait_for_timeout(LEGACY_TIMER_RETRY_WAIT_MS)
+                    except Exception:
+                        pass
+
         if current.inspection_error or current.minutes_to_end is None:
             unresolved.add(lot.url)
             continue
@@ -220,6 +251,9 @@ def main() -> int:
     for url in legacy_only[:20]:
         source = legacy_source_by_url.get(url, "UNKNOWN_LEGACY_SOURCE")
         print(f"LEGACY_ONLY {url} SOURCE {source}", flush=True)
+    for url in sorted(legacy_unresolved)[:20]:
+        source = legacy_source_by_url.get(url, "UNKNOWN_LEGACY_SOURCE")
+        print(f"LEGACY_UNRESOLVED {url} SOURCE {source}", flush=True)
 
     write_output("primary_complete", str(api_result.complete).lower())
     write_output("primary_scope", api_result.scope_status)
@@ -245,7 +279,11 @@ def main() -> int:
         print("FAIL: independent legacy comparison had page failures", flush=True)
         return 1
     if legacy_unresolved:
-        print("FAIL: independent legacy comparison has unresolved timers", flush=True)
+        print(
+            "FAIL: independent legacy comparison still has unresolved timer(s) "
+            "after bounded retry",
+            flush=True,
+        )
         return 1
     if legacy_only:
         print(
