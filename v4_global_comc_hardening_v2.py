@@ -15,6 +15,20 @@ COMC_PSA10_INDEX = "https://www.comc.com/Cards/Pokemon%2CaGraded%2CrPSA%2Cg10"
 COMC_PSA10_SUFFIX = "%2CaGraded%2CrPSA%2Cg10"
 PLAYER_COUNT_RE = re.compile(r"\s*\([0-9][0-9,]*\)\s*$")
 
+# Retrieval-only escape hatch for COMC player facets that are not exposed on the
+# global category/graded indexes. The route is an exact public COMC set page and
+# cannot prove commercial identity by itself: every emitted observation still
+# has to pass the strict Japanese + set + number + card-name + PSA10 row gate.
+#
+# Provenance checked 2026-08-16:
+# https://www.comc.com/Cards/Pokemon/2023/Pokemon_Scarlet__Violet_-_Raging_Surf_sv3a_-_Base_-_Japanese
+COMC_EXACT_SET_RETRIEVAL_ROUTES = {
+    ("raging surf", "japanese", 2023): (
+        "https://www.comc.com/Cards/Pokemon/2023/"
+        "Pokemon_Scarlet__Violet_-_Raging_Surf_sv3a_-_Base_-_Japanese"
+    ),
+}
+
 
 def _retrieval_player_label(text: str) -> str:
     """Normalize a COMC player label for retrieval only.
@@ -43,12 +57,26 @@ def _counted_player_anchor(page: Any, name: str) -> Optional[str]:
     return None
 
 
-def resolve_comc_player_base_v2(page: Any, name: str) -> tuple[Optional[str], str]:
+def _exact_set_retrieval_url(identity: Any) -> Optional[str]:
+    try:
+        year = int(identity.year)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    key = (
+        _norm(getattr(identity, "set_name", "")),
+        _norm(getattr(identity, "language", "")),
+        year,
+    )
+    return COMC_EXACT_SET_RETRIEVAL_ROUTES.get(key)
+
+
+def resolve_comc_player_base_v2(page: Any, identity: Any) -> tuple[Optional[str], str]:
+    name = str(getattr(identity, "name", "") or "").strip()
     base, proof = v4.resolve_comc_player_base(page, name)
     if base:
         return base, proof
 
-    # Retrieval-only fallback. Exact commercial identity is still proven later
+    # Retrieval-only fallbacks. Exact commercial identity is still proven later
     # from set/language/localId/card-name/PSA10 fields in the COMC row.
     for index_url, reason in (
         (COMC_PSA10_INDEX, "PLAYER_LINK_PSA10_INDEX_COUNT_STRIPPED"),
@@ -63,6 +91,18 @@ def resolve_comc_player_base_v2(page: Any, name: str) -> tuple[Optional[str], st
             candidate = None
         if candidate:
             return candidate, reason
+
+    exact_set_url = _exact_set_retrieval_url(identity)
+    if exact_set_url:
+        try:
+            page.goto(exact_set_url, wait_until="domcontentloaded", timeout=25000)
+            page.wait_for_timeout(650)
+            candidate = _counted_player_anchor(page, name)
+        except Exception:
+            candidate = None
+        if candidate:
+            return candidate, "PLAYER_LINK_EXACT_SET_ROUTE_COUNT_STRIPPED"
+
     return None, "PLAYER_UNRESOLVED"
 
 
@@ -101,7 +141,7 @@ def collect_comc_v5(
     trace = retrieval_v2.MarketTrace("comc")
 
     for seed in seeds:
-        player_base, player_proof = resolve_comc_player_base_v2(page, seed.source_identity.name)
+        player_base, player_proof = resolve_comc_player_base_v2(page, seed.source_identity)
         if not player_base:
             trace.reject(seed, "player_url_unresolved")
             trace.query_pages.append(
