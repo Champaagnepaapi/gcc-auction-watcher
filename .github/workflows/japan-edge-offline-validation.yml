@@ -8,6 +8,7 @@ on:
       - "japan_edge_hunter_v2.py"
       - "japan_edge_hunter_v3.py"
       - "japan_edge_ppt_shadow.py"
+      - "japan_edge_ppt_catalog_shadow.py"
       - "tests_japan/**"
       - ".github/workflows/japan-edge-hunter.yml"
       - ".github/workflows/japan-edge-offline-validation.yml"
@@ -58,24 +59,31 @@ jobs:
             japan_edge_hunter_v2.py \
             japan_edge_hunter_v3.py \
             japan_edge_ppt_shadow.py \
+            japan_edge_ppt_catalog_shadow.py \
             tests_japan/test_japan_edge_hunter.py \
             tests_japan/test_japan_edge_hunter_v2.py \
             tests_japan/test_japan_edge_hunter_v3.py \
-            tests_japan/test_japan_edge_ppt_shadow.py
+            tests_japan/test_japan_edge_ppt_shadow.py \
+            tests_japan/test_japan_edge_ppt_catalog_shadow.py
 
       - name: PPT Japanese safety assertions
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-          code = Path('japan_edge_ppt_shadow.py').read_text(encoding='utf-8')
+          base = Path('japan_edge_ppt_shadow.py').read_text(encoding='utf-8')
+          catalog = Path('japan_edge_ppt_catalog_shadow.py').read_text(encoding='utf-8')
           live = Path('.github/workflows/japan-edge-offline-validation.yml').read_text(encoding='utf-8')
-          assert 'language": "japanese"' in code
-          assert 'SOLD_AGGREGATED' in code
-          assert 'EBAY_GRADED_AGGREGATE' in code
-          assert 'independent_market_increment' in code
-          assert 'notification_use' in code
-          assert 'production_decision_use' in code
+          combined = base + catalog
+          assert 'language": "japanese"' in combined
+          assert '"setId": set_id' in catalog
+          assert 'JP_SET_ID_MAP' in catalog
+          assert 'provider_candidates' in catalog
+          assert 'SOLD_AGGREGATED' in combined
+          assert 'EBAY_GRADED_AGGREGATE' in combined
+          assert 'independent_market_increment' in catalog
+          assert 'notification_use' in catalog
+          assert 'production_decision_use' in catalog
           assert 'workflow_dispatch:' in live
           assert 'ppt-jp-live-shadow:' in live
           assert "github.ref_name == 'agent/japan-edge-ppt-jp-shadow-20260816'" in live
@@ -85,7 +93,7 @@ jobs:
           assert 'JAPAN_EDGE_PPT_MAX_HTTP_CALLS: "8"' in live
           assert 'JAPAN_EDGE_PPT_MAX_CREDITS: "40"' in live
           assert 'JAPAN_EDGE_PPT_DAILY_REMAINING_FLOOR: "15000"' in live
-          print('PPT JP + visible live-shadow safety assertions: PASS')
+          print('PPT JP exact-set + visible live-shadow safety assertions: PASS')
           PY
 
       - name: Parse Japan Edge workflows
@@ -154,10 +162,10 @@ jobs:
             --output japan_edge_ppt_live_baseline.json \
             2>&1 | tee japan_edge_ppt_live_baseline.log
 
-      - name: Enrich exact Japanese leads with PPT shadow
+      - name: Enrich exact Japanese leads with PPT exact-set shadow
         shell: bash
         run: |
-          python japan_edge_ppt_shadow.py \
+          python japan_edge_ppt_catalog_shadow.py \
             --input japan_edge_ppt_live_baseline.json \
             --output japan_edge_ppt_live_shadow_report.json \
             2>&1 | tee japan_edge_ppt_live_shadow.log
