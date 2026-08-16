@@ -37,11 +37,12 @@ from v4_structural_edge_hunter import install_v4_structural_edge_hunter
 
 
 def _mislisted_slab_hunter_enabled() -> bool:
-    return os.getenv("V4_MISLISTED_SLAB_HUNTER_ENABLED", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    """User-disabled in V4 production after repeated OCR/manual-review false positives.
+
+    Keep the implementation available for future diagnostics, but never install it
+    in the production watcher regardless of workflow environment overrides.
+    """
+    return False
 
 
 def _cert_problem_notifications_enabled() -> bool:
@@ -91,7 +92,7 @@ if __name__ == "__main__":
                 "(V4_CERT_PROBLEM_NOTIFICATIONS_ENABLED=false)"
             )
     else:
-        watcher.log("Mislisted slab hunter: safe-off (V4_MISLISTED_SLAB_HUNTER_ENABLED=false)")
+        watcher.log("Mislisted slab hunter: disabled by production policy")
     install_fast_lane_notification_guard()
     # Only changes user-facing opportunity labels; economics and decisions stay intact.
     install_v4_notification_semantics()
