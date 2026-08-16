@@ -138,12 +138,8 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
                 sales[1],
             },
         )
-        self.assertEqual(
-            sum(sale == sales[0] for sale, _ in opened), 1
-        )
-        self.assertEqual(
-            sum(sale == sales[1] for sale, _ in opened), 2
-        )
+        self.assertEqual(sum(sale == sales[0] for sale, _ in opened), 1)
+        self.assertEqual(sum(sale == sales[1] for sale, _ in opened), 2)
 
     def test_private_and_weekly_results_are_deduplicated_against_api_results(self):
         primary = [self.lot("same"), self.lot("api-only")]
@@ -274,6 +270,82 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             "conflicting expected_total scopes",
             primary.auction_coverage.incomplete_reasons,
         )
+
+    def test_augmented_mode_distinguishes_api_and_full_legacy_fallback(self):
+        self.assertEqual(
+            private_coverage._augmented_mode(
+                private_coverage.item_discovery.PRIMARY_MODE
+            ),
+            private_coverage.AUGMENTED_MODE,
+        )
+        self.assertEqual(
+            private_coverage._augmented_mode(
+                private_coverage.item_discovery.FALLBACK_MODE
+            ),
+            private_coverage.AUGMENTED_FALLBACK_MODE,
+        )
+        self.assertIsNone(private_coverage._augmented_mode("UNKNOWN"))
+
+    def test_installed_guard_augments_full_legacy_fallback(self):
+        saved_collect = watcher.collect_lots_from_listing
+        saved_installed = private_coverage._INSTALLED
+        diagnostics = watcher.RunDiagnostics()
+
+        def fallback_collect(
+            _page,
+            _url,
+            _source_type,
+            run_diagnostics=None,
+            **_kwargs,
+        ):
+            setattr(
+                run_diagnostics,
+                "auction_discovery_mode",
+                private_coverage.item_discovery.FALLBACK_MODE,
+            )
+            setattr(run_diagnostics, "auction_fallback_used", True)
+            return [self.lot("legacy-first-pass")]
+
+        supplemental = private_coverage.PrivateAuctionAugmentResult(
+            lots=[self.lot("weekly-recovered")],
+            sales_seen=10,
+            private_sales_seen=7,
+            weekly_sales_seen=3,
+            failures=0,
+        )
+
+        try:
+            private_coverage._INSTALLED = False
+            watcher.collect_lots_from_listing = fallback_collect
+            with patch.object(
+                private_coverage,
+                "discover_private_auction_lots",
+                return_value=supplemental,
+            ):
+                private_coverage.install_v4_private_auction_coverage()
+                result = watcher.collect_lots_from_listing(
+                    object(),
+                    private_coverage.item_discovery.AUCTION_INDEX_URL,
+                    "auction",
+                    diagnostics,
+                )
+
+            self.assertEqual(
+                {lot.url for lot in result},
+                {
+                    self.lot("legacy-first-pass").url,
+                    self.lot("weekly-recovered").url,
+                },
+            )
+            self.assertTrue(diagnostics.auction_fallback_used)
+            self.assertEqual(
+                diagnostics.auction_discovery_mode,
+                private_coverage.AUGMENTED_FALLBACK_MODE,
+            )
+            self.assertEqual(diagnostics.auction_private_candidates_added, 1)
+        finally:
+            watcher.collect_lots_from_listing = saved_collect
+            private_coverage._INSTALLED = saved_installed
 
     def test_temporary_diagnostic_horizon_is_restored(self):
         old = watcher.MAX_AUCTION_MINUTES
