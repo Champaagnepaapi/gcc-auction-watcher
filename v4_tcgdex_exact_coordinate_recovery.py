@@ -231,7 +231,6 @@ def _canonical_from_exact_coordinate(
     if not card_id or not local_id or not isinstance(set_payload, Mapping):
         return None
     set_id = str(set_payload.get("id") or "").strip()
-    set_name = str(set_payload.get("name") or "").strip()
     if set_id != record.tcgdex_set_id:
         return None
     if not _local_id_matches(local_id, record.tcgdex_local_id):
@@ -245,10 +244,14 @@ def _canonical_from_exact_coordinate(
         status="EXACT",
         card_id=card_id,
         set_id=set_id,
-        set_name=set_name,
+        # The registry proves this GCC label maps to the exact TCGdex set ID.
+        # Preserve the commercial label used by downstream market matching.
+        set_name=record.listing_set,
         local_id=local_id,
         full_number=full_number,
-        name=str(card.get("name") or "").strip(),
+        # Same rationale for name: the registry key requires the exact GCC name,
+        # while the ja TCGdex endpoint returns the localized Japanese string.
+        name=record.listing_name,
         language_code=record.language_code,
         pricing=card.get("pricing") if isinstance(card.get("pricing"), Mapping) else {},
         variants=card.get("variants") if isinstance(card.get("variants"), Mapping) else {},
@@ -256,7 +259,8 @@ def _canonical_from_exact_coordinate(
             f"TCGDEX_EXACT_COORDINATE_RECOVERY:{record.provenance}; "
             f"registry_source={_SOURCE_COMMIT}"
         ),
-        unique_name_number=True,
+        # This bridge proves exact set+coordinate, not global name+number uniqueness.
+        unique_name_number=False,
     )
 
 
