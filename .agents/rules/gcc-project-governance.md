@@ -15,19 +15,37 @@ Project: Robot Pokémon / GCC Auction Watcher.
 Before making any modification:
 
 1. Read README.md completely. It is the canonical project handoff.
-2. Inspect the actual local Git state:
+2. Read `docs/project-capability-ledger.md` when it exists. It is the durable capability/supersession registry used to prevent reimplementing work that already exists on V4, V5, Robot KB or historical/shadow branches.
+3. Inspect the actual local Git state:
    - current branch
    - HEAD SHA
    - git status
    - relevant branches
-3. When GitHub access is available, verify relevant PRs, commits, workflow runs and logs.
-4. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
-5. Reconstruct the current production and experimental architecture before changing code.
+4. When GitHub access is available, verify relevant PRs, commits, workflow runs and logs.
+5. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
+6. Reconstruct the current production and experimental architecture before changing code.
 
-If README, an old report and the actual repository disagree:
+If README, the capability ledger, an old report and the actual repository disagree:
 - actual code/GitHub state is authoritative for technical facts;
-- README and prior discussions are used to understand intent;
+- README, the ledger and prior discussions are used to understand intent/history;
 - report important inconsistencies rather than silently guessing.
+
+## Mandatory capability-recovery check
+
+Before implementing or designing any non-trivial capability, perform a reuse audit first.
+
+1. Search `README.md` and `docs/project-capability-ledger.md` for the capability and functional synonyms.
+2. Search GitHub PRs, branches and historical commits for equivalent or predecessor work.
+3. Inspect the relevant current V4, V5, Robot KB and shadow modules instead of assuming absence from `main` means the capability was never built.
+4. Follow documented supersession chains and start from the newest compatible validated implementation.
+5. Prefer reusing, porting or adapting proven code/tests over implementing an independent equivalent.
+6. If a new implementation is still required, record why the prior implementation is incompatible, unsafe, obsolete or belongs to a deliberately separate architecture.
+7. Never revive a `SUPERSEDED` or `DISABLED` implementation without first reading the successor/root-cause history that replaced or disabled it.
+8. After a significant validated phase, update both the README handoff and the capability ledger with status, authoritative PR/branch/SHA, tests/runs, deployment state and supersession/reuse instruction.
+
+A closed or unmerged PR is not automatically discarded work. `SHADOW`, `DEFERRED` and `V5_ONLY` branches may contain the canonical implementation to reuse later.
+
+If the same capability appears in multiple lines (for example V4 and V5), compare the actual implementations and invariants before choosing one. Do not silently copy an older implementation over a newer safety hardening.
 
 ## Project governance
 
@@ -192,7 +210,9 @@ When a live diagnostic is required but project policy reserves manual launching 
 
 README.md is the canonical project handoff.
 
-After a significant validated architecture, provider, production, workflow or live-phase change, update README.md before considering the phase complete.
+`docs/project-capability-ledger.md` is the durable capability/history/supersession registry. Its purpose is to make previously validated work discoverable even when it is V5-only, shadow, deferred, disabled or no longer present on `main`.
+
+After a significant validated architecture, provider, production, workflow or live-phase change, update README.md and the capability ledger before considering the phase complete.
 
 Do not document an unverified claim as completed.
 
