@@ -20,28 +20,30 @@ Before making any modification:
 4. Read `docs/project-open-pr-inventory.md` when it exists. It records the current open-PR surface, stale-open PRs, pending behavior changes and PR stacks that must not be merged independently.
 5. Read `docs/project-workflow-inventory.md` when it exists. It distinguishes workflows actually present in the current `main` tree from historical GitHub Actions records left behind by deleted one-shot/temp YAML files.
 6. Read `docs/project-issue-inventory.md` when it exists. It distinguishes living registry issues, already-delivered historical specifications and genuinely pending issues.
-7. Inspect the actual local Git state:
+7. Read `docs/project-repository-snapshot.md` when it exists. It records top-level repository topology such as default branch, branch protection, branch/PR/issue/workflow counts, tags and releases.
+8. Inspect the actual local Git state:
    - current branch
    - HEAD SHA
    - git status
    - relevant branches
-8. When GitHub access is available, verify relevant PRs, issues, commits, workflow runs and logs. For any merge/close/dispatch decision, re-check the live GitHub state rather than trusting an inventory snapshot.
-9. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
-10. Reconstruct the current production and experimental architecture before changing code.
+9. When GitHub access is available, verify relevant PRs, issues, commits, workflow runs and logs. For any merge/close/dispatch decision, re-check the live GitHub state rather than trusting an inventory snapshot.
+10. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
+11. Reconstruct the current production and experimental architecture before changing code.
 
-If README, the capability ledger, the branch inventory, the open-PR inventory, the workflow inventory, the issue inventory, an old report and the actual repository disagree:
+If README, the capability ledger, the branch inventory, the open-PR inventory, the workflow inventory, the issue inventory, the repository snapshot, an old report and the actual repository disagree:
 - actual code/GitHub state is authoritative for technical facts;
 - README, the ledgers/inventories and prior discussions are used to understand intent/history;
 - `docs/project-open-pr-inventory.md` supersedes older static PR-status statements in the capability ledger until the ledger is refreshed;
 - for workflow existence, the current Git tree is authoritative; the Actions API can retain historical workflow records after their YAML file disappeared from `main`;
 - an open Issue may be a deliberate registry or an already-delivered planning specification rather than outstanding implementation work;
+- repository topology fields such as branch protection must be re-verified live before relying on them;
 - report important inconsistencies rather than silently guessing.
 
 ## Mandatory capability-recovery check
 
 Before implementing or designing any non-trivial capability, perform a reuse audit first.
 
-1. Search `README.md`, `docs/project-capability-ledger.md`, `docs/project-branch-inventory.md`, `docs/project-open-pr-inventory.md`, `docs/project-workflow-inventory.md` and `docs/project-issue-inventory.md` for the capability and functional synonyms.
+1. Search `README.md`, `docs/project-capability-ledger.md`, `docs/project-branch-inventory.md`, `docs/project-open-pr-inventory.md`, `docs/project-workflow-inventory.md`, `docs/project-issue-inventory.md` and `docs/project-repository-snapshot.md` for the capability and functional synonyms.
 2. Search GitHub PRs, Issues, branches and historical commits for equivalent or predecessor work. Do not limit the search to open PRs or branches based on current `main`.
 3. Inspect the relevant current V4, V5, Robot KB, Source Scout, Japan Edge and global-shadow modules instead of assuming absence from `main` means the capability was never built.
 4. Follow documented supersession chains and start from the newest compatible validated implementation.
@@ -95,6 +97,7 @@ The repository intentionally contains a large historical branch surface because 
 ## Project governance
 
 - `main` is the canonical V4 production branch.
+- At the 17 Aug 2026 audit, GitHub reported `main` as unprotected with no server-enforced required status checks. Re-verify this before any merge; never rely on branch protection to enforce project governance.
 - Experimental V5 work must remain isolated from V4 production.
 - PR #8 / the V5 experimental line must never be merged into `main` without explicit user authorization.
 - Never merge another agent's work automatically.
@@ -265,7 +268,9 @@ README.md is the canonical project handoff.
 
 `docs/project-issue-inventory.md` is the complete issue index. It prevents registry issues and already-delivered planning issues from being misread as fresh work.
 
-After a significant validated architecture, provider, production, workflow or live-phase change, update README.md and the capability ledger before considering the phase complete. Update the branch inventory when branches are created/retired/superseded, the open-PR inventory whenever open PR status/topology changes materially, the workflow inventory whenever current workflow topology changes, and the issue inventory when issue roles/states change materially.
+`docs/project-repository-snapshot.md` is the topological snapshot. It records repository visibility/default branch, branch protection, high-level counts, tags/releases and links to the detailed inventories.
+
+After a significant validated architecture, provider, production, workflow or live-phase change, update README.md and the capability ledger before considering the phase complete. Update the branch inventory when branches are created/retired/superseded, the open-PR inventory whenever open PR status/topology changes materially, the workflow inventory whenever current workflow topology changes, the issue inventory when issue roles/states change materially, and the repository snapshot after a new exhaustive topology audit.
 
 Do not document an unverified claim as completed.
 
