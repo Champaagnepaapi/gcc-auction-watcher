@@ -37,6 +37,9 @@ from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
 from v4_structural_edge_hunter import install_v4_structural_edge_hunter
 from v4_tcgdex_exact_coordinate_recovery import install_v4_tcgdex_exact_coordinate_recovery
+from v4_tcgdex_generalized_coordinate_recovery import (
+    install_v4_tcgdex_generalized_coordinate_recovery,
+)
 from v4_tcgdex_observability import install_v4_tcgdex_observability
 
 
@@ -70,9 +73,11 @@ if __name__ == "__main__":
     install_v4_private_auction_coverage()
     install_current_auction_discovery_diagnostics()
     install_canonical_multimarket_pipeline()
-    # Recover only reviewed exact GCC coordinates that TCGdex cannot resolve by
-    # localized name/set text. No fuzzy matching or generic denominator bypass.
+    # First preserve the bounded reviewed per-card bridges from PR #119.
     install_v4_tcgdex_exact_coordinate_recovery()
+    # Then recover whole exact set/namespaces and bounded display suffix cases.
+    # This remains exact set + localId proof: no fuzzy matching or variant bypass.
+    install_v4_tcgdex_generalized_coordinate_recovery()
     install_multimarket_safety_hardening()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
