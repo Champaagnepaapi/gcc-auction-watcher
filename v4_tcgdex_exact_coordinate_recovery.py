@@ -255,10 +255,9 @@ def _canonical_from_exact_coordinate(
         language_code=record.language_code,
         pricing=card.get("pricing") if isinstance(card.get("pricing"), Mapping) else {},
         variants=card.get("variants") if isinstance(card.get("variants"), Mapping) else {},
-        reason=(
-            f"TCGDEX_EXACT_COORDINATE_RECOVERY:{record.provenance}; "
-            f"registry_source={_SOURCE_COMMIT}"
-        ),
+        # Exact registry key + live exact set/localId/card-count proof has the
+        # same deterministic semantics as the existing set/localId resolver.
+        reason="TCGDEX_EXACT_SET_LOCALID",
         # This bridge proves exact set+coordinate, not global name+number uniqueness.
         unique_name_number=False,
     )
