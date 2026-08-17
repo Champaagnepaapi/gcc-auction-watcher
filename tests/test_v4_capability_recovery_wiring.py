@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -25,8 +26,10 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("docs/project-capability-ledger.md", governance)
         self.assertIn("docs/project-branch-inventory.md", governance)
+        self.assertIn("docs/project-open-pr-inventory.md", governance)
         self.assertIn("Mandatory capability-recovery check", governance)
         self.assertIn("Branch hygiene / deletion safety", governance)
+        self.assertIn("Open PR hygiene", governance)
 
     def test_capability_ledger_records_shadow_not_as_production(self):
         ledger = Path("docs/project-capability-ledger.md").read_text(encoding="utf-8")
@@ -72,6 +75,31 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         self.assertEqual(len(set(names)), 145)
         self.assertIn("main", names)
         self.assertIn("oops-no-more", names)
+
+    def test_open_pr_inventory_has_exactly_the_16_audited_open_prs(self):
+        inventory = Path("docs/project-open-pr-inventory.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("exactement **16 PR ouvertes**", inventory)
+        rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ \|", line)]
+        numbers = {
+            int(re.match(r"^\| #(\d+) \|", line).group(1))
+            for line in rows
+        }
+        self.assertEqual(
+            numbers,
+            {8, 54, 87, 92, 96, 106, 107, 108, 109, 110, 111, 113, 114, 115, 122, 123},
+        )
+        self.assertEqual(len(rows), 16)
+        self.assertIn("#54", inventory)
+        self.assertIn("SUPERSEDED / STALE_OPEN", inventory)
+        self.assertIn("#87", inventory)
+        self.assertIn("DEFERRED / BEHAVIOR_CHANGE", inventory)
+        self.assertIn("#111", inventory)
+        self.assertIn("#122", inventory)
+        self.assertIn("#123", inventory)
+        self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO = 1.75", inventory)
+        self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = 10", inventory)
 
 
 if __name__ == "__main__":
