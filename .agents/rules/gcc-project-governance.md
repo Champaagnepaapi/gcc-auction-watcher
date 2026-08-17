@@ -16,36 +16,47 @@ Before making any modification:
 
 1. Read README.md completely. It is the canonical project handoff.
 2. Read `docs/project-capability-ledger.md` when it exists. It is the durable capability/supersession registry used to prevent reimplementing work that already exists on V4, V5, Robot KB or historical/shadow branches.
-3. Inspect the actual local Git state:
+3. Read `docs/project-branch-inventory.md` when it exists. It is the exhaustive remote-branch recovery index. Use it to discover work that may be absent from `main` and from open PRs.
+4. Inspect the actual local Git state:
    - current branch
    - HEAD SHA
    - git status
    - relevant branches
-4. When GitHub access is available, verify relevant PRs, commits, workflow runs and logs.
-5. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
-6. Reconstruct the current production and experimental architecture before changing code.
+5. When GitHub access is available, verify relevant PRs, commits, workflow runs and logs.
+6. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
+7. Reconstruct the current production and experimental architecture before changing code.
 
-If README, the capability ledger, an old report and the actual repository disagree:
+If README, the capability ledger, the branch inventory, an old report and the actual repository disagree:
 - actual code/GitHub state is authoritative for technical facts;
-- README, the ledger and prior discussions are used to understand intent/history;
+- README, the ledger, the branch inventory and prior discussions are used to understand intent/history;
 - report important inconsistencies rather than silently guessing.
 
 ## Mandatory capability-recovery check
 
 Before implementing or designing any non-trivial capability, perform a reuse audit first.
 
-1. Search `README.md` and `docs/project-capability-ledger.md` for the capability and functional synonyms.
-2. Search GitHub PRs, branches and historical commits for equivalent or predecessor work.
-3. Inspect the relevant current V4, V5, Robot KB and shadow modules instead of assuming absence from `main` means the capability was never built.
+1. Search `README.md`, `docs/project-capability-ledger.md` and `docs/project-branch-inventory.md` for the capability and functional synonyms.
+2. Search GitHub PRs, branches and historical commits for equivalent or predecessor work. Do not limit the search to open PRs or branches based on current `main`.
+3. Inspect the relevant current V4, V5, Robot KB, Source Scout, Japan Edge and global-shadow modules instead of assuming absence from `main` means the capability was never built.
 4. Follow documented supersession chains and start from the newest compatible validated implementation.
 5. Prefer reusing, porting or adapting proven code/tests over implementing an independent equivalent.
 6. If a new implementation is still required, record why the prior implementation is incompatible, unsafe, obsolete or belongs to a deliberately separate architecture.
 7. Never revive a `SUPERSEDED` or `DISABLED` implementation without first reading the successor/root-cause history that replaced or disabled it.
-8. After a significant validated phase, update both the README handoff and the capability ledger with status, authoritative PR/branch/SHA, tests/runs, deployment state and supersession/reuse instruction.
+8. Treat closed/unmerged PRs and historical branches as recoverable project assets until ancestry and supersession prove otherwise.
+9. After a significant validated phase, update README, the capability ledger and the branch inventory when branch topology/status materially changed.
 
-A closed or unmerged PR is not automatically discarded work. `SHADOW`, `DEFERRED` and `V5_ONLY` branches may contain the canonical implementation to reuse later.
+A closed or unmerged PR is not automatically discarded work. `SHADOW`, `DEFERRED`, `BENCHMARK` and `V5_ONLY` branches may contain the canonical implementation to reuse later.
 
 If the same capability appears in multiple lines (for example V4 and V5), compare the actual implementations and invariants before choosing one. Do not silently copy an older implementation over a newer safety hardening.
+
+## Branch hygiene / deletion safety
+
+The repository intentionally contains a large historical branch surface because significant validated work lives outside `main`.
+
+- Never delete a branch merely because it is old, closed, unmerged, documentation-only or absent from current workflows.
+- Before any branch deletion, verify its tip SHA, ancestry against `main`/V5/current successor, associated PRs, workflow references, unique files/tests/docs and whether the capability ledger marks it as historical evidence.
+- Temporary/no-op branches may be cleanup candidates, but cleanup remains destructive and requires explicit user authorization.
+- Do not rewrite history or force-push recovery branches.
 
 ## Project governance
 
@@ -212,7 +223,9 @@ README.md is the canonical project handoff.
 
 `docs/project-capability-ledger.md` is the durable capability/history/supersession registry. Its purpose is to make previously validated work discoverable even when it is V5-only, shadow, deferred, disabled or no longer present on `main`.
 
-After a significant validated architecture, provider, production, workflow or live-phase change, update README.md and the capability ledger before considering the phase complete.
+`docs/project-branch-inventory.md` is the exhaustive branch recovery index. It exists so a capability hidden on a historical/shadow/benchmark branch cannot silently disappear from project memory.
+
+After a significant validated architecture, provider, production, workflow or live-phase change, update README.md and the capability ledger before considering the phase complete. Update the branch inventory as well whenever branches are created, retired, superseded or their recovery role changes materially.
 
 Do not document an unverified claim as completed.
 
