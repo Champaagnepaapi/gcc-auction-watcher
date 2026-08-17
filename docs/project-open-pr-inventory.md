@@ -8,7 +8,7 @@ Snapshot vérifié : **17 août 2026**.
 
 ## Résultat exhaustif
 
-GitHub Search a retourné exactement **16 PR ouvertes**. Elles ont été vérifiées individuellement ou dans leur stack fonctionnelle.
+GitHub Search retourne **120 pull requests au total** dans le dépôt et exactement **16 PR ouvertes** au moment de cet audit. Les 16 ouvertes ont été vérifiées individuellement ou dans leur stack fonctionnelle. Les anciennes PR ont également été parcourues pendant l'audit de capacités afin de reconstruire les chaînes de supersession documentées dans le capability ledger.
 
 | PR | Draft | Head vérifié | Classification projet | Instruction |
 |---|---:|---|---|---|
@@ -27,7 +27,7 @@ GitHub Search a retourné exactement **16 PR ouvertes**. Elles ont été vérifi
 | #114 | oui | `c40aa846ce5fdc4213afa0895e4440a04995b85a` | `SHADOW / DEFERRED` | Rejet des pages Magi explicitement SOLD dans la lane ASK. |
 | #115 | oui | `e9906b97ee54251fb4ff85417c5a8556da9068a1` | `SHADOW / DEFERRED` | Route COMC exact-set facet. Dernier child de la stack globale auditée. |
 | #122 | non | `e8f00ef1cd36059ba08e8c7a27a18eb8183cdd18` | `DEFERRED / SUPERSEDED_CANDIDATE` | Fallback TCGdex coordonnée unique validé. PR #123 l'étend avec la capacité V5 #31 et la mémoire durable. Garder ouverte jusqu'à décision explicite. |
-| #123 | oui | `496bb31d35563a504acff5e51c0f70c9774aca90` au moment du snapshot | `DEFERRED / CURRENT_RECOVERY` | Candidate actuelle de récupération globale + backport TCGdex. Tout nouveau commit doit être revalidé avant merge. |
+| #123 | oui | **head mobile — re-vérifier GitHub avant toute action** | `DEFERRED / CURRENT_RECOVERY` | Candidate actuelle de récupération globale + backport TCGdex. Son SHA final est volontairement consigné dans la PR/CI plutôt que dans ce fichier auto-modifiant. |
 
 Aucune PR de cette table n'est autorisée au merge par le seul fait d'être ouverte/mergeable.
 
