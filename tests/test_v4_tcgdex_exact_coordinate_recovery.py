@@ -109,6 +109,9 @@ class TestV4TCGdexExactCoordinateRecovery(unittest.TestCase):
         self.assertEqual(result.set_id, "SV6a")
         self.assertEqual(result.local_id, "066")
         self.assertEqual(result.full_number, "066/064")
+        self.assertEqual(result.name, "Houndoom")
+        self.assertEqual(result.set_name, "Night Wanderer")
+        self.assertFalse(result.unique_name_number)
         self.assertIn("TCGDEX_EXACT_COORDINATE_RECOVERY", result.reason)
 
         wrong_set = {**payload, "set": {**payload["set"], "id": "SV4a"}}
