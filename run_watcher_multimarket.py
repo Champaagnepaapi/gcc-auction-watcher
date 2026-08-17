@@ -42,6 +42,9 @@ from v4_tcgdex_generalized_coordinate_recovery import (
 )
 from v4_tcgdex_observability import install_v4_tcgdex_observability
 from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
+from v4_tcgdex_two_of_three_backport import (
+    install_v4_tcgdex_two_of_three_backport,
+)
 from v4_tcgdex_unique_coordinate_fallback import (
     install_v4_tcgdex_unique_coordinate_fallback,
 )
@@ -85,6 +88,11 @@ if __name__ == "__main__":
     # Then recover whole exact set/namespaces and bounded display suffix cases.
     # This remains exact set + localId proof: no fuzzy matching or variant bypass.
     install_v4_tcgdex_generalized_coordinate_recovery()
+    # Backport the already-proven V5 PR #31 catalogue-cardinality rules before
+    # the broader coordinate-only fallback: exact name+full-number may recover
+    # one set, and exact set+name may recover one printed number. Two exact
+    # coordinates are mandatory and ambiguity remains fail-closed.
+    install_v4_tcgdex_two_of_three_backport()
     # Last TCGdex identity fallback: after every existing exact path says
     # NO_MATCH, prove a globally unique printed coordinate without adding aliases.
     install_v4_tcgdex_unique_coordinate_fallback()
