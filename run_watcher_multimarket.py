@@ -32,6 +32,7 @@ from v4_notification_semantics import install_v4_notification_semantics
 from v4_notification_signal_quality_guard import (
     install_v4_notification_signal_quality_guard,
 )
+from v4_poketrace_market_retrieval import install_v4_poketrace_market_retrieval
 from v4_private_auction_coverage import install_v4_private_auction_coverage
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
@@ -96,6 +97,10 @@ if __name__ == "__main__":
     # Last TCGdex identity fallback: after every existing exact path says
     # NO_MATCH, prove a globally unique printed coordinate without adding aliases.
     install_v4_tcgdex_unique_coordinate_fallback()
+    # PokeTrace stays market-only. Recover V5's proven structured retrieval
+    # contract (card_number + language game) only after TCGdex has resolved the
+    # canonical card; all exact candidate/commercial/grade gates remain V4's.
+    install_v4_poketrace_market_retrieval()
     install_multimarket_safety_hardening()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
