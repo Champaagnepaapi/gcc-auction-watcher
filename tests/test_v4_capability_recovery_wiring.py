@@ -27,9 +27,11 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         self.assertIn("docs/project-capability-ledger.md", governance)
         self.assertIn("docs/project-branch-inventory.md", governance)
         self.assertIn("docs/project-open-pr-inventory.md", governance)
+        self.assertIn("docs/project-workflow-inventory.md", governance)
         self.assertIn("Mandatory capability-recovery check", governance)
         self.assertIn("Branch hygiene / deletion safety", governance)
         self.assertIn("Open PR hygiene", governance)
+        self.assertIn("Workflow hygiene", governance)
 
     def test_capability_ledger_records_shadow_not_as_production(self):
         ledger = Path("docs/project-capability-ledger.md").read_text(encoding="utf-8")
@@ -100,6 +102,40 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         self.assertIn("#123", inventory)
         self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO = 1.75", inventory)
         self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = 10", inventory)
+
+    def test_workflow_inventory_separates_14_current_files_from_80_records(self):
+        inventory = Path("docs/project-workflow-inventory.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("**14 fichiers workflow existent réellement", inventory)
+        self.assertIn("**80 enregistrements de workflows**", inventory)
+        self.assertIn("0ff115a95e8bbf8e4d04534e8efb343eb93cb128", inventory)
+        self.assertIn("append-readme-pr65.yml", inventory)
+        self.assertIn("fetch du fichier sur `main` retourne `404`", inventory)
+        self.assertIn("v5-gcc-catalog-refresh.yml", inventory)
+        self.assertIn("MAIN_SUPPORT / LEGACY_DEPENDENCY", inventory)
+
+        raw_header = "Liste exhaustive 80/80 des chemins enregistrés :"
+        raw = inventory.split(raw_header, 1)[1]
+        code_block = raw.split("```text", 1)[1].split("```", 1)[0]
+        names = [line.strip() for line in code_block.splitlines() if line.strip()]
+        self.assertEqual(len(names), 80)
+        self.assertEqual(len(set(names)), 80)
+        for current in (
+            "japan-edge-hunter.yml",
+            "robot-kb-cloud-shadow.yml",
+            "robot-kb-sold-shadow.yml",
+            "v4-auction-discovery-validation.yml",
+            "v4-final-auction-check.yml",
+            "v4-gcc-coverage-audit.yml",
+            "v4-global-live-shadow.yml",
+            "v4-global-shadow-dispatch-ci.yml",
+            "v4-kb-shadow-ingest.yml",
+            "v5-gcc-catalog-refresh.yml",
+            "v5-live-raw-pipeline-diagnostic.yml",
+            "watcher.yml",
+        ):
+            self.assertIn(current, names)
 
 
 if __name__ == "__main__":
