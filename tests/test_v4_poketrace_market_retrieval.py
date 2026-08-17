@@ -160,7 +160,9 @@ class StructuredPokeTraceRetrievalTests(unittest.TestCase):
         self.assertEqual(retrieval._normalize_card_number("#004/102"), "4/102")
         self.assertEqual(retrieval._normalize_card_number("041"), "41")
         self.assertEqual(retrieval._normalize_card_number("DP045"), "dp45")
-        self.assertEqual(retrieval._normalize_card_number("232/SV-P"), "232/sv-p")
+        # This intentionally mirrors V5's existing normalizer exactly: a suffix
+        # without digits falls back to punctuation-insensitive normalization.
+        self.assertEqual(retrieval._normalize_card_number("232/SV-P"), "232/svp")
 
     def test_french_is_skipped_without_spending_poketrace_budget(self):
         target = _lot(language="French")
