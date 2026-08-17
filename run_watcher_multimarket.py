@@ -40,8 +40,11 @@ from v4_tcgdex_exact_coordinate_recovery import install_v4_tcgdex_exact_coordina
 from v4_tcgdex_generalized_coordinate_recovery import (
     install_v4_tcgdex_generalized_coordinate_recovery,
 )
-from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
 from v4_tcgdex_observability import install_v4_tcgdex_observability
+from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
+from v4_tcgdex_unique_coordinate_fallback import (
+    install_v4_tcgdex_unique_coordinate_fallback,
+)
 
 
 def _mislisted_slab_hunter_enabled() -> bool:
@@ -82,6 +85,9 @@ if __name__ == "__main__":
     # Then recover whole exact set/namespaces and bounded display suffix cases.
     # This remains exact set + localId proof: no fuzzy matching or variant bypass.
     install_v4_tcgdex_generalized_coordinate_recovery()
+    # Last TCGdex identity fallback: after every existing exact path says
+    # NO_MATCH, prove a globally unique printed coordinate without adding aliases.
+    install_v4_tcgdex_unique_coordinate_fallback()
     install_multimarket_safety_hardening()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
