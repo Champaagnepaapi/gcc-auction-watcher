@@ -106,12 +106,12 @@ class TestV4TCGdexRun1054SetAliases(unittest.TestCase):
                     language=language,
                     year=year,
                 )
-                left, _ = generalized._number_parts(number)
+                local_id = generalized._reference_candidates(number)[0]
                 result = generalized._canonical_from_coordinate(
                     lot,
                     self._card(
-                        card_id=f"{set_id}-{left}",
-                        local_id=left,
+                        card_id=f"{set_id}-{local_id}",
+                        local_id=local_id,
                         name=provider_name,
                         set_id=set_id,
                         count=count,
