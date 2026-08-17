@@ -69,9 +69,6 @@ if __name__ == "__main__":
     install_v4_private_auction_coverage()
     install_current_auction_discovery_diagnostics()
     install_canonical_multimarket_pipeline()
-    # Preserve TCGdex/PSA-scope counters collected during inspection when the
-    # external-market stage resets its own diagnostics. Observability only.
-    install_v4_tcgdex_observability()
     install_multimarket_safety_hardening()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
@@ -123,6 +120,11 @@ if __name__ == "__main__":
     # Structural edges consume exact SOLD + active-ask context. Expected Profit
     # is secondary/ranking-only and can never suppress a V4 notification.
     install_v4_structural_edge_hunter()
+    # IMPORTANT: multimarket safety replaces watcher.process_external_market_candidates.
+    # Finalize TCGdex observability only after every runtime installer that can
+    # replace/wrap that entrypoint, otherwise the preservation wrapper is lost.
+    # This remains diagnostics-only: no identity, matching, valuation or budget change.
+    install_v4_tcgdex_observability()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
     exit_code = 1
