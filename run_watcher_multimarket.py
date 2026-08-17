@@ -36,6 +36,7 @@ from v4_private_auction_coverage import install_v4_private_auction_coverage
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
 from v4_structural_edge_hunter import install_v4_structural_edge_hunter
+from v4_tcgdex_observability import install_v4_tcgdex_observability
 
 
 def _mislisted_slab_hunter_enabled() -> bool:
@@ -68,6 +69,9 @@ if __name__ == "__main__":
     install_v4_private_auction_coverage()
     install_current_auction_discovery_diagnostics()
     install_canonical_multimarket_pipeline()
+    # Preserve TCGdex/PSA-scope counters collected during inspection when the
+    # external-market stage resets its own diagnostics. Observability only.
+    install_v4_tcgdex_observability()
     install_multimarket_safety_hardening()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
