@@ -15,23 +15,89 @@ Project: Robot Pokémon / GCC Auction Watcher.
 Before making any modification:
 
 1. Read README.md completely. It is the canonical project handoff.
-2. Inspect the actual local Git state:
+2. Read `docs/project-capability-ledger.md` when it exists. It is the durable capability/supersession registry used to prevent reimplementing work that already exists on V4, V5, Robot KB or historical/shadow branches.
+3. Read `docs/project-branch-inventory.md` when it exists. It is the exhaustive remote-branch recovery index. Use it to discover work that may be absent from `main` and from open PRs.
+4. Read `docs/project-open-pr-inventory.md` when it exists. It records the current open-PR surface, stale-open PRs, pending behavior changes and PR stacks that must not be merged independently.
+5. Read `docs/project-workflow-inventory.md` when it exists. It distinguishes workflows actually present in the current `main` tree from historical GitHub Actions records left behind by deleted one-shot/temp YAML files.
+6. Read `docs/project-issue-inventory.md` when it exists. It distinguishes living registry issues, already-delivered historical specifications and genuinely pending issues.
+7. Read `docs/project-repository-snapshot.md` when it exists. It records top-level repository topology such as default branch, branch protection, branch/PR/issue/workflow counts, tags and releases.
+8. Inspect the actual local Git state:
    - current branch
    - HEAD SHA
    - git status
    - relevant branches
-3. When GitHub access is available, verify relevant PRs, commits, workflow runs and logs.
-4. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
-5. Reconstruct the current production and experimental architecture before changing code.
+9. When GitHub access is available, verify relevant PRs, issues, commits, workflow runs and logs. For any merge/close/dispatch decision, re-check the live GitHub state rather than trusting an inventory snapshot.
+10. Never assume an old summary, old SHA, previous agent report or previous chat reflects the current repository state.
+11. Reconstruct the current production and experimental architecture before changing code.
 
-If README, an old report and the actual repository disagree:
+If README, the capability ledger, the branch inventory, the open-PR inventory, the workflow inventory, the issue inventory, the repository snapshot, an old report and the actual repository disagree:
 - actual code/GitHub state is authoritative for technical facts;
-- README and prior discussions are used to understand intent;
+- README, the ledgers/inventories and prior discussions are used to understand intent/history;
+- `docs/project-open-pr-inventory.md` supersedes older static PR-status statements in the capability ledger until the ledger is refreshed;
+- for workflow existence, the current Git tree is authoritative; the Actions API can retain historical workflow records after their YAML file disappeared from `main`;
+- an open Issue may be a deliberate registry or an already-delivered planning specification rather than outstanding implementation work;
+- repository topology fields such as branch protection must be re-verified live before relying on them;
 - report important inconsistencies rather than silently guessing.
+
+## Mandatory capability-recovery check
+
+Before implementing or designing any non-trivial capability, perform a reuse audit first.
+
+1. Search `README.md`, `docs/project-capability-ledger.md`, `docs/project-branch-inventory.md`, `docs/project-open-pr-inventory.md`, `docs/project-workflow-inventory.md`, `docs/project-issue-inventory.md` and `docs/project-repository-snapshot.md` for the capability and functional synonyms.
+2. Search GitHub PRs, Issues, branches and historical commits for equivalent or predecessor work. Do not limit the search to open PRs or branches based on current `main`.
+3. Inspect the relevant current V4, V5, Robot KB, Source Scout, Japan Edge and global-shadow modules instead of assuming absence from `main` means the capability was never built.
+4. Follow documented supersession chains and start from the newest compatible validated implementation.
+5. Prefer reusing, porting or adapting proven code/tests over implementing an independent equivalent.
+6. If a new implementation is still required, record why the prior implementation is incompatible, unsafe, obsolete or belongs to a deliberately separate architecture.
+7. Never revive a `SUPERSEDED` or `DISABLED` implementation without first reading the successor/root-cause history that replaced or disabled it.
+8. Treat closed/unmerged PRs and historical branches as recoverable project assets until ancestry and supersession prove otherwise.
+9. Explicitly check for `STALE_OPEN` PRs before merging: an open PR may already be fully absorbed by later `main` history.
+10. Explicitly check whether an open Issue is a registry or delivered specification before treating it as backlog.
+11. Before creating a workflow, check current workflows and historical workflow records for an existing consolidated equivalent.
+12. After a significant validated phase, update README, the capability ledger and the inventories when topology/status materially changed.
+
+A closed or unmerged PR is not automatically discarded work. `SHADOW`, `DEFERRED`, `BENCHMARK` and `V5_ONLY` branches may contain the canonical implementation to reuse later.
+
+If the same capability appears in multiple lines (for example V4 and V5), compare the actual implementations and invariants before choosing one. Do not silently copy an older implementation over a newer safety hardening.
+
+## Branch hygiene / deletion safety
+
+The repository intentionally contains a large historical branch surface because significant validated work lives outside `main`.
+
+- Never delete a branch merely because it is old, closed, unmerged, documentation-only or absent from current workflows.
+- Before any branch deletion, verify its tip SHA, ancestry against `main`/V5/current successor, associated PRs, workflow references, unique files/tests/docs and whether the capability ledger marks it as historical evidence.
+- Temporary/no-op branches may be cleanup candidates, but cleanup remains destructive and requires explicit user authorization.
+- Do not rewrite history or force-push recovery branches.
+
+## Open PR hygiene
+
+- Open does not mean current, mergeable does not mean desired, and draft/non-draft does not imply authorization.
+- Before merging an old PR, compare its exact patch against current `main`; if the same behavior already exists, classify it `STALE_OPEN/SUPERSEDED` instead of replaying it.
+- Preserve genuinely pending product/economic changes as separate decisions. Example: PR #87's 30% GCC-only illiquid notification behavior must not be smuggled into unrelated recovery work.
+- Keep stacked shadow PRs together. The Global Multi-Vault line #108→#109→#110→#113→#114→#115 must be recovered as a stack, not by merging a child directly to `main`.
+- PR #122 and PR #123 are separate until the user explicitly decides which line supersedes/merges; never auto-close either.
+
+## Issue hygiene
+
+- Issue #1 is intentionally an open V4 run registry, not an unfinished coding task. Preserve its minimal-metadata/no-secrets purpose.
+- Issue #28 is a completed historical specification whose external-market architecture is already implemented in later V4 code; do not reopen/rewrite it by default.
+- Issue #58 remains open but its Robot KB SOLD/fixed-rotation goals were delivered and superseded by the #59/#60/#62/#68/#72/#75/#76 stack. Do not treat it as fresh backlog or close it automatically.
+- Before changing an Issue state or body for housekeeping, get explicit user authorization.
+
+## Workflow hygiene
+
+- Distinguish **current YAML files** from **historical GitHub Actions registry records**. A workflow record can still appear with `state=active` after its YAML file is gone from `main`.
+- Verify `.github/workflows` in the current Git tree before asserting that a workflow exists or can be changed by editing `main`.
+- Current production Main Scanner and Fast Lane are externally scheduled through `workflow_dispatch`; never add a parallel GitHub cron for them.
+- Diagnostics and one-shot lives should be manual unless the project explicitly defines a recurring production lane.
+- Do not recreate old `*-temp.yml`, `*-one-shot.yml`, README handoff or superseded V5 diagnostic workflows merely because they remain visible in the Actions registry.
+- The scheduled `v5-gcc-catalog-refresh.yml` is a current legacy/support dependency because the current manual V5 live raw diagnostic still restores `gcc_catalog_index.json`; do not remove it until that dependency is explicitly retired and validated.
+- Removing current workflow files or disabling/deleting historical Actions records is cleanup/destructive work and requires explicit authorization.
 
 ## Project governance
 
 - `main` is the canonical V4 production branch.
+- At the 17 Aug 2026 audit, GitHub reported `main` as unprotected with no server-enforced required status checks. Re-verify this before any merge; never rely on branch protection to enforce project governance.
 - Experimental V5 work must remain isolated from V4 production.
 - PR #8 / the V5 experimental line must never be merged into `main` without explicit user authorization.
 - Never merge another agent's work automatically.
@@ -192,7 +258,19 @@ When a live diagnostic is required but project policy reserves manual launching 
 
 README.md is the canonical project handoff.
 
-After a significant validated architecture, provider, production, workflow or live-phase change, update README.md before considering the phase complete.
+`docs/project-capability-ledger.md` is the durable capability/history/supersession registry. Its purpose is to make previously validated work discoverable even when it is V5-only, shadow, deferred, disabled or no longer present on `main`.
+
+`docs/project-branch-inventory.md` is the exhaustive branch recovery index. It exists so a capability hidden on a historical/shadow/benchmark branch cannot silently disappear from project memory.
+
+`docs/project-open-pr-inventory.md` is the current open-PR recovery/status index. It prevents stale-open PRs, pending product decisions and stacked shadow PRs from being mistaken for production or independently mergeable work.
+
+`docs/project-workflow-inventory.md` is the current/historical workflow index. It records the exact current `main` workflow tree and the larger retained Actions registry so deleted temp workflows are not accidentally resurrected.
+
+`docs/project-issue-inventory.md` is the complete issue index. It prevents registry issues and already-delivered planning issues from being misread as fresh work.
+
+`docs/project-repository-snapshot.md` is the topological snapshot. It records repository visibility/default branch, branch protection, high-level counts, tags/releases and links to the detailed inventories.
+
+After a significant validated architecture, provider, production, workflow or live-phase change, update README.md and the capability ledger before considering the phase complete. Update the branch inventory when branches are created/retired/superseded, the open-PR inventory whenever open PR status/topology changes materially, the workflow inventory whenever current workflow topology changes, the issue inventory when issue roles/states change materially, and the repository snapshot after a new exhaustive topology audit.
 
 Do not document an unverified claim as completed.
 

@@ -2,16 +2,28 @@
 
 > **Source de reprise technique canonique — à lire en premier dans toute nouvelle conversation.**
 > Ce README décrit l’état courant. L’historique détaillé antérieur reste disponible dans Git/GitHub ; ne pas réintroduire un comportement ancien simplement parce qu’il apparaît dans un vieux commit.
+> Le registre durable `docs/project-capability-ledger.md` doit ensuite être consulté avant toute nouvelle implémentation importante afin de récupérer les capacités déjà construites sur V4, V5, Robot KB ou les branches shadow/deferred.
 
-## État canonique — 16 août 2026
+## État canonique — 17 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
-Dernier merge fonctionnel V4 / Robot KB :
+Head production `main` vérifié au début de l’audit de récupération :
 
 ```text
-79eb35232b30e1f02834233937461fe52a506d19
+c8a495226f9e9800e5e1e2ac6a730ea21b1c3383
 ```
+
+### Audit global anti-réimplémentation — 17 août 2026
+
+- Un registre durable des capacités existe désormais dans `docs/project-capability-ledger.md`. Il classe explicitement les travaux `PROD_V4`, `MAIN_SUPPORT`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `BENCHMARK`, `SUPERSEDED` ou `DISABLED`, avec PR/branches/modules et instructions de réutilisation.
+- La gouvernance impose maintenant un **capability-recovery check** avant tout travail non trivial : README + ledger + PR/branches GitHub + code V4/V5/Robot KB/shadow doivent être inspectés avant d’écrire un nouvel équivalent.
+- L’audit TCGdex a confirmé que PR #31 avait déjà construit en V5 une résolution déterministe `2 coordonnées sur 3`. PR #123, encore draft/non mergée, backporte cette capacité en V4 au-dessus des fast paths #119/#120/#121 et avant le fallback plus large de #122.
+- PR #122 reste non mergée et n’est pas production ; PR #123 la remplace/étend pour revue mais **aucun merge n’est autorisé implicitement**.
+- L’audit global a aussi retrouvé des capacités majeures déjà faites : consensus RAW robuste + price discovery temporel multi-grader déjà en production au merge `8a61a6a5ec8740b9b8413cc82de26f11db064c43`, stack global multi-vault #108-#115 en shadow, PPT #92/#106/#107, Source Scout historique, Robot KB durable, Fast Lane, Structural Edge Hunter et l’historique cert/OCR désormais hard-disabled en production.
+- La branche Source Scout historique `agent/source-scout-benchmark-20260814` est un actif `BENCHMARK/DEFERRED` à réutiliser pour toute future comparaison provider ; ne pas reconstruire ses probes/policies de zéro.
+- Aucun benchmark vérifié ne prouve un TCGdex `500/500`. Les anciens `100/100` retrouvés concernent notamment la visibilité des certificats GCC, et les nombres `500+` sont souvent des suites de tests logiciels.
+- Aucun live production, achat, bid, checkout, paiement ou merge de PR #8 n’est introduit par cet audit.
 
 ### Mise à jour V4 — external coverage drain / FR — 16 août 2026
 
@@ -565,7 +577,7 @@ Validation PR #76 : run `31889075054`, job `95022529447` : **529 tests PASS**, c
 
 # V5 — EXPÉRIMENTALE, PR #8 — NE PAS MERGER
 
-PR : **#8**  
+PR : **#8**
 Branche : `agent/v5-poketrace-cardmarket-market-data`
 
 Head V5 expérimental actuellement validé :
@@ -873,7 +885,6 @@ SUCCESS
 Live : 2 000 GCC SOLD, 361 ventes japonaises PSA 10 éligibles, 64 groupes de références exactes, 12 seeds, 36 recherches Japon, 503 ASK observés, 232 candidats potentiellement ≥30 % avant preuve stricte, 5 candidats exacts retenus, 227 rejets identité. Dans ce run, PSA APR a répondu HTTP 403, eBay direct n'a exposé aucun SOLD structuré exact et PokeTrace n'a pas produit de match japonais PSA 10 fort : les 5 leads sont donc restés `GCC_ONLY_UNCONFIRMED`, sans fabrication d'une fair value mondiale.
 
 Sécurité inchangée : aucun achat, bid, checkout, paiement ou grading automatique. PR #8 reste expérimentale/non mergée. PR #87 reste séparée.
-
 
 ---
 
