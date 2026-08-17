@@ -24,13 +24,18 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         governance = Path(
             ".agents/rules/gcc-project-governance.md"
         ).read_text(encoding="utf-8")
-        self.assertIn("docs/project-capability-ledger.md", governance)
-        self.assertIn("docs/project-branch-inventory.md", governance)
-        self.assertIn("docs/project-open-pr-inventory.md", governance)
-        self.assertIn("docs/project-workflow-inventory.md", governance)
+        for path in (
+            "docs/project-capability-ledger.md",
+            "docs/project-branch-inventory.md",
+            "docs/project-open-pr-inventory.md",
+            "docs/project-workflow-inventory.md",
+            "docs/project-issue-inventory.md",
+        ):
+            self.assertIn(path, governance)
         self.assertIn("Mandatory capability-recovery check", governance)
         self.assertIn("Branch hygiene / deletion safety", governance)
         self.assertIn("Open PR hygiene", governance)
+        self.assertIn("Issue hygiene", governance)
         self.assertIn("Workflow hygiene", governance)
 
     def test_capability_ledger_records_shadow_not_as_production(self):
@@ -83,6 +88,7 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("exactement **16 PR ouvertes**", inventory)
+        self.assertIn("**120 pull requests au total**", inventory)
         rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ \|", line)]
         numbers = {
             int(re.match(r"^\| #(\d+) \|", line).group(1))
@@ -123,6 +129,8 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         self.assertEqual(len(set(names)), 80)
         for current in (
             "japan-edge-hunter.yml",
+            "japan-edge-offline-validation.yml",
+            "psa-api-diagnostic.yml",
             "robot-kb-cloud-shadow.yml",
             "robot-kb-sold-shadow.yml",
             "v4-auction-discovery-validation.yml",
@@ -136,6 +144,23 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
             "watcher.yml",
         ):
             self.assertIn(current, names)
+
+    def test_issue_inventory_has_exactly_the_three_repository_issues(self):
+        inventory = Path("docs/project-issue-inventory.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("exactement **3 issues**", inventory)
+        rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ `", line)]
+        numbers = {
+            int(re.match(r"^\| #(\d+) `", line).group(1))
+            for line in rows
+        }
+        self.assertEqual(numbers, {1, 28, 58})
+        self.assertEqual(len(rows), 3)
+        self.assertIn("ACTIVE_REGISTRY", inventory)
+        self.assertIn("SUPERSEDED_BY_IMPLEMENTATION", inventory)
+        self.assertIn("STALE_PLANNING_ISSUE", inventory)
+        self.assertIn("#59/#60/#62/#68/#72/#75/#76", inventory)
 
 
 if __name__ == "__main__":
