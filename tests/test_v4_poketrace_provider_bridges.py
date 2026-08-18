@@ -68,7 +68,7 @@ def _candidate(*, name, number, set_name, game):
 
 
 class PokeTraceProviderBridgeTests(unittest.TestCase):
-    def test_japanese_retrieval_uses_exact_same_card_tcgdex_localized_name(self):
+    def test_japanese_provider_retrieval_uses_exact_same_card_tcgdex_localized_name(self):
         target = _lot(
             name="Reshiram & Charizard Gx",
             reference="#016/173",
@@ -95,7 +95,7 @@ class PokeTraceProviderBridgeTests(unittest.TestCase):
             "_fetch_tcgdex_card_detail",
             return_value=(200, detail),
         ):
-            context = retrieval._retrieval_context(target, canonical)
+            context = retrieval._provider_retrieval_context(target, canonical)
 
         self.assertIsNotNone(context)
         assert context is not None
@@ -103,6 +103,62 @@ class PokeTraceProviderBridgeTests(unittest.TestCase):
         self.assertEqual(context.card_number, "016/173")
         self.assertEqual(context.game, "pokemon-japanese")
         self.assertEqual(context.provider_name_aliases, ("レシラム&リザードンGX",))
+
+    def test_base_retrieval_context_stays_network_free_and_keeps_canonical_name(self):
+        target = _lot(
+            name="Reshiram & Charizard Gx",
+            reference="#016/173",
+            language="Japanese",
+            series="Tag All Stars",
+        )
+        canonical = _canonical(
+            card_id="SM12a-016",
+            set_id="SM12a",
+            set_name="Tag All Stars",
+            local_id="016",
+            full_number="#016/173",
+            name="Reshiram & Charizard Gx",
+            language_code="ja",
+        )
+        with patch.object(
+            retrieval.multimarket,
+            "_fetch_tcgdex_card_detail",
+            side_effect=AssertionError("base context must not fetch TCGdex"),
+        ):
+            context = retrieval._retrieval_context(target, canonical)
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context.search_name, "Reshiram & Charizard Gx")
+        self.assertEqual(context.card_number, "016/173")
+        self.assertEqual(context.provider_name_aliases, ())
+
+    def test_provider_retrieval_falls_back_to_canonical_name_when_alias_unavailable(self):
+        target = _lot(
+            name="Reshiram & Charizard Gx",
+            reference="#016/173",
+            language="Japanese",
+            series="Tag All Stars",
+        )
+        canonical = _canonical(
+            card_id="SM12a-016",
+            set_id="SM12a",
+            set_name="Tag All Stars",
+            local_id="016",
+            full_number="#016/173",
+            name="Reshiram & Charizard Gx",
+            language_code="ja",
+        )
+        with patch.object(
+            retrieval.multimarket,
+            "_fetch_tcgdex_card_detail",
+            return_value=(503, None),
+        ):
+            context = retrieval._provider_retrieval_context(target, canonical)
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context.search_name, "Reshiram & Charizard Gx")
+        self.assertEqual(context.card_number, "016/173")
+        self.assertEqual(context.provider_name_aliases, ())
 
     def test_localized_alias_fails_closed_on_wrong_tcgdex_coordinate(self):
         canonical = _canonical(
