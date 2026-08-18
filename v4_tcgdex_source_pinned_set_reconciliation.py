@@ -34,6 +34,73 @@ def _reclassify_exact(result: canonical.CanonicalCard) -> None:
         diagnostics.tcgdex_error += 1
 
 
+def _recover_from_immutable_source(
+    lot: watcher.Lot,
+    *,
+    alias: generalized.ExactSetAlias,
+    language_code: str,
+    listing_set: str,
+    listing_name: str,
+) -> canonical.CanonicalCard | None:
+    """Prove the aliased set/localId directly from the immutable TCGdex source.
+
+    The live REST projection is known to occasionally expose a stale/wrong set
+    namespace.  When that happens, the already-reviewed exact GCC set alias plus
+    printed denominator selects one TCGdex set.  We then require the immutable
+    cards-database file for the exact localId to import that same set.  The
+    existing source-finish parser provides the source-path/set-import proof and
+    finish flags from the same pinned file; no provider market field participates.
+    """
+
+    # Lazy import avoids the intentional installer cycle: source-pinned finish
+    # installs this set-reconciliation layer before wrapping it.
+    from v4_tcgdex_source_pinned_finish import source_pinned_finish_proof
+
+    identity = watcher.extract_card_identity(lot)
+    reference = str(lot.card_number or identity.get("ref") or "").strip()
+    if not reference or not listing_name:
+        return None
+
+    for local_id in generalized._reference_candidates(reference):
+        if not generalized._same_local_id(local_id, reference):
+            continue
+        candidate = canonical.CanonicalCard(
+            status="EXACT",
+            card_id=f"{alias.tcgdex_set_id}-{local_id}",
+            set_id=alias.tcgdex_set_id,
+            set_name=listing_set,
+            local_id=local_id,
+            full_number=reference,
+            name=listing_name,
+            language_code=language_code,
+            pricing={},
+            variants={},
+            reason="TCGDEX_SOURCE_PINNED_SET_COORDINATE",
+            unique_name_number=False,
+        )
+        proof = source_pinned_finish_proof(candidate)
+        if proof is None:
+            continue
+
+        finishes = set(proof.finishes)
+        variants = {
+            key: key in finishes
+            for key in ("normal", "holo", "reverse")
+        }
+        watcher.log(
+            "TCGdex source set correction: "
+            f"{listing_name} #{reference} | "
+            f"set={alias.tcgdex_set_id} | source={proof.source_path} | "
+            f"pin={proof.source_commit[:12]}"
+        )
+        return replace(
+            candidate,
+            variants=variants,
+            reason="TCGDEX_SOURCE_PINNED_SET_RECONCILED",
+        )
+    return None
+
+
 def _reconcile_exact_source_pinned_set(
     lot: watcher.Lot,
     card: canonical.CanonicalCard,
@@ -46,6 +113,11 @@ def _reconcile_exact_source_pinned_set(
         return card
 
     language_code, listing_set, _, listing_name, _, _ = generalized._lot_components(lot)
+
+    # Preserve the existing fast path: if the target live REST coordinate is
+    # healthy, use its full canonical payload.  The immutable source path below
+    # exists specifically for the observed class where REST itself is the stale
+    # projection and therefore cannot prove the corrected namespace.
     recovered = generalized._fetch_coordinate(
         lot,
         language_code=language_code,
@@ -55,6 +127,14 @@ def _reconcile_exact_source_pinned_set(
         expected_count=alias.tcgdex_official_count,
         allow_localized_name_mismatch=alias.allow_localized_name_mismatch,
     )
+    if recovered is None:
+        recovered = _recover_from_immutable_source(
+            lot,
+            alias=alias,
+            language_code=language_code,
+            listing_set=listing_set,
+            listing_name=listing_name,
+        )
     if recovered is None:
         blocked = canonical.CanonicalCard(
             "AMBIGUOUS",
@@ -84,10 +164,11 @@ def install_v4_tcgdex_source_pinned_set_reconciliation() -> None:
     """Correct a conflicting REST set namespace only from reviewed source-pinned aliases.
 
     This post-identity layer is intentionally narrow: the exact GCC set label,
-    language and printed denominator must select one reviewed Japanese alias,
-    then exact set + localId must be proven again by TCGdex. Provider market data
-    never participates. If the pinned coordinate cannot be proven, the conflict
-    blocks instead of preserving the contradictory REST identity.
+    language and printed denominator must select one reviewed Japanese alias.
+    The target set + localId is then proven either by the exact live TCGdex
+    coordinate or, when that REST projection is itself stale, by the immutable
+    pinned cards-database file importing the same exact set. Provider market data
+    never participates. If neither proof is available, the conflict blocks.
     """
 
     global _ORIGINAL_RESOLVER
