@@ -63,34 +63,39 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         ):
             self.assertIn(marker, ledger)
 
-    def test_branch_inventory_has_all_146_audited_remote_names(self):
+    def test_branch_inventory_has_all_151_audited_remote_names(self):
         inventory = Path("docs/project-branch-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("146/146", inventory)
+        self.assertIn("151/151", inventory)
         self.assertIn("agent/v5-poketrace-cardmarket-market-data", inventory)
         self.assertIn("fix/v4-recover-existing-capabilities-20260817", inventory)
         self.assertIn("fix/v4-poketrace-deterministic-market-retrieval-20260817", inventory)
+        self.assertIn("fix/v4-poketrace-exact-provider-bridges-20260818", inventory)
+        self.assertIn("fix/v4-poketrace-preserve-provider-number-20260818", inventory)
+        self.assertIn("fix/v4-poketrace-provider-bridges-after-127-20260818", inventory)
+        self.assertIn("fix/v4-poketrace-ja-search-regression-20260818", inventory)
+        self.assertIn("diag/v4-provider-rejection-observability-20260818", inventory)
         self.assertIn("agent/p0-card-knowledge-base-foundation", inventory)
         self.assertIn("agent/source-scout-benchmark-20260814", inventory)
         self.assertIn("feat/v4-global-multivault-edge-foundation", inventory)
         self.assertIn("tmp-noop-check", inventory)
 
-        raw_header = "# 12. Contrôle de complétude — liste brute 146/146"
+        raw_header = "# Contrôle de complétude — liste brute 151/151"
         raw = inventory.split(raw_header, 1)[1]
         code_block = raw.split("```text", 1)[1].split("```", 1)[0]
         names = [line.strip() for line in code_block.splitlines() if line.strip()]
-        self.assertEqual(len(names), 146)
-        self.assertEqual(len(set(names)), 146)
+        self.assertEqual(len(names), 151)
+        self.assertEqual(len(set(names)), 151)
         self.assertIn("main", names)
         self.assertIn("oops-no-more", names)
 
-    def test_open_pr_inventory_has_exactly_the_15_audited_open_prs(self):
+    def test_open_pr_inventory_has_exactly_the_16_audited_open_prs(self):
         inventory = Path("docs/project-open-pr-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("exactement **15 PR ouvertes**", inventory)
-        self.assertIn("**121 pull requests au total**", inventory)
+        self.assertIn("exactement **16 PR ouvertes**", inventory)
+        self.assertIn("**126 pull requests au total**", inventory)
         rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ \|", line)]
         numbers = {
             int(re.match(r"^\| #(\d+) \|", line).group(1))
@@ -98,20 +103,21 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         }
         self.assertEqual(
             numbers,
-            {8, 54, 87, 92, 96, 106, 107, 108, 109, 110, 111, 113, 114, 115, 124},
+            {8, 54, 87, 92, 96, 106, 107, 108, 109, 110, 111, 113, 114, 115, 126, 129},
         )
-        self.assertEqual(len(rows), 15)
+        self.assertEqual(len(rows), 16)
         self.assertIn("#54", inventory)
         self.assertIn("SUPERSEDED / STALE_OPEN", inventory)
         self.assertIn("#87", inventory)
         self.assertIn("DEFERRED / BEHAVIOR_CHANGE", inventory)
         self.assertIn("#111", inventory)
-        self.assertIn("#124", inventory)
+        self.assertIn("#126", inventory)
+        self.assertIn("#129", inventory)
         self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO = 1.75", inventory)
         self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = 10", inventory)
         self.assertIn("#122", inventory)
         self.assertIn("#123", inventory)
-        self.assertIn("a2878cae20987e3ff16c8aedf6f67d07957f039f", inventory)
+        self.assertIn("4737604a1685f344ced65ede1ed49b4a1b9b7f6d", inventory)
 
     def test_workflow_inventory_separates_14_current_files_from_80_records(self):
         inventory = Path("docs/project-workflow-inventory.md").read_text(

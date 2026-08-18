@@ -1,51 +1,36 @@
-# Current phase — PokeTrace zero-candidate retrieval fix
+# Current phase — PokeTrace Japanese search regression
 
-Production `main`: `20c5e5317974577180786947f8eb76774360a3b1` (merge PR #125).
+Production `main` au début de la phase : `4737604a1685f344ced65ede1ed49b4a1b9b7f6d` (merge PR #128).
 
-Fix branch: `fix/v4-poketrace-preserve-provider-number-20260818`.
+Fix branch : `fix/v4-poketrace-ja-search-regression-20260818`.
 
 ## Verified live state
 
-Production run `32115020811` on `20c5e5317974577180786947f8eb76774360a3b1` completed successfully.
+Premier run production post-#128 : `32119349938` — SUCCESS.
 
-- TCGdex: `21 attempted | 13 exact | 1 no-match | 7 ambiguous | 0 errors`.
-- PokeTrace: `2 attempted | 0 exact | 2 no-match | 0 errors`.
-- final opportunities: `0`.
-- no purchase, bid, checkout or payment occurred.
-
-PR #125 proved that both actual Japanese PokeTrace misses failed **before local matching**:
-
-- `Team Rocket's Meowth #109/098` -> `provider_candidates=0`;
-- `Groudon #069/062` -> `provider_candidates=0`.
-
-Therefore the deterministic set bridge is not the immediate blocker: there is no provider candidate to bridge.
+- TCGdex : `25 attempted | 14 exact | 0 no-match | 11 ambiguous | 0 errors`.
+- PokeTrace : `5 attempted | 0 exact | 5 no-match | 0 errors`.
+- les 5 probes japonais ont retourné `provider_candidates=0`.
+- final opportunities : `0`.
+- aucun achat, bid, checkout ou paiement.
 
 ## Root cause
 
-PR #124 reused V5's matching normalizer for the provider request itself. That normalizer intentionally canonicalizes numeric equality by stripping leading zeroes, so the request sent:
+Le run `32116746065` post-#127 avait prouvé que PokeTrace retournait des candidats japonais lorsque la requête conservait le nom canonique/romanisé avec le numéro imprimé paddé et `game=pokemon-japanese`.
 
-```text
-109/098 -> 109/98
-069/062 -> 69/62
-```
-
-PokeTrace's own public catalog exposes those exact cards as `109/098` and `069/062` under `game=pokemon-japanese`, market US. The provider's exact `card_number` filter must therefore receive the proven printed/catalog surface, while V4 may continue using zero-insensitive normalization only **after retrieval** for acceptance.
+PR #128 a attaché correctement le nom TCGdex localisé au même `card_id + set_id + localId`, mais l'a aussi utilisé comme `search_name`. Cette substitution a fait régresser la récupération à zéro candidat sur le run post-merge.
 
 ## Current change
 
-`v4_poketrace_market_retrieval.py` now separates:
+La branche sépare à nouveau strictement :
 
-1. provider retrieval number -> NFKC/label/whitespace cleanup only, leading zeroes preserved;
-2. local matching number -> existing numeric-safe normalization unchanged.
+1. **retrieval** : nom canonique/romanisé + numéro imprimé/paddé + game exact ;
+2. **acceptance alias** : nom TCGdex localisé, uniquement pour le même card id/set id/localId déjà exact.
 
-Focused regressions cover the two live blocker shapes (`069/062`, `109/098`) plus alphanumeric surface preservation. No set alias, fuzzy search, translation-as-proof or identity relaxation is introduced.
+Aucun deuxième appel PokeTrace, aucun fuzzy, aucune traduction comme preuve, aucun changement des gates numéro/set/langue/édition/finish/stamp/promo/grader/grade ou de l'économie.
 
 ## Next gate
 
-Run CI first. If green, open the PR and merge only with user authorization. Then inspect the first production run on the merge SHA:
+Créer la PR, lancer la CI complète et vérifier compile/YAML/diff + discovery read-only. Si tout est vert, la PR reste non mergée jusqu'à autorisation utilisateur. Le gain live PokeTrace devra être mesuré après merge sur un nouveau run production.
 
-- provider candidate count for the Japanese exact identities;
-- PokeTrace exact/strong result after the existing strict card/set/language/variant/grader/grade gates;
-- TCGdex blockers remain separate fail-closed work.
-
-PR #8 remains experimental and must not be merged into `main` without explicit user authorization.
+PR #126 est une ancienne lignée basée avant #127/#128 et ne doit pas être mergée telle quelle. PR #8 reste expérimentale et non mergée.

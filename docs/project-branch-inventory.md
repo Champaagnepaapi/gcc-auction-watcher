@@ -1,40 +1,37 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire exhaustif des branches
 
-> Snapshot GitHub exhaustif destiné à empêcher la perte de travail historique et les réimplémentations inutiles. L’état GitHub live reste autoritaire.
+> Snapshot GitHub destiné à empêcher la perte de travail historique et les réimplémentations inutiles. GitHub live reste autoritaire.
 
-Snapshot vérifié : **17 août 2026, après merge #123 et création de la branche #124**.
+Snapshot vérifié : **18 août 2026, PR #129 ouverte**.
 
 ## Résultat
 
-- **146/146 branches distantes** trouvées.
-- **146 noms uniques**.
-- `main` production au moment du snapshot : `a2878cae20987e3ff16c8aedf6f67d07957f039f`.
-- nouvelle branche active de la phase PokeTrace : `fix/v4-poketrace-deterministic-market-retrieval-20260817`.
+- **151/151 branches distantes** trouvées.
+- **151 noms uniques**.
+- `main` production : `4737604a1685f344ced65ede1ed49b4a1b9b7f6d`.
+- branche active : `fix/v4-poketrace-ja-search-regression-20260818`.
 - aucune branche supprimée pendant cette phase.
-
-## Règle d’utilisation
-
-Avant de créer une capacité, chercher d’abord dans README, capability ledger, cet inventaire, les PRs et le code réel. Une branche absente de `main` n’est jamais une preuve que la capacité n’a pas déjà été construite. Une branche historique ne doit pas être supprimée sans audit explicite d’ancestry, PR, workflows et actifs uniques.
 
 ## Familles de récupération prioritaires
 
-- **V4 production / historique** : branches `agent/v4-*`, `fix/v4-*`, `adaptive_v4_market_refresh`, `ops/v4-*`.
-- **TCGdex V4** : `fix/v4-tcgdex-*`; #119/#120/#121 puis #123 ont construit la chaîne production actuelle. La branche #124 ajoute uniquement la récupération du contrat market-retrieval PokeTrace structuré.
-- **V5** : `agent/v5-*`, diagnostics/ops V5 et PR #8. V5 reste expérimentale ; ne jamais merger #8 sans autorisation explicite.
-- **Robot KB / Neon** : `agent/p0-*`, `agent/p1-*`, `agent/p3-*`, `agent/kb-*`.
-- **Source Scout** : `agent/source-scout-*`; réutiliser ses benchmarks/provider probes.
-- **Global Multi-Vault** : `feat/v4-global-*` + `fix/v4-global-*`; stack #108→#109→#110→#113→#114→#115.
-- **Japan Edge** : `feat/japan-edge-*`, `agent/japan-edge-*`, `fix/japan-edge-*`.
-- **Première génération catalogue GCC** : `chatgpt-*`; historique utile mais superseded comme autorité primaire par TCGdex.
-- **Docs/diagnostics/ops/temp** : conserver comme preuves historiques jusqu’à audit de suppression explicite.
+- V4 production/historique : `agent/v4-*`, `fix/v4-*`, `adaptive_v4_market_refresh`, `ops/v4-*`.
+- TCGdex/PokeTrace V4 : #119→#125 puis #127/#128; #129 corrige la régression JA de retrieval sans relâcher les gates.
+- V5 : `agent/v5-*`, diagnostics/ops V5 et PR #8. V5 reste expérimentale; ne jamais merger #8 sans autorisation explicite.
+- Robot KB / Neon : `agent/p0-*`, `agent/p1-*`, `agent/p3-*`, `agent/kb-*`.
+- Global Multi-Vault : `feat/v4-global-*` + `fix/v4-global-*`; stack #108→#109→#110→#113→#114→#115.
+- Source Scout / Japan Edge / cert-OCR / diagnostics : conserver comme preuves historiques jusqu'à audit explicite.
 
 ## Phase courante
 
-`fix/v4-poketrace-deterministic-market-retrieval-20260817` / PR #124 récupère le comportement déjà prouvé en V5 : après identité TCGdex exacte, PokeTrace reçoit un `card_number` structuré et un `game` explicite (`pokemon` / `pokemon-japanese`). Aucun fuzzy ou assouplissement de gate n’est introduit.
+`fix/v4-poketrace-ja-search-regression-20260818` / PR #129 sépare à nouveau :
+- retrieval PokeTrace JA = nom canonique/romanisé + collector number imprimé + `game=pokemon-japanese`;
+- nom TCGdex localisé = alias d'acceptation uniquement, lié au même `card_id + set_id + localId` exact.
+
+Aucun fuzzy, aucune traduction comme preuve, aucun achat/bid/checkout/paiement.
 
 ---
 
-# 12. Contrôle de complétude — liste brute 146/146
+# Contrôle de complétude — liste brute 151/151
 
 ```text
 adaptive_v4_market_refresh
@@ -126,6 +123,7 @@ chore/expose-global-shadow-dispatch-pr
 diag/cert-number-coverage-100-20260815
 diag/kb-fixed-filter-contract-20260815
 diag/v4-gcc-gradation-cert-100
+diag/v4-provider-rejection-observability-20260818
 diag/v5-neon-cache-probe-20260816
 diag/v5-tcgdex-blockers-20260816
 docs/canonical-project-handoff
@@ -160,6 +158,10 @@ fix/v4-global-comc-groudon-resolution
 fix/v4-global-magi-sold-filter
 fix/v4-notification-signal-quality
 fix/v4-poketrace-deterministic-market-retrieval-20260817
+fix/v4-poketrace-exact-provider-bridges-20260818
+fix/v4-poketrace-ja-search-regression-20260818
+fix/v4-poketrace-preserve-provider-number-20260818
+fix/v4-poketrace-provider-bridges-after-127-20260818
 fix/v4-recover-existing-capabilities-20260817
 fix/v4-tcgdex-exact-coordinate-recovery-20260817
 fix/v4-tcgdex-generalized-coordinate-recovery-20260817
@@ -187,4 +189,4 @@ tmp-noop-check
 
 ## Fraîcheur
 
-Mettre à jour ce fichier quand une branche est créée/supprimée ou lorsqu’une lignée change d’autorité. Ne jamais supprimer une branche uniquement parce qu’elle paraît ancienne.
+Mettre à jour ce fichier quand une branche est créée/supprimée ou lorsqu'une lignée change d'autorité. Ne jamais supprimer une branche uniquement parce qu'elle paraît ancienne.

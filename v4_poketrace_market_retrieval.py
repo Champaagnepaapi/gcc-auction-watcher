@@ -18,10 +18,13 @@ import v4_canonical_multimarket as multimarket
 # matching normalization because PokeTrace exposes padded surfaces such as
 # 069/062 and 109/098. Keep that boundary intact here.
 #
-# Live diagnostics also proved that Japanese GCC/TCGdex identities can need a
-# provider-only localized search name. A localized alias is admitted only when
-# it comes from the exact same TCGdex card id + set id + localId. It never
-# replaces the listing identity and never proves a sensitive variant.
+# Japanese GCC/TCGdex identities can also expose an exact localized TCGdex
+# name. That localized name is acceptance-only provider metadata tied to the
+# same card_id + set_id + localId; it must never replace the canonical provider
+# search term. Live post-#127 retrieval returned Japanese PokeTrace candidates
+# from canonical/romanized search names, while post-#128 localized-script search
+# regressed those probes to zero candidates. Keep retrieval and acceptance
+# aliases separate.
 
 
 @dataclass(frozen=True)
@@ -153,7 +156,7 @@ def _provider_retrieval_context(
     lot: watcher.Lot,
     canonical: multimarket.CanonicalCard,
 ) -> Optional[PokeTraceRetrievalContext]:
-    """Enrich the stable context with a same-card TCGdex provider alias."""
+    """Keep canonical retrieval and attach same-card TCGdex acceptance aliases."""
 
     context = _retrieval_context(lot, canonical)
     if context is None or context.language_code != "ja":
@@ -164,7 +167,7 @@ def _provider_retrieval_context(
     ):
         return context
     return PokeTraceRetrievalContext(
-        search_name=localized,
+        search_name=context.search_name,
         card_number=context.card_number,
         game=context.game,
         language_code=context.language_code,
