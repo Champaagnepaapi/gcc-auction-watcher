@@ -19,6 +19,17 @@ _ALIASES = (
             "TCGdex SV6a official Night Wanderer set / GCC Japanese romanized label"
         ),
     ),
+    generalized.ExactSetAlias(
+        "ja",
+        "Glory of the Team Rocket",
+        "SV10",
+        98,
+        require_numeric_denominator=True,
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex SV10 official The Glory of Team Rocket set / GCC Japanese romanized label"
+        ),
+    ),
 )
 
 
