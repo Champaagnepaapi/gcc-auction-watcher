@@ -19,9 +19,9 @@ import v4_canonical_multimarket as multimarket
 # 069/062 and 109/098. Keep that boundary intact here.
 #
 # Live diagnostics also proved that Japanese GCC/TCGdex identities can need a
-# provider-only localized search name. A localized alias is therefore admitted
-# only when it comes from the exact same TCGdex card id + set id + localId. It
-# never replaces the listing identity and never proves a sensitive variant.
+# provider-only localized search name. A localized alias is admitted only when
+# it comes from the exact same TCGdex card id + set id + localId. It never
+# replaces the listing identity and never proves a sensitive variant.
 
 
 @dataclass(frozen=True)
@@ -124,6 +124,8 @@ def _retrieval_context(
     lot: watcher.Lot,
     canonical: multimarket.CanonicalCard,
 ) -> Optional[PokeTraceRetrievalContext]:
+    """Build the stable #127 retrieval context without extra network work."""
+
     language_code = str(canonical.language_code or "").strip().casefold()
     if not language_code:
         language_code = multimarket._language_code(lot)
@@ -138,23 +140,36 @@ def _retrieval_context(
     if not canonical_name or not card_number:
         return None
 
-    aliases: list[str] = []
-    search_name = canonical_name
-    if language_code == "ja":
-        localized = _exact_tcgdex_localized_name(canonical, language_code)
-        if localized and multimarket._normalize(localized) != multimarket._normalize(
-            canonical_name
-        ):
-            aliases.append(localized)
-            search_name = localized
-
     return PokeTraceRetrievalContext(
-        search_name=search_name,
+        search_name=canonical_name,
         card_number=card_number,
         game=game,
         language_code=language_code,
         canonical_card_id=str(canonical.card_id or "").strip(),
-        provider_name_aliases=tuple(aliases),
+    )
+
+
+def _provider_retrieval_context(
+    lot: watcher.Lot,
+    canonical: multimarket.CanonicalCard,
+) -> Optional[PokeTraceRetrievalContext]:
+    """Enrich the stable context with a same-card TCGdex provider alias."""
+
+    context = _retrieval_context(lot, canonical)
+    if context is None or context.language_code != "ja":
+        return context
+    localized = _exact_tcgdex_localized_name(canonical, context.language_code)
+    if not localized or multimarket._normalize(localized) == multimarket._normalize(
+        context.search_name
+    ):
+        return context
+    return PokeTraceRetrievalContext(
+        search_name=localized,
+        card_number=context.card_number,
+        game=context.game,
+        language_code=context.language_code,
+        canonical_card_id=context.canonical_card_id,
+        provider_name_aliases=(localized,),
     )
 
 
@@ -212,7 +227,7 @@ def _structured_poketrace_evidence(
     # V4's exact graded PokeTrace gate currently supports only EN and JA market
     # records. Do not spend a provider request on FR/DE/etc. only to reject the
     # returned record later on language. Fallback APR/eBay behavior is unchanged.
-    context = _retrieval_context(lot, canonical)
+    context = _provider_retrieval_context(lot, canonical)
     if context is None:
         language_code = str(canonical.language_code or "").strip().casefold()
         if not language_code:
