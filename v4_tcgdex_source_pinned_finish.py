@@ -8,6 +8,9 @@ from typing import Mapping
 import requests
 
 import v4_canonical_multimarket as canonical
+from v4_tcgdex_source_pinned_set_reconciliation import (
+    install_v4_tcgdex_source_pinned_set_reconciliation,
+)
 
 
 # Immutable upstream catalogue snapshot already used by the V4 TCGdex recovery
@@ -283,6 +286,7 @@ def install_v4_tcgdex_source_pinned_finish() -> None:
     """Install generic post-identity reconciliation against immutable TCGdex source."""
 
     global _ORIGINAL_RESOLVER
+    install_v4_tcgdex_source_pinned_set_reconciliation()
     current = canonical.resolve_tcgdex_card
     if getattr(current, "_v4_tcgdex_source_pinned_finish", False):
         return
