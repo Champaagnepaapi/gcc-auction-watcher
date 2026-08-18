@@ -20,6 +20,12 @@ import v4_canonical_multimarket as multimarket
 # `pokemon-japanese`. V5 already solved this by sending card_number + game as
 # structured retrieval filters. This module recovers that behavior without
 # letting PokeTrace become an identity resolver.
+#
+# Important provider boundary: matching normalization and retrieval formatting
+# are deliberately separate. PokeTrace's catalog exposes padded collector
+# numbers such as 069/062 and 109/098. Stripping those zeroes before sending the
+# exact `card_number` filter can turn a known provider card into zero candidates.
+# Acceptance still uses V4's numeric-safe comparison after retrieval.
 
 
 @dataclass(frozen=True)
@@ -45,7 +51,7 @@ _CARD_NUMBER_LABEL_PREFIX = re.compile(
 
 
 def _normalize_card_number(value: object) -> str:
-    """Use the same safe structured-number normalization as V5 PokeTrace."""
+    """Canonical number comparison used by the inherited V5 matching contract."""
 
     compact = unicodedata.normalize("NFKC", str(value or "")).strip()
     compact = _CARD_NUMBER_LABEL_PREFIX.sub("", compact)
@@ -60,6 +66,19 @@ def _normalize_card_number(value: object) -> str:
         return f"{prefix.casefold()}{int(digits)}{suffix.casefold()}"
 
     return "/".join(canonical(part) for part in parts)
+
+
+def _provider_card_number(value: object) -> str:
+    """Keep TCGdex's proven collector-number surface for PokeTrace retrieval.
+
+    Safe cleanup removes only presentation labels/whitespace. Leading zeroes,
+    alphanumeric prefixes/suffixes and the denominator surface remain intact so
+    the provider's exact `card_number` filter sees the same printed coordinate.
+    """
+
+    compact = unicodedata.normalize("NFKC", str(value or "")).strip()
+    compact = _CARD_NUMBER_LABEL_PREFIX.sub("", compact)
+    return re.sub(r"\s+", "", compact).lstrip("#")
 
 
 def _exact_market_game(language_code: str) -> str:
@@ -83,7 +102,7 @@ def _retrieval_context(
         return None
 
     search_name = str(canonical.name or "").strip()
-    card_number = _normalize_card_number(
+    card_number = _provider_card_number(
         canonical.full_number or canonical.local_id or lot.card_number
     )
     if not search_name or not card_number:
@@ -102,7 +121,7 @@ def _structured_paced_get(
     *,
     params: Optional[Mapping[str, object]] = None,
 ):
-    """Inject only V5-proven structured retrieval fields on `/cards` calls."""
+    """Inject only structured retrieval fields on `/cards` calls."""
 
     context = _ACTIVE_CONTEXT.get()
     if context is None or not url.rstrip("/").endswith("/cards"):

@@ -1,29 +1,51 @@
-# Current phase — post-PR #124 provider rejection diagnosis
+# Current phase — PokeTrace zero-candidate retrieval fix
 
-Production `main`: `c0dc89edc17cad475219cf4b18b1d13561460d71` (merge PR #124).
+Production `main`: `20c5e5317974577180786947f8eb76774360a3b1` (merge PR #125).
 
-Diagnostic branch: `diag/v4-provider-rejection-observability-20260818`.
+Fix branch: `fix/v4-poketrace-preserve-provider-number-20260818`.
 
 ## Verified live state
 
-Production run `32112552901` on `c0dc89edc17cad475219cf4b18b1d13561460d71` completed successfully.
+Production run `32115020811` on `20c5e5317974577180786947f8eb76774360a3b1` completed successfully.
 
-- TCGdex: `14 attempted | 9 exact | 1 no-match | 4 ambiguous | 0 errors`.
-- PokeTrace: `3 attempted | 0 exact | 3 no-match | 0 errors`.
+- TCGdex: `21 attempted | 13 exact | 1 no-match | 7 ambiguous | 0 errors`.
+- PokeTrace: `2 attempted | 0 exact | 2 no-match | 0 errors`.
 - final opportunities: `0`.
 - no purchase, bid, checkout or payment occurred.
 
-PR #124 correctly stopped spending PokeTrace requests on unsupported exact-market languages and sends the V5-proven structured `card_number` + `game` fields for EN/JA. The first production sample nevertheless remained `0/3` exact, so structured retrieval alone is not the complete root cause.
+PR #125 proved that both actual Japanese PokeTrace misses failed **before local matching**:
 
-## Current mission
+- `Team Rocket's Meowth #109/098` -> `provider_candidates=0`;
+- `Groudon #069/062` -> `provider_candidates=0`.
 
-Add bounded diagnostics around the **already-final** V4 TCGdex and PokeTrace gates so the next production run identifies:
+Therefore the deterministic set bridge is not the immediate blocker: there is no provider candidate to bridge.
 
-1. the exact cards behind current TCGdex `NO_MATCH` / `AMBIGUOUS` outcomes and their final reason codes;
-2. whether each PokeTrace miss is caused by zero provider candidates, card number, set nomenclature, language/game, or the existing sensitive-dimension hardening.
+## Root cause
 
-The diagnostics log only public card/provider identity fields. They do not change matching, valuation, provider budgets, notification decisions, state, fair value or `max_recommended`.
+PR #124 reused V5's matching normalizer for the provider request itself. That normalizer intentionally canonicalizes numeric equality by stripping leading zeroes, so the request sent:
 
-After evidence is captured, reuse the existing V5 deterministic PokeTrace set-bridge / provider-alias lineage if it is actually the blocker rather than inventing a new heuristic.
+```text
+109/098 -> 109/98
+069/062 -> 69/62
+```
+
+PokeTrace's own public catalog exposes those exact cards as `109/098` and `069/062` under `game=pokemon-japanese`, market US. The provider's exact `card_number` filter must therefore receive the proven printed/catalog surface, while V4 may continue using zero-insensitive normalization only **after retrieval** for acceptance.
+
+## Current change
+
+`v4_poketrace_market_retrieval.py` now separates:
+
+1. provider retrieval number -> NFKC/label/whitespace cleanup only, leading zeroes preserved;
+2. local matching number -> existing numeric-safe normalization unchanged.
+
+Focused regressions cover the two live blocker shapes (`069/062`, `109/098`) plus alphanumeric surface preservation. No set alias, fuzzy search, translation-as-proof or identity relaxation is introduced.
+
+## Next gate
+
+Run CI first. If green, open the PR and merge only with user authorization. Then inspect the first production run on the merge SHA:
+
+- provider candidate count for the Japanese exact identities;
+- PokeTrace exact/strong result after the existing strict card/set/language/variant/grader/grade gates;
+- TCGdex blockers remain separate fail-closed work.
 
 PR #8 remains experimental and must not be merged into `main` without explicit user authorization.
