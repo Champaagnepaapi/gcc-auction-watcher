@@ -1,45 +1,49 @@
-# Current phase — PokeTrace final-gate / Japanese set namespace
+# Current phase — generic TCGdex source-pinned finish reconciliation
 
-Production `main` au début de la phase : `fadefe91c7b35aac37131a1c4f386231d00b45dc` (merge PR #129).
+Production `main` au début de la phase : `febe7620818924a9e0d37dbb2b7bff7c8eb57bee` (merge PR #131).
 
-Working branch : `diag/v4-poketrace-final-gate-20260818`.
+Working branch : `fix/v4-tcgdex-generic-source-finish-proof-20260818`.
 
 ## Verified live state
 
-Post-#129 production :
+Premier run production post-#131 : `32132889285` — SUCCESS.
 
-- run `32122825454` — SUCCESS, PokeTrace `1 attempted | 0 exact | 1 no-match` ; Charizard VSTAR `015/100` retrouve `1` candidat `S9: Star Birth` ;
-- run `32123694201` — SUCCESS, PokeTrace `1 attempted | 0 exact | 1 no-match` ; Zorua `072/064` retrouve `1` candidat `SV6a: Night Wanderer` ;
-- final opportunities : `0` ;
-- aucun achat, bid, checkout ou paiement.
+- TCGdex `10 attempted | 4 exact | 2 no-match | 4 ambiguous | 0 error` ;
+- PokeTrace `1 attempted | 0 exact | 1 no-match` ;
+- Toxtricity `181/172`, `S12a: VSTAR Universe`, JA : candidat PokeTrace exact macro retrouvé mais rejet `PROVIDER_ONLY_FINISH_UNPROVEN` ;
+- projection REST TCGdex observée : `normal=1, holo=0, reverse=0` ;
+- catalogue source pinné `tcgdex/cards-database@af33c9ac882e2acfadffaf19e8083aa976d12983`, `data-asia/S/S12a/181.ts` : variante unique `holo` ;
+- le même drift avait déjà été prouvé pour Kricketune `S12a/174` ;
+- final opportunities `0`, aucun achat/bid/checkout/paiement.
 
-La régression de retrieval JA est donc corrigée : le blocker est désormais dans le gate final d'identité/hardening.
+## Root cause
 
-## Audit déterministe
-
-Le bridge PokeTrace `<catalog-id>: <label>` existe déjà en V4. Le porter une deuxième fois depuis V5 serait redondant.
-
-Le snapshot officiel pin `tcgdex/cards-database@af33c9ac882e2acfadffaf19e8083aa976d12983` prouve :
-
-- `S9` = Star Birth, 100 cartes ; `S9/015` est Charizard VSTAR et son impression catalogue est holo-only ; le candidat PokeTrace `S9: Star Birth` est donc compatible avec le bridge de préfixe exact déjà présent ;
-- `SV6a` = Night Wanderer, 64 cartes ; `SV6a/072` est Zorua ;
-- `SV7a` est Paradise Dragona, également 64 cartes, et `SV7a/072` est une autre carte. Le live `tcgdex_set=SV7a/Night Wanderer` est donc un mauvais namespace hybride provenant d'un fallback de coordonnée, pas une preuve permettant d'accepter le set PokeTrace par simple label.
+PR #131 corrigeait Kricketune avec un registre exact carte par carte. Le run suivant a immédiatement montré le même drift sur Toxtricity. Continuer à ajouter une entrée par carte créerait un treadmill et ne traiterait pas la classe de panne.
 
 ## Current change
 
-1. ajoute un alias set-level source-pinned `ja + Night Wanderer -> SV6a`, avec dénominateur exact `64` et exact set/localId toujours obligatoires ;
-2. conserve PokeTrace market-only après identité TCGdex ;
-3. améliore l'observabilité du gate final pour distinguer `NAME`, `SET`, `SET_ID_CONFLICT`, langue, dimensions commerciales, finish catalogue et hardening final ;
-4. ajoute les formes live post-#129 comme régressions offline, notamment `S9: Star Birth` et `SV6a: Night Wanderer`.
+Remplacer le registre carte par carte par une réconciliation générique et fail-closed :
 
-Aucun fuzzy, aucune traduction comme preuve, aucun changement de fair value, `max_recommended`, seuil économique, grader/grade, notification ou transaction.
+1. uniquement après identité TCGdex `EXACT` japonaise ;
+2. dériver le chemin du fichier `cards-database` depuis `set_id + localId` déjà prouvés ;
+3. lire uniquement le commit upstream immuable déjà utilisé par V4 ;
+4. vérifier dans le fichier source l'import du même set exact ;
+5. parser uniquement le bloc `variants` et n'accepter que `normal/holo/reverse` ;
+6. corriger seulement ces trois booléens quand la source pinnée les prouve ;
+7. préserver tous les autres flags/microvariantes TCGdex ;
+8. cache process-local + budget réseau borné ; timeout/missing/malformed/budget => aucune correction, fail-closed.
+
+Cette couche ne consulte aucun champ PokeTrace pour choisir la preuve. PokeTrace reste market-only.
+
+## Safety
+
+- aucun fuzzy/substr/traduction comme preuve ;
+- identité non EXACT, langue non JA, coordonnées incohérentes ou source inaccessible => aucune correction ;
+- un type de variante source inconnu => aucune correction ;
+- aucun changement fair value, `max_recommended`, seuil économique, grader/grade ou notification ;
+- aucun achat, bid, checkout, paiement ou grading payant ;
+- PR #8 reste expérimentale et non mergée.
 
 ## Next gate
 
-CI complète + compile/YAML/diff + comparaison discovery read-only. Si tout est vert, ouvrir la PR et la laisser non mergée jusqu'à autorisation utilisateur. Après merge autorisé, le premier run prod devra confirmer :
-
-- Zorua résolu sous `SV6a`, jamais `SV7a` ;
-- raison exacte du rejet Charizard si PokeTrace reste `0 exact` ;
-- aucun relâchement d'identité ou microvariante.
-
-PR #8 reste expérimentale et non mergée ; son bridge de set a été audité en lecture seule uniquement.
+Tests ciblés + full suite V4, compile/YAML/diff et discovery live read-only. Après merge explicitement autorisé, vérifier un run production où une carte affectée (Toxtricity/Kricketune ou autre drift réel) est évaluée et confirmer que PokeTrace n'est plus bloqué par le faux finish REST.
