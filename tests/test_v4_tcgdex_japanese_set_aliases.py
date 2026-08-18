@@ -12,14 +12,14 @@ import v4_tcgdex_japanese_set_aliases as aliases
 class JapaneseSetAliasTests(unittest.TestCase):
     def setUp(self):
         self.key = generalized._alias_key("ja", "Night Wanderer")
-        self.original = generalized._SET_ALIASES_BY_KEY.get(self.key)
+        self.original_aliases = generalized._SET_ALIASES
+        self.original_by_key = dict(generalized._SET_ALIASES_BY_KEY)
         aliases.install_v4_tcgdex_japanese_set_aliases()
 
     def tearDown(self):
-        if self.original is None:
-            generalized._SET_ALIASES_BY_KEY.pop(self.key, None)
-        else:
-            generalized._SET_ALIASES_BY_KEY[self.key] = self.original
+        generalized._SET_ALIASES = self.original_aliases
+        generalized._SET_ALIASES_BY_KEY.clear()
+        generalized._SET_ALIASES_BY_KEY.update(self.original_by_key)
 
     def test_night_wanderer_maps_to_official_sv6a_namespace(self):
         alias = generalized._SET_ALIASES_BY_KEY[self.key]
