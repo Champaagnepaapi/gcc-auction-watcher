@@ -68,7 +68,7 @@ def _candidate(*, name, number, set_name, game):
 
 
 class PokeTraceProviderBridgeTests(unittest.TestCase):
-    def test_japanese_provider_retrieval_uses_exact_same_card_tcgdex_localized_name(self):
+    def test_japanese_provider_retrieval_keeps_canonical_search_and_attaches_localized_alias(self):
         target = _lot(
             name="Reshiram & Charizard Gx",
             reference="#016/173",
@@ -99,10 +99,65 @@ class PokeTraceProviderBridgeTests(unittest.TestCase):
 
         self.assertIsNotNone(context)
         assert context is not None
-        self.assertEqual(context.search_name, "レシラム&リザードンGX")
+        self.assertEqual(context.search_name, "Reshiram & Charizard Gx")
         self.assertEqual(context.card_number, "016/173")
         self.assertEqual(context.game, "pokemon-japanese")
         self.assertEqual(context.provider_name_aliases, ("レシラム&リザードンGX",))
+
+    def test_post_128_regression_structured_get_keeps_romanized_search_for_japanese(self):
+        target = _lot(
+            name="Galarian Zapdos",
+            reference="188/172",
+            language="Japanese",
+            series="VSTAR Universe",
+        )
+        canonical = _canonical(
+            card_id="S12a-188",
+            set_id="S12a",
+            set_name="VSTAR Universe",
+            local_id="188",
+            full_number="188/172",
+            name="Galarian Zapdos",
+            language_code="ja",
+        )
+        detail = {
+            "id": "S12a-188",
+            "localId": "188",
+            "name": "ガラルサンダー",
+            "set": {"id": "S12a"},
+        }
+        with patch.object(
+            retrieval.multimarket,
+            "_fetch_tcgdex_card_detail",
+            return_value=(200, detail),
+        ):
+            context = retrieval._provider_retrieval_context(target, canonical)
+        self.assertIsNotNone(context)
+        assert context is not None
+
+        captured = {}
+
+        def fake_get(budget, url, *, params=None):
+            captured.update(dict(params or {}))
+            return 200, {"data": []}
+
+        token = retrieval._ACTIVE_CONTEXT.set(context)
+        try:
+            with patch.object(retrieval, "_ORIGINAL_PACED_GET", side_effect=fake_get):
+                retrieval._structured_paced_get(
+                    object(),
+                    "https://api.poketrace.com/cards",
+                    params={"market": "US", "limit": 20, "product_type": "single"},
+                )
+        finally:
+            retrieval._ACTIVE_CONTEXT.reset(token)
+
+        self.assertEqual(captured["search"], "Galarian Zapdos")
+        self.assertEqual(captured["card_number"], "188/172")
+        self.assertEqual(captured["game"], "pokemon-japanese")
+        self.assertEqual(captured["market"], "US")
+        self.assertEqual(captured["product_type"], "single")
+        self.assertEqual(context.provider_name_aliases, ("ガラルサンダー",))
 
     def test_base_retrieval_context_stays_network_free_and_keeps_canonical_name(self):
         target = _lot(
@@ -196,7 +251,7 @@ class PokeTraceProviderBridgeTests(unittest.TestCase):
             language_code="ja",
         )
         context = retrieval.PokeTraceRetrievalContext(
-            search_name="レシラム&リザードンGX",
+            search_name="Reshiram & Charizard Gx",
             card_number="016/173",
             game="pokemon-japanese",
             language_code="ja",
@@ -391,7 +446,7 @@ class PokeTraceProviderBridgeTests(unittest.TestCase):
             game="pokemon-japanese",
         )
         context = retrieval.PokeTraceRetrievalContext(
-            search_name="レシラム&リザードンGX",
+            search_name="Reshiram & Charizard Gx",
             card_number="016/173",
             game="pokemon-japanese",
             language_code="ja",
