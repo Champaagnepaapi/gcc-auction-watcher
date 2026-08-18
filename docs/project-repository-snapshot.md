@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — snapshot topologique du dépôt
 
-Snapshot GitHub vérifié le **18 août 2026** pendant PR #129.
+Snapshot GitHub vérifié le **18 août 2026** pendant la PR docs #136.
 
 ## Topologie
 
@@ -8,9 +8,10 @@ Snapshot GitHub vérifié le **18 août 2026** pendant PR #129.
 Repository: Champaagnepaapi/gcc-auction-watcher
 Visibility: public
 Default branch: main
-main HEAD: 4737604a1685f344ced65ede1ed49b4a1b9b7f6d
-Remote branches: 151
-Pull requests total: 126
+main HEAD: a52398685629e4baf4c8ac036851e2ae1a49b037
+main protected: false
+Remote branches: 158
+Pull requests total: 133
 Pull requests open: 16
 Issues hors PR: 3
 Current workflow YAML files on main: 14
@@ -19,43 +20,53 @@ Tags: 0 at last exhaustive topology audit
 Releases: 0 at last exhaustive topology audit
 ```
 
-## Changements depuis le snapshot précédent
+## Phase production courante
 
-- #124, #125, #127 et #128 ont été mergées dans `main` dans la lignée PokeTrace V4.
-- `main` courant = `4737604a1685f344ced65ede1ed49b4a1b9b7f6d` (merge #128).
-- PR #126 reste une ancienne lignée draft pré-#127/#128 et ne doit pas être mergée telle quelle.
-- branche `fix/v4-poketrace-ja-search-regression-20260818` créée depuis le `main` courant; PR #129 ouverte.
-- branches distantes vérifiées : **151/151**.
-- PR ouvertes vérifiées : **16/16**.
+La lignée V4 TCGdex/PokeTrace #123→#135 est terminée et la dernière classe corrigée est validée en production.
 
-## Phase #129
+PR #135 :
+- feature head `1bcdccaae8997755cc6f65c44dd9770c69cabbe9` ;
+- merge `a52398685629e4baf4c8ac036851e2ae1a49b037` ;
+- objet : récupération fail-closed d'un set exact depuis le catalogue TCGdex immuable lorsque le REST expose un namespace stale/conflictuel.
 
-Le run production post-#128 `32119349938` est SUCCESS mais PokeTrace reste `5 attempted | 0 exact | 5 no-match`; les cinq probes JA ont `provider_candidates=0`.
+Run production naturel `32160680888` sur le merge SHA exact : **SUCCESS**.
+Il prouve la correction vers `SV10` pour Team Rocket's Houndoom `100/098`, Meowth `109/098` et Moltres ex `112/098`. Crobat `117/098` n'était pas échantillonné dans ce run ; aucune preuve live spécifique Crobat n'est revendiquée.
 
-Le run post-#127 avait auparavant prouvé que PokeTrace retrouvait des candidats JA avec le nom canonique/romanisé, le numéro imprimé paddé et `game=pokemon-japanese`. #129 restaure ce contrat de retrieval et conserve le nom TCGdex localisé uniquement comme alias d'acceptation du même `card_id + set_id + localId` exact.
+## Topologie PR importante
 
-## Sécurité
+- #8 : **OPEN / DRAFT / V5 EXPERIMENTAL / NON MERGED** ; ne jamais merger dans `main` sans autorisation explicite ;
+- #126 : **OPEN / DRAFT / SUPERSEDED** par #127/#128 et la suite ; ne pas merger ;
+- #136 : **OPEN / DRAFT / DOCS-ONLY**, fermeture documentaire de la phase #123→#135 ;
+- 16 PR ouvertes au total, détaillées dans `docs/project-open-pr-inventory.md`.
 
-- aucun fuzzy ou traduction comme preuve;
-- aucun changement fair value / `max_recommended` / seuil économique;
-- aucun achat, bid, checkout, paiement ou grading payant;
-- ASK/enchère live jamais transformé en SOLD;
-- PR #8 reste V5 expérimentale, intacte et non mergée.
+## Couverture et risque restant
 
-## Où trouver le détail
+Le run `32160680888` avait une discovery complète mais une couverture marché externe encore incomplète : backlog externe ~2031, ETA diagnostique ~204 runs. Le `0 opportunity` du run n'est donc pas présenté comme un verdict économique globalement trustworthy.
+
+## Invariants
+
+- V4 sur `main` reste production canonique ;
+- PokeTrace reste marché/prix après identité TCGdex ;
+- aucune preuve fuzzy/substr/traduction ;
+- ASK/enchère live != SOLD ;
+- aucun achat, bid, checkout ou paiement automatique ;
+- Robot KB/Neon reste séparé de la décision commerciale V4 ;
+- V5/PR #8 reste séparée.
+
+## Documents d'autorité
 
 ```text
 README.md
   -> handoff canonique de production
 
 docs/project-current-phase.md
-  -> phase active #129
+  -> phase fonctionnelle courante
 
 docs/project-capability-ledger.md
   -> capacités et supersessions
 
 docs/project-branch-inventory.md
-  -> 151/151 branches distantes
+  -> 158/158 branches distantes
 
 docs/project-open-pr-inventory.md
   -> 16/16 PR ouvertes
@@ -65,11 +76,8 @@ docs/project-workflow-inventory.md
 
 docs/project-issue-inventory.md
   -> 3/3 issues
-
-docs/v4-poketrace-run32119349938-regression.md
-  -> preuve et root cause de la régression post-#128
 ```
 
 ## Règle de fraîcheur
 
-Les nombres de branches/PRs/workflows et la branch protection peuvent changer. Avant toute action destructive, merge ou changement de configuration, re-vérifier GitHub live.
+Les nombres de branches/PRs/workflows et la branch protection peuvent changer. Avant tout merge, suppression ou changement de configuration, re-vérifier GitHub live.
