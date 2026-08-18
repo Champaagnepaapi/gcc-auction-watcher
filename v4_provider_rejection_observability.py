@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass
+import re
 from typing import Any, Mapping, Optional
 
 import watcher
 import v4_canonical_multimarket as multimarket
+import v4_multimarket_safety as safety
 
 
 @dataclass(frozen=True)
@@ -42,18 +44,24 @@ def _provider_set(candidate: Mapping[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _explicit_provider_set_prefix(provider_set_name: object) -> str:
+    raw = str(provider_set_name or "").strip()
+    match = re.match(r"^([A-Za-z0-9.]+)\s*:\s*\S", raw)
+    if match is None:
+        return ""
+    return safety._normalize_catalog_set_id(match.group(1))
+
+
 def _candidate_rejection_reason(
     lot: watcher.Lot,
     canonical: multimarket.CanonicalCard,
     candidate: Mapping[str, Any],
 ) -> str:
-    """Explain the existing final V4 PokeTrace gate without changing it."""
+    """Mirror the installed final V4 PokeTrace gate without changing it."""
 
     if str(candidate.get("productType") or "single").strip().casefold() != "single":
         return "PRODUCT_TYPE"
-    if multimarket._normalize(candidate.get("name")) != multimarket._normalize(
-        canonical.name
-    ):
+    if not safety._provider_name_matches(canonical, candidate.get("name")):
         return "NAME"
     if not multimarket._same_card_number(
         candidate.get("cardNumber"), canonical.full_number
@@ -77,28 +85,89 @@ def _candidate_rejection_reason(
         and multimarket._normalize(provider_set_name)
         == multimarket._normalize(canonical.set_name)
     )
+    provider_prefix = _explicit_provider_set_prefix(provider_set_name)
+    expected_prefix = safety._normalize_catalog_set_id(canonical.set_id)
+    if provider_prefix and expected_prefix and provider_prefix != expected_prefix:
+        return "SET_ID_CONFLICT"
+    set_id_prefix_exact = safety._provider_set_id_prefix_matches(
+        canonical, provider_set_name
+    )
     unique_bridge = bool(
         canonical.unique_name_number
         and canonical_den
         and candidate_den == canonical_den
     )
-    if not (set_exact or unique_bridge):
+    if not (set_exact or set_id_prefix_exact or unique_bridge):
         return "SET"
     if not multimarket._poketrace_language_market_is_exact(lot, candidate):
         return "LANGUAGE_GAME"
 
-    # The function installed at runtime is the hardened production gate. If all
-    # macro coordinates above agree but it still rejects, the blocker is one of
-    # the existing sensitive-dimension/catalog-applicability safeguards.
-    if not multimarket._candidate_exact_for_canonical(lot, canonical, candidate):
-        return "SENSITIVE_DIMENSIONS_OR_HARDENING"
+    expected = watcher.expected_commercial_dimensions(lot)
+    if any(value == "__conflict__" for value in expected.values()):
+        return "LISTING_DIMENSION_CONFLICT"
+    observed = safety._candidate_sensitive_dimensions(candidate)
+
+    for dimension in watcher.SENSITIVE_COMMERCIAL_DIMENSIONS:
+        expected_value = expected.get(dimension)
+        if expected_value and expected_value not in observed.get(dimension, set()):
+            return f"LISTING_{dimension.upper()}_UNMATCHED"
+
+    catalog_finish = safety._catalog_only_finish(canonical)
+    for dimension in watcher.SENSITIVE_COMMERCIAL_DIMENSIONS:
+        values = observed.get(dimension, set())
+        if not values or expected.get(dimension):
+            continue
+        if dimension == "finish" and len(values) == 1:
+            if catalog_finish and next(iter(values)) == catalog_finish:
+                continue
+        return f"PROVIDER_ONLY_{dimension.upper()}_UNPROVEN"
+
+    variants = canonical.variants if isinstance(canonical.variants, Mapping) else {}
+    if variants.get("firstEdition") is True and not expected.get("edition"):
+        return "EDITION_APPLICABILITY_UNPROVEN"
+    possible_finishes = sum(
+        variants.get(key) is True for key in ("normal", "holo", "reverse")
+    )
+    if possible_finishes > 1 and not expected.get("finish"):
+        return "CATALOG_FINISH_AMBIGUOUS"
+
+    if not safety.hardened_candidate_exact_for_canonical(lot, canonical, candidate):
+        return "FINAL_HARDENING"
     return "MATCH"
 
 
+def _dimension_summary(values: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for dimension in sorted(watcher.SENSITIVE_COMMERCIAL_DIMENSIONS):
+        value = values.get(dimension)
+        if isinstance(value, set):
+            rendered = "/".join(sorted(str(item) for item in value))
+        else:
+            rendered = str(value or "")
+        if rendered:
+            parts.append(f"{dimension}:{rendered}")
+    return ",".join(parts) or "-"
+
+
+def _variant_summary(canonical: multimarket.CanonicalCard) -> str:
+    variants = canonical.variants if isinstance(canonical.variants, Mapping) else {}
+    parts = [
+        f"{key}:{int(variants.get(key) is True)}"
+        for key in ("normal", "holo", "reverse", "firstEdition")
+        if key in variants
+    ]
+    return ",".join(parts) or "-"
+
+
 def _candidate_example(
-    candidate: Mapping[str, Any], reason: str
+    lot: watcher.Lot,
+    canonical: multimarket.CanonicalCard,
+    candidate: Mapping[str, Any],
+    reason: str,
 ) -> str:
     set_name, set_slug, set_id = _provider_set(candidate)
+    expected = watcher.expected_commercial_dimensions(lot)
+    observed = safety._candidate_sensitive_dimensions(candidate)
     return (
         f"reason={reason} id={_display(candidate.get('id')) or '-'} "
         f"name={_display(candidate.get('name')) or '-'} "
@@ -107,7 +176,10 @@ def _candidate_example(
         f"set_slug={_display(set_slug) or '-'} "
         f"set_id={_display(set_id) or '-'} "
         f"game={_display(candidate.get('game')) or '-'} "
-        f"variant={_display(candidate.get('variant')) or '-'}"
+        f"variant={_display(candidate.get('variant')) or '-'} "
+        f"expected_dims={_display(_dimension_summary(expected), limit=120)} "
+        f"provider_dims={_display(_dimension_summary(observed), limit=120)} "
+        f"tcgdex_variants={_display(_variant_summary(canonical), limit=100)}"
     )
 
 
@@ -148,7 +220,10 @@ def _diagnostic_paced_get(
         f"| provider_candidates={len(candidates)} | reasons {reason_text}"
     )
     for candidate, reason in list(zip(candidates, reasons))[:3]:
-        watcher.log("PokeTrace probe candidate: " + _candidate_example(candidate, reason))
+        watcher.log(
+            "PokeTrace probe candidate: "
+            + _candidate_example(context.lot, context.canonical, candidate, reason)
+        )
     return result
 
 

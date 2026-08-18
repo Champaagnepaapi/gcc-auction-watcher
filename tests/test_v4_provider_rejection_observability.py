@@ -8,10 +8,16 @@ import v4_canonical_multimarket as mm
 import v4_provider_rejection_observability as obs
 
 
-def _lot(*, language="English", series="Base Set", reference="4/102"):
+def _lot(
+    *,
+    name="Charizard",
+    language="English",
+    series="Base Set",
+    reference="4/102",
+):
     return watcher.Lot(
         url="https://gradedcardcenter.com/item/provider-observability-test",
-        title="Charizard",
+        title=name,
         current_price=40.0,
         source_type="fixed",
         grader="PSA",
@@ -30,35 +36,53 @@ def _lot(*, language="English", series="Base Set", reference="4/102"):
     )
 
 
-def _canonical(*, set_name="Base Set", set_id="base1", unique=False):
+def _canonical(
+    *,
+    name="Charizard",
+    full_number="4/102",
+    local_id="4",
+    set_name="Base Set",
+    set_id="base1",
+    language_code="en",
+    unique=False,
+    variants=None,
+):
     return mm.CanonicalCard(
         "EXACT",
-        card_id="base1-4",
+        card_id=f"{set_id}-{local_id}",
         set_id=set_id,
         set_name=set_name,
-        local_id="4",
-        full_number="4/102",
-        name="Charizard",
-        language_code="en",
+        local_id=local_id,
+        full_number=full_number,
+        name=name,
+        language_code=language_code,
+        variants={"holo": True} if variants is None else variants,
         reason="TCGDEX_EXACT_SET_LOCALID",
         unique_name_number=unique,
     )
 
 
-def _candidate(*, set_name="Base Set", game="pokemon", number="4/102"):
+def _candidate(
+    *,
+    name="Charizard",
+    set_name="Base Set",
+    game="pokemon",
+    number="4/102",
+    variant="Holofoil",
+):
     return {
         "id": "pt-observability-card",
-        "name": "Charizard",
+        "name": name,
         "cardNumber": number,
         "set": {"name": set_name, "slug": "fixture-set", "id": "fixture-id"},
-        "variant": "Holofoil",
+        "variant": variant,
         "productType": "single",
         "game": game,
     }
 
 
 class ProviderRejectionObservabilityTests(unittest.TestCase):
-    def test_reason_distinguishes_set_number_language_and_final_hardening(self):
+    def test_reason_distinguishes_set_number_language_and_match(self):
         target = _lot()
         canonical = _canonical()
 
@@ -80,16 +104,70 @@ class ProviderRejectionObservabilityTests(unittest.TestCase):
             ),
             "LANGUAGE_GAME",
         )
-        with patch.object(mm, "_candidate_exact_for_canonical", return_value=False):
-            self.assertEqual(
-                obs._candidate_rejection_reason(target, canonical, _candidate()),
-                "SENSITIVE_DIMENSIONS_OR_HARDENING",
-            )
-        with patch.object(mm, "_candidate_exact_for_canonical", return_value=True):
-            self.assertEqual(
-                obs._candidate_rejection_reason(target, canonical, _candidate()),
-                "MATCH",
-            )
+        self.assertEqual(
+            obs._candidate_rejection_reason(target, canonical, _candidate()),
+            "MATCH",
+        )
+
+    def test_post129_charizard_live_shape_is_not_misdiagnosed_as_name_or_set(self):
+        target = _lot(
+            name="Charizard VStar",
+            language="Japanese",
+            series="Brilliant Stars",
+            reference="015/100",
+        )
+        canonical = _canonical(
+            name="Charizard VStar",
+            full_number="015/100",
+            local_id="015",
+            set_name="Brilliant Stars",
+            set_id="S9",
+            language_code="ja",
+        )
+        candidate = _candidate(
+            name="Charizard VSTAR (Japanese)",
+            number="015/100",
+            set_name="S9: Star Birth",
+            game="pokemon-japanese",
+        )
+        self.assertEqual(
+            obs._candidate_rejection_reason(target, canonical, candidate),
+            "MATCH",
+        )
+
+    def test_post129_zorua_explicit_set_namespace_conflict_is_visible(self):
+        target = _lot(
+            name="Zorua",
+            language="Japanese",
+            series="Night Wanderer",
+            reference="072/064",
+        )
+        canonical = _canonical(
+            name="Zorua",
+            full_number="072/064",
+            local_id="072",
+            set_name="Night Wanderer",
+            set_id="SV7a",
+            language_code="ja",
+        )
+        candidate = _candidate(
+            name="Zorua (Japanese)",
+            number="072/064",
+            set_name="SV6a: Night Wanderer",
+            game="pokemon-japanese",
+        )
+        self.assertEqual(
+            obs._candidate_rejection_reason(target, canonical, candidate),
+            "SET_ID_CONFLICT",
+        )
+
+    def test_provider_only_finish_reports_when_tcgdex_finish_is_unproven(self):
+        target = _lot()
+        canonical = _canonical(variants={})
+        self.assertEqual(
+            obs._candidate_rejection_reason(target, canonical, _candidate()),
+            "PROVIDER_ONLY_FINISH_UNPROVEN",
+        )
 
     def test_paced_probe_logs_counts_and_bounded_identity_examples(self):
         target = _lot()
@@ -109,11 +187,7 @@ class ProviderRejectionObservabilityTests(unittest.TestCase):
         old_get = obs._ORIGINAL_PACED_GET
         try:
             obs._ORIGINAL_PACED_GET = fake_get
-            with patch.object(
-                mm,
-                "_candidate_exact_for_canonical",
-                side_effect=lambda _lot, _canonical, candidate: candidate["set"]["name"] == "Base Set",
-            ), patch.object(watcher, "log", side_effect=messages.append):
+            with patch.object(watcher, "log", side_effect=messages.append):
                 result = obs._diagnostic_paced_get(
                     mm.RequestBudget(),
                     f"{mm.POKETRACE_BASE_URL}/cards",
@@ -129,10 +203,16 @@ class ProviderRejectionObservabilityTests(unittest.TestCase):
         self.assertIn("MATCH=1", joined)
         self.assertIn("SET=1", joined)
         self.assertIn("set=Jungle", joined)
+        self.assertIn("tcgdex_variants=holo:1", joined)
         self.assertNotIn("api_key", joined.casefold())
 
     def test_nonexact_tcgdex_result_logs_final_blocker_only(self):
-        target = _lot(language="Japanese", series="VSTAR Universe", reference="177/172")
+        target = _lot(
+            name="Galarian Zapdos",
+            language="Japanese",
+            series="VSTAR Universe",
+            reference="177/172",
+        )
         old_resolver = obs._ORIGINAL_TCGDEX_RESOLVER
         messages = []
         try:
