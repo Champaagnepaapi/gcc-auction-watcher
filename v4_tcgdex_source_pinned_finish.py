@@ -168,9 +168,12 @@ def _parse_source_finish_proof(
     source_path: str,
 ) -> SourcePinnedFinishProof | None:
     # The path itself is derived from the already-proven exact TCGdex identity;
-    # additionally require the source file to import that exact set.
+    # additionally require the source file to import that exact set. TCGdex's
+    # pinned TypeScript catalogue mixes semicolon and semicolonless style, so
+    # accept either syntax while still requiring the whole import line to match.
     set_import = re.compile(
-        rf"import\s+Set\s+from\s+['\"]\.\./{re.escape(set_id)}['\"]\s*;"
+        rf"^\s*import\s+Set\s+from\s+['\"]\.\./{re.escape(set_id)}['\"]\s*;?\s*$",
+        flags=re.MULTILINE,
     )
     if set_import.search(text) is None:
         return None
