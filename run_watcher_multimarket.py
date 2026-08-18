@@ -47,6 +47,7 @@ from v4_tcgdex_generalized_coordinate_recovery import (
 from v4_tcgdex_japanese_set_aliases import install_v4_tcgdex_japanese_set_aliases
 from v4_tcgdex_observability import install_v4_tcgdex_observability
 from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
+from v4_tcgdex_source_pinned_finish import install_v4_tcgdex_source_pinned_finish
 from v4_tcgdex_two_of_three_backport import (
     install_v4_tcgdex_two_of_three_backport,
 )
@@ -103,6 +104,10 @@ if __name__ == "__main__":
     # Last TCGdex identity fallback: after every existing exact path says
     # NO_MATCH, prove a globally unique printed coordinate without adding aliases.
     install_v4_tcgdex_unique_coordinate_fallback()
+    # Correct only immutable, source-pinned finish metadata when the exact same
+    # TCGdex card's REST projection is known to disagree with cards-database.
+    # This runs after identity is fully proven and before any market provider.
+    install_v4_tcgdex_source_pinned_finish()
     # PokeTrace stays market-only. Recover V5's proven structured retrieval
     # contract (card_number + language game) only after TCGdex has resolved the
     # canonical card; all exact candidate/commercial/grade gates remain V4's.
