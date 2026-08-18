@@ -34,6 +34,9 @@ from v4_notification_signal_quality_guard import (
 )
 from v4_poketrace_market_retrieval import install_v4_poketrace_market_retrieval
 from v4_private_auction_coverage import install_v4_private_auction_coverage
+from v4_provider_rejection_observability import (
+    install_v4_provider_rejection_observability,
+)
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
 from v4_structural_edge_hunter import install_v4_structural_edge_hunter
@@ -157,6 +160,10 @@ if __name__ == "__main__":
     # replace/wrap that entrypoint, otherwise the preservation wrapper is lost.
     # This remains diagnostics-only: no identity, matching, valuation or budget change.
     install_v4_tcgdex_observability()
+    # Final bounded reason logging wraps the already-installed TCGdex/PokeTrace
+    # gates. It records only public card/provider identity fields and cannot
+    # change matching, evidence, budgets, valuation, notifications or state.
+    install_v4_provider_rejection_observability()
     # Install last so the passive wrapper sees the final production collectors.
     install_v4_kb_shadow_capture()
     exit_code = 1
