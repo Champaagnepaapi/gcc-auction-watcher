@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from email.header import Header
+import re
 from typing import Any, Mapping
 
 import requests
 
 import watcher
 import v4_canonical_multimarket as mm
+import v4_poketrace_market_retrieval as poketrace_retrieval
 
 
 _ORIGINAL_PROVIDER_EXACT = mm._candidate_exact_for_canonical
@@ -47,6 +49,54 @@ def _catalog_only_finish(canonical: mm.CanonicalCard) -> str:
     return observed[0] if len(observed) == 1 else ""
 
 
+def _numeric_secret_number(value: object) -> bool:
+    left, right = _canonical_number_parts(value)
+    if not (left.isdigit() and right.isdigit()):
+        return False
+    return int(left) > int(right)
+
+
+def _provider_name_matches(canonical: mm.CanonicalCard, candidate_name: object) -> bool:
+    if mm._normalize(candidate_name) == mm._normalize(canonical.name):
+        return True
+    if poketrace_retrieval.exact_provider_name_alias_matches(canonical, candidate_name):
+        return True
+
+    # PokeTrace appends the display annotation `(Secret)` to some cards whose
+    # printed collector number itself proves the secret-rarity relation
+    # (numerator > denominator). Strip only this exact trailing provider label;
+    # it is not a finish/edition/stamp and cannot manufacture a microvariant.
+    raw = str(candidate_name or "").strip()
+    match = re.fullmatch(r"(.+?)\s*\(Secret\)\s*", raw, flags=re.IGNORECASE)
+    if match and _numeric_secret_number(canonical.full_number):
+        return mm._normalize(match.group(1)) == mm._normalize(canonical.name)
+    return False
+
+
+def _normalize_catalog_set_id(value: object) -> str:
+    raw = re.sub(r"[^A-Za-z0-9.]+", "", str(value or "")).casefold()
+    match = re.fullmatch(r"([a-z]+)0*(\d+)(.*)", raw)
+    if not match:
+        return raw
+    prefix, digits, suffix = match.groups()
+    return f"{prefix}{int(digits)}{suffix}"
+
+
+def _provider_set_id_prefix_matches(
+    canonical: mm.CanonicalCard,
+    provider_set_name: object,
+) -> bool:
+    """Bridge only a literal PokeTrace `<catalog-id>: <label>` prefix."""
+
+    raw = str(provider_set_name or "").strip()
+    match = re.match(r"^([A-Za-z0-9.]+)\s*:\s*\S", raw)
+    if match is None:
+        return False
+    observed = _normalize_catalog_set_id(match.group(1))
+    expected = _normalize_catalog_set_id(canonical.set_id)
+    return bool(observed and expected and observed == expected)
+
+
 def hardened_candidate_exact_for_canonical(
     lot: watcher.Lot,
     canonical: mm.CanonicalCard,
@@ -59,7 +109,7 @@ def hardened_candidate_exact_for_canonical(
     """
     if str(candidate.get("productType") or "single").strip().casefold() != "single":
         return False
-    if mm._normalize(candidate.get("name")) != mm._normalize(canonical.name):
+    if not _provider_name_matches(canonical, candidate.get("name")):
         return False
     if not _same_card_number(candidate.get("cardNumber"), canonical.full_number):
         return False
@@ -80,6 +130,10 @@ def hardened_candidate_exact_for_canonical(
     set_exact = bool(
         provider_set and mm._normalize(provider_set) == mm._normalize(canonical.set_name)
     )
+    # PokeTrace set labels observed live use deterministic catalogue prefixes,
+    # e.g. `SWSH04: Vivid Voltage`. Exact prefix == exact TCGdex set ID is a
+    # provider nomenclature bridge, not fuzzy set matching.
+    set_id_prefix_exact = _provider_set_id_prefix_matches(canonical, provider_set)
     # If provider omitted the denominator, do not let catalog uniqueness bridge
     # a mismatching set. Exact set + exact localId is still deterministic.
     unique_bridge = bool(
@@ -87,7 +141,7 @@ def hardened_candidate_exact_for_canonical(
         and canonical_den
         and candidate_den == canonical_den
     )
-    if not (set_exact or unique_bridge):
+    if not (set_exact or set_id_prefix_exact or unique_bridge):
         return False
     if not mm._poketrace_language_market_is_exact(lot, candidate):
         return False
@@ -203,7 +257,6 @@ def hardened_multimarket_process_external_market_candidates(
         )
         combined = mm._combine_retry_with_fallback(poketrace, fallback)
         if not (
-
             combined.status == watcher.EXTERNAL_MATCHED
             and combined.strength == watcher.EVIDENCE_STRONG
             and combined.estimate is not None
@@ -217,7 +270,6 @@ def hardened_multimarket_process_external_market_candidates(
                 fetch_now,
             )
         return combined
-
 
     opportunities = mm._ORIGINAL_PROCESS_EXTERNAL(
         page,
