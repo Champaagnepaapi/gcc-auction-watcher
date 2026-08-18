@@ -14,6 +14,7 @@ on:
       - "v4_external_coverage_drain.py"
       - "v4_multimarket_safety.py"
       - "v4_structural_edge_hunter.py"
+      - "v4_provider_rejection_observability.py"
       - "v4_tcgdex_exact_coordinate_recovery.py"
       - "v4_tcgdex_generalized_coordinate_recovery.py"
       - "v4_tcgdex_run1054_set_aliases.py"
@@ -68,6 +69,7 @@ jobs:
           python -m py_compile v4_external_coverage_drain.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile v4_structural_edge_hunter.py
+          python -m py_compile v4_provider_rejection_observability.py
           python -m py_compile v4_tcgdex_exact_coordinate_recovery.py
           python -m py_compile v4_tcgdex_generalized_coordinate_recovery.py
           python -m py_compile v4_tcgdex_run1054_set_aliases.py
