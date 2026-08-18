@@ -44,6 +44,7 @@ from v4_tcgdex_exact_coordinate_recovery import install_v4_tcgdex_exact_coordina
 from v4_tcgdex_generalized_coordinate_recovery import (
     install_v4_tcgdex_generalized_coordinate_recovery,
 )
+from v4_tcgdex_japanese_set_aliases import install_v4_tcgdex_japanese_set_aliases
 from v4_tcgdex_observability import install_v4_tcgdex_observability
 from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
 from v4_tcgdex_two_of_three_backport import (
@@ -86,9 +87,11 @@ if __name__ == "__main__":
     install_canonical_multimarket_pipeline()
     # First preserve the bounded reviewed per-card bridges from PR #119.
     install_v4_tcgdex_exact_coordinate_recovery()
-    # Register reviewed set-level aliases from production run #1054 before the
-    # generic exact-coordinate layer is installed. Conflicts fail closed.
+    # Register reviewed set-level aliases before the generic exact-coordinate
+    # layer. Run-1054 aliases stay intact; the Japanese registry extension is
+    # separately source-pinned and conflict-checked.
     install_v4_tcgdex_run1054_set_aliases()
+    install_v4_tcgdex_japanese_set_aliases()
     # Then recover whole exact set/namespaces and bounded display suffix cases.
     # This remains exact set + localId proof: no fuzzy matching or variant bypass.
     install_v4_tcgdex_generalized_coordinate_recovery()
