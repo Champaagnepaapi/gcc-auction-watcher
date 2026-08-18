@@ -2,99 +2,72 @@
 
 > **Source dynamique de reprise pour les PR encore ouvertes.**
 >
-> Ce fichier complète `README.md`, `docs/project-capability-ledger.md` et `docs/project-branch-inventory.md`. Les statuts GitHub réels restent l'autorité ultime ; ce snapshot sert à empêcher qu'une vieille PR ouverte soit oubliée ou prise à tort pour de la production.
+> Ce fichier complète `README.md`, `docs/project-capability-ledger.md` et `docs/project-branch-inventory.md`. L’état GitHub live reste l’autorité ultime.
 
-Snapshot vérifié : **17 août 2026**.
+Snapshot vérifié : **17 août 2026, après merge #123 et création #124**.
 
 ## Résultat exhaustif
 
-GitHub Search retourne **120 pull requests au total** dans le dépôt et exactement **16 PR ouvertes** au moment de cet audit. Les 16 ouvertes ont été vérifiées individuellement ou dans leur stack fonctionnelle. Les anciennes PR ont également été parcourues pendant l'audit de capacités afin de reconstruire les chaînes de supersession documentées dans le capability ledger.
+GitHub contient désormais **121 pull requests au total** et exactement **15 PR ouvertes**. PR #122 et #123 ne sont plus ouvertes : #123 a été mergée dans `main` au SHA `a2878cae20987e3ff16c8aedf6f67d07957f039f`; #122 a été fermée/supersedée après que son travail soit entré dans `main` via #123.
 
-| PR | Draft | Head vérifié | Classification projet | Instruction |
+| PR | Draft | Head / lignée vérifiée | Classification projet | Instruction |
 |---|---:|---|---|---|
-| #8 | oui | `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` | `V5_ONLY` | V5 expérimentale canonique. **Ne jamais merger dans main sans autorisation explicite.** |
-| #54 | non | `55aa8af90be720b69e6d61cf0f37190a588e3275` | `SUPERSEDED / STALE_OPEN` | Son unique fix `pip install -r requirements.txt` avant le filtre KB est déjà présent sur `main`. Ne pas merger tel quel. |
-| #87 | non | `28659a2254a115caf59c01f039a75d7675ccaf75` | `DEFERRED / BEHAVIOR_CHANGE` | Vrai changement encore non production : ntfy GCC-only illiquide dès 30 %, >=2 GCC SOLD, floor absolu 0 €. Nécessite décision explicite avant reprise/validation/merge. |
-| #92 | oui | `772353311abac836afbc618047a5e2b146806e36` | `V5_ONLY / SHADOW` | PPT identity shadow V5. Retrieval/helper seulement, pas autorité automatique. |
-| #96 | oui | `360ae33a67987e0a981b348e636bd7e2f964667e` | `V5_ONLY / DEFERRED` | Rejet Pocket digital + curated physical catalog gaps. Non mergée dans V5. |
-| #106 | oui | `b2372ceed1591075466df9334255d353534d8b1d` | `SHADOW / DEFERRED` | Clean PPT V4 shadow, successeur de #90. |
-| #107 | oui | `7d70844b5511c13f809c7686e2a64c3f705802c4` | `SHADOW / DEFERRED` | PPT Japan display-only, successeur de #95/#105. |
-| #108 | oui | `e2a6fafeaa4a607010f0bd7378bc70caa708f306` | `SHADOW / DEFERRED` | Fondation Global Multi-Vault. Ne pas intégrer seule : suivre la stack complète jusqu'à #115. |
-| #109 | oui | `f3f94c4436b60e307f6ea8e5d97b92d3347d5db2` | `SHADOW / DEFERRED` | Live shadow multi-vault. |
-| #110 | oui | `fa98713591f002eb0238e4535b718a037f90f86f` | `SHADOW / DEFERRED` | Diagnostics de rejet multi-vault. |
-| #111 | oui | `170c5f670dfa60b14d5d9741257259632bc3dadc` | `SUPERSEDED / STALE_OPEN` | Ancienne refonte README/repo hygiene basée sur un main ancien. PR #123 contient un handoff/ledger/inventaire plus récent et plus complet. Ne pas merger #111 tel quel. |
-| #113 | oui | `a771b783fbcd98c4fdb6ba1008df35fa83263b54` | `SHADOW / DEFERRED` | Retrieval hardening magi/Fanatics/COMC. |
-| #114 | oui | `c40aa846ce5fdc4213afa0895e4440a04995b85a` | `SHADOW / DEFERRED` | Rejet des pages Magi explicitement SOLD dans la lane ASK. |
-| #115 | oui | `e9906b97ee54251fb4ff85417c5a8556da9068a1` | `SHADOW / DEFERRED` | Route COMC exact-set facet. Dernier child de la stack globale auditée. |
-| #122 | non | `e8f00ef1cd36059ba08e8c7a27a18eb8183cdd18` | `DEFERRED / SUPERSEDED_CANDIDATE` | Fallback TCGdex coordonnée unique validé. PR #123 l'étend avec la capacité V5 #31 et la mémoire durable. Garder ouverte jusqu'à décision explicite. |
-| #123 | oui | **head mobile — re-vérifier GitHub avant toute action** | `DEFERRED / CURRENT_RECOVERY` | Candidate actuelle de récupération globale + backport TCGdex. Son SHA final est volontairement consigné dans la PR/CI plutôt que dans ce fichier auto-modifiant. |
+| #8 | oui | V5 `agent/v5-poketrace-cardmarket-market-data` | `V5_ONLY` | V5 expérimentale canonique. **Ne jamais merger dans main sans autorisation explicite.** |
+| #54 | non | `agent/v4-kb-filter-stdlib-hotfix` | `SUPERSEDED / STALE_OPEN` | Son fix dépendances existe déjà sur `main`. Ne pas merger tel quel. |
+| #87 | non | `fix/v4-gcc-only-30pct-notify` | `DEFERRED / BEHAVIOR_CHANGE` | Vrai changement produit encore non production : GCC-only illiquide dès 30 %, >=2 GCC SOLD, floor 0 €. Décision explicite requise. |
+| #92 | oui | `agent/v5-ppt-identity-shadow` | `V5_ONLY / SHADOW` | PPT identity shadow V5, helper uniquement. |
+| #96 | oui | `agent/v5-catalog-gap-hardening` | `V5_ONLY / DEFERRED` | Pocket digital + curated physical catalog gaps. |
+| #106 | oui | `agent/v4-ppt-clean-20260816` | `SHADOW / DEFERRED` | Clean PPT V4 shadow, successeur de #90. |
+| #107 | oui | `agent/japan-edge-ppt-clean-20260816` | `SHADOW / DEFERRED` | PPT Japan display-only. |
+| #108 | oui | `feat/v4-global-multivault-edge-foundation` | `SHADOW / DEFERRED` | Fondation Global Multi-Vault. Utiliser la stack complète, pas cette PR seule. |
+| #109 | oui | `feat/v4-global-live-shadow` | `SHADOW / DEFERRED` | Live shadow multi-vault. |
+| #110 | oui | `feat/v4-global-rejection-diagnostics` | `SHADOW / DEFERRED` | Diagnostics de rejet multi-vault. |
+| #111 | oui | `docs/repo-hygiene-readme-20260816` | `SUPERSEDED / STALE_OPEN` | Snapshot docs ancien, superseded par #123 + inventaires actuels. |
+| #113 | oui | `feat/v4-global-retrieval-hardening` | `SHADOW / DEFERRED` | Retrieval hardening magi/Fanatics/COMC. |
+| #114 | oui | `fix/v4-global-magi-sold-filter` | `SHADOW / DEFERRED` | Rejet des pages Magi explicitement SOLD dans la lane ASK. |
+| #115 | oui | `fix/v4-global-comc-groudon-resolution` | `SHADOW / DEFERRED` | Route COMC exact-set facet, dernier child de la stack globale auditée. |
+| #124 | oui | `aed8088d2368f4b72bc19cebc129cce66979dd1b` au snapshot initial CI | `CURRENT_RECOVERY / V4` | Récupère le contrat structuré PokeTrace V5 (`card_number` + `game`) dans V4 après TCGdex exact. Draft jusqu’à validation/docs finales; aucun merge implicite. |
 
-Aucune PR de cette table n'est autorisée au merge par le seul fait d'être ouverte/mergeable.
+Aucune PR de cette table n’est autorisée au merge par le seul fait d’être ouverte ou mergeable.
 
 ---
 
-# Cas importants retrouvés pendant le deep audit
+## PR #124 — récupération PokeTrace structurée
 
-## PR #54 — ouverte mais déjà absorbée par `main`
+Root cause du run production #1076 (`32041486642`) : TCGdex résout **8/11** identités exactes, puis PokeTrace retourne **0/8** parce que V4 utilisait encore une recherche libre `name + number`, sans les champs structurés déjà utilisés par V5.
 
-PR #54 ajoutait uniquement l'installation des dépendances V4 dans `V4 KB shadow ingest` avant le filtre Python.
+Contrat récupéré dans #124 :
 
-Le workflow `main` courant contient déjà :
+- EN -> `game=pokemon` ;
+- JA -> `game=pokemon-japanese` ;
+- collector number canonique -> `card_number` ;
+- PokeTrace reste **market-only après identité TCGdex** ;
+- les gates V4 carte/set/numéro/langue/variant/grader/grade restent autoritaires ;
+- aucune traduction/fuzzy comme preuve ;
+- FR/DE/etc. ne gaspillent plus un appel PokeTrace qu’un gate langue V4 rejetterait ensuite ; APR/eBay restent les fallbacks.
 
-```yaml
-- name: Set up Python
-  uses: actions/setup-python@v5
-  with:
-    python-version: "3.12"
-    cache: pip
-    cache-dependency-path: requirements.txt
+Validation actuelle de la branche : run `32043115154`, job `95425820955` — **SUCCESS**, **676/676 tests PASS**, YAML PASS, `git diff --check` PASS, discovery read-only `80/80`, `effective_only=0`, `legacy_only=0`, actions économiques/notifications `0`.
 
-- name: Install V4 helper dependencies
-  run: python -m pip install -r requirements.txt
-```
+Aucun live PokeTrace production n’a été lancé pour #124 et aucune amélioration live n’est revendiquée avant cette mesure.
 
-Conclusion : **#54 est stale-open/superseded par l'histoire ultérieure de main**. Ne pas merger. Ne pas fermer automatiquement sans instruction utilisateur.
+---
 
-## PR #87 — réellement non production
+## PR #54 — ouverte mais absorbée par `main`
 
-PR #87 n'est ni fermée ni draft : elle est **ouverte, non-draft, non mergée**.
+Le workflow `v4-kb-shadow-ingest.yml` courant installe déjà `requirements.txt` avant les helpers V4. #54 reste donc `STALE_OPEN/SUPERSEDED`.
 
-Elle propose :
+## PR #87 — vraie décision produit encore séparée
 
-- GCC-only `ILLIQUID_PRICE_DISCOVERY` fixed notifiable dès **30 % de décote** ;
-- au moins **2 GCC SOLD exacts** ;
-- calcul direct de la décote ;
-- floor absolu par défaut **0 €** au lieu de 10 € ;
-- external graded SOLD inchangé ;
-- auctions silencieuses avant `<=5 min` ;
-- aucun changement de FV, `max_recommended`, identity, discovery ou transaction.
-
-Le `main` courant reste sur :
+Le `main` courant conserve :
 
 ```text
 V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO = 1.75
 V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = 10
 ```
 
-Donc **#87 représente encore une vraie décision produit/économique en attente**. Ne pas la présenter comme production et ne pas l'absorber implicitement dans #123.
+#87 propose 30 % de décote, >=2 GCC SOLD exacts et floor 0 €. Ne pas l’absorber dans un travail provider/identité.
 
-## PR #111 — docs historiques superseded
-
-#111 voulait déjà simplifier le README et documenter la forte surface de branches. Son intuition était correcte, mais son snapshot est ancien et incomplet par rapport au deep audit actuel :
-
-- basé sur un ancien `main` ;
-- ne connaît pas la chaîne TCGdex #117-#123 ;
-- ne contient pas l'inventaire exhaustif 145/145 ;
-- ne contient pas l'audit complet des 16 PR ouvertes ;
-- ne centralise pas les capacités historiques V4/V5/Robot KB/Source Scout/Global comme #123.
-
-Conclusion : **#111 est un actif historique docs, mais sa fonction est superseded par #123**. Ne pas merger tel quel et ne pas fermer automatiquement.
-
----
-
-# Stack Global Multi-Vault — PR ouvertes liées
-
-Ces PR ne sont pas six fonctionnalités indépendantes à merger séparément. Elles forment une seule lignée :
+## Stack Global Multi-Vault
 
 ```text
 #108 foundation
@@ -105,17 +78,10 @@ Ces PR ne sont pas six fonctionnalités indépendantes à merger séparément. E
  -> #115 COMC exact-set route
 ```
 
-Réutilisation future : repartir de la **dernière stack compatible**, puis rebase/port propre sur le `main` courant. Ne pas merger un child directement sur `main`.
+Réutilisation future : repartir de la dernière stack compatible et la reporter proprement sur le `main` courant. Ne pas merger un child directement sur `main`.
 
 ---
 
-# Règle de fraîcheur
+## Règle de fraîcheur
 
-Ce fichier doit être mis à jour lorsque :
-
-- une PR est créée, mergée, fermée ou convertie draft/non-draft ;
-- son head change de manière fonctionnelle ;
-- une PR ouverte devient `SUPERSEDED` parce que sa capacité est déjà absorbée ailleurs ;
-- une stack de PR change de successeur autoritaire.
-
-Pour toute décision de merge, **re-vérifier GitHub au moment de l'action** : ce snapshot ne remplace jamais l'état live du dépôt.
+Mettre à jour ce fichier lorsqu’une PR est créée, mergée, fermée, change de statut fonctionnel ou de chaîne de supersession. Pour toute décision de merge, **re-vérifier GitHub live**.
