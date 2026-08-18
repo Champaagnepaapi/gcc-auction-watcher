@@ -10,22 +10,18 @@ import watcher
 import v4_canonical_multimarket as multimarket
 
 
-# Backport only the proven market-retrieval contract from the current V5
-# PokeTrace provider. Identity remains TCGdex-first and all V4 acceptance,
-# grader/grade, variant and economic gates stay in v4_canonical_multimarket.
+# Backport only deterministic provider-facing retrieval from the proven V5
+# lineage. Identity remains TCGdex-first and all V4 acceptance, grader/grade,
+# variant and economic gates stay authoritative after retrieval.
 #
-# V4 previously queried `/cards` with one unstructured string such as
-# "Lapras 177/172" and no language/game discriminator. That is especially
-# harmful for Japanese cards because PokeTrace separates `pokemon` from
-# `pokemon-japanese`. V5 already solved this by sending card_number + game as
-# structured retrieval filters. This module recovers that behavior without
-# letting PokeTrace become an identity resolver.
+# PR #127 separated provider-facing collector-number formatting from local
+# matching normalization because PokeTrace exposes padded surfaces such as
+# 069/062 and 109/098. Keep that boundary intact here.
 #
-# Important provider boundary: matching normalization and retrieval formatting
-# are deliberately separate. PokeTrace's catalog exposes padded collector
-# numbers such as 069/062 and 109/098. Stripping those zeroes before sending the
-# exact `card_number` filter can turn a known provider card into zero candidates.
-# Acceptance still uses V4's numeric-safe comparison after retrieval.
+# Live diagnostics also proved that Japanese GCC/TCGdex identities can need a
+# provider-only localized search name. A localized alias is therefore admitted
+# only when it comes from the exact same TCGdex card id + set id + localId. It
+# never replaces the listing identity and never proves a sensitive variant.
 
 
 @dataclass(frozen=True)
@@ -34,6 +30,8 @@ class PokeTraceRetrievalContext:
     card_number: str
     game: str
     language_code: str
+    canonical_card_id: str = ""
+    provider_name_aliases: tuple[str, ...] = ()
 
 
 _ACTIVE_CONTEXT: ContextVar[Optional[PokeTraceRetrievalContext]] = ContextVar(
@@ -51,7 +49,7 @@ _CARD_NUMBER_LABEL_PREFIX = re.compile(
 
 
 def _normalize_card_number(value: object) -> str:
-    """Canonical number comparison used by the inherited V5 matching contract."""
+    """Canonical numeric-safe number comparison used after retrieval."""
 
     compact = unicodedata.normalize("NFKC", str(value or "")).strip()
     compact = _CARD_NUMBER_LABEL_PREFIX.sub("", compact)
@@ -69,11 +67,10 @@ def _normalize_card_number(value: object) -> str:
 
 
 def _provider_card_number(value: object) -> str:
-    """Keep TCGdex's proven collector-number surface for PokeTrace retrieval.
+    """Keep TCGdex's proven collector-number surface for provider retrieval.
 
     Safe cleanup removes only presentation labels/whitespace. Leading zeroes,
-    alphanumeric prefixes/suffixes and the denominator surface remain intact so
-    the provider's exact `card_number` filter sees the same printed coordinate.
+    alphanumeric prefixes/suffixes and denominator padding remain intact.
     """
 
     compact = unicodedata.normalize("NFKC", str(value or "")).strip()
@@ -90,6 +87,39 @@ def _exact_market_game(language_code: str) -> str:
     return ""
 
 
+def _exact_tcgdex_localized_name(
+    canonical: multimarket.CanonicalCard,
+    language_code: str,
+) -> str:
+    """Return only a same-card, same-set TCGdex localized provider alias.
+
+    Any transport/problem, malformed detail, card/set/localId conflict or
+    missing name disables the alias and leaves the original retrieval path.
+    """
+
+    card_id = str(canonical.card_id or "").strip()
+    set_id = str(canonical.set_id or "").strip()
+    local_id = str(canonical.local_id or "").strip()
+    if not (language_code and card_id and set_id and local_id):
+        return ""
+    try:
+        status, detail = multimarket._fetch_tcgdex_card_detail(language_code, card_id)
+    except Exception:
+        return ""
+    if status != 200 or not isinstance(detail, Mapping):
+        return ""
+    if str(detail.get("id") or "").strip() not in {"", card_id}:
+        return ""
+    if not multimarket._same_card_number(detail.get("localId"), local_id):
+        return ""
+    set_payload = detail.get("set")
+    if not isinstance(set_payload, Mapping):
+        return ""
+    if str(set_payload.get("id") or "").strip() != set_id:
+        return ""
+    return str(detail.get("name") or "").strip()
+
+
 def _retrieval_context(
     lot: watcher.Lot,
     canonical: multimarket.CanonicalCard,
@@ -101,17 +131,54 @@ def _retrieval_context(
     if not game:
         return None
 
-    search_name = str(canonical.name or "").strip()
+    canonical_name = str(canonical.name or "").strip()
     card_number = _provider_card_number(
         canonical.full_number or canonical.local_id or lot.card_number
     )
-    if not search_name or not card_number:
+    if not canonical_name or not card_number:
         return None
+
+    aliases: list[str] = []
+    search_name = canonical_name
+    if language_code == "ja":
+        localized = _exact_tcgdex_localized_name(canonical, language_code)
+        if localized and multimarket._normalize(localized) != multimarket._normalize(
+            canonical_name
+        ):
+            aliases.append(localized)
+            search_name = localized
+
     return PokeTraceRetrievalContext(
         search_name=search_name,
         card_number=card_number,
         game=game,
         language_code=language_code,
+        canonical_card_id=str(canonical.card_id or "").strip(),
+        provider_name_aliases=tuple(aliases),
+    )
+
+
+def exact_provider_name_alias_matches(
+    canonical: multimarket.CanonicalCard,
+    candidate_name: object,
+) -> bool:
+    """True only for an alias attached to this exact active TCGdex card."""
+
+    context = _ACTIVE_CONTEXT.get()
+    if context is None:
+        return False
+    if not context.canonical_card_id or context.canonical_card_id != str(
+        canonical.card_id or ""
+    ).strip():
+        return False
+    observed = multimarket._normalize(candidate_name)
+    return bool(
+        observed
+        and any(
+            observed == multimarket._normalize(alias)
+            for alias in context.provider_name_aliases
+            if alias
+        )
     )
 
 
@@ -121,7 +188,7 @@ def _structured_paced_get(
     *,
     params: Optional[Mapping[str, object]] = None,
 ):
-    """Inject only structured retrieval fields on `/cards` calls."""
+    """Inject only structured provider retrieval fields on `/cards` calls."""
 
     context = _ACTIVE_CONTEXT.get()
     if context is None or not url.rstrip("/").endswith("/cards"):
@@ -131,9 +198,8 @@ def _structured_paced_get(
     structured["search"] = context.search_name
     structured["card_number"] = context.card_number
     structured["game"] = context.game
-    # Keep V4's existing market, result cap and product_type exactly as supplied
-    # by the canonical provider. These fields only improve retrieval; exact
-    # acceptance still runs afterward through `_candidate_exact_for_canonical`.
+    # Keep V4's market/result cap/product_type untouched. Exact acceptance still
+    # runs afterward through the production fail-closed gate.
     return _ORIGINAL_PACED_GET(budget, url, params=structured)
 
 
