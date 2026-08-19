@@ -26,6 +26,7 @@ from v4_global_economic_confirmation import (
     evaluate_card,
     fetch_poketrace_external,
     identity_from_card,
+    install_global_external_market_stack,
     ppt_external,
     resolve_global_canonical,
 )
@@ -88,6 +89,12 @@ def enrich_confirmation(report: Mapping[str, Any]) -> dict[str, Any]:
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     now = now.astimezone(timezone.utc)
+
+    # Reuse the exact production V4 TCGdex/PokeTrace stack. The previous Global
+    # recovery live bypassed these installed wrappers and therefore resolved 0/5
+    # external canonicals even though the deterministic recovery already exists.
+    install_global_external_market_stack()
+    multimarket.clear_tcgdex_cache()
 
     ppt_key = os.getenv("POKEMONPRICETRACKER_API_KEY", "").strip()
     # 12/60 matches the previously validated bounded V4 PPT observer budget.
