@@ -1,0 +1,103 @@
+name: V4 Global Economic Confirmation Auto Once
+
+# Temporary user-authorized launcher for PR #140 while the connector has no
+# workflow_dispatch endpoint. Creation of this file triggers exactly one
+# read-only economic-confirmation run on this branch; remove it after validation.
+on:
+  push:
+    branches:
+      - feat/v4-global-economic-confirmation-20260819
+    paths:
+      - .github/workflows/v4-global-economic-confirmation-auto-once.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-global-live-shadow
+  cancel-in-progress: true
+
+jobs:
+  economic-confirmation:
+    if: ${{ github.event.head_commit.message == 'ops(global): run economic confirmation once' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NTFY_TOPIC: ""
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        timeout-minutes: 3
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "Playwright browser cache miss: downloading Chromium"
+            playwright install chromium
+          else
+            echo "Playwright browser cache hit: Chromium payload restored"
+          fi
+
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          launch_status=$?
+          set -e
+
+          if [ "$launch_status" -ne 0 ]; then
+            echo "Chromium launch probe failed; bounded dependency repair"
+            timeout 180s playwright install --with-deps chromium
+            python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          fi
+
+      - name: Run read-only economic confirmation diagnostic
+        run: |
+          python v4_global_live_confirmed.py \
+            --output-dir global_shadow_out \
+            --max-identities "5" \
+            --market-candidates "8"
+
+      - name: Assert no tracked runtime mutation
+        run: |
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Upload shadow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-global-market-live-shadow-${{ github.run_id }}
+          path: global_shadow_out/
+          if-no-files-found: error
+          retention-days: 7
