@@ -1,37 +1,29 @@
-# Robot Pokémon / GCC Auction Watcher — inventaire exhaustif des branches
+# Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-> Snapshot GitHub destiné à empêcher la perte de travail historique et les réimplémentations inutiles. GitHub live reste autoritaire.
-
-Snapshot vérifié : **18 août 2026, PR #129 ouverte**.
+Snapshot GitHub vérifié le **18 août 2026**, après création de la branche docs #136.
 
 ## Résultat
 
-- **151/151 branches distantes** trouvées.
-- **151 noms uniques**.
-- `main` production : `4737604a1685f344ced65ede1ed49b4a1b9b7f6d`.
-- branche active : `fix/v4-poketrace-ja-search-regression-20260818`.
-- aucune branche supprimée pendant cette phase.
+- branches distantes : **158**
+- branches uniques : **158**
+- production canonique : `main` = `a52398685629e4baf4c8ac036851e2ae1a49b037`
+- V5 canonique expérimentale : `agent/v5-poketrace-cardmarket-market-data` / PR #8 ; ne pas merger dans `main` sans autorisation explicite.
+- branche de phase docs courante : `docs/v4-tcgdex-poketrace-phase-close-20260818` / PR #136.
 
-## Familles de récupération prioritaires
+## Branches ajoutées depuis l'ancien snapshot 151
 
-- V4 production/historique : `agent/v4-*`, `fix/v4-*`, `adaptive_v4_market_refresh`, `ops/v4-*`.
-- TCGdex/PokeTrace V4 : #119→#125 puis #127/#128; #129 corrige la régression JA de retrieval sans relâcher les gates.
-- V5 : `agent/v5-*`, diagnostics/ops V5 et PR #8. V5 reste expérimentale; ne jamais merger #8 sans autorisation explicite.
-- Robot KB / Neon : `agent/p0-*`, `agent/p1-*`, `agent/p3-*`, `agent/kb-*`.
-- Global Multi-Vault : `feat/v4-global-*` + `fix/v4-global-*`; stack #108→#109→#110→#113→#114→#115.
-- Source Scout / Japan Edge / cert-OCR / diagnostics : conserver comme preuves historiques jusqu'à audit explicite.
+Avant la branche docs, six branches fonctionnelles ont été créées pendant la lignée #130→#135 :
 
-## Phase courante
+- `diag/v4-poketrace-final-gate-20260818`
+- `fix/v4-tcgdex-source-pinned-finish-20260818`
+- `fix/v4-tcgdex-generic-source-finish-proof-20260818`
+- `fix/v4-tcgdex-source-finish-semicolonless-20260818`
+- `fix/v4-tcgdex-source-pinned-set-reconciliation-20260818`
+- `fix/v4-tcgdex-source-set-file-fallback-20260818`
 
-`fix/v4-poketrace-ja-search-regression-20260818` / PR #129 sépare à nouveau :
-- retrieval PokeTrace JA = nom canonique/romanisé + collector number imprimé + `game=pokemon-japanese`;
-- nom TCGdex localisé = alias d'acceptation uniquement, lié au même `card_id + set_id + localId` exact.
+La branche docs #136 porte le total courant à 158.
 
-Aucun fuzzy, aucune traduction comme preuve, aucun achat/bid/checkout/paiement.
-
----
-
-# Contrôle de complétude — liste brute 151/151
+## Liste exhaustive 158/158
 
 ```text
 adaptive_v4_market_refresh
@@ -123,6 +115,7 @@ chore/expose-global-shadow-dispatch-pr
 diag/cert-number-coverage-100-20260815
 diag/kb-fixed-filter-contract-20260815
 diag/v4-gcc-gradation-cert-100
+diag/v4-poketrace-final-gate-20260818
 diag/v4-provider-rejection-observability-20260818
 diag/v5-neon-cache-probe-20260816
 diag/v5-tcgdex-blockers-20260816
@@ -135,6 +128,7 @@ docs/japan-edge-notification-layout-handoff
 docs/latest-v5-canonical-handoff
 docs/repo-hygiene-readme-20260816
 docs/update-readme-v4-auction-v5-status
+docs/v4-tcgdex-poketrace-phase-close-20260818
 docs/v4-tcgdex-run1054-handoff-20260817
 docs/v5-observability-handoff-20260815
 docs/v5-outage-cache-handoff-20260816
@@ -165,9 +159,14 @@ fix/v4-poketrace-provider-bridges-after-127-20260818
 fix/v4-recover-existing-capabilities-20260817
 fix/v4-tcgdex-exact-coordinate-recovery-20260817
 fix/v4-tcgdex-generalized-coordinate-recovery-20260817
+fix/v4-tcgdex-generic-source-finish-proof-20260818
 fix/v4-tcgdex-observability-20260817
 fix/v4-tcgdex-observability-finalizer-20260817
 fix/v4-tcgdex-run1054-aliases-20260817
+fix/v4-tcgdex-source-finish-semicolonless-20260818
+fix/v4-tcgdex-source-pinned-finish-20260818
+fix/v4-tcgdex-source-pinned-set-reconciliation-20260818
+fix/v4-tcgdex-source-set-file-fallback-20260818
 fix/v4-tcgdex-unique-coordinate-fallback-20260817
 fix/v4-tcgdex-unique-coordinate-fallback-check-20260817
 hotfix/v4-stop-cert-missing-spam
@@ -187,6 +186,11 @@ tmp-ignore2
 tmp-noop-check
 ```
 
-## Fraîcheur
+## Branches à traiter avec précaution
 
-Mettre à jour ce fichier quand une branche est créée/supprimée ou lorsqu'une lignée change d'autorité. Ne jamais supprimer une branche uniquement parce qu'elle paraît ancienne.
+- toute branche V5 / PR enfant V5 reste séparée de `main` ;
+- `fix/v4-poketrace-exact-provider-bridges-20260818` correspond à PR #126 et est superseded ;
+- les branches `feat/v4-global-*` / `fix/v4-global-*` sont une stack shadow, pas la V4 production ;
+- les branches `tmp-*`, diagnostics et anciens handoffs ne doivent pas être mergées juste parce qu'elles existent.
+
+Aucune branche n'a été supprimée pendant cet audit.
