@@ -45,7 +45,7 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         self.assertIn("SHADOW/DEFERRED", ledger)
         self.assertIn("PR #8", ledger)
         self.assertIn("V5_ONLY", ledger)
-        self.assertIn("PRs #9, #50, #52, #104", ledger)
+        self.assertIn("PRs structurantes : #9, #50, #52, #104", ledger)
         self.assertIn("DISABLED", ledger)
 
     def test_capability_ledger_preserves_recovered_foundations(self):
