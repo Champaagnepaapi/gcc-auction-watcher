@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: false
+      economic_confirmation:
+        description: "Run read-only PPT/PokeTrace economic confirmation diagnostic"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,12 +36,20 @@ jobs:
     env:
       NTFY_TOPIC: ""
       JAPAN_EDGE_NOTIFY_ENABLED: "false"
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Reject incompatible diagnostic modes
+        if: ${{ inputs.rejection_diagnostics && inputs.economic_confirmation }}
+        run: |
+          echo "::error::Choose rejection_diagnostics OR economic_confirmation, not both."
+          exit 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,15 +62,23 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run hardened read-only multi-market shadow
-        if: ${{ !inputs.rejection_diagnostics }}
+        if: ${{ !inputs.rejection_diagnostics && !inputs.economic_confirmation }}
         run: |
           python v4_global_live_shadow_hardened.py \
             --output-dir global_shadow_out \
             --max-identities "${{ inputs.max_identities }}" \
             --market-candidates "${{ inputs.market_candidates }}"
 
+      - name: Run read-only economic confirmation diagnostic
+        if: ${{ inputs.economic_confirmation && !inputs.rejection_diagnostics }}
+        run: |
+          python v4_global_live_confirmed.py \
+            --output-dir global_shadow_out \
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
+
       - name: Run legacy read-only rejection diagnostics
-        if: ${{ inputs.rejection_diagnostics }}
+        if: ${{ inputs.rejection_diagnostics && !inputs.economic_confirmation }}
         run: |
           python v4_global_rejection_diagnostics.py \
             --output-dir global_shadow_out \
