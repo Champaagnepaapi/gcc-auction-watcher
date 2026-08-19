@@ -11,7 +11,6 @@ never used to establish fair value.
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional, Sequence
@@ -103,6 +102,71 @@ def _parse_observed_at(value: object) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _lot_for_identity(identity: CommercialIdentity) -> watcher.Lot:
+    language = _norm_language(identity.language)
+    language_label = (
+        "Japanese" if language == "ja" else "English" if language == "en" else identity.language
+    )
+    sensitive = " ".join(
+        value for value in (identity.edition, identity.finish, identity.variant) if value
+    ).strip()
+    clean_title = " ".join(
+        value
+        for value in (
+            identity.name,
+            identity.set_name,
+            identity.number,
+            language_label,
+            identity.grader,
+            identity.grade,
+            sensitive,
+        )
+        if value
+    )
+    return watcher.Lot(
+        url="https://global-confirmation.invalid/read-only",
+        title=clean_title,
+        current_price=1.0,
+        source_type="FIXED_PRICE",
+        grader=identity.grader,
+        grade=identity.grade,
+        listing_text=clean_title,
+        card_set=identity.set_name,
+        card_number=identity.number,
+        language=language_label,
+        variant=sensitive,
+    )
+
+
+def resolve_global_canonical(
+    identity: CommercialIdentity,
+) -> tuple[watcher.Lot, multimarket.CanonicalCard]:
+    """Resolve the exact TCGdex macro identity used by every external bridge.
+
+    Global discovery already proved the commercial listing identity. This extra
+    resolver is not allowed to relax it; it only supplies real TCGdex card/set
+    coordinates to provider adapters. A non-EXACT result remains fail-closed.
+    """
+    lot = _lot_for_identity(identity)
+    if not identity.complete_for_exact_market or not identity.opportunity_language:
+        return lot, multimarket.CanonicalCard(
+            "NO_MATCH", reason="GLOBAL_EXTERNAL_IDENTITY_INCOMPLETE"
+        )
+    try:
+        canonical = multimarket.resolve_tcgdex_card(lot)
+    except Exception as error:
+        return lot, multimarket.CanonicalCard(
+            "ERROR", reason=f"GLOBAL_TCGDEX_ERROR:{type(error).__name__}"
+        )
+    if canonical.status != "EXACT":
+        return lot, canonical
+    if canonical.language_code != _norm_language(identity.language):
+        return lot, multimarket.CanonicalCard(
+            "AMBIGUOUS", reason="GLOBAL_TCGDEX_LANGUAGE_CONFLICT"
+        )
+    return lot, canonical
+
+
 def ppt_external(snapshot: PptSnapshot, *, now: datetime) -> ExternalAggregate:
     recent = (
         snapshot.last_sale_at is not None
@@ -136,55 +200,22 @@ def fetch_poketrace_external(
     *,
     budget: multimarket.RequestBudget,
     now: datetime,
+    canonical: Optional[multimarket.CanonicalCard] = None,
+    lot: Optional[watcher.Lot] = None,
 ) -> ExternalAggregate:
-    """Reuse the production V4 PokeTrace exact gate; do not reimplement matching."""
+    """Reuse the production V4 PokeTrace exact gate with a real TCGdex identity."""
     if not identity.complete_for_exact_market or not identity.opportunity_language:
         return ExternalAggregate("PokeTrace/eBay SOLD", "BLOCKED_IDENTITY")
 
-    language = _norm_language(identity.language)
-    language_label = "Japanese" if language == "ja" else "English" if language == "en" else identity.language
-    sensitive = " ".join(
-        value for value in (identity.edition, identity.finish, identity.variant) if value
-    ).strip()
-    clean_title = " ".join(
-        value
-        for value in (
-            identity.name,
-            identity.set_name,
-            identity.number,
-            language_label,
-            identity.grader,
-            identity.grade,
-            sensitive,
+    if lot is None or canonical is None:
+        lot, canonical = resolve_global_canonical(identity)
+    if canonical.status != "EXACT":
+        return ExternalAggregate(
+            "PokeTrace/eBay SOLD",
+            f"TCGDEX_{canonical.status or 'UNRESOLVED'}",
+            note=canonical.reason or "exact TCGdex canonical unavailable",
         )
-        if value
-    )
-    lot = watcher.Lot(
-        url="https://global-confirmation.invalid/read-only",
-        title=clean_title,
-        current_price=1.0,
-        source_type="FIXED_PRICE",
-        grader=identity.grader,
-        grade=identity.grade,
-        listing_text=clean_title,
-        card_set=identity.set_name,
-        card_number=identity.number,
-        language=language_label,
-        variant=sensitive,
-    )
-    local_id = str(identity.number).split("/", 1)[0]
-    canonical = multimarket.CanonicalCard(
-        status="EXACT",
-        card_id=f"global:{hashlib.sha256(identity.strict_key.encode()).hexdigest()[:16]}",
-        set_id="global-gcc-exact",
-        set_name=identity.set_name,
-        local_id=local_id,
-        full_number=identity.number,
-        name=identity.name,
-        language_code=language,
-        reason="GLOBAL_GCC_EXACT_IDENTITY",
-        unique_name_number=False,
-    )
+
     evidence = multimarket._poketrace_evidence(lot, canonical, budget, now)
     estimate = evidence.estimate
     if (
@@ -201,13 +232,13 @@ def fetch_poketrace_external(
             int(estimate.exact_grade_count or 0),
             None,
             evidence.strength,
-            note=(evidence.note or "") + "; corroboration only: no explicit last-sale timestamp",
+            note=(evidence.note or "") + "; TCGdex canonical exact; corroboration only: no explicit last-sale timestamp",
         )
     return ExternalAggregate(
         "PokeTrace/eBay SOLD",
         evidence.status or "UNAVAILABLE",
         evidence_strength=evidence.strength or "UNAVAILABLE",
-        note=evidence.note or "",
+        note=(evidence.note or "") + "; TCGdex canonical exact",
     )
 
 
