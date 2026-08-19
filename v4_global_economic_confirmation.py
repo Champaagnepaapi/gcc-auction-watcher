@@ -24,12 +24,27 @@ from v4_global_market_core import (
     CommercialIdentity,
 )
 from v4_global_ppt_confirmation import PptSnapshot
+from v4_multimarket_safety import install_multimarket_safety_hardening
+from v4_poketrace_market_retrieval import install_v4_poketrace_market_retrieval
+from v4_tcgdex_exact_coordinate_recovery import install_v4_tcgdex_exact_coordinate_recovery
+from v4_tcgdex_generalized_coordinate_recovery import (
+    install_v4_tcgdex_generalized_coordinate_recovery,
+)
+from v4_tcgdex_japanese_set_aliases import install_v4_tcgdex_japanese_set_aliases
+from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
+from v4_tcgdex_source_pinned_finish import install_v4_tcgdex_source_pinned_finish
+from v4_tcgdex_two_of_three_backport import install_v4_tcgdex_two_of_three_backport
+from v4_tcgdex_unique_coordinate_fallback import (
+    install_v4_tcgdex_unique_coordinate_fallback,
+)
 
 EXTERNAL_MIN_SALES = 3
 EXTERNAL_CONFIRM_RATIO = 1.25
 CORRELATED_PROVIDER_CONFLICT_RATIO = 1.35
 RECENT_DAYS = 90
 DEFAULT_MIN_DISCOUNT = 30.0
+
+_GLOBAL_EXTERNAL_STACK_INSTALLED = False
 
 
 @dataclass(frozen=True)
@@ -69,6 +84,38 @@ class ConfirmationDecision:
     external_sales_count: int = 0
     correlation_group: str = EBAY_GRADED_AGGREGATE
     note: str = ""
+
+
+def install_global_external_market_stack() -> None:
+    """Reuse the exact V4 production catalog/provider stack for Global confirms.
+
+    The first recovery live accidentally called the base TCGdex resolver directly,
+    bypassing the deterministic V4 wrappers already merged on main (#119→#123 and
+    subsequent source-pinned hardening). Install those proven wrappers in the same
+    production order instead of reimplementing a second Global resolver.
+
+    This is identity/provider plumbing only: no valuation, notification or
+    transaction capability is enabled here.
+    """
+
+    global _GLOBAL_EXTERNAL_STACK_INSTALLED
+    if _GLOBAL_EXTERNAL_STACK_INSTALLED:
+        return
+
+    install_v4_tcgdex_exact_coordinate_recovery()
+    install_v4_tcgdex_run1054_set_aliases()
+    install_v4_tcgdex_japanese_set_aliases()
+    install_v4_tcgdex_generalized_coordinate_recovery()
+    install_v4_tcgdex_two_of_three_backport()
+    install_v4_tcgdex_unique_coordinate_fallback()
+    install_v4_tcgdex_source_pinned_finish()
+
+    # PokeTrace remains market-only after TCGdex identity. Reuse the production
+    # structured EN/JA retrieval contract plus the fail-closed provider identity /
+    # microvariant matcher; the process/notification wrappers are inert here.
+    install_v4_poketrace_market_retrieval()
+    install_multimarket_safety_hardening()
+    _GLOBAL_EXTERNAL_STACK_INSTALLED = True
 
 
 def _norm_language(value: object) -> str:
@@ -145,7 +192,9 @@ def resolve_global_canonical(
 
     Global discovery already proved the commercial listing identity. This extra
     resolver is not allowed to relax it; it only supplies real TCGdex card/set
-    coordinates to provider adapters. A non-EXACT result remains fail-closed.
+    coordinates to provider adapters. The live runner installs the same layered
+    deterministic TCGdex stack as V4 production before calling this function.
+    A non-EXACT result remains fail-closed.
     """
     lot = _lot_for_identity(identity)
     if not identity.complete_for_exact_market or not identity.opportunity_language:
