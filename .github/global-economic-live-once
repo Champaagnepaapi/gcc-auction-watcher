@@ -1,0 +1,7 @@
+authorized: 2026-08-19
+mode: READ_ONLY_ECONOMIC_CONFIRMATION
+max_identities: 5
+market_candidates: 8
+notifications: false
+transactions: false
+purpose: validate clean canonical names + bounded PPT priority
