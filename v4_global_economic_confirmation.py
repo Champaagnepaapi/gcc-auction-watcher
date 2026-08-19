@@ -157,19 +157,12 @@ def _lot_for_identity(identity: CommercialIdentity) -> watcher.Lot:
     sensitive = " ".join(
         value for value in (identity.edition, identity.finish, identity.variant) if value
     ).strip()
-    clean_title = " ".join(
-        value
-        for value in (
-            identity.name,
-            identity.set_name,
-            identity.number,
-            language_label,
-            identity.grader,
-            identity.grade,
-            sensitive,
-        )
-        if value
-    )
+    # `title` is the name input consumed by the deterministic TCGdex resolver.
+    # All other identity axes already have dedicated Lot fields. Putting set /
+    # number / grader / grade into this synthetic title polluted the recovered
+    # canonical.name and caused PokeTrace retrieval to search the whole identity
+    # string instead of the actual card name.
+    clean_title = str(identity.name or "").strip()
     return watcher.Lot(
         url="https://global-confirmation.invalid/read-only",
         title=clean_title,
