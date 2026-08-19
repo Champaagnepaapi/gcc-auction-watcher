@@ -1,0 +1,113 @@
+name: V4 Global Market Offline Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "README.md"
+      - "v4_global_market_core.py"
+      - "v4_global_live_shadow.py"
+      - "v4_global_live_shadow_hardened.py"
+      - "v4_global_comc_hardening.py"
+      - "v4_global_comc_hardening_v2.py"
+      - "v4_global_magi_registry_hardening.py"
+      - "v4_global_magi_target_hardening.py"
+      - "v4_global_magi_target_hardening_v2.py"
+      - "v4_tcgdex_japanese_set_registry.py"
+      - "v4_global_rejection_diagnostics.py"
+      - "v4_global_retrieval_hardening.py"
+      - "v4_global_retrieval_hardening_v2.py"
+      - "v4_global_retrieval_hardening_v3.py"
+      - "v4_global_ppt_bridge.py"
+      - "v4_global_poketrace_bridge.py"
+      - "v4_market_cardova.py"
+      - "v4_market_gcc_bridge.py"
+      - "v4_market_magi_bridge.py"
+      - "v4_market_fanatics_bridge.py"
+      - "v4_market_comc_bridge.py"
+      - "v4_market_verified_offer.py"
+      - "tests_global/**"
+      - ".github/workflows/v4-global-market-offline-validation.yml"
+      - ".github/workflows/v4-global-live-shadow.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install PyYAML
+
+      - name: Run focused global-market tests
+        run: python -m unittest discover -s tests_global -p "test*.py" -v
+
+      - name: Run existing V4 multimarket regression tests
+        run: python -m unittest discover -s tests -p "test_v4_*multimarket*.py" -v
+
+      - name: Compile changed Python files
+        run: |
+          python -m py_compile v4_global_market_core.py
+          python -m py_compile v4_global_live_shadow.py
+          python -m py_compile v4_global_live_shadow_hardened.py
+          python -m py_compile v4_global_comc_hardening.py
+          python -m py_compile v4_global_comc_hardening_v2.py
+          python -m py_compile v4_global_magi_registry_hardening.py
+          python -m py_compile v4_global_magi_target_hardening.py
+          python -m py_compile v4_global_magi_target_hardening_v2.py
+          python -m py_compile v4_tcgdex_japanese_set_registry.py
+          python -m py_compile v4_global_rejection_diagnostics.py
+          python -m py_compile v4_global_retrieval_hardening.py
+          python -m py_compile v4_global_retrieval_hardening_v2.py
+          python -m py_compile v4_global_retrieval_hardening_v3.py
+          python -m py_compile v4_global_ppt_bridge.py
+          python -m py_compile v4_global_poketrace_bridge.py
+          python -m py_compile v4_market_cardova.py
+          python -m py_compile v4_market_gcc_bridge.py
+          python -m py_compile v4_market_magi_bridge.py
+          python -m py_compile v4_market_fanatics_bridge.py
+          python -m py_compile v4_market_comc_bridge.py
+          python -m py_compile v4_market_verified_offer.py
+          python -m py_compile tests_global/test_v4_global_market_core.py
+          python -m py_compile tests_global/test_v4_global_live_shadow.py
+          python -m py_compile tests_global/test_v4_global_comc_hardening.py
+          python -m py_compile tests_global/test_v4_global_comc_hardening_v2.py
+          python -m py_compile tests_global/test_v4_global_magi_registry_hardening.py
+          python -m py_compile tests_global/test_v4_global_magi_target_hardening.py
+          python -m py_compile tests_global/test_v4_global_magi_target_hardening_v2.py
+          python -m py_compile tests_global/test_v4_global_rejection_diagnostics.py
+          python -m py_compile tests_global/test_v4_global_retrieval_hardening.py
+          python -m py_compile tests_global/test_v4_global_retrieval_hardening_v2.py
+          python -m py_compile tests_global/test_v4_global_retrieval_hardening_v3.py
+          python -m py_compile tests_global/test_v4_global_evidence_bridges.py
+          python -m py_compile tests_global/test_v4_market_cardova.py
+          python -m py_compile tests_global/test_v4_market_verified_offer.py
+
+      - name: Parse workflows YAML
+        run: |
+          python - <<'PY'
+          import pathlib, yaml
+          for path in (
+              pathlib.Path('.github/workflows/v4-global-market-offline-validation.yml'),
+              pathlib.Path('.github/workflows/v4-global-live-shadow.yml'),
+          ):
+              yaml.safe_load(path.read_text())
+              print(f"YAML PASS: {path}")
+          PY
+
+      - name: Check diff whitespace
+        run: git diff --check origin/${{ github.base_ref }}...HEAD
