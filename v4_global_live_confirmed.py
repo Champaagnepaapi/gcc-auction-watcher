@@ -12,7 +12,7 @@ import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import requests
 
@@ -30,7 +30,13 @@ from v4_global_economic_confirmation import (
     ppt_external,
     resolve_global_canonical,
 )
-from v4_global_ppt_confirmation import PptBudget, PptSnapshot, fetch_snapshot
+from v4_global_market_core import AUCTION_SNAPSHOT_LE5, FIXED_ASK
+from v4_global_ppt_confirmation import (
+    PptBudget,
+    PptSnapshot,
+    fetch_snapshot,
+    reviewed_set_id,
+)
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -79,6 +85,31 @@ def _canonical_payload(canonical: multimarket.CanonicalCard) -> dict[str, object
     }
 
 
+def _has_actionable_offer(card: Mapping[str, Any]) -> bool:
+    raw = card.get("offers")
+    offers = raw if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) else []
+    for offer in offers:
+        if not isinstance(offer, Mapping):
+            continue
+        if offer.get("evidence_type") not in {FIXED_ASK, AUCTION_SNAPSHOT_LE5}:
+            continue
+        try:
+            all_in = float(offer.get("all_in_eur"))
+        except (TypeError, ValueError):
+            continue
+        if all_in > 0:
+            return True
+    return False
+
+
+def _confirmation_priority(index: int, card: Mapping[str, Any]) -> tuple[int, int, int]:
+    """Spend bounded provider credits on economically relevant cards first."""
+    identity = identity_from_card(card)
+    actionable = _has_actionable_offer(card)
+    reviewed = bool(identity is not None and reviewed_set_id(identity))
+    return (0 if actionable else 1, 0 if reviewed else 1, index)
+
+
 def enrich_confirmation(report: Mapping[str, Any]) -> dict[str, Any]:
     output = dict(report)
     now_raw = output.get("observed_at")
@@ -110,7 +141,16 @@ def enrich_confirmation(report: Mapping[str, Any]) -> dict[str, Any]:
     poketrace_budget = multimarket.RequestBudget()
     min_discount = _env_float("GLOBAL_CONFIRM_MIN_DISCOUNT_PCT", 30.0, 0.0)
 
-    cards: list[dict[str, Any]] = []
+    raw_cards = [
+        dict(raw_card) if isinstance(raw_card, Mapping) else {}
+        for raw_card in output.get("cards", [])
+    ]
+    work = sorted(
+        enumerate(raw_cards),
+        key=lambda item: _confirmation_priority(item[0], item[1]),
+    )
+    processed: dict[int, dict[str, Any]] = {}
+
     confirmed = 0
     conflicts = 0
     no_external = 0
@@ -120,8 +160,7 @@ def enrich_confirmation(report: Mapping[str, Any]) -> dict[str, Any]:
     ppt_dynamic_catalog_matches = 0
     ppt_reviewed_set_matches = 0
 
-    for raw_card in output.get("cards", []):
-        card = dict(raw_card) if isinstance(raw_card, Mapping) else {}
+    for index, card in work:
         identity = identity_from_card(card)
         if identity is None:
             canonical = multimarket.CanonicalCard(
@@ -179,8 +218,10 @@ def enrich_confirmation(report: Mapping[str, Any]) -> dict[str, Any]:
             "poketrace": _external_payload(poketrace),
             "decision": decision_payload(decision),
         }
-        cards.append(card)
+        processed[index] = card
 
+    # Provider-budget priority must not reorder the externally visible report.
+    cards = [processed[index] for index in range(len(raw_cards))]
     output["cards"] = cards
     output["schema_version"] = max(3, int(output.get("schema_version") or 1))
     output["mode"] = "READ_ONLY_ECONOMIC_CONFIRMATION"
@@ -206,6 +247,7 @@ def enrich_confirmation(report: Mapping[str, Any]) -> dict[str, Any]:
         "ppt_daily_remaining": ppt_budget.daily_remaining,
         "ppt_blocked_reason": ppt_budget.blocked_reason,
         "poketrace_requests": poketrace_budget.poketrace_requests,
+        "provider_priority": "ACTIONABLE_THEN_REVIEWED_THEN_DIAGNOSTIC",
         "identity_gate_relaxed": False,
         "automatic_purchase": False,
         "automatic_bid": False,
