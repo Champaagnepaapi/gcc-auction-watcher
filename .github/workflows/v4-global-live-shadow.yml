@@ -16,11 +16,6 @@ on:
         required: false
         type: boolean
         default: false
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/v4-global-live-shadow.yml"
 
 permissions:
   contents: read
@@ -31,7 +26,6 @@ concurrency:
 
 jobs:
   live-shadow:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.head_ref == 'feat/v4-global-multivault-reintegration-20260819' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -43,7 +37,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,15 +49,15 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run hardened read-only multi-market shadow
-        if: ${{ github.event_name == 'pull_request' || !inputs.rejection_diagnostics }}
+        if: ${{ !inputs.rejection_diagnostics }}
         run: |
           python v4_global_live_shadow_hardened.py \
             --output-dir global_shadow_out \
-            --max-identities "${{ inputs.max_identities || '5' }}" \
-            --market-candidates "${{ inputs.market_candidates || '8' }}"
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
 
       - name: Run legacy read-only rejection diagnostics
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.rejection_diagnostics }}
+        if: ${{ inputs.rejection_diagnostics }}
         run: |
           python v4_global_rejection_diagnostics.py \
             --output-dir global_shadow_out \
