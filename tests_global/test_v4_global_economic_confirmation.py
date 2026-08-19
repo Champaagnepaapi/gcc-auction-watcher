@@ -7,10 +7,12 @@ from unittest import mock
 
 import watcher
 import v4_canonical_multimarket as multimarket
+import v4_global_economic_confirmation as confirmation
 from v4_global_economic_confirmation import (
     ExternalAggregate,
     evaluate_card,
     fetch_poketrace_external,
+    install_global_external_market_stack,
     ppt_external,
     resolve_global_canonical,
     select_correlated_external,
@@ -230,6 +232,40 @@ class ConfirmationTests(unittest.TestCase):
             None,
             watcher.EVIDENCE_STRONG,
         )
+
+    def test_global_external_stack_reuses_production_order_idempotently(self):
+        names = [
+            "install_v4_tcgdex_exact_coordinate_recovery",
+            "install_v4_tcgdex_run1054_set_aliases",
+            "install_v4_tcgdex_japanese_set_aliases",
+            "install_v4_tcgdex_generalized_coordinate_recovery",
+            "install_v4_tcgdex_two_of_three_backport",
+            "install_v4_tcgdex_unique_coordinate_fallback",
+            "install_v4_tcgdex_source_pinned_finish",
+            "install_v4_poketrace_market_retrieval",
+            "install_multimarket_safety_hardening",
+        ]
+        calls = []
+        patchers = [
+            mock.patch.object(
+                confirmation,
+                name,
+                side_effect=(lambda name=name: calls.append(name)),
+            )
+            for name in names
+        ]
+        old_installed = confirmation._GLOBAL_EXTERNAL_STACK_INSTALLED
+        confirmation._GLOBAL_EXTERNAL_STACK_INSTALLED = False
+        for patcher in patchers:
+            patcher.start()
+        try:
+            install_global_external_market_stack()
+            install_global_external_market_stack()
+        finally:
+            for patcher in reversed(patchers):
+                patcher.stop()
+            confirmation._GLOBAL_EXTERNAL_STACK_INSTALLED = old_installed
+        self.assertEqual(calls, names)
 
     def test_recent_ppt_snapshot_becomes_strong_external(self):
         external = ppt_external(
