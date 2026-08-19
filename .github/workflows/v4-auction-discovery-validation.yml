@@ -48,11 +48,48 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
-      - name: Install dependencies
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        shell: bash
         run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "Playwright browser cache miss: downloading Chromium once"
+            playwright install chromium
+          else
+            echo "Playwright browser cache hit: Chromium payload restored"
+          fi
+
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          launch_status=$?
+          set -e
+
+          if [ "$launch_status" -ne 0 ]; then
+            echo "Chromium launch probe failed; installing runner system dependencies"
+            playwright install --with-deps chromium
+            python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          fi
 
       - name: Run complete V4 tests
         run: python -m unittest discover -s tests -p "test*.py" -v
