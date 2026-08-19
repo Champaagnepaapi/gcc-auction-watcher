@@ -522,7 +522,10 @@ def fetch_snapshot(
             {
                 "language": "japanese",
                 "search": identity.name,
-                "limit": 20,
+                # PPT consumes credits roughly in proportion to returned rows.
+                # Keep generic discovery as tightly bounded as the reviewed path;
+                # exact identity is still proved only after response matching.
+                "limit": 5,
             },
             timeout,
         )
