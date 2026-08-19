@@ -38,7 +38,7 @@ concurrency:
 
 jobs:
   live-shadow:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ops(global): self launch economic confirmation' }}
+    if: "${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ops(global): self launch economic confirmation' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
