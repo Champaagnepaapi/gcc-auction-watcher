@@ -12,6 +12,7 @@ on:
       - "v4_canonical_multimarket.py"
       - "v4_edge_hunter_safety.py"
       - "v4_external_coverage_drain.py"
+      - "v4_external_provider_navigation_resilience.py"
       - "v4_multimarket_safety.py"
       - "v4_structural_edge_hunter.py"
       - "v4_provider_rejection_observability.py"
@@ -67,6 +68,7 @@ jobs:
           python -m py_compile v4_canonical_multimarket.py
           python -m py_compile v4_edge_hunter_safety.py
           python -m py_compile v4_external_coverage_drain.py
+          python -m py_compile v4_external_provider_navigation_resilience.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile v4_structural_edge_hunter.py
           python -m py_compile v4_provider_rejection_observability.py
