@@ -21,16 +21,24 @@ on:
         required: false
         type: boolean
         default: false
+  # Temporary branch-local self-launch. This exists only so the authorized
+  # read-only validation can be started through the connected GitHub writer.
+  push:
+    branches:
+      - feat/v4-global-economic-confirmation-20260819
+    paths:
+      - .github/workflows/v4-global-live-shadow.yml
 
 permissions:
   contents: read
 
 concurrency:
   group: v4-global-live-shadow
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   live-shadow:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'ops(global): self launch economic confirmation' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -46,7 +54,7 @@ jobs:
           persist-credentials: false
 
       - name: Reject incompatible diagnostic modes
-        if: ${{ inputs.rejection_diagnostics && inputs.economic_confirmation }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.rejection_diagnostics && inputs.economic_confirmation }}
         run: |
           echo "::error::Choose rejection_diagnostics OR economic_confirmation, not both."
           exit 1
@@ -57,8 +65,6 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      # Reuse the Playwright cache strategy already proven by the canonical V4
-      # watcher instead of running apt + a full browser download on every live.
       - name: Restore Playwright browser cache
         id: playwright-cache
         uses: actions/cache@v4
@@ -103,7 +109,7 @@ jobs:
           fi
 
       - name: Run hardened read-only multi-market shadow
-        if: ${{ !inputs.rejection_diagnostics && !inputs.economic_confirmation }}
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.rejection_diagnostics && !inputs.economic_confirmation }}
         run: |
           python v4_global_live_shadow_hardened.py \
             --output-dir global_shadow_out \
@@ -111,15 +117,22 @@ jobs:
             --market-candidates "${{ inputs.market_candidates }}"
 
       - name: Run read-only economic confirmation diagnostic
-        if: ${{ inputs.economic_confirmation && !inputs.rejection_diagnostics }}
+        if: ${{ github.event_name == 'push' || (inputs.economic_confirmation && !inputs.rejection_diagnostics) }}
         run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            max_identities="5"
+            market_candidates="8"
+          else
+            max_identities="${{ inputs.max_identities }}"
+            market_candidates="${{ inputs.market_candidates }}"
+          fi
           python v4_global_live_confirmed.py \
             --output-dir global_shadow_out \
-            --max-identities "${{ inputs.max_identities }}" \
-            --market-candidates "${{ inputs.market_candidates }}"
+            --max-identities "$max_identities" \
+            --market-candidates "$market_candidates"
 
       - name: Run legacy read-only rejection diagnostics
-        if: ${{ inputs.rejection_diagnostics && !inputs.economic_confirmation }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.rejection_diagnostics && !inputs.economic_confirmation }}
         run: |
           python v4_global_rejection_diagnostics.py \
             --output-dir global_shadow_out \
