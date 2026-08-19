@@ -41,33 +41,32 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
 
     def test_capability_ledger_records_shadow_not_as_production(self):
         ledger = Path("docs/project-capability-ledger.md").read_text(encoding="utf-8")
-        self.assertIn("PR #108", ledger)
+        self.assertIn("Stack #108→#115", ledger)
         self.assertIn("SHADOW/DEFERRED", ledger)
         self.assertIn("PR #8", ledger)
         self.assertIn("V5_ONLY", ledger)
-        self.assertIn("PR #104", ledger)
+        self.assertIn("PRs #9, #50, #52, #104", ledger)
         self.assertIn("DISABLED", ledger)
 
     def test_capability_ledger_preserves_recovered_foundations(self):
         ledger = Path("docs/project-capability-ledger.md").read_text(encoding="utf-8")
         for marker in (
-            "chatgpt-gcc-cumulative-index-20260810",
-            "agent/p0-card-knowledge-base-foundation",
-            "agent/p1-shadow-observation-sidecar",
-            "agent/p3-postgres-durable-shadow",
-            "agent/kb-tcgdex-macro-cache",
-            "agent/source-scout-ppt-cardinality-20260815",
-            "agent/source-scout-tcgapi-identity-20260815",
-            "agent/v4-robust-raw-consensus",
-            "PR #115",
+            "P0/P1/P3 et PRs #51/#59/#60",
+            "PR #68/#72/#76",
+            "PR #62/#75",
+            "TCGdex identity cache",
+            "agent/source-scout-benchmark-20260814",
+            "Aucun benchmark vérifié ne prouve un TCGdex `500/500`",
+            "Stack #108→#115",
+            "#115 COMC",
         ):
             self.assertIn(marker, ledger)
 
-    def test_branch_inventory_has_all_151_audited_remote_names(self):
+    def test_branch_inventory_has_complete_audited_snapshot(self):
         inventory = Path("docs/project-branch-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("151/151", inventory)
+        self.assertIn("158/158", inventory)
         self.assertIn("agent/v5-poketrace-cardmarket-market-data", inventory)
         self.assertIn("fix/v4-recover-existing-capabilities-20260817", inventory)
         self.assertIn("fix/v4-poketrace-deterministic-market-retrieval-20260817", inventory)
@@ -81,21 +80,22 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         self.assertIn("feat/v4-global-multivault-edge-foundation", inventory)
         self.assertIn("tmp-noop-check", inventory)
 
-        raw_header = "# Contrôle de complétude — liste brute 151/151"
+        raw_header = "## Liste exhaustive 158/158"
         raw = inventory.split(raw_header, 1)[1]
         code_block = raw.split("```text", 1)[1].split("```", 1)[0]
         names = [line.strip() for line in code_block.splitlines() if line.strip()]
-        self.assertEqual(len(names), 151)
-        self.assertEqual(len(set(names)), 151)
+        self.assertEqual(len(names), 158)
+        self.assertEqual(len(set(names)), 158)
         self.assertIn("main", names)
         self.assertIn("oops-no-more", names)
 
-    def test_open_pr_inventory_has_exactly_the_16_audited_open_prs(self):
+    def test_open_pr_inventory_matches_audited_16_pr_snapshot(self):
         inventory = Path("docs/project-open-pr-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("exactement **16 PR ouvertes**", inventory)
-        self.assertIn("**126 pull requests au total**", inventory)
+        self.assertIn("PR totales : **133**", inventory)
+        self.assertIn("PR ouvertes : **16**", inventory)
+        self.assertIn("Contrôle : **16 lignes / 16 PR ouvertes**", inventory)
         rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ \|", line)]
         numbers = {
             int(re.match(r"^\| #(\d+) \|", line).group(1))
@@ -103,21 +103,20 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         }
         self.assertEqual(
             numbers,
-            {8, 54, 87, 92, 96, 106, 107, 108, 109, 110, 111, 113, 114, 115, 126, 129},
+            {8, 54, 87, 92, 96, 106, 107, 108, 109, 110, 111, 113, 114, 115, 126, 136},
         )
         self.assertEqual(len(rows), 16)
         self.assertIn("#54", inventory)
-        self.assertIn("SUPERSEDED / STALE_OPEN", inventory)
+        self.assertIn("STALE_OPEN/SUPERSEDED", inventory)
         self.assertIn("#87", inventory)
-        self.assertIn("DEFERRED / BEHAVIOR_CHANGE", inventory)
+        self.assertIn("décision produit V4 non déployée", inventory)
         self.assertIn("#111", inventory)
         self.assertIn("#126", inventory)
-        self.assertIn("#129", inventory)
-        self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_UPSIDE_RATIO = 1.75", inventory)
-        self.assertIn("V4_ILLIQUID_GCC_ONLY_MIN_ABSOLUTE_UPSIDE_EUR = 10", inventory)
-        self.assertIn("#122", inventory)
-        self.assertIn("#123", inventory)
-        self.assertIn("4737604a1685f344ced65ede1ed49b4a1b9b7f6d", inventory)
+        self.assertIn("SUPERSEDED/STALE_OPEN", inventory)
+        self.assertIn("#136", inventory)
+        self.assertIn("docs-only phase close", inventory)
+        self.assertIn("#129 à #135 ont été mergées/fermées", inventory)
+        self.assertIn("aucun changement de statut de PR #8", inventory)
 
     def test_workflow_inventory_separates_14_current_files_from_80_records(self):
         inventory = Path("docs/project-workflow-inventory.md").read_text(
