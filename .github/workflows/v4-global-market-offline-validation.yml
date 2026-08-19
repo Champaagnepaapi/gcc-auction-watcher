@@ -32,7 +32,6 @@ on:
       - "tests_global/**"
       - ".github/workflows/v4-global-market-offline-validation.yml"
       - ".github/workflows/v4-global-live-shadow.yml"
-      - ".github/global-economic-live-once"
 
 permissions:
   contents: read
@@ -102,6 +101,7 @@ jobs:
           python -m py_compile tests_global/test_v4_global_retrieval_hardening_v3.py
           python -m py_compile tests_global/test_v4_global_evidence_bridges.py
           python -m py_compile tests_global/test_v4_global_economic_confirmation.py
+          python -m py_compile tests_global/test_v4_global_confirmation_recovery.py
           python -m py_compile tests_global/test_v4_market_cardova.py
           python -m py_compile tests_global/test_v4_market_verified_offer.py
 
@@ -119,93 +119,3 @@ jobs:
 
       - name: Check diff whitespace
         run: git diff --check origin/${{ github.base_ref }}...HEAD
-
-  # Temporary, branch-local, user-authorized one-shot live. It is inert unless
-  # the marker file exists in the checked-out PR head and is removed after use.
-  economic-confirmation-once:
-    if: ${{ github.event_name == 'pull_request' && github.head_ref == 'feat/v4-global-economic-confirmation-20260819' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      NTFY_TOPIC: ""
-      JAPAN_EDGE_NOTIFY_ENABLED: "false"
-      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
-      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check one-shot marker
-        id: marker
-        shell: bash
-        run: |
-          if [ -f .github/global-economic-live-once ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set up Python
-        if: ${{ steps.marker.outputs.enabled == 'true' }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Restore Playwright browser cache
-        if: ${{ steps.marker.outputs.enabled == 'true' }}
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
-
-      - name: Install Python dependencies
-        if: ${{ steps.marker.outputs.enabled == 'true' }}
-        timeout-minutes: 3
-        run: pip install -r requirements.txt
-
-      - name: Ensure Chromium runtime is usable
-        if: ${{ steps.marker.outputs.enabled == 'true' }}
-        timeout-minutes: 5
-        shell: bash
-        run: |
-          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
-            playwright install chromium
-          fi
-          set +e
-          python - <<'PY'
-          from playwright.sync_api import sync_playwright
-          with sync_playwright() as p:
-              browser = p.chromium.launch(headless=True)
-              browser.close()
-          PY
-          launch_status=$?
-          set -e
-          if [ "$launch_status" -ne 0 ]; then
-            timeout 180s playwright install --with-deps chromium
-          fi
-
-      - name: Run read-only economic confirmation diagnostic
-        if: ${{ steps.marker.outputs.enabled == 'true' }}
-        run: |
-          python v4_global_live_confirmed.py \
-            --output-dir global_shadow_out \
-            --max-identities "5" \
-            --market-candidates "8"
-
-      - name: Assert no tracked runtime mutation
-        if: ${{ steps.marker.outputs.enabled == 'true' }}
-        run: test -z "$(git status --porcelain --untracked-files=no)"
-
-      - name: Upload shadow artifact
-        if: ${{ steps.marker.outputs.enabled == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: v4-global-market-live-shadow-${{ github.run_id }}
-          path: global_shadow_out/
-          if-no-files-found: error
-          retention-days: 7
