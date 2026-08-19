@@ -18,6 +18,9 @@ from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
 from v4_exact_active_ask_position import install_v4_exact_active_ask_position
 from v4_external_coverage_drain import install_v4_external_coverage_drain
+from v4_external_provider_navigation_resilience import (
+    install_v4_external_provider_navigation_resilience,
+)
 from v4_focus_cert_router import install_v4_focus_cert_router
 from v4_kb_shadow_bridge import (
     flush_capture_if_configured,
@@ -76,6 +79,11 @@ def _cert_problem_notifications_enabled() -> bool:
 
 if __name__ == "__main__":
     install_psa_apr_hydration_guard()
+    # eBay/PSA public pages sometimes finish rendering usable DOM after
+    # Playwright's domcontentloaded deadline. Reuse that already-loaded DOM only
+    # when the expected provider host + structured controls/items are proven;
+    # never retry the network request and never relax provider matching.
+    install_v4_external_provider_navigation_resilience()
     install_grade_arbitrage_guard()
     install_technical_alert_guard()
     install_fixed_queue_backlog_diagnostics()
