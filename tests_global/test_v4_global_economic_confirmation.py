@@ -12,10 +12,16 @@ from v4_global_economic_confirmation import (
     evaluate_card,
     fetch_poketrace_external,
     ppt_external,
+    resolve_global_canonical,
     select_correlated_external,
 )
 from v4_global_market_core import ACTIVE_AUCTION, FIXED_ASK, CommercialIdentity
-from v4_global_ppt_confirmation import PptSnapshot, _match, reviewed_set_id
+from v4_global_ppt_confirmation import (
+    PptSnapshot,
+    _match,
+    _match_canonical,
+    reviewed_set_id,
+)
 
 NOW = datetime(2026, 8, 19, 10, 0, tzinfo=timezone.utc)
 IDENTITY = CommercialIdentity(
@@ -25,6 +31,27 @@ IDENTITY = CommercialIdentity(
     language="ja",
     grader="PSA",
     grade="10",
+)
+DYNAMIC_IDENTITY = CommercialIdentity(
+    name="Raikou",
+    set_name="VSTAR Universe",
+    number="218/172",
+    language="ja",
+    grader="PSA",
+    grade="10",
+    finish="V",
+    variant="Special Art Rare",
+)
+DYNAMIC_CANONICAL = multimarket.CanonicalCard(
+    status="EXACT",
+    card_id="s12a-218",
+    set_id="s12a",
+    set_name="VSTAR Universe",
+    local_id="218",
+    full_number="218/172",
+    name="Raikou",
+    language_code="ja",
+    reason="TEST_EXACT",
 )
 
 
@@ -57,8 +84,7 @@ def card(*, fair=100.0, offer=60.0, evidence=FIXED_ASK, all_in=True):
 class PptIdentityTests(unittest.TestCase):
     def test_reviewed_mapping_is_exact_and_small(self):
         self.assertEqual(reviewed_set_id(IDENTITY), "23599")
-        other = CommercialIdentity("Mewtwo", "VSTAR Universe", "183/165", "ja", "PSA", "10")
-        self.assertIsNone(reviewed_set_id(other))
+        self.assertIsNone(reviewed_set_id(DYNAMIC_IDENTITY))
 
     def test_exact_provider_set_number_matches(self):
         status, row = _match(
@@ -88,6 +114,100 @@ class PptIdentityTests(unittest.TestCase):
             "23599",
         )
         self.assertEqual(status, "MICROVARIANT_UNPROVEN")
+
+    def test_generic_external_catalog_id_is_exact_coordinate(self):
+        status, row, proof = _match_canonical(
+            DYNAMIC_IDENTITY,
+            DYNAMIC_CANONICAL,
+            [{
+                "externalCatalogId": "s12a-218",
+                "setId": "provider-777",
+                "setName": "provider wording can differ",
+                "cardNumber": "218",
+                "language": "japanese",
+                "name": "Raikou",
+                "tcgPlayerId": 77,
+            }],
+        )
+        self.assertEqual(status, "EXACT")
+        self.assertIsNotNone(row)
+        self.assertEqual(proof, "TCGDEX_EXTERNAL_CATALOG_ID")
+
+    def test_present_conflicting_external_catalog_id_cannot_fallback(self):
+        status, row, _ = _match_canonical(
+            DYNAMIC_IDENTITY,
+            DYNAMIC_CANONICAL,
+            [{
+                "externalCatalogId": "wrong-card-id",
+                "setName": "VSTAR Universe",
+                "cardNumber": "218",
+                "language": "japanese",
+                "name": "Raikou",
+            }],
+        )
+        self.assertEqual(status, "CLEAN_NO_MATCH")
+        self.assertIsNone(row)
+
+    def test_exact_set_name_number_fallback_only_when_catalog_id_absent(self):
+        status, row, proof = _match_canonical(
+            DYNAMIC_IDENTITY,
+            DYNAMIC_CANONICAL,
+            [{
+                "setId": "provider-777",
+                "setName": "VSTAR Universe",
+                "cardNumber": "218",
+                "language": "japanese",
+                "name": "Raikou",
+            }],
+        )
+        self.assertEqual(status, "EXACT")
+        self.assertIsNotNone(row)
+        self.assertEqual(proof, "TCGDEX_SET_NAME_NUMBER_FALLBACK")
+
+    def test_multiple_distinct_catalog_coordinate_rows_are_ambiguous(self):
+        rows = [
+            {
+                "externalCatalogId": "s12a-218",
+                "setId": "provider-777",
+                "cardNumber": "218",
+                "language": "japanese",
+                "tcgPlayerId": 1,
+            },
+            {
+                "externalCatalogId": "s12a-218",
+                "setId": "provider-778",
+                "cardNumber": "218",
+                "language": "japanese",
+                "tcgPlayerId": 2,
+            },
+        ]
+        status, row, proof = _match_canonical(DYNAMIC_IDENTITY, DYNAMIC_CANONICAL, rows)
+        self.assertEqual(status, "AMBIGUOUS")
+        self.assertIsNone(row)
+        self.assertEqual(proof, "TCGDEX_EXTERNAL_CATALOG_ID")
+
+    def test_dynamic_coordinate_still_requires_sensitive_microvariant(self):
+        identity = CommercialIdentity(
+            "Raikou",
+            "VSTAR Universe",
+            "218/172",
+            "ja",
+            "PSA",
+            "10",
+            variant="Master Ball Reverse",
+        )
+        status, row, _ = _match_canonical(
+            identity,
+            DYNAMIC_CANONICAL,
+            [{
+                "externalCatalogId": "s12a-218",
+                "cardNumber": "218",
+                "language": "japanese",
+                "name": "Raikou",
+            }],
+        )
+        self.assertEqual(status, "MICROVARIANT_UNPROVEN")
+        self.assertIsNone(row)
 
 
 class ConfirmationTests(unittest.TestCase):
@@ -187,7 +307,20 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(decision.status, "NO_ACTIONABLE_ALL_IN_OFFER")
 
     @mock.patch("v4_global_economic_confirmation.multimarket._poketrace_evidence")
-    def test_poketrace_reuses_existing_exact_gate(self, evidence_mock):
+    @mock.patch("v4_global_economic_confirmation.multimarket.resolve_tcgdex_card")
+    def test_poketrace_reuses_real_tcgdex_exact_gate(self, resolve_mock, evidence_mock):
+        canonical = multimarket.CanonicalCard(
+            status="EXACT",
+            card_id="sv2a-183",
+            set_id="sv2a",
+            set_name="151",
+            local_id="183",
+            full_number="183/165",
+            name="Mewtwo",
+            language_code="ja",
+            reason="TEST",
+        )
+        resolve_mock.return_value = canonical
         evidence_mock.return_value = SimpleNamespace(
             status=watcher.EXTERNAL_MATCHED,
             strength=watcher.EVIDENCE_STRONG,
@@ -206,9 +339,40 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(args[0].card_set, "151")
         self.assertEqual(args[0].card_number, "183/165")
         self.assertEqual(args[0].language, "Japanese")
-        self.assertEqual(args[1].set_name, "151")
+        self.assertEqual(args[1].card_id, "sv2a-183")
+        self.assertEqual(args[1].set_id, "sv2a")
         self.assertEqual(args[1].full_number, "183/165")
         self.assertEqual(args[1].language_code, "ja")
+
+    @mock.patch("v4_global_economic_confirmation.multimarket._poketrace_evidence")
+    @mock.patch("v4_global_economic_confirmation.multimarket.resolve_tcgdex_card")
+    def test_poketrace_never_runs_when_tcgdex_is_unresolved(self, resolve_mock, evidence_mock):
+        resolve_mock.return_value = multimarket.CanonicalCard(
+            "AMBIGUOUS", reason="multiple exact macro candidates"
+        )
+        result = fetch_poketrace_external(
+            IDENTITY,
+            budget=multimarket.RequestBudget(),
+            now=NOW,
+        )
+        self.assertEqual(result.status, "TCGDEX_AMBIGUOUS")
+        evidence_mock.assert_not_called()
+
+    @mock.patch("v4_global_economic_confirmation.multimarket.resolve_tcgdex_card")
+    def test_global_canonical_language_conflict_fails_closed(self, resolve_mock):
+        resolve_mock.return_value = multimarket.CanonicalCard(
+            status="EXACT",
+            card_id="sv2a-183",
+            set_id="sv2a",
+            set_name="151",
+            local_id="183",
+            full_number="183/165",
+            name="Mewtwo",
+            language_code="en",
+        )
+        _, canonical = resolve_global_canonical(IDENTITY)
+        self.assertEqual(canonical.status, "AMBIGUOUS")
+        self.assertEqual(canonical.reason, "GLOBAL_TCGDEX_LANGUAGE_CONFLICT")
 
 
 if __name__ == "__main__":
