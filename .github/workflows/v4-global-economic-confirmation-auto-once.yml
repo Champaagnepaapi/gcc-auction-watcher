@@ -1,8 +1,8 @@
 name: V4 Global Economic Confirmation Auto Once
 
 # Temporary user-authorized launcher for PR #140 while the connector has no
-# workflow_dispatch endpoint. Creation of this file triggers exactly one
-# read-only economic-confirmation run on this branch; remove it after validation.
+# workflow_dispatch endpoint. This push is the explicit one-shot trigger.
+# launch-nonce: 2026-08-19T22:13+02:00
 on:
   push:
     branches:
