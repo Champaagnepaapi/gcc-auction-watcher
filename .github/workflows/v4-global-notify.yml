@@ -1,0 +1,123 @@
+name: V4 Global Confirmed Notifications
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_identities:
+        description: "Max rotating strict JP PSA10 identities to validate"
+        required: false
+        default: "5"
+      market_candidates:
+        description: "Max listing candidates per market/identity"
+        required: false
+        default: "8"
+  schedule:
+    - cron: "41 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-global-confirmed-notifications
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    # Manual runs are always dry-run validation. Scheduled work does not even
+    # start until the repository variable is explicitly set to the literal true.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.GLOBAL_NOTIFY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GLOBAL_NOTIFY_ENABLED: ${{ github.event_name == 'schedule' && vars.GLOBAL_NOTIFY_ENABLED == 'true' && 'true' || 'false' }}
+      GLOBAL_NOTIFY_DEDUPE_TTL_DAYS: ${{ vars.GLOBAL_NOTIFY_DEDUPE_TTL_DAYS || '14' }}
+      GLOBAL_NOTIFY_REPRICE_DROP_PCT: ${{ vars.GLOBAL_NOTIFY_REPRICE_DROP_PCT || '5' }}
+      GLOBAL_PPT_MAX_HTTP_CALLS: "12"
+      GLOBAL_PPT_MAX_CREDITS: "60"
+      GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
+      GLOBAL_MAX_IDENTITIES: ${{ inputs.max_identities || '5' }}
+      GLOBAL_MARKET_CANDIDATES: ${{ inputs.market_candidates || '8' }}
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        timeout-minutes: 3
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            playwright install chromium
+          fi
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          launch_status=$?
+          set -e
+          if [ "$launch_status" -ne 0 ]; then
+            timeout 180s playwright install --with-deps chromium
+          fi
+
+      - name: Restore Global notification state
+        uses: actions/cache/restore@v4
+        with:
+          path: .global-notify-state
+          key: global-notify-state-${{ github.event_name }}-${{ github.run_id }}
+          restore-keys: |
+            global-notify-state-${{ github.event_name }}-
+
+      - name: Run confirmed Global notification lane
+        run: |
+          python v4_global_notify.py \
+            --state .global-notify-state/state.json \
+            --output-dir global_notify_out \
+            --max-identities "$GLOBAL_MAX_IDENTITIES" \
+            --market-candidates "$GLOBAL_MARKET_CANDIDATES"
+
+      - name: Assert no tracked runtime mutation
+        run: test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Save Global notification state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .global-notify-state
+          key: global-notify-state-${{ github.event_name }}-${{ github.run_id }}
+
+      - name: Upload Global notification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-global-notify-${{ github.run_id }}
+          path: global_notify_out/
+          if-no-files-found: ignore
+          retention-days: 14
