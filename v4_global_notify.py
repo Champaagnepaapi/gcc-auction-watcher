@@ -79,7 +79,11 @@ def _empty_state() -> dict[str, Any]:
 def _validate_state(payload: object) -> tuple[bool, str]:
     if not isinstance(payload, Mapping):
         return False, "STATE_NOT_OBJECT"
-    if int(payload.get("schema_version") or 0) != STATE_SCHEMA_VERSION:
+    try:
+        schema_version = int(payload.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        return False, "STATE_SCHEMA_MISMATCH"
+    if schema_version != STATE_SCHEMA_VERSION:
         return False, "STATE_SCHEMA_MISMATCH"
     try:
         cursor = int(payload.get("cursor", 0))
@@ -202,11 +206,21 @@ def confirmed_notification_candidates(report: Mapping[str, Any]) -> list[tuple[M
             continue
         try:
             offer_all_in = float(decision.get("offer_all_in_eur"))
+            gcc_fair = float(decision.get("gcc_fair_eur"))
+            external_fair = float(decision.get("external_fair_eur"))
             confirmed_fair = float(decision.get("confirmed_fair_eur"))
+            discount = float(decision.get("discount_pct"))
             external_sales = int(decision.get("external_sales_count") or 0)
         except (TypeError, ValueError):
             continue
-        if offer_all_in <= 0 or confirmed_fair <= 0 or external_sales < 3:
+        if (
+            offer_all_in <= 0
+            or gcc_fair <= 0
+            or external_fair <= 0
+            or confirmed_fair <= 0
+            or discount < 0
+            or external_sales < 3
+        ):
             continue
         if not str(decision.get("external_provider") or "").strip():
             continue
@@ -240,7 +254,7 @@ def _should_deliver(
     except (TypeError, ValueError):
         return True, "PREVIOUS_PRICE_INVALID"
     threshold = previous_price * (1.0 - max(0.0, reprice_drop_pct) / 100.0)
-    if current_price + 1e-9 <= threshold:
+    if current_price <= threshold + 1e-9:
         return True, "PRICE_IMPROVED"
     return False, "DEDUPED"
 
