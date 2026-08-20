@@ -1,67 +1,91 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **18 août 2026**.
+État vérifié le **20 août 2026**.
 
 ## Production canonique
 
 - V4 production : `main`
-- `main` : `a52398685629e4baf4c8ac036851e2ae1a49b037`
-- dernier changement fonctionnel : PR #135, `V4: recover source-pinned set conflicts when TCGdex REST is stale`
+- `main` : `c012284c423e9526fd2712001fdbce3a5cfafda3`
+- dernier changement intégré : PR #140, Global economic confirmation gate, avec PR #142 absorbée
 - V5 : PR #8, expérimentale/draft/non mergée dans `main`
-- PR #126 : ancienne lignée PokeTrace, ouverte/draft mais **superseded** par #127/#128 et la suite ; ne pas merger.
+- Robot KB/Neon : historique durable séparé
 
-## Phase #123 → #135 : terminée et validée en production
+## Phase Global #139 → #142 : fermée en read-only
 
-La séquence a remplacé les corrections ponctuelles par des preuves déterministes et bornées :
+### #139 — réintégration
 
-1. #123 : récupération V4 des capacités TCGdex déjà construites, dont unicité déterministe ;
-2. #124 : retrieval PokeTrace structuré (`card_number` + `game`) après identité TCGdex ;
-3. #127/#128/#129 : padding collector number, bridges provider exacts, recherche JA canonique ;
-4. #130 : diagnostic final-gate et correction source-pinnée `Night Wanderer -> SV6a` ;
-5. #131/#132/#133 : preuve finish TCGdex source-pinnée, généralisée puis compatible avec imports TypeScript sans point-virgule ;
-6. #134/#135 : réconciliation des namespaces de set lorsque le REST TCGdex est stale, #135 devenant l'autorité générique de cette classe.
+Le stack Global historique a été réintégré sur le main courant : GCC, Cardova, magi, Fanatics, COMC, identité commerciale stricte, diagnostics et hardenings.
 
-Pin catalogue TCGdex immuable :
-`af33c9ac882e2acfadffaf19e8083aa976d12983`.
+### #140 — confirmation économique
 
-## Preuve production #135
+Le Global peut désormais comparer une offre actionnable à une preuve gradée externe stricte :
 
-Run naturel V4 `32160680888` sur le SHA exact `a52398685629e4baf4c8ac036851e2ae1a49b037` : **SUCCESS**.
+- fixed ASK exact ou snapshot auction ≤5m avec all-in prouvé ;
+- PPT/PokeTrace/eBay comptent comme une seule famille corrélée ;
+- minimum 3 ventes agrégées pour un centre utilisable ;
+- conflit GCC/externe >1.25 bloque ;
+- fair confirmé = minimum entre GCC et externe ;
+- ASK/current auction ne devient jamais SOLD.
 
-Preuves runtime :
+### #142 — bridge exact provider
 
-- `Team Rocket's Houndoom 100/098` : correction source-pinnée vers `SV10` ;
-- `Team Rocket's Meowth 109/098` : correction source-pinnée vers `SV10` ;
-- `Team Rocket's Moltres Ex 112/098` : correction source-pinnée vers `SV10` ;
-- TCGdex : `31 attempted | 18 exact | 4 no-match | 9 ambiguous | 0 errors` ;
-- PokeTrace : `2 attempted | 1 exact | 0 strong | 1 weak | 1 no-match | 0 ambiguous | 0 errors` ;
-- discovery : COMPLETE ;
-- final opportunities : `0` ;
-- aucun achat, bid, checkout ou paiement.
+La classe de rejet observée live était une différence bornée de nomenclature provider après preuve macro exacte. Le bridge accepte uniquement les mécaniques `V/VSTAR/VMAX/ex/GX` ou `Mega <nom> ex` avec full collector number, set/préfixe TCGdex et langue exacts. Aucun fuzzy ni relaxation d'identité.
 
-Crobat `117/098` n'était pas sélectionné dans ce run : ne pas revendiquer une preuve live spécifique Crobat. La classe générique `S12 -> SV10` est toutefois prouvée live sur trois cartes du même set.
+## Validation
 
-## État économique restant
+Head combiné avant merge : `b10adebc1f6866ae4ec37e9ea01eeddd2a240c60`.
 
-Le run `32160680888` avait encore :
+```text
+Offline Validation   32351952230  SUCCESS
+Dispatcher CI        32351952209  SUCCESS
+Global               146/146 PASS
+V4 multimarket        51/51 PASS
+compile/YAML/diff     PASS
+```
 
-- external-market coverage : **INCOMPLETE** ;
-- external pending backlog : environ `2031` ;
-- ETA diagnostique : environ `204` runs ;
-- PSA APR encore indisponible sur ce run ;
-- eBay partiellement en timeout/indisponible.
+Live final read-only `32344120993` :
 
-Donc `0 opportunité` n'est pas présenté comme un résultat économique globalement trustworthy tant que cette couverture externe reste incomplète.
+```text
+TCGdex exact       5/5
+PPT matched        4/5
+PokeTrace matched  4/5
+would_notify       0
+conflicts blocked  1
+```
+
+Mewtwo `183/165` : GCC ~€155, externe ~€103.40, Fanatics ASK ~€99.10 -> ratio 1.499 -> `MARKET_CONFLICT_BLOCKED`.
+
+Pikachu M-P reste `CLEAN_NO_MATCH` externe ; aucune correction ponctuelle n'est autorisée sans classe déterministe répétée.
+
+## Statut opérationnel Global
+
+**READ-ONLY uniquement.**
+
+- `v4-global-live-shadow.yml` reste manuel `workflow_dispatch` ;
+- `economic_confirmation` ne produit que `would_notify` diagnostique ;
+- aucune notification automatique ;
+- aucun schedule Global ;
+- aucun achat, bid, checkout, paiement ou grading ;
+- one-shot #142 supprimé avant merge.
+
+## V4 principale
+
+La lignée TCGdex/PokeTrace #123→#135 reste l'autorité d'identité production. Le backlog externe de la V4 normale continue à être drainé/mesuré séparément de Global.
+
+Ne pas reprendre une ancienne PR/branche pour corriger un `NO_MATCH` sans d'abord démontrer une nouvelle classe répétée et déterministe.
 
 ## Prochaine direction
 
-Ne plus ajouter d'alias carte-par-carte pour un simple `NO_MATCH/AMBIGUOUS`. La prochaine modification d'identité doit partir d'une **classe de blocker répétée et déterministe**, avec preuve source/catalogue et fail-closed.
+Deux axes distincts :
 
-Priorité opérationnelle : laisser V4 drainer le backlog externe et mesurer les blockers récurrents. Aucun changement risqué de V4 n'est justifié pendant une enchère active sans nouvelle preuve mesurée.
+1. **V4 production** : continuer la couverture externe, mesurer les blockers récurrents, corriger uniquement des classes prouvées.
+2. **Global Multi-Vault** : si l'utilisateur veut l'activer, ouvrir une phase séparée pour les notifications avec feature flag default-off, déduplication persistante, cadence explicite et live read-only de validation avant toute activation.
+
+L'activation Global n'est **pas** implicite dans le merge #140.
 
 ## Invariants
 
-- PokeTrace reste marché/prix après identité TCGdex ; il ne choisit pas l'identité normale.
+- PokeTrace reste marché/prix après identité TCGdex ;
 - aucun fuzzy/substr/Levenshtein/traduction comme preuve exacte ;
 - ASK et enchère active ne sont jamais des SOLD ;
 - RAW ne devient jamais valeur d'un slab ;
