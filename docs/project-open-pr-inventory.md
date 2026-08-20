@@ -4,10 +4,11 @@ Snapshot GitHub vérifié le **20 août 2026** pendant la validation de la phase
 
 - dernier merge fonctionnel/runtime sur `main` : `c012284c423e9526fd2712001fdbce3a5cfafda3`
 - des commits docs-only suivent ce SHA sur `main` ; re-vérifier le HEAD live
-- PR ouvertes pertinentes recensées : **18**
 - PR #8 : expérimentale V5, draft, non mergée.
 
-## PR ouvertes
+Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub sans nouvel audit live.
+
+## PR ouvertes pertinentes
 
 | PR | Draft | Branche | Classification / instruction |
 |---|---:|---|---|
@@ -29,8 +30,6 @@ Snapshot GitHub vérifié le **20 août 2026** pendant la validation de la phase
 | #138 | oui | `shadow/v4-global-current-main-reintegration-20260819` | `SUPERSEDED_BY_139`. |
 | #141 | oui | `diag/v4-global-provider-coverage-20260820` | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
 | #145 | oui | `feat/v4-global-notification-activation-20260820` | **ACTIVE / VALIDATED DEFAULT-OFF.** Notifications Global confirmées + dédup/rotation/cadence + résilience TCGdex bornée. Ne pas merger ni activer `GLOBAL_NOTIFY_ENABLED=true` sans autorisation explicite. |
-
-Contrôle : **18 lignes / 18 PR ouvertes pertinentes recensées** pendant cette phase.
 
 ## Phase Global
 
