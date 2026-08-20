@@ -32,6 +32,9 @@ jobs:
       GLOBAL_NOTIFY_ENABLED: ${{ github.event_name == 'schedule' && vars.GLOBAL_NOTIFY_ENABLED == 'true' && 'true' || 'false' }}
       GLOBAL_NOTIFY_DEDUPE_TTL_DAYS: ${{ vars.GLOBAL_NOTIFY_DEDUPE_TTL_DAYS || '14' }}
       GLOBAL_NOTIFY_REPRICE_DROP_PCT: ${{ vars.GLOBAL_NOTIFY_REPRICE_DROP_PCT || '5' }}
+      GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"
+      GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"
+      GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"
       GLOBAL_PPT_MAX_HTTP_CALLS: "12"
       GLOBAL_PPT_MAX_CREDITS: "60"
       GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
@@ -97,7 +100,7 @@ jobs:
 
       - name: Run confirmed Global notification lane
         run: |
-          python v4_global_notify.py \
+          python v4_global_notify_resilient.py \
             --state .global-notify-state/state.json \
             --output-dir global_notify_out \
             --max-identities "$GLOBAL_MAX_IDENTITIES" \
