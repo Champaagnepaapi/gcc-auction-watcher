@@ -6,8 +6,11 @@ from pathlib import Path
 
 
 class GlobalNotifyWorkflowTests(unittest.TestCase):
+    def _text(self) -> str:
+        return Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
+
     def test_schedule_is_hourly_and_activation_is_explicit(self):
-        text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
+        text = self._text()
         self.assertIn('workflow_dispatch:', text)
         self.assertIn('cron: "41 * * * *"', text)
         self.assertIn('Resolve notification activation', text)
@@ -18,7 +21,7 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertIn("github.event_name == 'schedule'", text)
 
     def test_manual_dispatch_can_only_be_dry_run(self):
-        text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
+        text = self._text()
         env_line = next(line.strip() for line in text.splitlines() if line.strip().startswith('GLOBAL_NOTIFY_ENABLED:'))
         self.assertIn("github.event_name == 'schedule'", env_line)
         self.assertIn("steps.activation.outputs.enabled == 'true'", env_line)
@@ -30,21 +33,33 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertEqual(marker, 'true')
 
     def test_repository_false_is_emergency_override(self):
-        text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
+        text = self._text()
         self.assertIn('if [ "$REPO_NOTIFY_FLAG" = "false" ]; then', text)
         self.assertIn('elif [ "$REPO_NOTIFY_FLAG" = "true" ]; then', text)
         self.assertIn('elif [ "$marker" = "true" ]; then', text)
 
-    def test_state_is_persistent_and_isolated_by_event(self):
-        text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
+    def test_marketplace_state_is_persistent_and_isolated_by_event(self):
+        text = self._text()
         self.assertIn('actions/cache/restore@v4', text)
         self.assertIn('actions/cache/save@v4', text)
-        self.assertIn('global-notify-state-${{ github.event_name }}-', text)
-        self.assertIn('--state .global-notify-state/state.json', text)
+        self.assertIn('global-marketplace-state-${{ github.event_name }}-', text)
+        self.assertIn('--state-dir .global-marketplace-state', text)
+        self.assertNotIn('--state .global-notify-state/state.json', text)
+
+    def test_production_runner_is_marketplace_first_not_seed_rotation(self):
+        text = self._text()
+        self.assertIn('python v4_global_marketplace_notify_resilient.py', text)
+        self.assertNotIn('python v4_global_notify_resilient.py', text)
+        self.assertIn('--max-evaluations "$GLOBAL_MARKETPLACE_MAX_EVALUATIONS"', text)
+        self.assertIn('--gcc-live-pages 100', text)
+        self.assertIn('--browser-detail-cap 100', text)
+        self.assertIn('--comc-pages 10', text)
+        self.assertNotIn('GLOBAL_MAX_IDENTITIES', text)
+        self.assertNotIn('--max-identities', text)
+        self.assertNotIn('--market-candidates', text)
 
     def test_runner_and_provider_secrets_are_bounded_to_notification_lane(self):
-        text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
-        self.assertIn('python v4_global_notify_resilient.py', text)
+        text = self._text()
         self.assertIn('GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"', text)
         self.assertIn('GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"', text)
         self.assertIn('GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"', text)
