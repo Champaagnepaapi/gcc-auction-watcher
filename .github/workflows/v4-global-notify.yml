@@ -3,14 +3,10 @@ name: V4 Global Confirmed Notifications
 on:
   workflow_dispatch:
     inputs:
-      max_identities:
-        description: "Max rotating strict JP PSA10 identities to validate"
+      max_evaluations:
+        description: "Max pending marketplace listings to evaluate economically"
         required: false
-        default: "5"
-      market_candidates:
-        description: "Max listing candidates per market/identity"
-        required: false
-        default: "8"
+        default: "10"
   schedule:
     - cron: "41 * * * *"
 
@@ -29,7 +25,7 @@ jobs:
     # emergency override that disables the marker.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       GLOBAL_NOTIFY_DEDUPE_TTL_DAYS: ${{ vars.GLOBAL_NOTIFY_DEDUPE_TTL_DAYS || '14' }}
       GLOBAL_NOTIFY_REPRICE_DROP_PCT: ${{ vars.GLOBAL_NOTIFY_REPRICE_DROP_PCT || '5' }}
@@ -39,8 +35,7 @@ jobs:
       GLOBAL_PPT_MAX_HTTP_CALLS: "12"
       GLOBAL_PPT_MAX_CREDITS: "60"
       GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
-      GLOBAL_MAX_IDENTITIES: ${{ inputs.max_identities || '5' }}
-      GLOBAL_MARKET_CANDIDATES: ${{ inputs.market_candidates || '8' }}
+      GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}
       POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
@@ -118,42 +113,46 @@ jobs:
             timeout 180s playwright install --with-deps chromium
           fi
 
-      - name: Restore Global notification state
+      - name: Restore Global marketplace state
         if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         uses: actions/cache/restore@v4
         with:
-          path: .global-notify-state
-          key: global-notify-state-${{ github.event_name }}-${{ github.run_id }}
+          path: .global-marketplace-state
+          key: global-marketplace-state-${{ github.event_name }}-${{ github.run_id }}
           restore-keys: |
-            global-notify-state-${{ github.event_name }}-
+            global-marketplace-state-${{ github.event_name }}-
 
-      - name: Run confirmed Global notification lane
+      - name: Run marketplace-first Global notification lane
         if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         env:
           GLOBAL_NOTIFY_ENABLED: ${{ github.event_name == 'schedule' && steps.activation.outputs.enabled == 'true' && 'true' || 'false' }}
         run: |
-          python v4_global_notify_resilient.py \
-            --state .global-notify-state/state.json \
-            --output-dir global_notify_out \
-            --max-identities "$GLOBAL_MAX_IDENTITIES" \
-            --market-candidates "$GLOBAL_MARKET_CANDIDATES"
+          python v4_global_marketplace_notify_resilient.py \
+            --state-dir .global-marketplace-state \
+            --output-dir global_marketplace_out \
+            --max-evaluations "$GLOBAL_MARKETPLACE_MAX_EVALUATIONS" \
+            --gcc-sold-pages 30 \
+            --gcc-live-pages 100 \
+            --browser-detail-cap 100 \
+            --browser-scroll-rounds 15 \
+            --comc-pages 10
 
       - name: Assert no tracked runtime mutation
         if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         run: test -z "$(git status --porcelain --untracked-files=no)"
 
-      - name: Save Global notification state
+      - name: Save Global marketplace state
         if: ${{ always() && (github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true') }}
         uses: actions/cache/save@v4
         with:
-          path: .global-notify-state
-          key: global-notify-state-${{ github.event_name }}-${{ github.run_id }}
+          path: .global-marketplace-state
+          key: global-marketplace-state-${{ github.event_name }}-${{ github.run_id }}
 
-      - name: Upload Global notification report
+      - name: Upload Global marketplace report
         if: ${{ always() && (github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true') }}
         uses: actions/upload-artifact@v4
         with:
-          name: v4-global-notify-${{ github.run_id }}
-          path: global_notify_out/
+          name: v4-global-marketplace-${{ github.run_id }}
+          path: global_marketplace_out/
           if-no-files-found: ignore
           retention-days: 14
