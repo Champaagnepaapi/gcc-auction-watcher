@@ -9,16 +9,25 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
     def _text(self) -> str:
         return Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
 
-    def test_schedule_is_hourly_and_activation_is_explicit(self):
+    def test_schedule_is_every_ten_minutes_and_activation_is_explicit(self):
         text = self._text()
         self.assertIn('workflow_dispatch:', text)
-        self.assertIn('cron: "41 * * * *"', text)
+        self.assertIn('cron: "1,11,21,31,41,51 * * * *"', text)
+        self.assertNotIn('cron: "41 * * * *"', text)
         self.assertIn('Resolve notification activation', text)
         self.assertIn('REPO_NOTIFY_FLAG: ${{ vars.GLOBAL_NOTIFY_ENABLED }}', text)
         self.assertIn('.github/global-notify-activation', text)
         self.assertIn("steps.activation.outputs.enabled == 'true'", text)
         self.assertIn("github.event_name == 'workflow_dispatch'", text)
         self.assertIn("github.event_name == 'schedule'", text)
+
+    def test_ten_minute_schedule_keeps_bounded_batch_and_non_overlapping_concurrency(self):
+        text = self._text()
+        self.assertIn('default: "10"', text)
+        self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}", text)
+        self.assertIn('group: v4-global-confirmed-notifications', text)
+        self.assertIn('cancel-in-progress: false', text)
+        self.assertIn('timeout-minutes: 40', text)
 
     def test_manual_dispatch_can_only_be_dry_run(self):
         text = self._text()
