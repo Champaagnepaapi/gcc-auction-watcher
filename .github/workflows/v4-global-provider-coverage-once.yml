@@ -1,0 +1,97 @@
+name: V4 Global Provider Coverage One Shot
+
+on:
+  push:
+    branches:
+      - diag/v4-global-provider-coverage-20260820
+    paths:
+      - .github/workflows/v4-global-provider-coverage-once.yml
+  pull_request:
+    branches:
+      - feat/v4-global-economic-confirmation-20260819
+    paths:
+      - .github/workflows/v4-global-provider-coverage-once.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-global-provider-coverage-once
+  cancel-in-progress: false
+
+jobs:
+  provider-coverage:
+    if: ${{ github.event_name == 'push' || github.head_ref == 'diag/v4-global-provider-coverage-20260820' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NTFY_TOPIC: ""
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        timeout-minutes: 3
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            playwright install chromium
+          fi
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          launch_status=$?
+          set -e
+          if [ "$launch_status" -ne 0 ]; then
+            timeout 180s playwright install --with-deps chromium
+          fi
+
+      - name: Compile diagnostic
+        run: |
+          python -m py_compile v4_global_provider_coverage_diagnostic.py
+          python -m py_compile v4_global_provider_coverage_dimensions.py
+
+      - name: Run read-only provider coverage diagnostic
+        run: |
+          python v4_global_provider_coverage_dimensions.py \
+            --output-dir global_provider_coverage_out \
+            --max-identities "5" \
+            --market-candidates "8"
+
+      - name: Assert no tracked runtime mutation
+        run: test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-global-provider-coverage-${{ github.run_id }}
+          path: global_provider_coverage_out/
+          if-no-files-found: error
+          retention-days: 7
