@@ -6,6 +6,11 @@ on:
       - diag/v4-global-provider-coverage-20260820
     paths:
       - .github/workflows/v4-global-provider-coverage-once.yml
+  pull_request:
+    branches:
+      - feat/v4-global-economic-confirmation-20260819
+    paths:
+      - .github/workflows/v4-global-provider-coverage-once.yml
 
 permissions:
   contents: read
@@ -16,6 +21,7 @@ concurrency:
 
 jobs:
   provider-coverage:
+    if: ${{ github.event_name == 'push' || github.head_ref == 'diag/v4-global-provider-coverage-20260820' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
