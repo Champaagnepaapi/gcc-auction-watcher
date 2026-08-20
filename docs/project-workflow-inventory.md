@@ -1,10 +1,10 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire workflows GitHub Actions
 
-Audit vérifié le **20 août 2026** pendant la phase #145.
+Audit vérifié le **20 août 2026** pendant la phase d'activation #146.
 
 ## Résultat clé
 
-Le tree `main` de base contient **15 fichiers workflow YAML**. La branche #145 ajoute **1 workflow permanent** : `.github/workflows/v4-global-notify.yml`. Après merge éventuel de #145, le tree contiendrait donc **16 workflows**.
+Le tree `main` contient **16 fichiers workflow YAML** depuis le merge #145. #146 ne crée pas un 17e workflow : il active la lane existante `v4-global-notify.yml` via un marker versionné et conserve un override repository variable.
 
 L'API Actions conserve aussi des enregistrements historiques de workflows supprimés ; ces records ne sont pas une preuve qu'un YAML existe encore sur `main`.
 
@@ -24,18 +24,18 @@ L'API Actions conserve aussi des enregistrements historiques de workflows suppri
 | `v4-gcc-coverage-audit.yml` | `workflow_dispatch` | Audit GCC manuel/read-only. |
 | `v4-global-live-shadow.yml` | `workflow_dispatch` | Global manuel/read-only ; `economic_confirmation` utilise le stack exact confirmé. |
 | `v4-global-market-offline-validation.yml` | PR ciblée | CI Global : tests + regressions V4 + compile/YAML/diff. |
-| `v4-global-notify.yml` | `workflow_dispatch` + cron horaire `41 * * * *` | **Ajout #145. Default-off.** Manual = toujours dry-run ; schedule ne démarre que si `vars.GLOBAL_NOTIFY_ENABLED == 'true'`. Aucune transaction. |
+| `v4-global-notify.yml` | `workflow_dispatch` + cron horaire `41 * * * *` | Notifications Global confirmées. Manual = toujours dry-run. Schedule activé par marker `true` ou repo var `true`; repo var `false` force l'arrêt. Aucune transaction. |
 | `v4-global-shadow-dispatch-ci.yml` | PR ciblée | Vérifie le contrat du dispatcher Global. |
 | `v4-kb-shadow-ingest.yml` | `workflow_run` après succès V4 | Ingestion passive vers Robot KB/Neon. |
 | `v5-gcc-catalog-refresh.yml` | `workflow_dispatch` + cron | Support V5 legacy ; ne pas supprimer sans audit dédié. |
 | `v5-live-raw-pipeline-diagnostic.yml` | `workflow_dispatch` | V5 diagnostic manuel, aucune transaction/grading payant. |
 | `watcher.yml` | `workflow_dispatch` | V4 production canonique, cadence externe Cron-job.org. |
 
-## Global après #139/#140/#142 et #145
+## Global après #139/#140/#142/#145/#146
 
 `v4-global-live-shadow.yml` reste volontairement **manuel/read-only**.
 
-Le workflow #145 `v4-global-notify.yml` est une lane distincte de notification confirmée :
+`v4-global-notify.yml` est la lane séparée de notification confirmée :
 
 ```text
 Global exact offers
@@ -43,13 +43,20 @@ Global exact offers
  -> PPT / PokeTrace confirmation
  -> MULTIMARKET_CONFIRMED uniquement
  -> déduplication persistante
- -> notification seulement si feature flag schedule explicitement activé
+ -> notification seulement si activation schedule explicite
 ```
+
+Activation #146 :
+
+- `.github/global-notify-activation = true` active les runs `schedule` ;
+- `vars.GLOBAL_NOTIFY_ENABLED=true` reste supporté ;
+- `vars.GLOBAL_NOTIFY_ENABLED=false` est un override d'urgence prioritaire ;
+- le job schedule démarre pour résoudre l'activation, mais les étapes provider ne s'exécutent que si le gate est actif ;
+- `workflow_dispatch` reste toujours dry-run ;
+- `NTFY_TOPIC` vide = fail-closed avant scan.
 
 Invariants :
 
-- `workflow_dispatch` force `GLOBAL_NOTIFY_ENABLED=false` : validation manuelle = dry-run ;
-- schedule horaire existe mais le job scheduled est skip tant que `vars.GLOBAL_NOTIFY_ENABLED != 'true'` ;
 - TTL déduplication 14 jours ; re-alert si baisse >=5 % ou expiration TTL ;
 - rotation persistante des seeds ;
 - retry TCGdex Global-only : max 2 tentatives, timeout 10 s, backoff 0.25 s ; échec final reste `ERROR`/fail-closed ;
@@ -58,25 +65,23 @@ Invariants :
 
 Live dry-run #145 `32359861668` : TCGdex 5/5, PPT 4/5, PokeTrace 4/5, `sent=0`, safety PASS.
 
-Les workflows one-shot utilisés pour les validations #142/#145 ont été **supprimés de la branche finale**. Les records Actions historiques peuvent rester visibles.
+Validation activation #146 : `32368400673` SUCCESS, Global 166/166, V4 51/51, compile/YAML/diff PASS.
+
+Les workflows one-shot utilisés pour les validations #142/#145 ont été **supprimés**. Les records Actions historiques peuvent rester visibles.
 
 ## Triggers automatiques permanents
 
-GitHub cron déjà actif sur main :
+GitHub cron :
 
 ```text
 Japan Edge Hunter
 Robot KB cloud shadow
 Robot KB SOLD shadow
 V5 GCC Catalog Refresh
-```
-
-Candidate #145, **désactivée par feature flag par défaut** :
-
-```text
 V4 Global Confirmed Notifications @ minute 41
-  -> job SKIPPED sauf vars.GLOBAL_NOTIFY_ENABLED == 'true'
 ```
+
+Pour Global Notifications, `vars.GLOBAL_NOTIFY_ENABLED=false` force l'arrêt immédiat même si le marker versionné vaut `true`.
 
 Événement automatique :
 
