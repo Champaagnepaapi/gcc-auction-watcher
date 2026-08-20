@@ -1,23 +1,22 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **20 août 2026** après le merge #148.
+État vérifié le **20 août 2026** après le merge #151.
 
 ## Autorité
 
 ```text
 V4 production                  main
-Dernier merge runtime          ea9a69b375434031c935de8d25fcc12acd1a1c93 (#148)
+Dernier merge runtime Global   c9539ca521f69b43b3d93e621fb21447a69f3fe7 (#151)
 Global discovery               marketplace-first
 Global notification workflow   marketplace-first
+Global schedule registry       issue #150
 V5                             PR #8 / draft / non mergée
 Robot KB / Neon                séparé
 ```
 
 Toujours re-vérifier le HEAD GitHub live ; des commits docs-only peuvent suivre le SHA runtime.
 
-## Phase Global #147 → #148
-
-Le Global est passé de seed-first à **marketplace-first**.
+## Global marketplace-first
 
 ```text
 GCC / Fanatics / COMC / magi / Cardova
@@ -30,78 +29,64 @@ GCC / Fanatics / COMC / magi / Cardova
  -> notification si gate complet
 ```
 
-### Bootstrap / incrémental
+Bootstrap : tout l'inventaire découvert est mis en file. Ensuite : nouvelles annonces, changements économiques et retryables. Disparition != SOLD.
 
-- bootstrap : tout l'inventaire découvert est mis en file et peut déjà produire une décote ;
-- ensuite : nouvelles annonces + changements économiques + retryables ;
-- annonce inchangée déjà traitée : pas de retraitement inutile ;
-- disparition != SOLD.
+Gate : `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5`, all-in prouvé, TCGdex exact, externe gradé exact >=3 ventes, décote >=30 %, conflit matériel bloquant. `ACTIVE_AUCTION` non actionnable. PPT/PokeTrace/eBay = une famille corrélée.
 
-### Gate économique
+Le correctif GCC #147 propage explicitement `FIXED_PRICE/AUCTION` depuis la requête ; une auction sans champ row type ne peut plus devenir `FIXED_ASK`.
 
-- `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5` seulement ;
-- `ACTIVE_AUCTION` non actionnable ;
-- all-in prouvé ;
-- identité TCGdex exacte ;
-- externe gradé exact >=3 ventes ;
-- PPT/PokeTrace/eBay = une seule famille corrélée ;
-- conflit GCC/externe matériel bloque ;
-- avec GCC : fair confirmé = `min(GCC, externe)` ;
-- sans GCC fair : `EXTERNAL_ONLY` possible avec externe exact/fort ;
-- seuil : 30 %.
+## Cutover #148
 
-ASK, auction live et disparition ne deviennent jamais SOLD.
-
-## Correctif GCC type d'annonce
-
-Régression marketplace-first découverte en live puis corrigée avant merge #147 : `sellingTypeGroup` n'est pas toujours renvoyé dans chaque row GCC. Le scanner propage maintenant explicitement le type de requête `FIXED_PRICE/AUCTION` au parser.
-
-Une auction sans champ type ne peut plus tomber en `FIXED_ASK`. Tests dédiés pour auction active et snapshot `≤5 min`.
-
-## Validation #147
+Le workflow existant `.github/workflows/v4-global-notify.yml` est l'unique cron Global et utilise `v4_global_marketplace_notify_resilient.py`.
 
 ```text
-head                    2e65631416d0b39947de47ed4df3d37a4a87cbdc
-merge                   5a1b0f050098b560e812a4dc6e64a9f8d40a8897
-run                     32397363626 SUCCESS
-Global                  201/201 PASS
-V4                       51/51 PASS
-GCC exact               1172
-Fanatics exact          1
-COMC exact              11
-magi exact              0
-inventory               1184
-selected/pending        10 / 1174
+schedule      41 * * * *
+manual        toujours dry-run
+state         .global-marketplace-state
+batch         10 pending/run initialement
+kill switch   vars.GLOBAL_NOTIFY_ENABLED=false
 ```
 
-## Validation #148 / cutover production
+## Registre autonome #150 / PR #151
 
-Le workflow existant `.github/workflows/v4-global-notify.yml` a été conservé comme **unique cron Global** et pointe maintenant sur `v4_global_marketplace_notify_resilient.py`.
+Le connecteur ChatGPT ne peut pas énumérer directement les runs GitHub Actions `schedule` sans `run_id`. #151 réutilise le pattern du registre V4 issue #1 mais garde les deux lanes séparées.
+
+Chaque vrai `schedule` Global poste dans **issue #150** :
+
+- timestamp, `run_id`, attempt, trigger, SHA ;
+- activation + outcome marketplace ;
+- inventaire/selected/pending ;
+- TCGdex/PPT/PokeTrace ;
+- confirmed candidates / notifications sent ;
+- flags purchase/bid/checkout/payment.
+
+Aucun log complet, secret, cookie/session ou détail listing-level n'est copié. `workflow_dispatch` n'écrit pas dans #150. Le finalizer est `always()` afin de laisser un run_id/statut même après échec provider lorsque le job peut atteindre cette étape.
+
+Validation #151 :
 
 ```text
-head                    9ff96e9cd9124944e50bb55e990289f5fd07492f
-merge                   ea9a69b375434031c935de8d25fcc12acd1a1c93
-run                     32398465774 SUCCESS
-validate job            96520726453 SUCCESS
-live read-only job      96520818899 SUCCESS
-Global                  202/202 PASS
+branch                  ops/v4-global-run-registry-20260820
+head                    a424fb62cb5e0553929847d3b973411a8b61a561
+merge                   c9539ca521f69b43b3d93e621fb21447a69f3fe7
+run                     32410224171 SUCCESS
+validate/live jobs      96558656377 / 96558728745 SUCCESS
+Global                  203/203 PASS
 V4                       51/51 PASS
 compile/YAML/diff       PASS
-inventory               1184
-selected/pending        10 / 1174
+inventory               1186
+selected/pending        10 / 1176
 TCGdex exact            5
 PPT                     1 match / 6 HTTP / 28 credits
 PokeTrace               4 matches / 6 requests
 market conflicts        4 blocked
 would_notify            0
 transactions            false
+artifact                9421951722
 ```
-
-Activation #146 reste inchangée : marker versionné / repo var true ; repo var false = kill switch ; manual dispatch toujours dry-run ; `NTFY_TOPIC` absent = fail-closed.
 
 ## Preuve encore attendue
 
-Le code/cutover est mergé. Il reste à **observer explicitement le premier vrai run `schedule` post-#148 sur `main`** pour clôturer la preuve live production du nouveau runtime. Ne pas revendiquer cette preuve sans run ID/logs.
+La mécanique du registre est offline + live read-only validée et mergée. Il reste à observer **le premier commentaire automatique de l'issue #150 produit par un vrai `schedule` sur `main` post-#151**. Ce commentaire donnera le `run_id`, après quoi jobs/logs/artifacts pourront être inspectés sans intervention utilisateur.
 
 ## Cardova
 
@@ -109,11 +94,11 @@ Le code/cutover est mergé. Il reste à **observer explicitement le premier vrai
 
 ## Prochaine direction
 
-1. Observer le premier schedule post-#148.
-2. Laisser le bootstrap drainer le backlog marketplace-first par batches de 10.
-3. Mesurer débit/coût/backlog avant d'augmenter ce cap.
-4. Si anomalie : `vars.GLOBAL_NOTIFY_ENABLED=false` coupe la lane.
-5. V4 cœur production continue normalement et reste séparé de Global.
+1. Lire le prochain commentaire #150 après le prochain cron minute 41.
+2. Inspecter automatiquement le run_id et confirmer le vrai mode production marketplace-first.
+3. Laisser le backlog se drainer par batches de 10.
+4. Mesurer débit/coût/backlog avant scale-up.
+5. Si anomalie : `vars.GLOBAL_NOTIFY_ENABLED=false` coupe la lane.
 
 ## Invariants
 
