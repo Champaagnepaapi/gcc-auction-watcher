@@ -26,6 +26,16 @@ jobs:
       JAPAN_EDGE_GLOBAL_MAX_CANDIDATES: "12"
       V4_POKETRACE_MAX_REQUESTS_PER_RUN: "20"
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      # PPT is display-only and is queried only for a Japan Edge opportunity
+      # that has already passed the existing market decision. It never changes
+      # verdict/FV/notification eligibility and shares the eBay aggregate family.
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      JAPAN_EDGE_PPT_CONTEXT_ENABLED: ${{ vars.JAPAN_EDGE_PPT_CONTEXT_ENABLED || 'true' }}
+      JAPAN_EDGE_PPT_CONTEXT_MAX_CANDIDATES: "4"
+      JAPAN_EDGE_PPT_CONTEXT_MAX_HTTP_CALLS: "8"
+      JAPAN_EDGE_PPT_CONTEXT_MAX_CREDITS: "40"
+      JAPAN_EDGE_PPT_CONTEXT_DAILY_REMAINING_FLOOR: "15000"
+      JAPAN_EDGE_PPT_CONTEXT_INTERVAL_SECONDS: "1.10"
       # Enabled by default after authorized live validation. An explicit
       # repository variable can fail-safe disable it without a code change.
       JAPAN_EDGE_NOTIFY_ENABLED: ${{ vars.JAPAN_EDGE_NOTIFY_ENABLED || 'true' }}

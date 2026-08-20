@@ -5,6 +5,10 @@ from strict Japanese PSA 10 GCC SOLD references, then each exact cheap candidate
 checked against an independent exact Japanese PSA 10 graded market aggregate from
 PokeTrace/eBay SOLD data before high-priority notification.
 
+PokemonPriceTracker can additionally be displayed as a separate JP PSA10 market
+context after the economic decision is already made. PPT never creates/suppresses
+an opportunity or changes the V3 fair value/verdict.
+
 No purchase, bid, checkout or payment code exists here.
 """
 from __future__ import annotations
@@ -23,6 +27,7 @@ import requests
 
 import japan_edge_hunter as base
 import japan_edge_hunter_v2 as v2
+import japan_edge_ppt_notification_context as ppt_context
 import v4_canonical_multimarket as multimarket
 import watcher
 
@@ -199,7 +204,14 @@ def _notification_fingerprint(op: base.Opportunity) -> str:
     return hashlib.sha256(f"v3|{op.provider}|{op.url}|{op.price_jpy}".encode()).hexdigest()
 
 
-def notify(op: base.Opportunity, external: ExternalReference, decision: MarketDecision, server: str, topic: str) -> None:
+def notify(
+    op: base.Opportunity,
+    external: ExternalReference,
+    decision: MarketDecision,
+    server: str,
+    topic: str,
+    ppt: ppt_context.PptNotificationContext | None = None,
+) -> None:
     landed = f"{op.landed_chf:.0f} CHF" if op.landed_chf is not None else f"€{op.landed_eur:.0f}"
     identity = op.identity
     title = (
@@ -213,8 +225,12 @@ def notify(op: base.Opportunity, external: ExternalReference, decision: MarketDe
         "",
         f"GCC exact JP PSA10: €{decision.gcc_fair_eur:.0f} | {op.gcc_sold_count} SOLD ({op.gcc_recent_90} <90j)",
         f"→ décote vs GCC: -{decision.discount_vs_gcc_pct:.0f}%",
-        "",
     ]
+    ppt_lines = ppt_context.notification_lines(ppt) if ppt is not None else []
+    if ppt_lines:
+        market_lines.extend(["", *ppt_lines])
+    market_lines.append("")
+
     if external.fair_eur is not None and decision.discount_vs_external_pct is not None:
         market_lines.extend(
             [
@@ -241,6 +257,7 @@ def notify(op: base.Opportunity, external: ExternalReference, decision: MarketDe
             *market_lines,
             "",
             f"VERDICT: {decision.status}",
+            "PPT = CONTEXTE AFFICHÉ, PAS DÉCIDEUR",
             "ASK, PAS UNE VENTE",
             op.url,
         ]
@@ -266,6 +283,7 @@ def enrich_payload(
 ) -> dict:
     now = datetime.now(timezone.utc)
     budget = multimarket.RequestBudget()
+    ppt_client = ppt_context.PptNotificationClient.from_env()
     rows = []
     state = base.load_state(state_path)
     cutoff = now - timedelta(days=14)
@@ -286,16 +304,29 @@ def enrich_payload(
             external = ExternalReference(status="PENDING_BUDGET", note="global market candidate cap reached")
 
         decision = classify_market(op, external, min_discount)
+        fp = _notification_fingerprint(op)
+        is_new_notification = fp not in notified
+
+        if decision.should_notify:
+            # In a diagnostic/no-ntfy run, fetch context for the report. In
+            # production, avoid spending PPT credits again on an already-deduped
+            # notification.
+            if not notify_enabled or not topic or is_new_notification:
+                ppt_display = ppt_client.fetch(op, now)
+            else:
+                ppt_display = ppt_context.not_requested("NOT_REQUESTED_ALREADY_NOTIFIED")
+        else:
+            ppt_display = ppt_context.not_requested("NOT_REQUESTED_DECISION_NOT_NOTIFYING")
+
         row = asdict(op)
         row["external_reference"] = asdict(external)
         row["market_decision"] = asdict(decision)
+        row["ppt_notification_context"] = ppt_context.as_payload(ppt_display)
         rows.append(row)
 
-        if notify_enabled and topic and decision.should_notify:
-            fp = _notification_fingerprint(op)
-            if fp not in notified:
-                notify(op, external, decision, server, topic)
-                notified[fp] = now.isoformat().replace("+00:00", "Z")
+        if notify_enabled and topic and decision.should_notify and is_new_notification:
+            notify(op, external, decision, server, topic, ppt_display)
+            notified[fp] = now.isoformat().replace("+00:00", "Z")
 
     base.save_state(
         state_path,
@@ -316,6 +347,8 @@ def enrich_payload(
         "conflict_ratio": GLOBAL_CONFLICT_RATIO,
         "max_external_candidates": max_external_candidates,
         "poketrace_requests_used": budget.poketrace_requests,
+        "ppt_notification_context": ppt_client.summary(),
+        "ppt_policy": "display-only after market decision; SOLD_AGGREGATED; same eBay correlation family; never changes verdict/FV/notification eligibility",
     }
     output_path.write_text(json.dumps(output, ensure_ascii=False, indent=2))
     return output
@@ -382,6 +415,7 @@ def main() -> None:
         "market_blocked": sum(
             1 for row in enriched.get("opportunities", []) if row["market_decision"]["status"] in {"MARKET_CONFLICT_BLOCKED", "GCC_EDGE_NOT_GLOBAL"}
         ),
+        "ppt_context": enriched.get("global_market", {}).get("ppt_notification_context", {}),
         "diagnostics": enriched.get("diagnostics", {}),
     }
     print(json.dumps(summary, ensure_ascii=False))
