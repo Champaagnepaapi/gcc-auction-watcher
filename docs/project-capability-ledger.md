@@ -12,11 +12,12 @@ Last functional/runtime merge   : c012284c423e9526fd2712001fdbce3a5cfafda3
 V5 expérimentale                : PR #8 / agent/v5-poketrace-cardmarket-market-data
 V5 head validé                  : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 TCGdex source pin               : af33c9ac882e2acfadffaf19e8083aa976d12983
+Global notification candidate   : PR #145 / default-off / non mergée à ce snapshot
 ```
 
 Des commits docs-only suivent `c012284c...` sur `main`. Toujours re-vérifier le HEAD live ; le SHA ci-dessus est le **baseline runtime**, pas une promesse que le HEAD Git est identique.
 
-Statuts : `PROD_V4`, `MAIN_SUPPORT`, `GLOBAL_READ_ONLY`, `ROBOT_KB`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`.
+Statuts : `PROD_V4`, `MAIN_SUPPORT`, `GLOBAL_READ_ONLY`, `GLOBAL_NOTIFY_DEFAULT_OFF`, `ROBOT_KB`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`.
 
 ---
 
@@ -73,15 +74,15 @@ PR #126 = `SUPERSEDED`, ne pas merger.
 
 ---
 
-# Global Multi-Vault — `GLOBAL_READ_ONLY` sur main
+# Global Multi-Vault
 
-## #139 — réintégration
+## #139 — réintégration — `GLOBAL_READ_ONLY`
 
 A absorbé/revalidé les capacités historiques #108→#115 : common valuation, strict identity, GCC/Cardova/magi/Fanatics/COMC, diagnostics, retrieval hardening, Magi SOLD guard, COMC fallback, runner manuel/read-only et CI Global.
 
 Les PR #108/#109/#110/#113/#114/#115 et #138 sont désormais historiques/superseded pour l'intégration.
 
-## #140 — confirmation économique
+## #140 — confirmation économique — `GLOBAL_READ_ONLY`
 
 Dernier merge fonctionnel/runtime : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
 
@@ -95,7 +96,7 @@ Dernier merge fonctionnel/runtime : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
 - PPT/PokeTrace/eBay = une seule famille `EBAY_GRADED_AGGREGATE` ;
 - aucune notification réelle ni transaction.
 
-## #142 — bridge exact provider
+## #142 — bridge exact provider — `MAIN_SUPPORT`
 
 Absorbée dans #140 avant merge vers main.
 
@@ -111,7 +112,7 @@ Après preuve macro exacte uniquement :
 - `externalCatalogId` conflictuel bloque ;
 - aucun fuzzy.
 
-### Validation
+### Validation #140/#142
 
 ```text
 Head #140        b10adebc1f6866ae4ec37e9ea01eeddd2a240c60
@@ -126,11 +127,72 @@ Live `32344120993` : TCGdex 5/5, PPT 4/5, PokeTrace 4/5, `would_notify=0`, 1 con
 
 Pikachu M-P reste `CLEAN_NO_MATCH`. Ne pas ajouter un alias ponctuel sans classe répétée prouvée.
 
-## Activation Global
+## #145 — notifications Global confirmées — `GLOBAL_NOTIFY_DEFAULT_OFF`
 
-`GLOBAL_READ_ONLY` uniquement : workflow manuel, `notification_capable=false`, aucun schedule, aucun achat/bid/checkout/paiement. Le one-shot #142 a été supprimé.
+Phase séparée, construite au-dessus des décisions #140 et du bridge #142 ; aucun nouveau moteur de matching/fair value parallèle.
 
-Une future activation notifications = **nouvelle phase** avec feature flag default-off, déduplication persistante, cadence explicite et nouveau live de validation.
+Capacités :
+
+- notification uniquement après `would_notify=true` + `MULTIMARKET_CONFIRMED` ;
+- offre exacte actionnable `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5` + `all_in_eur` prouvé ;
+- externe gradé >=3 ventes ;
+- déduplication persistante 14 jours par identité + marché + URL ;
+- re-alert uniquement après expiration TTL ou baisse de prix >=5 % ;
+- rotation persistante des seeds ;
+- état corrompu = fail-closed si livraison activée ;
+- `workflow_dispatch` = toujours dry-run ;
+- cron candidat horaire minute 41, mais job scheduled skip tant que `vars.GLOBAL_NOTIFY_ENABLED != 'true'` ;
+- aucune transaction possible.
+
+### Résilience TCGdex Global-only
+
+Le premier dry-run notification `32357750921` a validé les garde-fous mais TCGdex a `ReadTimeout` sur 5/5, donc 0/5 exact et PokeTrace 0/5. Le correctif #145 ajoute une résilience **transport uniquement**, isolée à la lane Global :
+
+- max 2 tentatives au total ;
+- timeout 10 s ;
+- backoff 0.25 s ;
+- retry seulement Timeout/ConnectionError/HTTP 502/503/504 ;
+- 404/non-match jamais transformé ;
+- échec après retry reste `ERROR` et fail-closed ;
+- aucune règle d'identité n'est relâchée ;
+- le scanner V4 canonique n'installe pas ce wrapper.
+
+Validation fonctionnelle + live :
+
+```text
+head fonctionnel pré-one-shot  3c459ac561013eaf49b5475d7d89222a8b9efdda
+Offline CI                    32359793387 SUCCESS
+Dispatcher CI                 32359793463 SUCCESS
+Global tests                  164/164 PASS
+V4 regressions                 51/51 PASS
+compile/YAML/diff             PASS
+
+live run / job                32359861668 / 96396943369
+mode                          READ_ONLY_NOTIFICATION_VALIDATION
+TCGdex exact                  5/5
+PPT matched                   4/5
+PokeTrace matched             4/5
+confirmed_would_notify        0
+market conflicts              1 blocked
+sent                          0
+notifications                 false
+transactions                  false
+identity_gate_relaxed         false
+artifact                      9403172623
+artifact digest               sha256:68054acd9468b7f3e1ac5fdcb9720a9bcba38d19e7440dc96bbb59e61b1ad2b0
+```
+
+Après suppression du one-shot et synchronisation README/ledger/inventaires, le head `c192fa2fb2647ad4b2ec1bd450081d22b97132a2` est validé par :
+
+```text
+Offline CI                    32360623413 SUCCESS
+Dispatcher CI                 32360623370 SUCCESS
+Global tests                  164/164 PASS
+V4 regressions                 51/51 PASS
+compile/YAML/diff             PASS
+```
+
+Le one-shot ayant produit le live est supprimé avant le head final. L'activation réelle `GLOBAL_NOTIFY_ENABLED=true` reste une **autorisation séparée** et ne doit pas être inférée d'un merge.
 
 PR #141 = `SUPERSEDED_DIAGNOSTIC`, ne pas merger comme fonctionnalité.
 
@@ -176,7 +238,7 @@ PR #106/#107 restent des shadows historiques séparés ; Global #140 utilise son
 - #108/#109/#110/#113/#114/#115/#138 : stack Global historique absorbée par #139 ;
 - #141 : diagnostic absorbé par #142 ;
 - #142 : absorbée dans #140 puis main ;
-- one-shots/temp : provenance uniquement.
+- one-shots/temp : provenance uniquement, à supprimer après validation.
 
 ## Invariants
 
@@ -187,4 +249,5 @@ PR #106/#107 restent des shadows historiques séparés ; Global #140 utilise son
 - RAW != valeur slab ;
 - aucune identité/langue/grader/grade/microvariante incompatible mélangée ;
 - aucun achat, bid, checkout ou paiement automatique ;
-- aucun secret dans repo/logs.
+- aucun secret dans repo/logs ;
+- merge #145 != activation réelle : le feature flag reste default-off jusqu'à autorisation explicite.

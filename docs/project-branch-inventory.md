@@ -8,6 +8,7 @@
 production canonique              main
 last functional/runtime merge     c012284c423e9526fd2712001fdbce3a5cfafda3
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / PR #8
+Global notification candidate     feat/v4-global-notification-activation-20260820 / PR #145
 ```
 
 Des commits docs-only suivent le baseline runtime `c012284c...` sur `main`. Toujours re-vérifier le HEAD GitHub live avant une action.
@@ -16,7 +17,7 @@ PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` s
 
 ## Comptage
 
-Le dernier audit exhaustif, le 18 août, comptait 158 branches distantes. Plusieurs branches Global/diagnostic/docs ont été créées depuis. Le nombre courant n'a pas été reconstitué exhaustivement pendant cette fermeture ; ne pas présenter `158` comme nombre actuel.
+Le dernier audit exhaustif, le 18 août, comptait 158 branches distantes. Plusieurs branches Global/diagnostic/docs ont été créées depuis. Le nombre courant n'a pas été reconstitué exhaustivement pendant cette phase ; ne pas présenter `158` comme nombre actuel.
 
 Toute suppression de branche exige un nouvel audit exhaustif + autorisation explicite.
 
@@ -33,15 +34,16 @@ Toute suppression de branche exige un nouvel audit exhaustif + autorisation expl
 - `diag/v4-global-provider-coverage-20260820-work` ;
 - `fix/v4-global-external-exact-bridge-20260820` — #142, absorbée dans #140 ;
 - `docs/v4-global-economic-confirmation-close-20260820` — #143, docs ;
-- `docs/fix-global-runtime-baseline-wording-20260820` — correction docs-only de terminologie SHA.
+- `docs/fix-global-runtime-baseline-wording-20260820` — correction docs-only ;
+- `feat/v4-global-notification-activation-20260820` — **PR #145 active/draft**, notifications confirmées default-off + dédup/rotation + résilience TCGdex Global-only. Live dry-run `32359861668` SUCCESS ; activation réelle non autorisée.
 
-Ces branches ne deviennent pas production ; `main` reste l'autorité.
+Ces branches ne deviennent pas production ; `main` reste l'autorité jusqu'à merge explicite.
 
 ## Historique à ne pas rejouer
 
 - anciennes branches Global #108→#115 : absorbées par #139 ;
 - PR #126 : superseded par #127→#135 ;
-- one-shots/temp/diagnostics : provenance uniquement.
+- one-shots/temp/diagnostics : provenance uniquement ; les one-shots #145 ont été supprimés après validation.
 
 ## Règle cleanup branches
 
@@ -52,4 +54,4 @@ Ces branches ne deviennent pas production ; `main` reste l'autorité.
 5. autorisation explicite ;
 6. jamais de suppression V5/branche active par simple housekeeping.
 
-Aucune branche n'a été supprimée pendant la phase Global.
+Aucune branche n'a été supprimée pendant cette phase.

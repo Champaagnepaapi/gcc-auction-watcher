@@ -9,8 +9,13 @@ on:
       - "v4_global_live_shadow.py"
       - "v4_global_live_shadow_hardened.py"
       - "v4_global_live_confirmed.py"
+      - "v4_global_live_confirmed_v2.py"
       - "v4_global_economic_confirmation.py"
       - "v4_global_ppt_confirmation.py"
+      - "v4_global_provider_exact_bridge.py"
+      - "v4_global_notify.py"
+      - "v4_global_notify_resilient.py"
+      - "v4_global_tcgdex_resilience.py"
       - "v4_global_comc_hardening.py"
       - "v4_global_comc_hardening_v2.py"
       - "v4_global_magi_registry_hardening.py"
@@ -32,6 +37,7 @@ on:
       - "tests_global/**"
       - ".github/workflows/v4-global-market-offline-validation.yml"
       - ".github/workflows/v4-global-live-shadow.yml"
+      - ".github/workflows/v4-global-notify.yml"
 
 permissions:
   contents: read
@@ -68,8 +74,13 @@ jobs:
           python -m py_compile v4_global_live_shadow.py
           python -m py_compile v4_global_live_shadow_hardened.py
           python -m py_compile v4_global_live_confirmed.py
+          python -m py_compile v4_global_live_confirmed_v2.py
           python -m py_compile v4_global_economic_confirmation.py
           python -m py_compile v4_global_ppt_confirmation.py
+          python -m py_compile v4_global_provider_exact_bridge.py
+          python -m py_compile v4_global_notify.py
+          python -m py_compile v4_global_notify_resilient.py
+          python -m py_compile v4_global_tcgdex_resilience.py
           python -m py_compile v4_global_comc_hardening.py
           python -m py_compile v4_global_comc_hardening_v2.py
           python -m py_compile v4_global_magi_registry_hardening.py
@@ -102,6 +113,11 @@ jobs:
           python -m py_compile tests_global/test_v4_global_evidence_bridges.py
           python -m py_compile tests_global/test_v4_global_economic_confirmation.py
           python -m py_compile tests_global/test_v4_global_confirmation_recovery.py
+          python -m py_compile tests_global/test_v4_global_provider_exact_bridge.py
+          python -m py_compile tests_global/test_v4_global_provider_exact_bridge_catalog.py
+          python -m py_compile tests_global/test_v4_global_notify.py
+          python -m py_compile tests_global/test_v4_global_notify_workflow.py
+          python -m py_compile tests_global/test_v4_global_tcgdex_resilience.py
           python -m py_compile tests_global/test_v4_market_cardova.py
           python -m py_compile tests_global/test_v4_market_verified_offer.py
 
@@ -112,6 +128,7 @@ jobs:
           for path in (
               pathlib.Path('.github/workflows/v4-global-market-offline-validation.yml'),
               pathlib.Path('.github/workflows/v4-global-live-shadow.yml'),
+              pathlib.Path('.github/workflows/v4-global-notify.yml'),
           ):
               yaml.safe_load(path.read_text())
               print(f"YAML PASS: {path}")

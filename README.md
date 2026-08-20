@@ -13,22 +13,21 @@ main HEAD                      : toujours re-vérifier GitHub live ; des commits
 V5 expérimentale               : PR #8 / agent/v5-poketrace-cardmarket-market-data
 Robot KB / Neon                : historique durable séparé de V4/V5
 TCGdex source pin              : af33c9ac882e2acfadffaf19e8083aa976d12983
+Global notifications candidate : PR #145 / default-off / activation réelle séparée
 ```
 
-`c012284c...` est le dernier merge **fonctionnel/runtime** de cette phase. Les merges docs-only qui le suivent sur `main` ne changent pas le comportement V4/Global ; ne jamais confondre leur SHA avec un nouveau runtime déployé.
+`c012284c...` est le dernier merge **fonctionnel/runtime** actuellement présent sur `main`. Les commits docs-only qui le suivent ne changent pas le comportement V4/Global ; ne jamais confondre leur SHA avec un nouveau runtime déployé.
 
 ### Phase Global Multi-Vault #139 → #142 — INTÉGRÉE EN READ-ONLY
 
 - PR #139 a réintégré sur le `main` courant le Global Multi-Vault strict : GCC, Cardova, magi, Fanatics et COMC.
 - PR #140 ajoute la **confirmation économique externe** PPT/PokeTrace après identité exacte.
 - PR #142 ajoute le bridge générique de nomenclature provider exact, sans fuzzy ni alias carte-par-carte ; elle a été mergée dans #140 avant le merge vers `main`.
-- dernier merge fonctionnel/runtime de la phase : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
+- dernier merge fonctionnel/runtime de cette phase : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
 
-**Important : cette lane reste read-only / diagnostic.** Elle calcule `would_notify`, mais n'envoie aucune notification et n'est pas schedulée automatiquement. Aucune transaction n'est possible.
+Le runtime Global présent sur `main` reste read-only/diagnostic. Il calcule `would_notify`, n'envoie aucune notification et n'effectue aucune transaction.
 
-### Preuve live finale Global
-
-Run read-only :
+### Preuve live Global #140/#142
 
 ```text
 run_id                32344120993
@@ -54,19 +53,79 @@ result                MARKET_CONFLICT_BLOCKED
 
 L'ASK Fanatics apparemment très décoté par rapport à GCC n'est donc pas promu : le marché externe contredit le fair GCC. **ASK ≠ SOLD.**
 
-Couverture externe observée sur ce panel : Raikou, Entei, Dragonite et Mewtwo ont désormais une coordonnée externe exacte ; Pikachu M-P reste `CLEAN_NO_MATCH`. Ne pas relâcher l'identité pour forcer sa couverture.
+Couverture externe observée sur ce panel : Raikou, Entei, Dragonite et Mewtwo ont une coordonnée externe exacte ; Pikachu M-P reste `CLEAN_NO_MATCH`. Ne pas relâcher l'identité pour forcer sa couverture.
 
-Validation finale du head #140 `b10adebc1f6866ae4ec37e9ea01eeddd2a240c60` :
+### Phase #145 — notifications Global confirmées, DEFAULT-OFF
+
+PR #145 construit une lane de notification séparée au-dessus du moteur économique déjà validé. Elle ne remplace ni le scanner V4 canonique ni le matching #140/#142.
+
+Gate de notification :
 
 ```text
-V4 Global Market Offline Validation  32351952230  SUCCESS
-V4 Global Shadow Dispatcher CI       32351952209  SUCCESS
-Global tests                          146/146 PASS
-V4 multimarket regressions             51/51 PASS
-py_compile / YAML / diff-check        PASS
+exact actionable offer
+  + MULTIMARKET_CONFIRMED
+  + would_notify=true
+  + all_in_eur prouvé
+  + external graded >= 3 sales
+  -> dedupe/rotation
+  -> notification seulement si activation schedule explicitement autorisée
 ```
 
-Le one-shot utilisé pour la validation live de #142 a été supprimé avant merge. Le workflow permanent Global reste manuel/read-only.
+Capacités #145 :
+
+- déduplication persistante 14 jours par identité + marché + URL ;
+- re-notification seulement après expiration TTL ou baisse de prix `>=5%` ;
+- rotation persistante des seeds ;
+- état corrompu = fail-closed lorsque la livraison est activée ;
+- `workflow_dispatch` reste **toujours dry-run** ;
+- workflow permanent `v4-global-notify.yml` avec cron candidat `41 * * * *`, mais job scheduled **skip** tant que `vars.GLOBAL_NOTIFY_ENABLED != 'true'` ;
+- aucun achat, bid, checkout ou paiement.
+
+Le premier live de validation notification (`32357750921`) a validé la mécanique/sécurité mais a subi des `ReadTimeout` TCGdex sur 5/5 identités. #145 ajoute donc une résilience **Global-only et transport-only** : max 2 tentatives, timeout 10 s, backoff 0.25 s, uniquement Timeout/ConnectionError/HTTP 502/503/504. Un échec final reste `ERROR`/fail-closed ; aucun 404/no-match n'est transformé et aucune règle d'identité n'est relâchée. Le scanner V4 canonique n'installe pas ce wrapper.
+
+Validation offline du correctif :
+
+```text
+head fonctionnel pré-live       3c459ac561013eaf49b5475d7d89222a8b9efdda
+V4 Global Market Offline        32359793387  SUCCESS
+V4 Global Shadow Dispatcher CI  32359793463  SUCCESS
+Global tests                    164/164 PASS
+V4 multimarket                   51/51 PASS
+py_compile / YAML / diff-check  PASS
+```
+
+Live dry-run résilient :
+
+```text
+run / job              32359861668 / 96396943369
+mode                   READ_ONLY_NOTIFICATION_VALIDATION
+TCGdex exact           5/5
+PPT matched            4/5
+PokeTrace matched      4/5
+confirmed_would_notify 0
+market conflicts       1 blocked
+sent                   0
+notifications          false
+transactions           false
+identity_gate_relaxed  false
+artifact               9403172623
+artifact digest        sha256:68054acd9468b7f3e1ac5fdcb9720a9bcba38d19e7440dc96bbb59e61b1ad2b0
+```
+
+La couverture saine 5/5 TCGdex + 4/5 PPT + 4/5 PokeTrace est donc récupérée sans relâcher l'identité. Les one-shots utilisés pour lancer ces validations ont été supprimés après usage.
+
+Validation finale après cleanup/docs :
+
+```text
+head validé                      c8103f5ec9cea821a6b38423d3ec767e0c07a982
+V4 Global Market Offline         32360713478  SUCCESS
+V4 Global Shadow Dispatcher CI   32360713490  SUCCESS
+Global tests                     164/164 PASS
+V4 multimarket                    51/51 PASS
+py_compile / YAML / diff-check   PASS
+```
+
+**Important : merge #145 et activation réelle sont deux décisions distinctes.** `GLOBAL_NOTIFY_ENABLED=true` ne doit jamais être réglé sans autorisation explicite séparée. Tant que le flag reste absent/false, aucune notification scheduled ne part.
 
 ### Phase V4 TCGdex / PokeTrace #123 → #135 — TERMINÉE
 
@@ -192,9 +251,9 @@ Règles : provider indisponible ≠ no-match ; budget épuisé -> pending/requeu
 
 ---
 
-# Global Multi-Vault — support read-only sur main
+# Global Multi-Vault — support sur main + notification candidate default-off
 
-Pipeline :
+Pipeline économique :
 
 ```text
 GCC exact SOLD seeds
@@ -202,7 +261,7 @@ GCC exact SOLD seeds
   -> offres GCC / Cardova / magi / Fanatics / COMC
   -> TCGdex exact
   -> PPT + PokeTrace graded aggregate confirmation
-  -> décision read-only
+  -> décision économique
 ```
 
 ## Gate économique Global
@@ -215,8 +274,7 @@ GCC exact SOLD seeds
 - conflit matériel au sein de la famille corrélée reste bloquant ;
 - ratio GCC/externe >1.25 -> `MARKET_CONFLICT_BLOCKED` ;
 - fair confirmé = `min(GCC fair, external fair)` : l'externe ne peut jamais gonfler la valeur ;
-- seuil diagnostic actuel : 30 % de décote ;
-- `would_notify` est **informatif seulement** sur `main` courant.
+- seuil actuel : 30 % de décote.
 
 ## Bridge provider exact #142
 
@@ -226,11 +284,17 @@ Le bridge n'accepte que des différences de nomenclature mécaniques bornées ap
 
 Aucun fuzzy, aucune traduction supposée, aucune identité relâchée.
 
-## Activation
+## Notifications #145
 
-**Non activée.** Le workflow `.github/workflows/v4-global-live-shadow.yml` reste `workflow_dispatch` manuel ; `economic_confirmation` est un mode read-only. `NTFY_TOPIC` reste vide dans ce diagnostic et les transactions sont absentes.
+La lane candidate `.github/workflows/v4-global-notify.yml` est **default-off** :
 
-Une future activation doit être une phase séparée avec au minimum feature flag/default-off, déduplication persistante, politique de cadence et validation live dédiée. Elle ne doit jamais ajouter achat/bid/checkout.
+- manual dispatch = dry-run uniquement ;
+- schedule horaire = job skip sans `GLOBAL_NOTIFY_ENABLED=true` ;
+- dédup 14 jours + reprice >=5 % + rotation ;
+- TCGdex transport retry borné Global-only ;
+- aucun achat/bid/checkout/paiement.
+
+L'activation réelle reste séparée et non autorisée tant que le flag n'a pas été explicitement approuvé.
 
 ---
 
@@ -266,7 +330,7 @@ Architecture normale : TCGdex exact -> microvariant gates -> market providers. E
 
 # Workflows permanents
 
-Le tree `main` contient **15 workflows YAML** au 20 août 2026. Le détail est dans `docs/project-workflow-inventory.md`.
+Le tree `main` de base contient **15 workflows YAML**. La PR #145 propose un 16e workflow permanent `v4-global-notify.yml`, default-off. Le détail est dans `docs/project-workflow-inventory.md`.
 
 À retenir :
 
@@ -274,7 +338,8 @@ Le tree `main` contient **15 workflows YAML** au 20 août 2026. Le détail est d
 - Robot KB : collecte séparée ;
 - `v4-global-live-shadow.yml` : manuel/read-only ;
 - `v4-global-market-offline-validation.yml` : CI Global ;
-- le one-shot #142 a été supprimé avant merge ;
+- `v4-global-notify.yml` : candidate #145, manual dry-run + schedule skip par défaut ;
+- les one-shots de validation #142/#145 ont été supprimés ;
 - V5 lives : manuels/expérimentaux uniquement.
 
 ---
@@ -299,19 +364,18 @@ Pendant des enchères actives, éviter les changements risqués du cœur V4. Pr�
 
 ## Prochaine direction canonique
 
-La phase Global #139→#142 est fermée **en read-only**. Le prochain changement ne doit pas réinventer le matching déjà validé.
-
-Deux axes restent distincts :
+La mécanique #145 est validée en dry-run avec couverture externe saine, mais **merge et activation sont encore séparés**.
 
 ```text
 V4 production existante
-  -> continuer à drainer/mesurer la couverture externe
+  -> continuer normalement ; cœur V4 non modifié par la résilience Global-only
 
-Global Multi-Vault read-only
-  -> seulement si décidé : concevoir une activation notification séparée
-     avec déduplication + cadence + feature flag + nouveau live de validation
+Global notifications #145
+  -> merge seulement sur autorisation explicite
+  -> après merge, rester default-off
+  -> activation GLOBAL_NOTIFY_ENABLED=true seulement sur autorisation explicite séparée
 ```
 
-Pikachu M-P reste un no-match externe propre sur le dernier panel ; ne pas créer un alias ponctuel sans classe déterministe répétée.
+Pikachu M-P reste un no-match externe propre sur le panel historique ; ne pas créer un alias ponctuel sans classe déterministe répétée.
 
 Aucun benchmark vérifié ne prouve un TCGdex `500/500` ; ne pas reprendre cette affirmation sans nouvelle preuve.
