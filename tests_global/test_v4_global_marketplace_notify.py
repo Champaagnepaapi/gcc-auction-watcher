@@ -72,12 +72,22 @@ class MarketplaceNotifyTests(unittest.TestCase):
         }
         self.assertFalse(runner._evaluation_complete(card))
 
-    def test_clean_no_match_is_terminal_until_listing_changes(self):
+    def test_clean_no_match_does_not_hide_retryable_sibling(self):
         card = {
             "economic_confirmation": {
                 "external_canonical": {"status": "EXACT"},
                 "ppt": {"status": "CLEAN_NO_MATCH"},
                 "poketrace": {"status": "UNAVAILABLE"},
+            }
+        }
+        self.assertFalse(runner._evaluation_complete(card))
+
+    def test_both_clean_no_match_are_terminal_until_listing_changes(self):
+        card = {
+            "economic_confirmation": {
+                "external_canonical": {"status": "EXACT"},
+                "ppt": {"status": "CLEAN_NO_MATCH"},
+                "poketrace": {"status": "CLEAN_NO_MATCH"},
             }
         }
         self.assertTrue(runner._evaluation_complete(card))
