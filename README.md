@@ -8,18 +8,21 @@
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production / main : c012284c423e9526fd2712001fdbce3a5cfafda3
-V5 expérimentale     : PR #8 / agent/v5-poketrace-cardmarket-market-data
-Robot KB / Neon      : historique durable séparé de V4/V5
-TCGdex source pin    : af33c9ac882e2acfadffaf19e8083aa976d12983
+V4 functional runtime baseline : c012284c423e9526fd2712001fdbce3a5cfafda3
+main HEAD                      : toujours re-vérifier GitHub live ; des commits docs-only peuvent suivre le baseline runtime
+V5 expérimentale               : PR #8 / agent/v5-poketrace-cardmarket-market-data
+Robot KB / Neon                : historique durable séparé de V4/V5
+TCGdex source pin              : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
+
+`c012284c...` est le dernier merge **fonctionnel/runtime** de cette phase. Les merges docs-only qui le suivent sur `main` ne changent pas le comportement V4/Global ; ne jamais confondre leur SHA avec un nouveau runtime déployé.
 
 ### Phase Global Multi-Vault #139 → #142 — INTÉGRÉE EN READ-ONLY
 
 - PR #139 a réintégré sur le `main` courant le Global Multi-Vault strict : GCC, Cardova, magi, Fanatics et COMC.
 - PR #140 ajoute la **confirmation économique externe** PPT/PokeTrace après identité exacte.
 - PR #142 ajoute le bridge générique de nomenclature provider exact, sans fuzzy ni alias carte-par-carte ; elle a été mergée dans #140 avant le merge vers `main`.
-- merge production/support final : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
+- dernier merge fonctionnel/runtime de la phase : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
 
 **Important : cette lane reste read-only / diagnostic.** Elle calcule `would_notify`, mais n'envoie aucune notification et n'est pas schedulée automatiquement. Aucune transaction n'est possible.
 
