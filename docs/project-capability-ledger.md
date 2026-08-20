@@ -1,28 +1,19 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel vérifié le **18 août 2026**.
+Snapshot fonctionnel vérifié le **20 août 2026**.
 
-Ce fichier sert d'index anti-réimplémentation. Avant tout changement non trivial, vérifier si la capacité existe déjà sur V4, V5, Robot KB ou une branche shadow/deferred.
+Ce fichier sert d'index anti-réimplémentation. Avant tout changement non trivial, vérifier si la capacité existe déjà sur V4, Global, V5, Robot KB ou une branche historique/shadow.
 
 ## Autorité courante
 
 ```text
-V4 production / main : a52398685629e4baf4c8ac036851e2ae1a49b037
+V4 production / main : c012284c423e9526fd2712001fdbce3a5cfafda3
 V5 expérimentale     : PR #8 / agent/v5-poketrace-cardmarket-market-data
 V5 head validé       : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 TCGdex source pin    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-Statuts utilisés :
-
-- `PROD_V4` : actif sur `main` dans le watcher production ;
-- `MAIN_SUPPORT` : support/ops/docs sur `main` ;
-- `ROBOT_KB` : historique durable séparé ;
-- `V5_ONLY` : seulement dans la branche expérimentale V5 ;
-- `SHADOW` : mesure/recherche sans décision production ;
-- `DEFERRED` : capacité utile mais non activée ;
-- `DISABLED` : code/historique conservé mais comportement volontairement coupé ;
-- `SUPERSEDED` : ne pas merger/réimplémenter tel quel.
+Statuts : `PROD_V4`, `MAIN_SUPPORT`, `GLOBAL_READ_ONLY`, `ROBOT_KB`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`.
 
 ---
 
@@ -30,32 +21,20 @@ Statuts utilisés :
 
 ## Discovery GCC item-level — `PROD_V4`
 
-Capacités déjà construites :
+- auctions via `/on-sale-items`, `sellingTypeGroup=AUCTION`, `sortType=ENDING_SOON`, `status=ON_SALE`, `endTime` individuel ;
+- horizon local ≤60 min ; safety-net legacy ;
+- fixed discovery complète avant caps économiques ;
+- couverture explicite `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`.
 
-- auction discovery via `/on-sale-items`, `sellingTypeGroup=AUCTION`, `sortType=ENDING_SOON`, `status=ON_SALE`, `endTime` individuel ;
-- horizon local ≤60 min ;
-- safety-net legacy private/weekly ;
-- fallback legacy complet si l'ordre/completude API n'est pas prouvé ;
-- couverture explicite `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS` ;
-- discovery fixed complète avant caps économiques.
-
-PRs structurantes : #9, #50, #52, #104. Ne pas reconstruire un deuxième collector auction parallèle.
+PRs structurantes : #9, #50, #52, #104. Ne pas reconstruire un second collector auction parallèle.
 
 ## Fast Lane finale — `PROD_V4`
 
-PR #45 + #55.
-
-- recheck ciblé des auctions déjà armées ;
-- aucun nouveau discovery/provider externe ;
-- `max_recommended` persisté et immuable ;
-- alerte finale seulement si prix courant reste sous ce plafond ;
-- identité carte correcte dans la notification.
+PR #45 + #55 : recheck ciblé, aucun nouveau discovery/provider, `max_recommended` persisté et immuable, alerte finale seulement sous le plafond, aucune transaction.
 
 ## Arbitrage multi-marché canonique — `PROD_V4`
 
 PR #33 + #35 et durcissements ultérieurs.
-
-Architecture :
 
 ```text
 GCC listing
@@ -72,134 +51,150 @@ RAW Cardmarket/TCGplayer ne devient jamais fair value de slab.
 
 ## TCGdex / PokeTrace recovery #119→#135 — `PROD_V4`, AUTORITÉ COURANTE
 
-Cette lignée est la référence actuelle. Ne pas repartir d'anciennes branches pour corriger l'identité.
+- #119 : exact-coordinate registry ;
+- #120/#121 : récupération déterministe set/localId + aliases set-level ;
+- #122/#123 : unicité catalogue / `2 coordonnées sur 3` ;
+- #124 : retrieval PokeTrace structuré après TCGdex ;
+- #127 : padding collector provider conservé ;
+- #128/#129 : bridges exacts + recherche JA canonique ;
+- #130→#133 : diagnostics + finish source-pinné généralisé ;
+- #134/#135 : réconciliation de set REST stale depuis le catalogue immuable.
 
-- #119 : exact-coordinate registry pour blockers mesurés ;
-- #120/#121 : récupération déterministe set/localId et aliases set-level revus ;
-- #122/#123 : unicité catalogue / récupération `2 coordonnées sur 3` intégrée à V4 ;
-- #124 : retrieval PokeTrace structuré après identité TCGdex ;
-- #127 : padding provider collector number préservé ;
-- #128 : bridges provider exacts ;
-- #129 : JA canonical-search corrigé ;
-- #130 : final-gate diagnostics + alias source-pinné Night Wanderer/SV6a ;
-- #131→#133 : finish source-pinné puis généralisé ;
-- #134→#135 : réconciliation de set quand REST TCGdex est stale/conflictuel ; #135 utilise le fichier carte du catalogue immuable comme fallback exact.
+Preuve production #135 : run `32160680888`, SUCCESS. Houndoom `100/098`, Meowth `109/098`, Moltres ex `112/098` -> `SV10`.
 
-Production finale :
-
-```text
-PR #135 merge : a52398685629e4baf4c8ac036851e2ae1a49b037
-run prod       : 32160680888 / SUCCESS
-```
-
-Preuve live #135 : Houndoom `100/098`, Meowth `109/098` et Moltres ex `112/098` récupérés vers `SV10` depuis le pin TCGdex. Crobat `117/098` n'a pas été échantillonné ; ne pas inventer cette preuve spécifique.
-
-Règle future : **pas de treadmill d'alias carte-par-carte**. Une nouvelle correction d'identité doit correspondre à une classe répétée, déterministe et prouvée.
+Règle : **pas de treadmill d'alias carte-par-carte**. Toute nouvelle correction d'identité doit correspondre à une classe répétée, déterministe et prouvée.
 
 ## PR #126 — `SUPERSEDED`
 
-`fix/v4-poketrace-exact-provider-bridges-20260818`, PR ouverte/draft.
-
-Sa logique utile a été réintégrée proprement par #127/#128 puis durcie par #129→#135. **Ne pas merger #126.**
+Ancienne lignée PokeTrace. Sa logique utile est absorbée par #127→#135. **Ne pas merger.**
 
 ## Queue / couverture externe — `PROD_V4`
 
-PRs #43, #47, #77, #116.
+PRs #43, #47, #77, #116 : anti-starvation, refresh adaptatif, smart priority, budget eBay borné, `PENDING_BUDGET` distinct d'un no-match, backoff provider.
 
-- anti-starvation fixed ;
-- refresh adaptatif proche seuil ;
-- priorité smart des appels externes ;
-- eBay budget borné à 8 cartes/run avec réserve fixed ;
-- `PENDING_BUDGET` = scheduling pressure, pas clean negative ;
-- erreurs provider gardent backoff/fail-closed.
-
-État du run #135 : backlog externe ~2031 / ~204 runs, couverture externe `INCOMPLETE`. Priorité actuelle : drainage/mesure, pas relaxation identité.
+Le backlog externe de la V4 principale reste une métrique opérationnelle séparée de la lane Global.
 
 ## Exact active ASK — `PROD_V4`
 
-PR #78/#79.
-
-- eBay BIN exact seulement comme contexte d'offre actuellement achetable ;
-- ASK reste ASK ;
-- ne crée jamais une opportunité ;
-- ne modifie jamais fair value / `max_recommended`.
+PR #78/#79 : eBay BIN exact comme contexte d'offre achetable, toujours ASK, jamais fair value ni opportunité à lui seul.
 
 ## Structural Edge Hunter V2 — `PROD_V4`
 
-PR #80.
+PR #80 : signaux cross-market/grader/stale/liquidity/relative-grade/inventory. Informatifs ; ne remplacent pas les gates économiques.
 
-Signaux existants : cross-market lag, grader lag, stale seller repricing, liquidity breakout, relative-grade anomaly, same-card inventory anomaly, Expected Profit informatif.
+## Cert / OCR / Mislisted Slab — `DISABLED`
 
-Ces signaux ne remplacent jamais les gates de preuve ni l'économie V4.
+Historique #57, #63→#73. Lane Mislisted Slab hard-disabled en production par #103/#104 après faux positifs. Réactivation interdite sans phase dédiée read-only.
 
-## Notification quality / illiquide — `PROD_V4`
+## Japan Edge Hunter — `PROD_V4`, lane séparée
 
-PR #84 et durcissements associés.
+PR #89, #94, #101 : ASK japonais exact PSA10, GCC SOLD exact + contexte externe, `MULTIMARKET_CONFIRMED` / `MARKET_CONFLICT_BLOCKED` etc. Aucun achat automatique.
 
-- manual-review dédupée par URL stable ;
-- illiquid auction silencieuse avant ≤5 min ;
-- external absence != negative evidence ;
-- technical backlog attendu n'entraîne pas de faux spam.
+---
 
-PR #87 reste une décision produit séparée/non production sur le seuil GCC-only 30 % exact. Revalider sur le `main` courant avant toute intégration.
+# Global Multi-Vault — `GLOBAL_READ_ONLY` sur main
 
-## Cert / OCR / Mislisted Slab — `DISABLED` en production
+## Réintégration #139
 
-Historique riche : #57, #63→#73.
+PR #139 a réintégré proprement sur le `main` courant les capacités historiques #108→#115 :
 
-Les vérificateurs cert-first, OCR ciblé et diagnostics existent, mais la lane Mislisted Slab a été **hard-disabled** en production par #103/#104 après faux positifs. Ne pas la réactiver sans phase dédiée et validation live read-only.
+- common valuation / strict commercial identity ;
+- GCC, Cardova, magi, Fanatics, COMC ;
+- rejection diagnostics ;
+- retrieval hardening ;
+- Magi SOLD guard ;
+- COMC bounded fallback ;
+- runner live manuel/read-only ;
+- offline CI Global.
 
-## Japan Edge Hunter — `PROD_V4` lane séparée
+Les anciennes PR #108/#109/#110/#113/#114/#115 et la réintégration préparatoire #138 sont désormais des **sources historiques/superseded**, pas des PR à merger directement dans `main`.
 
-PR #89, #94, #101.
+## Confirmation économique #140
 
-- ASK japonais exact, PSA10 ;
-- GCC SOLD exact + contexte externe exact lorsque prouvable ;
-- ASK jamais introduit dans fair value ;
-- `MULTIMARKET_CONFIRMED`, `GCC_EDGE_NOT_GLOBAL`, `MARKET_CONFLICT_BLOCKED`, `GCC_ONLY_UNCONFIRMED` ;
-- aucun achat automatique.
+PR #140, merge main `c012284c423e9526fd2712001fdbce3a5cfafda3` :
+
+- exact `FIXED_ASK` / `AUCTION_SNAPSHOT_LE5` seulement comme offres actionnables ;
+- `ACTIVE_AUCTION` jamais actionnable ;
+- `all_in_eur` obligatoire ;
+- confirmation gradée externe obligatoire avant `would_notify` ;
+- minimum 3 ventes agrégées ;
+- GCC/externe >1.25 -> `MARKET_CONFLICT_BLOCKED` ;
+- fair confirmé = `min(GCC, externe)` ;
+- PPT/PokeTrace/eBay = une seule famille `EBAY_GRADED_AGGREGATE` ;
+- conflit intrafamille matériel bloque ;
+- PPT récent peut être primaire ; PokeTrace sans last-sale item-level reste corroboration selon contrat ;
+- aucune notification réelle ni transaction.
+
+## Bridge exact provider #142
+
+PR #142 a été mergée dans #140 avant son merge vers main.
+
+Capacité : corriger une **classe de nomenclature provider** après preuve macro exacte, sans fuzzy :
+
+- full collector number avec dénominateur exact ;
+- set exact ou préfixe set TCGdex exact ;
+- langue exacte ;
+- nom canonique + suffixe borné `V/VSTAR/VMAX/ex/GX` ou `Mega <nom> ex` ;
+- hardening V4 des dimensions toujours appliqué ;
+- `Unlimited` non matériel uniquement si TCGdex exact prouve `firstEdition=false` ;
+- PPT generic fallback seulement si `externalCatalogId` absent et preuve set-code/full-number/name/unique ;
+- `externalCatalogId` conflictuel bloque définitivement le fallback.
+
+### Validation
+
+Head combiné #140 `b10adebc1f6866ae4ec37e9ea01eeddd2a240c60` :
+
+```text
+Offline CI       32351952230 SUCCESS
+Dispatcher CI    32351952209 SUCCESS
+Global tests     146/146 PASS
+V4 regressions    51/51 PASS
+compile/YAML/diff PASS
+```
+
+Live read-only #142 `32344120993` :
+
+```text
+TCGdex exact      5/5
+PPT matched       4/5
+PokeTrace matched 4/5
+would_notify      0
+conflict blocked  1
+```
+
+Mewtwo 183/165 : GCC ~€155, externe ~€103.40, Fanatics ASK ~€99.10 -> ratio 1.499 -> `MARKET_CONFLICT_BLOCKED`.
+
+Pikachu M-P reste `CLEAN_NO_MATCH` externe. **Ne pas ajouter un alias ponctuel sans classe répétée prouvée.**
+
+## Statut d'activation
+
+`GLOBAL_READ_ONLY` uniquement.
+
+- workflow `v4-global-live-shadow.yml` reste `workflow_dispatch` manuel ;
+- mode `economic_confirmation` read-only ;
+- `notification_capable=false` dans le rapport ;
+- aucun schedule Global ;
+- aucun achat/bid/checkout/paiement ;
+- le one-shot de #142 a été supprimé avant merge.
+
+Une future activation de notifications doit être une **nouvelle phase** avec feature flag default-off, déduplication persistante, cadence explicite et live de validation.
+
+## PR #141 — `SUPERSEDED_DIAGNOSTIC`
+
+Le diagnostic de couverture #141 a servi à prouver la classe corrigée par #142. Ne pas merger #141 comme fonctionnalité : son résultat utile est absorbé par #142/#140.
 
 ---
 
 # Robot KB / Neon — `ROBOT_KB`
 
-Historique durable séparé de V4/V5. Ne jamais utiliser sa présence comme autorisation de mélanger preuve marché et décision production.
+- observations append-only ; provenance + raw payload ;
+- `SALE_TRANSACTION` seulement avec SOLD explicite + date + prix final ;
+- fixed hybride : recent + rotation + targeted ;
+- SOLD frais + backfill avec watermarks/cursors durables ;
+- snapshot auction ≤5m reste observation, pas vente ;
+- aucun hard gate KB-first tant que profondeur insuffisante.
 
-## Fondation / ingestion
-
-P0/P1/P3 et PRs #51/#59/#60 :
-
-- observations append-only ;
-- provenance + raw payload ;
-- mirror passif de discovery V4 ;
-- SOLD GCC uniquement quand `status=SOLD + soldAt + prix final` est explicite.
-
-## SOLD lossless et backfill
-
-PR #68/#72/#76.
-
-- watermark durable ;
-- lane SOLD fraîche 30 min ;
-- backfill historique séparé ;
-- max débit par run, jamais limite de couverture ;
-- cursor n'avance qu'après ingestion réussie ;
-- aucun ENDED/ASK/current auction transformé en SOLD.
-
-## Fixed coverage hybride
-
-PR #62/#75.
-
-- recent + rotation durable + ciblage sous-échantillonné ;
-- déduplication listing ;
-- état avancé uniquement après succès Neon.
-
-## TCGdex identity cache
-
-Migration/cache construit pour le fallback V5 : seules des identités TCGdex exactes prouvées peuvent remplir le cache. Le cache ne prouve jamais seul une microvariante sensible.
-
-## KB-first — `DEFERRED`
-
-Le hard gate KB-first reste interdit tant que la profondeur exacte carte/langue/grader/grade n'est pas suffisante. Les analytics read-only peuvent mesurer la readiness mais ne doivent pas supprimer les providers externes prématurément.
+Robot KB reste séparé de la décision commerciale V4/Global.
 
 ---
 
@@ -207,104 +202,46 @@ Le hard gate KB-first reste interdit tant que la profondeur exacte carte/langue/
 
 PR #8 reste **OPEN / DRAFT / NON MERGED** dans `main`.
 
-Head validé :
-
 ```text
-bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
+branch agent/v5-poketrace-cardmarket-market-data
+head   bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 ```
 
-## Identité normale
+Architecture normale : TCGdex exact + unicité déterministe + microvariant gates. Emergency seulement après vraie panne technique TCGdex via cache prouvé / TCG API / PokeTrace emergency, fail-closed.
 
-TCGdex + unicité déterministe, microvariant gates fail-closed. PokeTrace n'est pas un resolver de routine.
-
-## PokeTrace market-only / emergency
-
-PR #85/#86/#88.
-
-Chemin emergency seulement après vraie panne technique TCGdex :
-
-```text
-TCGdex technical failure
- -> Robot KB proven cache
- -> Pokemon TCG API
- -> PokeTrace emergency-only
- -> fail-closed
-```
-
-Éligible : transport, invalid JSON, 408/425/429/5xx. Clean no-match, 404, autres 4xx ne déclenchent pas l'emergency.
-
-Runtime/cache PokeTrace emergency isolé ; budget borné ; aucune metadata provider ne fabrique finish/édition.
-
-## Post-macro applicability / promo semantics
-
-PR #93, mergée uniquement dans V5.
-
-- retry exact TCGdex d'applicabilité microvariante ;
-- mapping promo borné ;
-- `wPromo` = W-stamp, pas statut promo générique ;
-- exact TCGdex uniquement pour lever l'inconnu.
-
-## V5 shadows/deferred
-
-- #92 : PokemonPriceTracker identity shadow ;
-- #96 : Pocket digital rejection + curated catalog gap, draft/non mergée dans V5 ;
-- aucune de ces PR n'est une autorisation de merge #8 vers `main`.
+PR #92 et #96 restent V5 shadow/deferred. Aucune de ces PR n'autorise le merge de #8.
 
 ---
 
-# PPT / Global Multi-Vault / Source Scout
+# PPT
 
-## PokemonPriceTracker — `SHADOW/DEFERRED`
+PokemonPriceTracker fournit des agrégats eBay gradés `SOLD_AGGREGATED`, jamais item-level SOLD. PPT/PokeTrace/eBay peuvent être corrélés ; ne pas les compter naïvement comme marchés indépendants.
 
-PR #106/#107 sont les clean shadows courants.
-
-- agrégats eBay graded = `SOLD_AGGREGATED`, jamais item-level SOLD ;
-- PPT/PokeTrace/eBay peuvent être corrélés ; ne pas les compter naïvement comme marchés indépendants ;
-- EN/JA utiles ; FR cross-language reste anchor, pas comparable exact sans calibration.
-
-## Global Multi-Vault — `SHADOW/DEFERRED`
-
-Stack #108→#115 : GCC/Cardova/magi/Fanatics/COMC, fair value commune et adapters stricts.
-
-- #108 foundation ;
-- #109 live shadow ;
-- #110 rejection diagnostics ;
-- #113 retrieval hardening ;
-- #114 Magi SOLD filter ;
-- #115 COMC Groudon retrieval.
-
-Les child PRs sont stacked. **Ne pas merger directement #113/#114/#115 dans `main`** ; une future intégration doit rebaser/réintégrer sur le `main` courant et revalider.
-
-## Source Scout — `BENCHMARK/DEFERRED`
-
-Branche historique `agent/source-scout-benchmark-20260814` et probes associés. Réutiliser ces benchmarks/policies pour toute nouvelle source au lieu de reconstruire des probes de zéro.
-
-Aucun benchmark vérifié ne prouve un TCGdex `500/500`.
+PR #106/#107 restent des shadows historiques séparés ; la lane Global #140 réutilise un adapter strict dédié et ne transforme pas ces anciennes PR en production autonome.
 
 ---
 
 # Supersessions importantes
 
-- #54 : `STALE_OPEN/SUPERSEDED`, dépendance déjà absorbée ;
-- #111 : ancien snapshot docs, superseded par README/inventaires courants ;
-- #126 : ancienne lignée PokeTrace, **DO NOT MERGE** ;
-- anciennes PR PPT/Japan shadow remplacées par #106/#107 ;
-- anciennes branches temp/diagnostics ne doivent jamais être interprétées comme production.
+- #54 : stale/superseded, dépendance déjà absorbée ;
+- #111 : ancien snapshot docs ;
+- #126 : ancienne lignée PokeTrace ; **DO NOT MERGE** ;
+- #108/#109/#110/#113/#114/#115/#138 : stack Global historique absorbée/reconstruite par #139 ;
+- #141 : diagnostic Global absorbé par #142 ;
+- #142 : fonctionnalité absorbée dans #140 puis main ;
+- anciens one-shots/temp diagnostics : mémoire historique seulement.
 
 ---
 
-# Phase courante / prochaine action
+# Prochaine phase
 
-Phase #123→#135 : **terminée et prouvée en production**.
+État fonctionnel actuel :
 
-Le prochain travail fonctionnel doit partir des métriques réelles :
-
-1. laisser le backlog externe se drainer ;
-2. mesurer les `NO_MATCH/AMBIGUOUS` qui se répètent ;
-3. identifier une classe déterministe nouvelle ;
-4. seulement alors coder un correctif fail-closed dédié.
-
-La PR docs #136 ferme cette phase documentaire. Elle ne contient aucun code runtime et ne doit être mergée qu'après revue/validation + autorisation utilisateur explicite.
+1. V4 production normale continue indépendamment ;
+2. Global Multi-Vault + confirmation économique est disponible sur main **en read-only seulement** ;
+3. si une activation notification Global est souhaitée, elle doit être conçue séparément avec déduplication + cadence + feature flag + validation live ;
+4. aucune transaction automatique ne doit être ajoutée ;
+5. PR #8 reste séparée et non mergée.
 
 ## Invariants finaux
 
