@@ -1,12 +1,12 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire workflows GitHub Actions
 
-Audit vérifié le **20 août 2026** après le merge marketplace-first #148.
+Audit vérifié le **20 août 2026** après le merge #151.
 
 ## Résultat clé
 
-Le tree `main` contient **16 fichiers workflow YAML**. #147/#148 n'ont créé aucun second workflow Global planifié : `v4-global-notify.yml` reste l'unique lane Global schedule et exécute désormais le runner marketplace-first.
+Le tree `main` contient **16 fichiers workflow YAML**. #151 n'en ajoute aucun : `v4-global-notify.yml` reste l'unique lane Global schedule, marketplace-first, avec un finalizer de registre vers l'issue #150.
 
-L'API Actions peut conserver des records historiques de workflows supprimés ; **le tree Git courant est l'autorité** pour les YAML réellement déclenchables.
+L'API Actions peut conserver des records historiques de workflows supprimés ; **le tree Git courant est l'autorité**.
 
 ## Workflows permanents
 
@@ -21,8 +21,8 @@ L'API Actions peut conserver des records historiques de workflows supprimés ; *
 | `v4-final-auction-check.yml` | `workflow_dispatch` | Fast Lane production, cadence externe. |
 | `v4-gcc-coverage-audit.yml` | `workflow_dispatch` | Audit GCC manuel/read-only. |
 | `v4-global-live-shadow.yml` | `workflow_dispatch` | Global manuel/read-only. |
-| `v4-global-market-offline-validation.yml` | PR ciblée | CI Global + live marketplace-first read-only sur PR pertinente. |
-| `v4-global-notify.yml` | `workflow_dispatch` + `41 * * * *` | **Unique lane Global production, marketplace-first depuis #148.** Manual toujours dry-run. |
+| `v4-global-market-offline-validation.yml` | PR ciblée | CI Global + live marketplace-first read-only. |
+| `v4-global-notify.yml` | `workflow_dispatch` + `41 * * * *` | **Unique lane Global production.** Marketplace-first + registre schedule #150. Manual toujours dry-run. |
 | `v4-global-shadow-dispatch-ci.yml` | PR ciblée | Contrat dispatcher Global. |
 | `v4-kb-shadow-ingest.yml` | `workflow_run` après succès V4 | Ingestion passive Robot KB/Neon. |
 | `v5-gcc-catalog-refresh.yml` | `workflow_dispatch` + cron | Support V5 legacy actuel. |
@@ -31,7 +31,7 @@ L'API Actions peut conserver des records historiques de workflows supprimés ; *
 
 ---
 
-# Global production après #148
+# Global production après #151
 
 ```text
 v4-global-notify.yml
@@ -39,13 +39,13 @@ v4-global-notify.yml
  -> restore .global-marketplace-state
  -> v4_global_marketplace_notify_resilient.py
  -> marketplace inventory discovery
- -> baseline/new/changed pending queue
- -> max 10 evaluations/run initialement
+ -> pending queue (max 10/run initialement)
  -> TCGdex exact + bounded retry
  -> PPT / PokeTrace confirmation
  -> MULTIMARKET_CONFIRMED gate
  -> dedupe notification
  -> save state
+ -> schedule-only registry finalizer -> issue #150
 ```
 
 ## Activation
@@ -63,9 +63,30 @@ v4-global-notify.yml
 .global-marketplace-state/notifications.json
 ```
 
-Cache séparé par event `schedule` / `workflow_dispatch`.
+Cache séparé par event `schedule` / `workflow_dispatch`. Discovery : bootstrap, puis new/changed/retryable. Disparition != SOLD.
 
-Discovery : bootstrap complet, puis nouvelles annonces/changements utiles/retryables. Disparition != SOLD.
+## Schedule run registry #150
+
+PR #151 ajoute au **même workflow** :
+
+```text
+permissions:
+  contents: read
+  issues: write
+```
+
+Le `issues: write` sert uniquement au commentaire automatique dans #150.
+
+Finalizer :
+
+- `if: always() && github.event_name == 'schedule'` ;
+- lit `global_marketplace_out/global_marketplace_report.json` si disponible ;
+- poste run_id/SHA/activation/outcome et métriques agrégées ;
+- report absent/illisible => `report_status` explicite, sans fabriquer de métriques ;
+- manual dispatch ne poste rien ;
+- aucun log complet, secret, session ou donnée listing-level n'est copié.
+
+Le registre V4 issue #1 reste séparé.
 
 ## Budgets / sécurité
 
@@ -90,14 +111,14 @@ TCGdex backoff           0.25 s
 #146 activation schedule        32379733361 SUCCESS
 #147 final marketplace live     32397363626 SUCCESS
 #148 cutover CI/live            32398465774 SUCCESS
-#148 Global tests               202/202 PASS
-#148 V4 regressions              51/51 PASS
-#148 GCC exact                  1172
-#148 inventory                  1184
-#148 selected/pending           10 / 1174
+#151 registry CI/live           32410224171 SUCCESS
+#151 Global tests               203/203 PASS
+#151 V4 regressions              51/51 PASS
+#151 inventory                  1186
+#151 selected/pending           10 / 1176
 ```
 
-Le premier vrai run `schedule` **post-#148** doit encore être observé explicitement avant de revendiquer la preuve live production du nouveau runner.
+Le premier vrai commentaire #150 produit par un `schedule` post-#151 reste la preuve finale attendue du registre en production.
 
 ---
 
@@ -126,7 +147,7 @@ GCC Auction Watcher
 GCC Final Auction Check
 ```
 
-Ne jamais ajouter de cron GitHub parallèle au Main Scanner/Fast Lane.
+Ne jamais ajouter de cron GitHub parallèle au Main Scanner/Fast Lane/Global.
 
 ---
 
@@ -136,8 +157,8 @@ Avant d'ajouter/modifier un workflow :
 
 1. vérifier le tree courant ;
 2. rechercher la capacité existante ;
-3. réutiliser le workflow consolidé quand possible ;
+3. réutiliser le workflow consolidé ;
 4. diagnostics ponctuels : préférer manuel ;
 5. pas de second cron Main Scanner/Fast Lane/Global ;
-6. ne pas supprimer workflow/branche/issue sans autorisation destructive explicite ;
+6. pas de suppression workflow/branche/issue sans autorisation destructive ;
 7. aucune transaction automatique.
