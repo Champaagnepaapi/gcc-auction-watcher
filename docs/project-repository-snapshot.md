@@ -1,76 +1,120 @@
 # Robot Pokémon / GCC Auction Watcher — snapshot topologique du dépôt
 
-Snapshot vérifié le **20 août 2026** après la phase Global #139→#142.
+Snapshot vérifié le **20 août 2026** après le merge marketplace-first #148.
 
-## Autorité
+## Autorité live vérifiée
 
 ```text
-Repository: Champaagnepaapi/gcc-auction-watcher
-Default branch: main
-Last functional/runtime merge: c012284c423e9526fd2712001fdbce3a5cfafda3
-main protected: false
-Open pull requests after docs closeout: 17
-Current workflow YAML files on main: 15
+Repository                    Champaagnepaapi/gcc-auction-watcher
+Default branch                main
+main HEAD                     ea9a69b375434031c935de8d25fcc12acd1a1c93
+Last runtime merge            #148 marketplace-first cutover
+main protected                false
+Open pull requests            17
+Current workflow YAML files   16
 ```
 
-Des commits docs-only suivent le merge fonctionnel `c012284c...`. **Toujours re-vérifier le HEAD `main` GitHub live** avant une nouvelle modification ; ne pas interpréter un SHA docs-only comme un nouveau runtime.
+Le HEAD ci-dessus est le dernier runtime vérifié avant la branche docs de fermeture ; un merge docs-only le fera naturellement avancer.
 
-Le dernier audit exhaustif des branches comptait 158 le 18 août ; plusieurs branches Global/diagnostic/docs ont été créées depuis. Le nombre distant courant n'a pas été ré-audité exhaustivement dans cette phase.
+Le nombre distant total de branches n'a **pas** été ré-audité exhaustivement pendant cette fermeture. Le dernier audit exhaustif connu comptait 158 branches le 18 août, mais plusieurs branches ont été créées depuis : ne pas présenter 158 comme nombre courant.
 
-## Phase Global
-
-- #139 : réintégration Global stricte ;
-- #140 : confirmation économique externe PPT/PokeTrace ;
-- #142 : bridge exact provider, absorbé dans #140 ;
-- dernier merge fonctionnel/runtime : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
-
-Global reste **read-only** : aucune notification automatique, aucun schedule Global, aucune transaction.
-
-## Validation
+## Global production
 
 ```text
-head fonctionnel #140  b10adebc1f6866ae4ec37e9ea01eeddd2a240c60
-Offline CI              32351952230 SUCCESS
-Dispatcher CI           32351952209 SUCCESS
-Global tests            146/146 PASS
+#139   réintégration Multi-Vault
+#140   confirmation économique externe
+#142   bridge exact provider absorbé par #140
+#145   notification runtime
+#146   activation réelle
+#147   marketplace-first discovery
+#148   cutover du workflow production vers marketplace-first
+```
+
+`v4-global-notify.yml` reste l'unique cron Global et exécute désormais le runner marketplace-first. Aucun second schedule n'a été créé.
+
+Activation : marker `.github/global-notify-activation=true`, repo var `true` supportée, repo var `false` kill switch prioritaire, manual dispatch dry-run.
+
+## Validation #148
+
+```text
+head                    9ff96e9cd9124944e50bb55e990289f5fd07492f
+merge                   ea9a69b375434031c935de8d25fcc12acd1a1c93
+run                     32398465774 SUCCESS
+Global                  202/202 PASS
 V4 multimarket           51/51 PASS
-Live read-only           32344120993 SUCCESS
-TCGdex external exact    5/5
-PPT matched              4/5
-PokeTrace matched        4/5
-would_notify             0
-market conflict blocked  1
+compile/YAML/diff       PASS
+live read-only          SUCCESS
+inventory               1184
+selected/pending        10 / 1174
+transactions            false
 ```
+
+Le premier vrai run `schedule` post-#148 n'a pas encore été observé explicitement dans cette fermeture ; ne pas le revendiquer sans ID/logs.
 
 ## PR importantes
 
+Open PR search live retourne 17 PRs. Les principales règles :
+
 - #8 : **OPEN / DRAFT / V5 EXPERIMENTAL / NON MERGED** ;
-- #126 : **OPEN / DRAFT / SUPERSEDED** ;
-- #138 : superseded par #139 ;
-- #141 : diagnostic superseded par #142 ;
-- #140 et #142 : mergées ;
-- les PR ouvertes sont détaillées dans `docs/project-open-pr-inventory.md`.
+- #54 : stale/superseded ;
+- #87 : décision produit V4 séparée/non déployée ;
+- #92/#96 : V5 child/shadow/deferred ;
+- #106/#107 : anciens PPT/Japan shadows ;
+- #108/#109/#110/#113/#114/#115/#138 : stack historique absorbé par #139 ;
+- #126 : superseded par #127→#135 ;
+- #141 : diagnostic superseded par #142/#140.
+
+#146/#147/#148 sont mergées et ne figurent plus dans la surface ouverte.
+
+Voir `docs/project-open-pr-inventory.md` pour le détail.
 
 ## Workflows
 
-15 YAML sont présents sur main. `v4-global-live-shadow.yml` reste manual-only et peut exécuter le mode read-only `economic_confirmation`. Le one-shot exact-bridge de #142 a été supprimé avant merge.
+Le tree courant contient 16 YAML. Principales lanes :
+
+- `watcher.yml` : V4 Main Scanner, cadence externe ;
+- `v4-final-auction-check.yml` : Fast Lane, cadence externe ;
+- `v4-global-notify.yml` : unique Global schedule `41 * * * *`, marketplace-first ;
+- `v4-global-live-shadow.yml` : manuel/read-only ;
+- `v4-global-market-offline-validation.yml` : CI Global ;
+- Robot KB : workflows séparés ;
+- V5 lives : manuels/expérimentaux ;
+- `v5-gcc-catalog-refresh.yml` reste support legacy actuel.
+
+Voir `docs/project-workflow-inventory.md`.
+
+## Branches
+
+Les branches #147/#148 sont conservées comme provenance et aucune suppression n'est implicite. Toute suppression exige audit d'atteignabilité/supersession + autorisation destructive explicite.
+
+Voir `docs/project-branch-inventory.md`.
+
+## Issues
+
+Le dernier audit exhaustif hors PR comptait 3 issues :
+
+- #1 : registre V4 vivant ;
+- #28 : historique/completed ;
+- #58 : planning Robot KB stale/superseded-by-delivered-stack.
+
+Ne pas fermer/réécrire une issue de housekeeping sans autorisation explicite.
 
 ## Documents d'autorité
 
 - `README.md` : handoff canonique ;
-- `docs/project-current-phase.md` : phase fonctionnelle ;
+- `docs/project-current-phase.md` : phase courante ;
 - `docs/project-capability-ledger.md` : capacités/supersessions ;
 - `docs/project-open-pr-inventory.md` : PR ouvertes ;
-- `docs/project-workflow-inventory.md` : workflows présents ;
-- `docs/project-branch-inventory.md` : branches pertinentes et règle d'audit ;
-- `docs/project-issue-inventory.md` : issues hors PR.
+- `docs/project-workflow-inventory.md` : workflows ;
+- `docs/project-branch-inventory.md` : branches ;
+- `docs/project-issue-inventory.md` : issues.
 
 ## Invariants
 
 - V4/main canonique ;
 - PR #8 jamais mergée sans autorisation explicite ;
-- ASK/enchère live != SOLD ;
+- ASK/enchère live/disparition != SOLD ;
 - aucun fuzzy comme preuve exacte ;
 - aucun achat, bid, checkout ou paiement automatique ;
 - Robot KB/Neon séparé ;
-- Global read-only != activation notification.
+- Cardova fail-closed sans session sûre.
