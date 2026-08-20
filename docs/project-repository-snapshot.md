@@ -1,47 +1,64 @@
 # Robot Pokémon / GCC Auction Watcher — snapshot topologique du dépôt
 
-Snapshot GitHub vérifié le **18 août 2026** pendant la PR docs #136.
+Snapshot GitHub vérifié le **20 août 2026** après merge #140.
 
-## Topologie
+## Topologie vérifiée
 
 ```text
 Repository: Champaagnepaapi/gcc-auction-watcher
 Visibility: public
 Default branch: main
-main HEAD: a52398685629e4baf4c8ac036851e2ae1a49b037
+main HEAD: c012284c423e9526fd2712001fdbce3a5cfafda3
 main protected: false
-Remote branches: 158
-Pull requests total: 133
-Pull requests open: 16
-Issues hors PR: 3
-Current workflow YAML files on main: 14
-GitHub Actions workflow registry records: 80 at last exhaustive workflow audit
-Tags: 0 at last exhaustive topology audit
-Releases: 0 at last exhaustive topology audit
+Open pull requests: 17
+Issues hors PR: 3 au dernier audit exhaustif
+Current workflow YAML files on main: 15
+Remote branch count: non ré-audité exhaustivement dans cette phase
 ```
 
-## Phase production courante
+Le dernier audit exhaustif des branches comptait 158 le 18 août ; plusieurs branches Global/diagnostic/docs ont été créées depuis. Ne pas réutiliser `158` comme nombre courant sans nouvel audit exhaustif.
 
-La lignée V4 TCGdex/PokeTrace #123→#135 est terminée et la dernière classe corrigée est validée en production.
+## Phase fonctionnelle courante
 
-PR #135 :
-- feature head `1bcdccaae8997755cc6f65c44dd9770c69cabbe9` ;
-- merge `a52398685629e4baf4c8ac036851e2ae1a49b037` ;
-- objet : récupération fail-closed d'un set exact depuis le catalogue TCGdex immuable lorsque le REST expose un namespace stale/conflictuel.
+Global Multi-Vault est désormais présent sur main **en read-only** :
 
-Run production naturel `32160680888` sur le merge SHA exact : **SUCCESS**.
-Il prouve la correction vers `SV10` pour Team Rocket's Houndoom `100/098`, Meowth `109/098` et Moltres ex `112/098`. Crobat `117/098` n'était pas échantillonné dans ce run ; aucune preuve live spécifique Crobat n'est revendiquée.
+- #139 : réintégration Global stricte ;
+- #140 : confirmation économique externe PPT/PokeTrace ;
+- #142 : bridge exact provider, absorbé dans #140 ;
+- merge main final : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
+
+Le workflow Global reste manuel ; aucune notification automatique ni transaction n'a été activée.
+
+## Validation Global
+
+```text
+head fonctionnel #140  b10adebc1f6866ae4ec37e9ea01eeddd2a240c60
+Offline CI              32351952230 SUCCESS
+Dispatcher CI           32351952209 SUCCESS
+Global tests            146/146 PASS
+V4 multimarket           51/51 PASS
+Live read-only           32344120993 SUCCESS
+TCGdex external exact    5/5
+PPT matched              4/5
+PokeTrace matched        4/5
+would_notify             0
+market conflict blocked  1
+```
 
 ## Topologie PR importante
 
-- #8 : **OPEN / DRAFT / V5 EXPERIMENTAL / NON MERGED** ; ne jamais merger dans `main` sans autorisation explicite ;
-- #126 : **OPEN / DRAFT / SUPERSEDED** par #127/#128 et la suite ; ne pas merger ;
-- #136 : **OPEN / DRAFT / DOCS-ONLY**, fermeture documentaire de la phase #123→#135 ;
-- 16 PR ouvertes au total, détaillées dans `docs/project-open-pr-inventory.md`.
+- #8 : **OPEN / DRAFT / V5 EXPERIMENTAL / NON MERGED** ; ne jamais merger sans autorisation explicite ;
+- #126 : **OPEN / DRAFT / SUPERSEDED** ; ne pas merger ;
+- #138 : ancien Global reintegration shadow, superseded par #139 ;
+- #141 : diagnostic de couverture, superseded par #142 ;
+- #140 et #142 : mergées ;
+- 17 PR ouvertes détaillées dans `docs/project-open-pr-inventory.md`.
 
-## Couverture et risque restant
+## Workflows
 
-Le run `32160680888` avait une discovery complète mais une couverture marché externe encore incomplète : backlog externe ~2031, ETA diagnostique ~204 runs. Le `0 opportunity` du run n'est donc pas présenté comme un verdict économique globalement trustworthy.
+15 YAML sont réellement présents sur main. `v4-global-market-offline-validation.yml` fait partie du tree courant. `v4-global-live-shadow.yml` est manual-only et peut exécuter le mode read-only `economic_confirmation`.
+
+Le one-shot exact-bridge utilisé pendant #142 a été supprimé avant merge.
 
 ## Invariants
 
@@ -50,14 +67,15 @@ Le run `32160680888` avait une discovery complète mais une couverture marché e
 - aucune preuve fuzzy/substr/traduction ;
 - ASK/enchère live != SOLD ;
 - aucun achat, bid, checkout ou paiement automatique ;
-- Robot KB/Neon reste séparé de la décision commerciale V4 ;
-- V5/PR #8 reste séparée.
+- Robot KB/Neon reste séparé de la décision commerciale ;
+- V5/PR #8 reste séparée ;
+- Global read-only n'est pas une activation notification.
 
 ## Documents d'autorité
 
 ```text
 README.md
-  -> handoff canonique de production
+  -> handoff canonique
 
 docs/project-current-phase.md
   -> phase fonctionnelle courante
@@ -66,18 +84,17 @@ docs/project-capability-ledger.md
   -> capacités et supersessions
 
 docs/project-branch-inventory.md
-  -> 158/158 branches distantes
+  -> autorité branches + règle d'audit exhaustif
 
 docs/project-open-pr-inventory.md
-  -> 16/16 PR ouvertes
-
+  -> 17 PR ouvertes vérifiées
 docs/project-workflow-inventory.md
-  -> 14 workflows courants vs 80 records au dernier audit exhaustif
+  -> 15 workflows présents sur main
 
 docs/project-issue-inventory.md
-  -> 3/3 issues
+  -> issues hors PR
 ```
 
 ## Règle de fraîcheur
 
-Les nombres de branches/PRs/workflows et la branch protection peuvent changer. Avant tout merge, suppression ou changement de configuration, re-vérifier GitHub live.
+Avant tout merge, suppression ou changement de configuration, re-vérifier GitHub live. Ne jamais extrapoler un ancien nombre de branches/workflows/PRs comme état courant.
