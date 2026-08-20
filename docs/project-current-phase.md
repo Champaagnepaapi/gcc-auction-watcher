@@ -1,72 +1,125 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **20 août 2026**.
+État vérifié le **20 août 2026** après le merge #148.
 
 ## Autorité
 
-- V4 production : `main`
-- dernier **merge fonctionnel/runtime** : `c012284c423e9526fd2712001fdbce3a5cfafda3` (PR #140)
-- des commits docs-only suivent ce SHA sur `main` ; toujours re-vérifier le HEAD GitHub live avant une nouvelle action
-- V5 : PR #8, expérimentale/draft/non mergée dans `main`
-- Robot KB/Neon : historique durable séparé
+```text
+V4 production                  main
+Dernier merge runtime          ea9a69b375434031c935de8d25fcc12acd1a1c93 (#148)
+Global discovery               marketplace-first
+Global notification workflow   marketplace-first
+V5                             PR #8 / draft / non mergée
+Robot KB / Neon                séparé
+```
 
-## Phase Global #139 → #142 : fermée en read-only
+Toujours re-vérifier le HEAD GitHub live ; des commits docs-only peuvent suivre le SHA runtime.
 
-#139 a réintégré le stack Global strict. #140 ajoute la confirmation économique externe. #142 ajoute le bridge exact de nomenclature provider et a été absorbée dans #140 avant son merge vers main.
+## Phase Global #147 → #148
+
+Le Global est passé de seed-first à **marketplace-first**.
+
+```text
+GCC / Fanatics / COMC / magi / Cardova
+ -> inventaire courant
+ -> identité exacte
+ -> TCGdex exact
+ -> GCC SOLD exact si disponible
+ -> PPT + PokeTrace
+ -> décision économique
+ -> notification si gate complet
+```
+
+### Bootstrap / incrémental
+
+- bootstrap : tout l'inventaire découvert est mis en file et peut déjà produire une décote ;
+- ensuite : nouvelles annonces + changements économiques + retryables ;
+- annonce inchangée déjà traitée : pas de retraitement inutile ;
+- disparition != SOLD.
 
 ### Gate économique
 
-- fixed ASK exact ou snapshot auction ≤5m avec all-in prouvé ;
+- `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5` seulement ;
+- `ACTIVE_AUCTION` non actionnable ;
+- all-in prouvé ;
+- identité TCGdex exacte ;
+- externe gradé exact >=3 ventes ;
 - PPT/PokeTrace/eBay = une seule famille corrélée ;
-- minimum 3 ventes agrégées pour un centre externe utilisable ;
-- conflit GCC/externe >1.25 bloque ;
-- fair confirmé = `min(GCC, externe)` ;
-- ASK/current auction ne devient jamais SOLD.
+- conflit GCC/externe matériel bloque ;
+- avec GCC : fair confirmé = `min(GCC, externe)` ;
+- sans GCC fair : `EXTERNAL_ONLY` possible avec externe exact/fort ;
+- seuil : 30 %.
 
-### Bridge #142
+ASK, auction live et disparition ne deviennent jamais SOLD.
 
-Seulement après full collector number, set/préfixe TCGdex et langue exacts : nomenclature mécanique bornée `V/VSTAR/VMAX/ex/GX` ou `Mega <nom> ex`. `Unlimited` non matériel uniquement si TCGdex exact prouve `firstEdition=false`. Aucun fuzzy.
+## Correctif GCC type d'annonce
 
-## Validation
+Régression marketplace-first découverte en live puis corrigée avant merge #147 : `sellingTypeGroup` n'est pas toujours renvoyé dans chaque row GCC. Le scanner propage maintenant explicitement le type de requête `FIXED_PRICE/AUCTION` au parser.
 
-Head fonctionnel #140 : `b10adebc1f6866ae4ec37e9ea01eeddd2a240c60`.
+Une auction sans champ type ne peut plus tomber en `FIXED_ASK`. Tests dédiés pour auction active et snapshot `≤5 min`.
+
+## Validation #147
 
 ```text
-Offline Validation   32351952230  SUCCESS
-Dispatcher CI        32351952209  SUCCESS
-Global               146/146 PASS
-V4 multimarket        51/51 PASS
-compile/YAML/diff     PASS
+head                    2e65631416d0b39947de47ed4df3d37a4a87cbdc
+merge                   5a1b0f050098b560e812a4dc6e64a9f8d40a8897
+run                     32397363626 SUCCESS
+Global                  201/201 PASS
+V4                       51/51 PASS
+GCC exact               1172
+Fanatics exact          1
+COMC exact              11
+magi exact              0
+inventory               1184
+selected/pending        10 / 1174
 ```
 
-Live final read-only `32344120993` : TCGdex 5/5, PPT 4/5, PokeTrace 4/5, `would_notify=0`, 1 conflit bloqué. Mewtwo `183/165` : GCC ~€155 vs externe ~€103.40, Fanatics ASK ~€99.10 -> `MARKET_CONFLICT_BLOCKED`.
+## Validation #148 / cutover production
 
-Pikachu M-P reste `CLEAN_NO_MATCH` externe ; aucune correction ponctuelle sans classe déterministe répétée.
+Le workflow existant `.github/workflows/v4-global-notify.yml` a été conservé comme **unique cron Global** et pointe maintenant sur `v4_global_marketplace_notify_resilient.py`.
 
-## Statut opérationnel Global
+```text
+head                    9ff96e9cd9124944e50bb55e990289f5fd07492f
+merge                   ea9a69b375434031c935de8d25fcc12acd1a1c93
+run                     32398465774 SUCCESS
+validate job            96520726453 SUCCESS
+live read-only job      96520818899 SUCCESS
+Global                  202/202 PASS
+V4                       51/51 PASS
+compile/YAML/diff       PASS
+inventory               1184
+selected/pending        10 / 1174
+TCGdex exact            5
+PPT                     1 match / 6 HTTP / 28 credits
+PokeTrace               4 matches / 6 requests
+market conflicts        4 blocked
+would_notify            0
+transactions            false
+```
 
-**READ-ONLY uniquement.**
+Activation #146 reste inchangée : marker versionné / repo var true ; repo var false = kill switch ; manual dispatch toujours dry-run ; `NTFY_TOPIC` absent = fail-closed.
 
-- `v4-global-live-shadow.yml` reste manuel `workflow_dispatch` ;
-- `economic_confirmation` ne produit que `would_notify` diagnostique ;
-- aucune notification automatique ;
-- aucun schedule Global ;
-- aucun achat, bid, checkout, paiement ou grading ;
-- one-shot #142 supprimé avant merge.
+## Preuve encore attendue
+
+Le code/cutover est mergé. Il reste à **observer explicitement le premier vrai run `schedule` post-#148 sur `main`** pour clôturer la preuve live production du nouveau runtime. Ne pas revendiquer cette preuve sans run ID/logs.
+
+## Cardova
+
+`AUTH_SESSION_INPUT_REQUIRED` reste fail-closed. Aucun cookie/token/session ne doit être stocké dans le repo.
 
 ## Prochaine direction
 
-1. V4 production : continuer à drainer/mesurer la couverture externe et ne corriger que des classes prouvées.
-2. Global : seulement si décidé, phase séparée d'activation notification avec feature flag default-off, déduplication persistante, cadence explicite et nouveau live de validation.
-
-L'activation Global n'est **pas** implicite dans le merge #140.
+1. Observer le premier schedule post-#148.
+2. Laisser le bootstrap drainer le backlog marketplace-first par batches de 10.
+3. Mesurer débit/coût/backlog avant d'augmenter ce cap.
+4. Si anomalie : `vars.GLOBAL_NOTIFY_ENABLED=false` coupe la lane.
+5. V4 cœur production continue normalement et reste séparé de Global.
 
 ## Invariants
 
-- PokeTrace marché/prix après identité TCGdex ;
-- aucun fuzzy/substr/Levenshtein/traduction comme preuve exacte ;
-- ASK et enchère active ne sont jamais des SOLD ;
-- RAW ne devient jamais valeur d'un slab ;
-- aucune identité/langue/grader/grade/microvariante incompatible mélangée ;
+- PR #8 non mergée sans autorisation explicite ;
+- aucun fuzzy comme preuve exacte ;
+- ASK/auction/disparition != SOLD ;
+- RAW != valeur slab ;
 - aucun achat, bid, checkout ou paiement automatique ;
-- PR #8 ne doit jamais être mergée dans `main` sans autorisation explicite.
+- Robot KB/Neon séparé.

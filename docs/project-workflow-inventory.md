@@ -1,14 +1,12 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire workflows GitHub Actions
 
-Audit vérifié le **20 août 2026** pendant la phase marketplace-first #147 / cutover production.
+Audit vérifié le **20 août 2026** après le merge marketplace-first #148.
 
 ## Résultat clé
 
-Le tree `main` contient **16 fichiers workflow YAML**. #147 et le cutover marketplace-first ne créent pas de workflow permanent supplémentaire : le workflow existant `v4-global-notify.yml` reste l'unique lane Global planifiée et change seulement de runner après validation/merge du cutover.
+Le tree `main` contient **16 fichiers workflow YAML**. #147/#148 n'ont créé aucun second workflow Global planifié : `v4-global-notify.yml` reste l'unique lane Global schedule et exécute désormais le runner marketplace-first.
 
-L'API Actions conserve aussi des enregistrements historiques de workflows supprimés ; ces records ne sont pas une preuve qu'un YAML existe encore sur `main`.
-
-**Le tree Git est l'autorité pour ce qui peut réellement être déclenché.**
+L'API Actions peut conserver des records historiques de workflows supprimés ; **le tree Git courant est l'autorité** pour les YAML réellement déclenchables.
 
 ## Workflows permanents
 
@@ -17,88 +15,93 @@ L'API Actions conserve aussi des enregistrements historiques de workflows suppri
 | `japan-edge-hunter.yml` | `workflow_dispatch` + cron | PROD Japan Edge ; ASK reste ASK. |
 | `japan-edge-offline-validation.yml` | `workflow_dispatch` + PR ciblée | CI/offline Japan Edge. |
 | `psa-api-diagnostic.yml` | `workflow_dispatch` | Diagnostic PSA manuel. |
-| `robot-kb-cloud-shadow.yml` | `workflow_dispatch` + cron | Robot KB collecte séparée, aucune transaction. |
+| `robot-kb-cloud-shadow.yml` | `workflow_dispatch` + cron | Robot KB collecte séparée. |
 | `robot-kb-sold-shadow.yml` | `workflow_dispatch` + cron | Robot KB SOLD/backfill strict. |
 | `v4-auction-discovery-validation.yml` | `workflow_dispatch` + PR ciblée | CI/comparaison V4 read-only. |
-| `v4-final-auction-check.yml` | `workflow_dispatch` | Fast Lane production, cadence externe. Aucun cron GitHub parallèle. |
+| `v4-final-auction-check.yml` | `workflow_dispatch` | Fast Lane production, cadence externe. |
 | `v4-gcc-coverage-audit.yml` | `workflow_dispatch` | Audit GCC manuel/read-only. |
-| `v4-global-live-shadow.yml` | `workflow_dispatch` | Global manuel/read-only ; `economic_confirmation` utilise le stack exact confirmé. |
-| `v4-global-market-offline-validation.yml` | PR ciblée | CI Global : tests + regressions V4 + compile/YAML/diff ; sur PR marketplace pertinente, live marketplace-first read-only après validation. |
-| `v4-global-notify.yml` | `workflow_dispatch` + cron horaire `41 * * * *` | Unique lane Global production. Manual = toujours dry-run. Après cutover : runner marketplace-first + état durable ; marker/repo-var #146 inchangés. Aucune transaction. |
-| `v4-global-shadow-dispatch-ci.yml` | PR ciblée | Vérifie le contrat du dispatcher Global. |
-| `v4-kb-shadow-ingest.yml` | `workflow_run` après succès V4 | Ingestion passive vers Robot KB/Neon. |
-| `v5-gcc-catalog-refresh.yml` | `workflow_dispatch` + cron | Support V5 legacy ; ne pas supprimer sans audit dédié. |
-| `v5-live-raw-pipeline-diagnostic.yml` | `workflow_dispatch` | V5 diagnostic manuel, aucune transaction/grading payant. |
-| `watcher.yml` | `workflow_dispatch` | V4 production canonique, cadence externe Cron-job.org. |
+| `v4-global-live-shadow.yml` | `workflow_dispatch` | Global manuel/read-only. |
+| `v4-global-market-offline-validation.yml` | PR ciblée | CI Global + live marketplace-first read-only sur PR pertinente. |
+| `v4-global-notify.yml` | `workflow_dispatch` + `41 * * * *` | **Unique lane Global production, marketplace-first depuis #148.** Manual toujours dry-run. |
+| `v4-global-shadow-dispatch-ci.yml` | PR ciblée | Contrat dispatcher Global. |
+| `v4-kb-shadow-ingest.yml` | `workflow_run` après succès V4 | Ingestion passive Robot KB/Neon. |
+| `v5-gcc-catalog-refresh.yml` | `workflow_dispatch` + cron | Support V5 legacy actuel. |
+| `v5-live-raw-pipeline-diagnostic.yml` | `workflow_dispatch` | V5 diagnostic manuel. |
+| `watcher.yml` | `workflow_dispatch` | V4 Main Scanner, cadence externe Cron-job.org. |
 
-## Global après #139/#140/#142/#145/#146/#147
+---
 
-`v4-global-live-shadow.yml` reste volontairement **manuel/read-only**.
-
-#147 ajoute le moteur marketplace-first sur `main` :
+# Global production après #148
 
 ```text
-inventaire GCC / Fanatics / COMC / magi / Cardova
- -> identité exacte
- -> TCGdex exact
+v4-global-notify.yml
+ -> Resolve notification activation
+ -> restore .global-marketplace-state
+ -> v4_global_marketplace_notify_resilient.py
+ -> marketplace inventory discovery
+ -> baseline/new/changed pending queue
+ -> max 10 evaluations/run initialement
+ -> TCGdex exact + bounded retry
  -> PPT / PokeTrace confirmation
- -> décision économique
+ -> MULTIMARKET_CONFIRMED gate
+ -> dedupe notification
+ -> save state
 ```
 
-Le cutover production réutilise **le même** `v4-global-notify.yml` :
+## Activation
+
+- `.github/global-notify-activation=true` active les schedules si la repo var ne force rien ;
+- `vars.GLOBAL_NOTIFY_ENABLED=true` supportée ;
+- `vars.GLOBAL_NOTIFY_ENABLED=false` = kill switch prioritaire ;
+- `workflow_dispatch` = toujours dry-run ;
+- `NTFY_TOPIC` absent/vide = fail-closed avant scan.
+
+## État durable
 
 ```text
-marketplace inventory
- -> état durable baseline/incrémental
- -> pending new/changed listings
- -> max 10 évaluations/run initialement
- -> TCGdex exact + retry transport borné
- -> PPT / PokeTrace confirmation
- -> MULTIMARKET_CONFIRMED uniquement
- -> déduplication persistante
- -> notification seulement si activation schedule explicite
+.global-marketplace-state/discovery.json
+.global-marketplace-state/notifications.json
 ```
 
-Activation #146 inchangée :
+Cache séparé par event `schedule` / `workflow_dispatch`.
 
-- `.github/global-notify-activation = true` active les runs `schedule` ;
-- `vars.GLOBAL_NOTIFY_ENABLED=true` reste supporté ;
-- `vars.GLOBAL_NOTIFY_ENABLED=false` est un override d'urgence prioritaire ;
-- le job schedule démarre pour résoudre l'activation, mais les étapes provider ne s'exécutent que si le gate est actif ;
-- `workflow_dispatch` reste toujours dry-run ;
-- `NTFY_TOPIC` vide = fail-closed avant scan.
+Discovery : bootstrap complet, puis nouvelles annonces/changements utiles/retryables. Disparition != SOLD.
 
-État après cutover :
+## Budgets / sécurité
 
-- `.global-marketplace-state/discovery.json` : inventaire observé + pending ;
-- `.global-marketplace-state/notifications.json` : dédup notifications ;
-- cache séparé par event `schedule` / `workflow_dispatch` ;
-- disparition d'un listing != SOLD ;
-- baseline puis nouvelles annonces/changements économiques seulement.
+```text
+PPT max HTTP             12
+PPT max credits          60
+PPT daily floor          15000
+TCGdex max attempts      2
+TCGdex timeout           10 s
+TCGdex backoff           0.25 s
+```
 
-Invariants :
-
-- TTL notification 14 jours ; re-alert si baisse >=5 % ou expiration TTL ;
-- retry TCGdex Global-only : max 2 tentatives, timeout 10 s, backoff 0.25 s ; échec final reste `ERROR`/fail-closed ;
-- PPT : 12 HTTP / 60 crédits / floor quotidien 15000 ;
 - ASK/current auction != SOLD ;
-- `ACTIVE_AUCTION` non actionnable ; `AUCTION_SNAPSHOT_LE5` reste observation, jamais vente ;
-- aucune transaction, achat, bid, checkout ou paiement.
+- `ACTIVE_AUCTION` non actionnable ;
+- `AUCTION_SNAPSHOT_LE5` observation uniquement ;
+- aucune transaction, achat, bid, checkout ou paiement ;
+- aucun gate identité relâché.
 
-Preuves :
+## Preuves
 
 ```text
-#146 first scheduled active     run 32379733361 SUCCESS
-#147 final read-only live       run 32397363626 SUCCESS
-#147 Global tests               201/201 PASS
-#147 V4 regressions              51/51 PASS
-#147 GCC exact                  1172
-#147 inventory                  1184
+#146 activation schedule        32379733361 SUCCESS
+#147 final marketplace live     32397363626 SUCCESS
+#148 cutover CI/live            32398465774 SUCCESS
+#148 Global tests               202/202 PASS
+#148 V4 regressions              51/51 PASS
+#148 GCC exact                  1172
+#148 inventory                  1184
+#148 selected/pending           10 / 1174
 ```
 
-Cardova reste `AUTH_SESSION_INPUT_REQUIRED` sans input de session sûre ; aucun secret n'est stocké dans le repo.
+Le premier vrai run `schedule` **post-#148** doit encore être observé explicitement avant de revendiquer la preuve live production du nouveau runner.
 
-## Triggers automatiques permanents
+---
+
+# Triggers automatiques permanents
 
 GitHub cron :
 
@@ -109,8 +112,6 @@ Robot KB SOLD shadow
 V5 GCC Catalog Refresh
 V4 Global Confirmed Notifications @ minute 41
 ```
-
-Pour Global Notifications, `vars.GLOBAL_NOTIFY_ENABLED=false` force l'arrêt immédiat même si le marker versionné vaut `true`.
 
 Événement automatique :
 
@@ -125,16 +126,18 @@ GCC Auction Watcher
 GCC Final Auction Check
 ```
 
-## Règle future
+Ne jamais ajouter de cron GitHub parallèle au Main Scanner/Fast Lane.
 
-Avant d'ajouter un workflow :
+---
+
+# Règle future
+
+Avant d'ajouter/modifier un workflow :
 
 1. vérifier le tree courant ;
-2. rechercher la capacité dans l'historique/ledger ;
-3. réutiliser un workflow consolidé quand il existe ;
-4. préférer `workflow_dispatch` pour diagnostics ponctuels ;
-5. ne jamais ajouter un cron GitHub parallèle au Main Scanner/Fast Lane ;
-6. ne pas supprimer branche/workflow/issue sans autorisation destructive explicite ;
+2. rechercher la capacité existante ;
+3. réutiliser le workflow consolidé quand possible ;
+4. diagnostics ponctuels : préférer manuel ;
+5. pas de second cron Main Scanner/Fast Lane/Global ;
+6. ne pas supprimer workflow/branche/issue sans autorisation destructive explicite ;
 7. aucune transaction automatique.
-
-Le nombre de records historiques Actions n'est pas le nombre de YAML réellement présents dans le tree.

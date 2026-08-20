@@ -1,19 +1,20 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-État pertinent vérifié le **20 août 2026**.
+État pertinent vérifié le **20 août 2026** après merge #148.
 
 ## Autorités
 
 ```text
-production canonique              main
-Global notification runtime       feat/v4-global-notification-activation-20260820 / PR #145 mergée
-Global activation                 ops/v4-global-notify-activate-20260820 / PR #146
+production canonique              main @ ea9a69b375434031c935de8d25fcc12acd1a1c93
+Global marketplace-first          feat/v4-global-marketplace-discovery-20260820 / PR #147 mergée
+Global cutover production         ops/v4-global-marketplace-cutover-20260820 / PR #148 mergée
+Global activation                 ops/v4-global-notify-activate-20260820 / PR #146 mergée
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / PR #8
 ```
 
 Toujours re-vérifier le HEAD GitHub live avant une action.
 
-PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` sans autorisation explicite.
+PR #8 reste expérimentale/draft/non mergée, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` ; ne jamais la merger dans `main` sans autorisation explicite.
 
 ## Comptage
 
@@ -35,16 +36,20 @@ Toute suppression de branche exige un nouvel audit exhaustif + autorisation expl
 - `fix/v4-global-external-exact-bridge-20260820` — #142, absorbée dans #140 ;
 - `docs/v4-global-economic-confirmation-close-20260820` — #143, docs ;
 - `docs/fix-global-runtime-baseline-wording-20260820` — correction docs-only ;
-- `feat/v4-global-notification-activation-20260820` — PR #145 mergée, merge `929d0d24ba959ba1ff30b2d73b1df5adc1d460e6` ;
-- `ops/v4-global-notify-activate-20260820` — **PR #146 active/autorisée**, marker versionné d'activation réelle + repo variable false comme override d'urgence.
+- `feat/v4-global-notification-activation-20260820` — PR #145 mergée ;
+- `ops/v4-global-notify-activate-20260820` — PR #146 mergée, marker d'activation réelle ;
+- `feat/v4-global-marketplace-discovery-20260820` — PR #147 mergée, merge `5a1b0f050098b560e812a4dc6e64a9f8d40a8897` ;
+- `ops/v4-global-marketplace-cutover-20260820` — PR #148 mergée, merge `ea9a69b375434031c935de8d25fcc12acd1a1c93` ;
+- `docs/v4-global-marketplace-cutover-close-20260820` — branche docs de fermeture courante.
 
-`main` reste l'autorité après merge explicite.
+`main` reste l'autorité après merge explicite. Les branches #147/#148 sont conservées comme provenance ; aucune suppression n'est autorisée implicitement.
 
 ## Historique à ne pas rejouer
 
 - anciennes branches Global #108→#115 : absorbées par #139 ;
 - PR #126 : superseded par #127→#135 ;
-- one-shots/temp/diagnostics : provenance uniquement ; les one-shots #145 ont été supprimés après validation.
+- ancien moteur Global seed-rotation : historique/benchmark uniquement après cutover #148 ;
+- one-shots/temp/diagnostics : provenance uniquement.
 
 ## Règle cleanup branches
 
