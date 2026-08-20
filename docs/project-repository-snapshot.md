@@ -1,35 +1,32 @@
 # Robot Pokémon / GCC Auction Watcher — snapshot topologique du dépôt
 
-Snapshot GitHub vérifié le **20 août 2026** après merge #140.
+Snapshot vérifié le **20 août 2026** après la phase Global #139→#142.
 
-## Topologie vérifiée
+## Autorité
 
 ```text
 Repository: Champaagnepaapi/gcc-auction-watcher
-Visibility: public
 Default branch: main
-main HEAD: c012284c423e9526fd2712001fdbce3a5cfafda3
+Last functional/runtime merge: c012284c423e9526fd2712001fdbce3a5cfafda3
 main protected: false
-Open pull requests: 17
-Issues hors PR: 3 au dernier audit exhaustif
+Open pull requests after docs closeout: 17
 Current workflow YAML files on main: 15
-Remote branch count: non ré-audité exhaustivement dans cette phase
 ```
 
-Le dernier audit exhaustif des branches comptait 158 le 18 août ; plusieurs branches Global/diagnostic/docs ont été créées depuis. Ne pas réutiliser `158` comme nombre courant sans nouvel audit exhaustif.
+Des commits docs-only suivent le merge fonctionnel `c012284c...`. **Toujours re-vérifier le HEAD `main` GitHub live** avant une nouvelle modification ; ne pas interpréter un SHA docs-only comme un nouveau runtime.
 
-## Phase fonctionnelle courante
+Le dernier audit exhaustif des branches comptait 158 le 18 août ; plusieurs branches Global/diagnostic/docs ont été créées depuis. Le nombre distant courant n'a pas été ré-audité exhaustivement dans cette phase.
 
-Global Multi-Vault est désormais présent sur main **en read-only** :
+## Phase Global
 
 - #139 : réintégration Global stricte ;
 - #140 : confirmation économique externe PPT/PokeTrace ;
 - #142 : bridge exact provider, absorbé dans #140 ;
-- merge main final : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
+- dernier merge fonctionnel/runtime : `c012284c423e9526fd2712001fdbce3a5cfafda3`.
 
-Le workflow Global reste manuel ; aucune notification automatique ni transaction n'a été activée.
+Global reste **read-only** : aucune notification automatique, aucun schedule Global, aucune transaction.
 
-## Validation Global
+## Validation
 
 ```text
 head fonctionnel #140  b10adebc1f6866ae4ec37e9ea01eeddd2a240c60
@@ -45,56 +42,35 @@ would_notify             0
 market conflict blocked  1
 ```
 
-## Topologie PR importante
+## PR importantes
 
-- #8 : **OPEN / DRAFT / V5 EXPERIMENTAL / NON MERGED** ; ne jamais merger sans autorisation explicite ;
-- #126 : **OPEN / DRAFT / SUPERSEDED** ; ne pas merger ;
-- #138 : ancien Global reintegration shadow, superseded par #139 ;
-- #141 : diagnostic de couverture, superseded par #142 ;
+- #8 : **OPEN / DRAFT / V5 EXPERIMENTAL / NON MERGED** ;
+- #126 : **OPEN / DRAFT / SUPERSEDED** ;
+- #138 : superseded par #139 ;
+- #141 : diagnostic superseded par #142 ;
 - #140 et #142 : mergées ;
-- 17 PR ouvertes détaillées dans `docs/project-open-pr-inventory.md`.
+- les PR ouvertes sont détaillées dans `docs/project-open-pr-inventory.md`.
 
 ## Workflows
 
-15 YAML sont réellement présents sur main. `v4-global-market-offline-validation.yml` fait partie du tree courant. `v4-global-live-shadow.yml` est manual-only et peut exécuter le mode read-only `economic_confirmation`.
-
-Le one-shot exact-bridge utilisé pendant #142 a été supprimé avant merge.
-
-## Invariants
-
-- V4 sur `main` reste production canonique ;
-- PokeTrace reste marché/prix après identité TCGdex ;
-- aucune preuve fuzzy/substr/traduction ;
-- ASK/enchère live != SOLD ;
-- aucun achat, bid, checkout ou paiement automatique ;
-- Robot KB/Neon reste séparé de la décision commerciale ;
-- V5/PR #8 reste séparée ;
-- Global read-only n'est pas une activation notification.
+15 YAML sont présents sur main. `v4-global-live-shadow.yml` reste manual-only et peut exécuter le mode read-only `economic_confirmation`. Le one-shot exact-bridge de #142 a été supprimé avant merge.
 
 ## Documents d'autorité
 
-```text
-README.md
-  -> handoff canonique
+- `README.md` : handoff canonique ;
+- `docs/project-current-phase.md` : phase fonctionnelle ;
+- `docs/project-capability-ledger.md` : capacités/supersessions ;
+- `docs/project-open-pr-inventory.md` : PR ouvertes ;
+- `docs/project-workflow-inventory.md` : workflows présents ;
+- `docs/project-branch-inventory.md` : branches pertinentes et règle d'audit ;
+- `docs/project-issue-inventory.md` : issues hors PR.
 
-docs/project-current-phase.md
-  -> phase fonctionnelle courante
+## Invariants
 
-docs/project-capability-ledger.md
-  -> capacités et supersessions
-
-docs/project-branch-inventory.md
-  -> autorité branches + règle d'audit exhaustif
-
-docs/project-open-pr-inventory.md
-  -> 17 PR ouvertes vérifiées
-docs/project-workflow-inventory.md
-  -> 15 workflows présents sur main
-
-docs/project-issue-inventory.md
-  -> issues hors PR
-```
-
-## Règle de fraîcheur
-
-Avant tout merge, suppression ou changement de configuration, re-vérifier GitHub live. Ne jamais extrapoler un ancien nombre de branches/workflows/PRs comme état courant.
+- V4/main canonique ;
+- PR #8 jamais mergée sans autorisation explicite ;
+- ASK/enchère live != SOLD ;
+- aucun fuzzy comme preuve exacte ;
+- aucun achat, bid, checkout ou paiement automatique ;
+- Robot KB/Neon séparé ;
+- Global read-only != activation notification.
