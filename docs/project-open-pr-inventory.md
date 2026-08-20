@@ -1,8 +1,8 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub vérifié le **20 août 2026** après le merge du cutover marketplace-first #148.
+Snapshot GitHub vérifié le **20 août 2026** après le merge #151.
 
-- `main` vérifié : `ea9a69b375434031c935de8d25fcc12acd1a1c93` (merge #148)
+- `main` vérifié : `c9539ca521f69b43b3d93e621fb21447a69f3fe7` (merge #151)
 - PR #8 : expérimentale V5, draft, ouverte, non mergée, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`.
 
 Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub sans nouvel audit live.
@@ -29,16 +29,18 @@ Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** 
 | #138 | oui | `shadow/v4-global-current-main-reintegration-20260819` | `SUPERSEDED_BY_139`. |
 | #141 | oui | `diag/v4-global-provider-coverage-20260820` | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
 
-## Phase Global récente — fermée côté code/cutover
+## Phase Global récente — fermée côté code
 
-- #139 : mergée vers main ;
-- #140 : confirmation économique mergée ;
-- #142 : bridge exact provider absorbé dans #140 ;
-- #145 : notifications Global confirmées mergées ;
-- #146 : activation réelle mergée ; premier schedule actif prouvé par run `32379733361` ;
-- #147 : marketplace-first discovery mergée, merge `5a1b0f050098b560e812a4dc6e64a9f8d40a8897` ;
-- #148 : cutover du workflow Global existant vers marketplace-first mergé, merge `ea9a69b375434031c935de8d25fcc12acd1a1c93`.
+- #139 : réintégration Global mergée ;
+- #140/#142 : confirmation économique + bridge exact ;
+- #145/#146 : notifications + activation ;
+- #147 : marketplace-first discovery, merge `5a1b0f050098b560e812a4dc6e64a9f8d40a8897` ;
+- #148 : cutover production, merge `ea9a69b375434031c935de8d25fcc12acd1a1c93` ;
+- #149 : fermeture documentaire #147/#148 ;
+- #151 : registre autonome des schedules Global vers issue #150, merge `c9539ca521f69b43b3d93e621fb21447a69f3fe7`.
 
-Validation #148 : run `32398465774` SUCCESS, **202/202 Global + 51/51 V4**, live read-only SUCCESS ; aucune transaction. La preuve finale attendue est maintenant le premier vrai run `schedule` marketplace-first sur `main`.
+Validation #151 : run `32410224171` SUCCESS, **203/203 Global + 51/51 V4**, live read-only SUCCESS, aucune transaction.
+
+La prochaine preuve attendue n'est pas une PR : c'est le premier commentaire automatique de l'issue #150 produit par un vrai `schedule` post-#151.
 
 Une PR ouverte n'est jamais une tâche à merger automatiquement. PR #8 reste explicitement protégée.

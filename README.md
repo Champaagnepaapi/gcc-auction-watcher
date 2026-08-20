@@ -10,16 +10,17 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production canonique          : main
-Dernier merge runtime            : PR #148 / ea9a69b375434031c935de8d25fcc12acd1a1c93
+Dernier merge runtime Global     : PR #151 / c9539ca521f69b43b3d93e621fb21447a69f3fe7
 Global discovery                 : marketplace-first / PR #147 mergée
 Global notification cutover      : marketplace-first / PR #148 mergée
+Global schedule run registry     : issue #150 / PR #151 mergée
 Global activation                : PR #146 / marker versionné + repo-var override
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
 Robot KB / Neon                  : historique durable séparé de V4/V5
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-Le SHA exact de `main` doit toujours être re-vérifié live. Les SHA ci-dessus servent de points de reprise fonctionnels ; des commits docs-only peuvent suivre un merge runtime.
+Le SHA exact de `main` doit toujours être re-vérifié live. Les SHA ci-dessus sont des points de reprise fonctionnels ; des commits docs-only peuvent suivre un merge runtime.
 
 ---
 
@@ -37,7 +38,7 @@ Le SHA exact de `main` doit toujours être re-vérifié live. Les SHA ci-dessus 
 ## Hiérarchie des preuves prix
 
 1. ventes **SOLD exactes et récentes** ;
-2. ventes SOLD exactes anciennes, ajustées temporellement lorsque la méthode est défendable ;
+2. ventes SOLD exactes anciennes, ajustées temporellement lorsque défendable ;
 3. asks fixes compatibles, explicitement étiquetés **ASK** ;
 4. snapshot d'enchère observé à `≤5 min` si aucun SOLD n'est disponible ;
 5. enchère en cours = signal faible.
@@ -50,7 +51,7 @@ Le SHA exact de `main` doit toujours être re-vérifié live. Les SHA ci-dessus 
 
 ## Architecture courante
 
-Depuis #147/#148, le Global ne choisit plus arbitrairement quelques seeds avant de chercher des offres.
+Depuis #147/#148, le Global ne choisit plus quelques seeds avant de chercher des offres.
 
 ```text
 GCC / Fanatics / COMC / magi / Cardova
@@ -72,26 +73,26 @@ notification seulement si gate complet
 
 ### Bootstrap puis incrémental
 
-Au premier passage :
+Premier passage :
 
-- l'inventaire existant est réellement analysé ;
-- les offres déjà présentes peuvent donc déclencher une décote immédiatement ;
-- elles sont aussi enregistrées comme baseline de discovery.
+- tout l'inventaire découvert est mis en file ;
+- les offres déjà présentes peuvent être évaluées immédiatement ;
+- elles forment ensuite la baseline de discovery.
 
-Aux passages suivants :
+Passages suivants :
 
 - nouvelles annonces ;
 - changements économiques utiles, notamment prix ;
 - listings pending/retryables ;
-- les annonces inchangées déjà traitées ne sont pas réévaluées inutilement.
+- pas de retraitement inutile des annonces inchangées déjà terminales.
 
 Une disparition d'annonce est seulement `missing` : **jamais SOLD fabriqué**.
 
-Les anciennes seeds GCC restent utilisables comme catalogue exact de retrieval/benchmark, pas comme moteur principal de discovery.
+Les anciennes seeds GCC restent un catalogue de retrieval/benchmark, pas le moteur de discovery.
 
 ## Providers de discovery
 
-État validé live #147/#148 :
+État validé live :
 
 ```text
 GCC       public /on-sale-items                  OK
@@ -101,17 +102,17 @@ magi      broad Pokemon PSA10 inventory query    OK
 Cardova   AUTH_SESSION_INPUT_REQUIRED             fail-closed
 ```
 
-Cardova ne doit recevoir aucun secret/session commité. Tant qu'une auth automatisable sûre n'est pas fournie, sa couverture reste explicitement incomplète.
+Cardova ne doit recevoir aucun secret/session commité. Tant qu'une auth automatisable sûre n'existe pas, sa couverture reste explicitement incomplète.
 
 ## Correctif GCC FIXED/AUCTION
 
-Le premier live marketplace-first a révélé une régression locale : GCC n'écho pas toujours `sellingTypeGroup` dans chaque row. Le nouveau parser pouvait alors confondre une enchère à faible prix avec un `FIXED_ASK`.
+Le premier live marketplace-first a montré que GCC n'écho pas toujours `sellingTypeGroup` dans chaque row. Le parser pouvait alors confondre une enchère à faible prix avec un `FIXED_ASK`.
 
-Correctif livré avant le merge #147 :
+Correctif livré avant #147 :
 
-- le scanner transmet explicitement au parser le type **de la requête envoyée** : `FIXED_PRICE` ou `AUCTION` ;
-- le type n'est plus deviné depuis un champ row optionnel ;
-- tests dédiés couvrent row sans type + auction active et row sans type + snapshot `≤5 min`.
+- le scanner transmet le type **de la requête envoyée** : `FIXED_PRICE` ou `AUCTION` ;
+- le type n'est plus déduit d'un champ row optionnel ;
+- tests dédiés couvrent auction active et snapshot `≤5 min` sans champ type.
 
 Une enchère active reste non actionnable ; un snapshot `≤5 min` reste une observation, jamais une vente.
 
@@ -135,13 +136,13 @@ Règles :
 
 - `ACTIVE_AUCTION` non actionnable ;
 - externe gradé : minimum 3 ventes agrégées ;
-- PPT/PokeTrace/eBay appartiennent à la même famille corrélée `EBAY_GRADED_AGGREGATE` et ne comptent pas comme marchés indépendants ;
-- si GCC fair exact existe et contredit matériellement l'externe, blocage `MARKET_CONFLICT_BLOCKED` ;
-- avec GCC fair, fair confirmé conservateur = `min(GCC fair, external fair)` ;
-- sans GCC fair exact, un externe exact/fort peut confirmer `EXTERNAL_ONLY` ;
-- aucune absence provider n'est interprétée comme mauvaise valeur.
+- PPT/PokeTrace/eBay appartiennent à la même famille corrélée `EBAY_GRADED_AGGREGATE` ;
+- si GCC fair exact contredit matériellement l'externe : `MARKET_CONFLICT_BLOCKED` ;
+- avec GCC fair : fair confirmé conservateur = `min(GCC fair, external fair)` ;
+- sans GCC fair exact : `EXTERNAL_ONLY` possible avec externe exact/fort ;
+- absence provider ≠ mauvaise valeur.
 
-Le bridge provider exact #142 ne tolère que des différences mécaniques bornées après preuve macro exacte : full collector number, set/préfixe TCGdex, langue, et suffixes provider explicitement supportés. Aucun fuzzy.
+Le bridge provider exact #142 ne tolère que des différences mécaniques bornées après preuve macro exacte. Aucun fuzzy.
 
 ---
 
@@ -160,41 +161,71 @@ workflow_dispatch   -> toujours dry-run
 schedule            -> 41 * * * *
 ```
 
-Après #148, ce workflow exécute :
+Depuis #148 :
 
 ```text
 v4_global_marketplace_notify_resilient.py
 ```
 
-et utilise l'état durable :
+État durable :
 
 ```text
 .global-marketplace-state/discovery.json
 .global-marketplace-state/notifications.json
 ```
 
-Le workflow Global existant a été réutilisé : **aucun second cron Global n'a été créé.**
+Le workflow existant a été réutilisé : **aucun second cron Global**.
 
 ## Activation #146
 
-- `.github/global-notify-activation = true` active les runs `schedule` lorsque la repo var n'impose rien ;
+- `.github/global-notify-activation = true` active les runs `schedule` si la repo var n'impose rien ;
 - `vars.GLOBAL_NOTIFY_ENABLED=true` reste supporté ;
-- `vars.GLOBAL_NOTIFY_ENABLED=false` est le kill switch d'urgence prioritaire ;
+- `vars.GLOBAL_NOTIFY_ENABLED=false` = kill switch prioritaire ;
 - `workflow_dispatch` reste toujours dry-run ;
-- `NTFY_TOPIC` absent/vide => fail-closed avant le scan.
+- `NTFY_TOPIC` absent/vide => fail-closed avant scan.
 
-Premier schedule réellement notification-capable de l'ancienne lane seed :
+Preuve historique de l'activation notification : run `32379733361`, mode `GLOBAL_NOTIFICATION_ACTIVE`, activation true, 0 sent, transactions false.
+
+## Registre autonome des runs Global — #150 / #151
+
+Le connecteur utilisé par ChatGPT ne sait pas lister génériquement les runs GitHub Actions `schedule` sans connaître leur `run_id`. Depuis #151, chaque vrai run `schedule` Global écrit donc une ligne minimale dans l'issue **#150 `Global Run Registry — ChatGPT log access`**.
+
+Le registre contient uniquement :
+
+- timestamp UTC, `run_id`, attempt, trigger, commit SHA ;
+- activation et outcome du runner ;
+- métriques agrégées sûres discovery/TCGdex/PPT/PokeTrace/notification ;
+- flags explicites `automatic_purchase/bid/checkout/payment`.
+
+Il ne recopie **aucun log complet**, secret, token, cookie/session, identité listing-level ou donnée de paiement. Le registre V4 historique reste séparé dans l'issue #1.
+
+`workflow_dispatch` n'écrit pas dans #150 : seuls les vrais `schedule` le font. Le finalizer tourne avec `always()` afin qu'un run provider en échec laisse quand même son `run_id` et son statut lorsque GitHub peut exécuter la fin du job.
+
+Validation #151 avant merge :
 
 ```text
-run / job              32379733361 / 96459686467
-mode                   GLOBAL_NOTIFICATION_ACTIVE
-activation             true
-sent                   0
-transactions           false
-identity_gate_relaxed  false
+branch                         ops/v4-global-run-registry-20260820
+head                           a424fb62cb5e0553929847d3b973411a8b61a561
+merge main                     c9539ca521f69b43b3d93e621fb21447a69f3fe7
+CI / live                      32410224171 SUCCESS
+validate / live jobs           96558656377 / 96558728745
+Global tests                   203/203 PASS
+V4 multimarket                  51/51 PASS
+compile / YAML / diff-check    PASS
+live mode                      READ_ONLY_MARKETPLACE_DISCOVERY_VALIDATION
+inventory                      1186
+selected / pending after       10 / 1176
+TCGdex exact                   5
+PPT                            1 match / 6 HTTP / 28 credits
+PokeTrace                      4 matches / 6 requests
+market conflicts               4 blocked
+confirmed_would_notify         0
+notifications                  false pendant validation
+transactions                   false
+artifact                       9421951722
 ```
 
-Cela prouve l'activation #146. Après le cutover #148, la **première exécution `schedule` marketplace-first sur le nouveau runtime doit encore être observée explicitement avant de revendiquer une preuve live production post-cutover**.
+La prochaine preuve à capturer est le **premier commentaire réel de #150 créé par un `schedule` sur `main` après #151**. À partir de là, ChatGPT peut récupérer le `run_id`, lire jobs/logs/artifacts et vérifier la prod sans demander de lien à l'utilisateur.
 
 ## Budgets / résilience
 
@@ -208,7 +239,7 @@ TCGdex timeout                 10 s
 TCGdex retry backoff           0.25 s
 ```
 
-Retry TCGdex Global-only sur Timeout/ConnectionError/HTTP 502/503/504. Un échec final reste une erreur ; aucun no-match n'est fabriqué et aucun gate identité n'est relâché.
+Retry TCGdex Global-only sur Timeout/ConnectionError/HTTP 502/503/504. Échec final = erreur ; aucun no-match fabriqué et aucun gate identité relâché.
 
 Dédup notification : TTL 14 jours ; re-alert seulement après expiration ou baisse de prix `>=5%`.
 
@@ -227,62 +258,21 @@ V4 multimarket                   51/51 PASS
 py_compile / YAML / diff-check  PASS
 ```
 
-Live final #147 :
+Live : GCC 1172 exact, Fanatics 1, COMC 11, magi 0 ; inventory 1184 ; 10 évaluées ; TCGdex 5 ; PPT 1 ; PokeTrace 4 ; 4 conflits bloqués ; 0 would-notify ; transactions false.
 
-```text
-GCC candidates / exact          14375 / 1172
-Fanatics candidates / exact     24 / 1
-COMC candidates / exact         11 / 11
-magi candidates / exact         96 / 0
-inventory queued                1184
-selected / pending after        10 / 1174
-TCGdex exact                    5
-PPT matched                     1 ; 6 HTTP ; 28 credits
-PokeTrace matched               4 ; 6 requests
-market conflicts                4 blocked
-confirmed_would_notify          0
-notifications                   false pendant validation
-transactions                    false
-```
-
-## #148 — cutover du workflow production
+## #148 — cutover production
 
 ```text
 branch                          ops/v4-global-marketplace-cutover-20260820
 head validé                     9ff96e9cd9124944e50bb55e990289f5fd07492f
 merge main                      ea9a69b375434031c935de8d25fcc12acd1a1c93
 CI / live                       32398465774 SUCCESS
-validate job                    96520726453 SUCCESS
-live read-only job              96520818899 SUCCESS
 Global tests                    202/202 PASS
 V4 multimarket                   51/51 PASS
 py_compile / YAML / diff-check  PASS
-artifact                        9417682288
-artifact digest                 sha256:9e7d17471b49d90496a0aaf9fcb5f4b5d2dd72cba8888f818c1f1bebe5d126ef
 ```
 
-Live #148 :
-
-```text
-GCC candidates / exact          14373 / 1172
-Fanatics candidates / exact     24 / 1
-COMC candidates / exact         11 / 11
-magi candidates / exact         96 / 0
-inventory                       1184
-selected / pending after        10 / 1174
-catalog SOLD                    780
-catalog fair                    100
-TCGdex exact                    5
-PPT                             1 match ; 6 HTTP ; 28 credits
-PokeTrace                       4 matches ; 6 requests
-market conflicts                4 blocked
-confirmed_would_notify          0
-notifications                   false pendant validation
-identity_gate_relaxed           false
-transactions                    false
-```
-
-Le cœur V4 canonique n'a pas été remplacé par le Global ; #148 change uniquement la lane Global de notification/discovery.
+Le cœur V4 canonique n'a pas été remplacé par Global ; #148 change uniquement la lane Global notification/discovery.
 
 ---
 
@@ -307,7 +297,7 @@ Cron-job.org toutes les 3 min
 
 Ne jamais ajouter de cron GitHub parallèle à ces deux lanes.
 
-Architecture prix/identité V4 :
+Architecture :
 
 ```text
 GCC listing
@@ -317,17 +307,11 @@ GCC listing
   -> arbitrage économique
 ```
 
-PSA scope économique production : `8`, `8.5`, `9`, `10`. PSA <8 hors scope économique ; ne jamais synthétiser PSA 9.5.
+PSA scope production : `8`, `8.5`, `9`, `10`. PSA <8 hors scope économique ; jamais de PSA 9.5 synthétique.
 
-Chemins V4 principaux :
+Chemins principaux : `GCC_ONLY`, `GCC_EXTERNAL_CONFIRMED`, `EXTERNAL_RESCUE`, `EXTERNAL_PENDING`, `MARKET_CONFLICT_BLOCKED`.
 
-- `GCC_ONLY`
-- `GCC_EXTERNAL_CONFIRMED`
-- `EXTERNAL_RESCUE`
-- `EXTERNAL_PENDING`
-- `MARKET_CONFLICT_BLOCKED`
-
-La lignée TCGdex/PokeTrace #123→#135 reste l'autorité V4 pour l'identité exacte, les bridges déterministes, les microvariantes et le fallback catalogue source-pinné. PR #126 est superseded et ne doit pas être mergée.
+La lignée TCGdex/PokeTrace #123→#135 reste l'autorité V4. PR #126 est superseded et ne doit pas être mergée.
 
 ---
 
@@ -339,11 +323,11 @@ Robot KB reste séparé de la décision commerciale V4/Global.
 - payload brut + provenance ;
 - priorité aux ventes finales `SOLD` prouvées ;
 - fixed : baseline puis changements utiles ;
-- auctions : SOLD final prioritaire ; snapshot `≤5 min` uniquement fallback explicitement identifié ;
+- auctions : SOLD final prioritaire ; snapshot `≤5 min` seulement fallback identifié ;
 - disparition/ask/live auction ne devient jamais vente ;
 - objectif : courbes 30j/90j/1an/multi-années, liquidité, tendance, calibration.
 
-Ne pas activer un hard gate KB-first tant que la profondeur exacte par identité/grader/grade n'est pas démontrée suffisante.
+Pas de hard gate KB-first tant que la profondeur exacte par identité/grader/grade n'est pas suffisante.
 
 ---
 
@@ -357,24 +341,22 @@ head         bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 
 **Ne jamais merger PR #8 dans `main` sans autorisation explicite.**
 
-V5 et ses child PRs restent séparées de V4/Global production.
-
 ---
 
 # Workflows permanents
 
-Le tree `main` contient **16 workflows YAML** au dernier audit live de cette phase.
+Le tree `main` contient **16 workflows YAML**. #151 n'en ajoute aucun : il modifie seulement le workflow Global existant.
 
 À retenir :
 
 - Main Scanner et Fast Lane : cadence externe ;
 - Robot KB : collecte séparée ;
 - `v4-global-live-shadow.yml` : manuel/read-only ;
-- `v4-global-market-offline-validation.yml` : CI Global + live PR read-only pertinent ;
-- `v4-global-notify.yml` : unique Global schedule, marketplace-first depuis #148 ;
+- `v4-global-market-offline-validation.yml` : CI Global + live PR read-only ;
+- `v4-global-notify.yml` : unique Global schedule, marketplace-first + registre #150 ;
 - V5 lives : manuels/expérimentaux uniquement.
 
-Voir `docs/project-workflow-inventory.md` pour le détail.
+Voir `docs/project-workflow-inventory.md`.
 
 ---
 
@@ -392,7 +374,7 @@ Voir `docs/project-workflow-inventory.md` pour le détail.
 10. live read-only lorsque pertinent ;
 11. aucune transaction/secret ;
 12. merge seulement avec l'autorisation requise ;
-13. mettre à jour README/ledger/inventaires après une phase importante.
+13. mettre à jour README/ledger/inventaires après phase importante.
 
 Documents de reprise :
 
@@ -410,10 +392,11 @@ Documents de reprise :
 
 ```text
 Global marketplace-first
-  -> laisser le bootstrap drainer les 1174 listings pending par batches bornés
-  -> observer explicitement le premier vrai schedule post-#148 sur main
-  -> ensuite mesurer débit, backlog et coûts avant tout scale-up >10/run
-  -> si anomalie : vars.GLOBAL_NOTIFY_ENABLED=false = kill switch
+  -> récupérer automatiquement le prochain run_id schedule via issue #150
+  -> inspecter jobs/logs/artifact du premier schedule post-#151
+  -> laisser le bootstrap drainer le backlog par batches de 10
+  -> mesurer débit, backlog et coûts avant scale-up >10/run
+  -> anomalie : vars.GLOBAL_NOTIFY_ENABLED=false = kill switch
 
 Cardova
   -> reste fail-closed AUTH_SESSION_INPUT_REQUIRED
