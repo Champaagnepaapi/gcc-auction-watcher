@@ -30,7 +30,10 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
 
     def test_runner_and_provider_secrets_are_bounded_to_notification_lane(self):
         text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
-        self.assertIn('python v4_global_notify.py', text)
+        self.assertIn('python v4_global_notify_resilient.py', text)
+        self.assertIn('GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"', text)
+        self.assertIn('GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"', text)
+        self.assertIn('GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"', text)
         self.assertIn('GLOBAL_PPT_MAX_HTTP_CALLS: "12"', text)
         self.assertIn('GLOBAL_PPT_MAX_CREDITS: "60"', text)
         self.assertIn('GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"', text)
