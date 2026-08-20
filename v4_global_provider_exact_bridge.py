@@ -9,7 +9,6 @@ not alter notification/transaction capability.
 """
 from __future__ import annotations
 
-from dataclasses import replace
 import re
 from typing import Mapping, Sequence
 
@@ -99,25 +98,52 @@ def _set_exact_or_catalog_prefix(
     )
 
 
-def _without_non_applicable_unlimited(
-    lot: watcher.Lot, canonical: multimarket.CanonicalCard
-) -> watcher.Lot:
-    """Remove only a synthetic Unlimited axis proved inapplicable by TCGdex.
+def _sensitive_dimensions_compatible(
+    lot: watcher.Lot,
+    canonical: multimarket.CanonicalCard,
+    candidate: Mapping[str, object],
+) -> bool:
+    """Reuse V4 fail-closed dimension semantics with one catalog applicability rule.
 
-    TCGdex's exact card compiler sets `firstEdition=false` when the immutable
-    variant list contains no 1st-edition stamp. This is not an inference from a
-    provider omitting "First Edition"; it is an exact catalog statement that the
-    edition axis is not present for this coordinate.
+    Global discovery sometimes labels a modern card `Unlimited`. That label must
+    still be proved unless the exact TCGdex coordinate explicitly reports
+    `firstEdition=false`; only in that case is the edition axis catalog-proved
+    inapplicable. This never infers Unlimited from provider omission.
     """
+    expected = dict(watcher.expected_commercial_dimensions(lot))
+    if any(value == "__conflict__" for value in expected.values()):
+        return False
+
     variants = canonical.variants if isinstance(canonical.variants, Mapping) else {}
-    if variants.get("firstEdition") is not False:
-        return lot
-    expected = watcher.expected_commercial_dimensions(lot)
-    if expected.get("edition") != "unlimited":
-        return lot
-    cleaned = re.sub(r"\bunlimited\b", " ", str(lot.variant or ""), flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" |")
-    return replace(lot, variant=cleaned)
+    if expected.get("edition") == "unlimited" and variants.get("firstEdition") is False:
+        expected.pop("edition", None)
+
+    observed = safety._candidate_sensitive_dimensions(candidate)
+    for dimension in watcher.SENSITIVE_COMMERCIAL_DIMENSIONS:
+        expected_value = expected.get(dimension)
+        if not expected_value:
+            continue
+        if expected_value not in observed.get(dimension, set()):
+            return False
+
+    catalog_finish = safety._catalog_only_finish(canonical)
+    for dimension in watcher.SENSITIVE_COMMERCIAL_DIMENSIONS:
+        values = observed.get(dimension, set())
+        if not values or expected.get(dimension):
+            continue
+        if dimension == "finish" and len(values) == 1:
+            if catalog_finish and next(iter(values)) == catalog_finish:
+                continue
+        return False
+
+    if variants.get("firstEdition") is True and not expected.get("edition"):
+        return False
+    possible_finishes = sum(
+        variants.get(key) is True for key in ("normal", "holo", "reverse")
+    )
+    if possible_finishes > 1 and not expected.get("finish"):
+        return False
+    return True
 
 
 def global_candidate_exact_for_canonical(
@@ -150,17 +176,7 @@ def global_candidate_exact_for_canonical(
         language_code=canonical.language_code,
     ):
         return False
-
-    # The macro coordinate and controlled name shape are now proved. Reuse the
-    # existing V4 sensitive-dimension hardening unchanged, with two proxies only:
-    # provider display name becomes the canonical name for that final check; and
-    # a synthetic Unlimited label is removed only when exact TCGdex says the
-    # first-edition axis is inapplicable.
-    proxy_lot = _without_non_applicable_unlimited(lot, canonical)
-    proxy_canonical = replace(canonical, name=str(candidate.get("name") or "").strip())
-    return safety.hardened_candidate_exact_for_canonical(
-        proxy_lot, proxy_canonical, candidate
-    )
+    return _sensitive_dimensions_compatible(lot, canonical, candidate)
 
 
 def _ppt_candidate_matches(
