@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import v4_global_live_confirmed as confirmed
 from v4_global_provider_exact_bridge import install_global_provider_exact_bridge
+from v4_global_tcgdex_resilience import install_global_tcgdex_resilience
 
 
 _ORIGINAL_INSTALL = confirmed.install_global_external_market_stack
 
 
 def _install_stack_with_global_bridges() -> None:
+    # Global-only transport resilience is installed before the exact V4 stack is
+    # executed. Exhausted retries still surface as TCGdex ERROR and fail closed.
+    install_global_tcgdex_resilience()
     _ORIGINAL_INSTALL()
     install_global_provider_exact_bridge()
 
