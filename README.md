@@ -9,8 +9,9 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production canonique         : main / toujours re-vérifier le SHA GitHub live
-Global notification runtime     : PR #145 mergée / merge SHA 929d0d24ba959ba1ff30b2d73b1df5adc1d460e6
+Global marketplace-first        : PR #147 mergée / merge SHA 5a1b0f050098b560e812a4dc6e64a9f8d40a8897
 Global notification activation  : PR #146 / marker versionné + override repo variable
+Global production cutover       : workflow v4-global-notify.yml -> marketplace-first après merge de la phase cutover
 V5 expérimentale                : PR #8 / agent/v5-poketrace-cardmarket-market-data
 Robot KB / Neon                 : historique durable séparé de V4/V5
 TCGdex source pin               : af33c9ac882e2acfadffaf19e8083aa976d12983
@@ -23,7 +24,7 @@ Le SHA exact de `main` doit toujours être re-vérifié live. Les SHA ci-dessus 
 - PR #139 a réintégré sur le `main` courant le Global Multi-Vault strict : GCC, Cardova, magi, Fanatics et COMC.
 - PR #140 ajoute la **confirmation économique externe** PPT/PokeTrace après identité exacte.
 - PR #142 ajoute le bridge générique de nomenclature provider exact, sans fuzzy ni alias carte-par-carte ; elle a été mergée dans #140 avant le merge vers `main`.
-- cette couche économique reste sans transaction automatique ; seule la lane notification séparée #145/#146 peut désormais produire une alerte utilisateur lorsqu'elle est explicitement activée.
+- cette couche économique reste sans transaction automatique ; seule la lane notification séparée #145/#146 peut produire une alerte utilisateur lorsqu'elle est explicitement activée.
 
 ### Preuve live Global #140/#142
 
@@ -65,7 +66,7 @@ exact actionable offer
   + would_notify=true
   + all_in_eur prouvé
   + external graded >= 3 sales
-  -> dedupe/rotation
+  -> déduplication persistante
   -> notification seulement si activation schedule explicite
 ```
 
@@ -73,7 +74,6 @@ Capacités #145 :
 
 - déduplication persistante 14 jours par identité + marché + URL ;
 - re-notification seulement après expiration TTL ou baisse de prix `>=5%` ;
-- rotation persistante des seeds ;
 - état corrompu = fail-closed lorsque la livraison est activée ;
 - `workflow_dispatch` reste **toujours dry-run** ;
 - workflow permanent `v4-global-notify.yml` avec cron `41 * * * *` ;
@@ -125,17 +125,89 @@ Le connecteur GitHub disponible ne permet pas de modifier directement les reposi
 - si `NTFY_TOPIC` est absent/vide, le runner lève `GLOBAL_NOTIFY_ENABLED_WITHOUT_TOPIC` avant le scan et n'envoie rien ;
 - aucune règle identité/prix n'est modifiée ; aucune transaction n'est ajoutée.
 
-Validation PR #146 avant merge :
+Premier run planifié réel après activation :
 
 ```text
-head testé                       5311329f9e8f3a7ce164032a426d54b112132194
-V4 Global Market Offline         32368400673  SUCCESS
-Global tests                     166/166 PASS
-V4 multimarket                    51/51 PASS
-py_compile / YAML / diff-check   PASS
+run / job              32379733361 / 96459686467
+main                    3d8f6cc6c12d6cf0d438128389bce89c0df09d1f
+mode                    GLOBAL_NOTIFICATION_ACTIVE
+activation              true via marker versionné
+cards                    5
+confirmed candidates     0
+sent                     0
+market conflicts         1 blocked
+state cursor             0 -> 5
+transactions             false
+identity_gate_relaxed    false
 ```
 
-Après merge #146, la prochaine exécution planifiée `41 * * * *` est la première exécution réellement notification-capable. Toute absence de topic/provider/state valide reste fail-closed.
+La lane notification a donc été prouvée active en production ; `0 sent` venait de l'absence d'opportunité confirmée, pas d'une désactivation.
+
+### Phase #147 — discovery Global marketplace-first — MERGÉE
+
+PR #147 remplace la logique **seed-first comme moteur de discovery** par le flux demandé :
+
+```text
+GCC / Fanatics / COMC / magi / Cardova
+  -> scan de l'inventaire disponible
+  -> identité exacte
+  -> TCGdex exact
+  -> PPT + PokeTrace
+  -> calcul de décote
+  -> notification si gate complet
+```
+
+Le bootstrap découvre l'inventaire existant et met immédiatement les offres en file d'évaluation économique ; les runs suivants conservent un état durable et ne remettent en file que les nouvelles annonces ou changements économiques utiles. Une disparition n'est jamais transformée en SOLD.
+
+L'historique GCC n'est plus une liste de cartes à choisir avant de chercher les offres. Il reste un **catalogue de retrieval exact** et une ancre de fair lorsqu'elle existe. Un agrégat externe exact et suffisamment fort (`>=3` ventes) peut confirmer une offre en `EXTERNAL_ONLY` lorsque le fair GCC exact manque.
+
+Régression découverte pendant le premier live #147 : l'API GCC n'écho pas toujours `sellingTypeGroup` dans chaque row. Le nouveau parser pouvait alors classer une enchère à faible prix de départ comme `FIXED_ASK`. Correctif final : le scanner transmet explicitement le type **de la requête GCC** (`FIXED_PRICE` ou `AUCTION`) au parser. Deux tests dédiés verrouillent row sans type + auction active et row sans type + snapshot `≤5 min`.
+
+Validation finale après ce correctif :
+
+```text
+head #147                       2e65631416d0b39947de47ed4df3d37a4a87cbdc
+merge main                      5a1b0f050098b560e812a4dc6e64a9f8d40a8897
+CI / live run                   32397363626 SUCCESS
+validate / live jobs            96517204490 / 96517278588
+Global tests                    201/201 PASS
+V4 multimarket                   51/51 PASS
+py_compile / YAML / diff-check  PASS
+GCC candidates / exact          14375 / 1172
+Fanatics candidates / exact     24 / 1
+COMC candidates / exact         11 / 11
+magi candidates / exact         96 / 0
+inventory queued                1184
+selected / pending after        10 / 1174
+TCGdex exact                    5
+PPT matched                     1 ; 6 HTTP ; 28 crédits ; remaining 19310
+PokeTrace matched               4 ; 6 requêtes
+market conflicts                4 blocked
+confirmed_would_notify          0
+notifications                   false pendant validation
+transactions                    false
+artifact                        9417266637
+artifact digest                 sha256:e15160d7bcca026ea28af116aaa8d6513cda5271f4d9a4483ef7dc666c925f6d
+```
+
+Cardova reste explicitement `AUTH_SESSION_INPUT_REQUIRED` tant qu'aucune session/auth automatisable sûre n'est fournie. Aucun secret de session n'est stocké ou commité.
+
+### Phase cutover production marketplace-first — EN VALIDATION
+
+Le workflow permanent `.github/workflows/v4-global-notify.yml` est modifié sur une branche dédiée pour utiliser `v4_global_marketplace_notify_resilient.py` au lieu du runner seed-rotation historique, **sans créer de second cron**.
+
+Contrat du cutover :
+
+- même schedule `41 * * * *` ;
+- même marker d'activation et même override d'urgence `vars.GLOBAL_NOTIFY_ENABLED=false` ;
+- `workflow_dispatch` reste toujours dry-run ;
+- état durable séparé `.global-marketplace-state` ;
+- bootstrap complet de discovery puis incrémental ;
+- `10` listings pending évalués économiquement par run au démarrage, valeur déjà validée live avec les budgets PPT/PokeTrace actuels ;
+- mêmes gates stricts TCGdex/PPT/PokeTrace et mêmes règles ASK/auction ;
+- aucun achat, bid, checkout ou paiement.
+
+Ne considérer ce cutover `PROD` qu'après CI + live read-only de la PR de cutover, merge autorisé, puis observation d'un vrai run `schedule` sur `main`.
 
 ### Phase V4 TCGdex / PokeTrace #123 → #135 — TERMINÉE
 
@@ -261,19 +333,21 @@ Règles : provider indisponible ≠ no-match ; budget épuisé -> pending/requeu
 
 ---
 
-# Global Multi-Vault — support sur main + notifications confirmées
+# Global Multi-Vault — marketplace-first + notifications confirmées
 
-Pipeline économique :
+Pipeline économique courant :
 
 ```text
-GCC exact SOLD seeds
+inventaire GCC / Fanatics / COMC / magi / Cardova
   -> identité commerciale exacte
-  -> offres GCC / Cardova / magi / Fanatics / COMC
   -> TCGdex exact
+  -> GCC SOLD exact si disponible
   -> PPT + PokeTrace graded aggregate confirmation
   -> décision économique
-  -> notification #145/#146 seulement si gate complet
+  -> notification seulement si gate complet
 ```
+
+Les anciennes seeds GCC restent utilisables comme **catalogue exact de retrieval/benchmark**, jamais comme moteur qui choisit arbitrairement 5 cartes avant de chercher les offres.
 
 ## Gate économique Global
 
@@ -283,8 +357,9 @@ GCC exact SOLD seeds
 - minimum 3 ventes agrégées pour un centre externe utilisable ;
 - PPT/PokeTrace/eBay partagent `EBAY_GRADED_AGGREGATE` et ne comptent qu'une fois ;
 - conflit matériel au sein de la famille corrélée reste bloquant ;
-- ratio GCC/externe >1.25 -> `MARKET_CONFLICT_BLOCKED` ;
-- fair confirmé = `min(GCC fair, external fair)` : l'externe ne peut jamais gonfler la valeur ;
+- si GCC fair existe et contredit matériellement l'externe, `MARKET_CONFLICT_BLOCKED` ;
+- lorsque GCC fair existe, fair confirmé conservateur = `min(GCC fair, external fair)` ;
+- sans GCC fair exact, un externe exact/fort peut produire `EXTERNAL_ONLY` ;
 - seuil actuel : 30 % de décote.
 
 ## Bridge provider exact #142
@@ -295,7 +370,7 @@ Le bridge n'accepte que des différences de nomenclature mécaniques bornées ap
 
 Aucun fuzzy, aucune traduction supposée, aucune identité relâchée.
 
-## Notifications #145/#146
+## Notifications Global
 
 La lane `.github/workflows/v4-global-notify.yml` :
 
@@ -303,7 +378,8 @@ La lane `.github/workflows/v4-global-notify.yml` :
 - schedule horaire = `41 * * * *` ;
 - activation par `vars.GLOBAL_NOTIFY_ENABLED=true` ou marker versionné `.github/global-notify-activation=true` ;
 - `vars.GLOBAL_NOTIFY_ENABLED=false` force l'arrêt ;
-- dédup 14 jours + reprice >=5 % + rotation ;
+- dédup 14 jours + reprice >=5 % ;
+- état marketplace persistant : baseline puis nouvelles annonces/changements utiles ;
 - TCGdex transport retry borné Global-only ;
 - `NTFY_TOPIC` absent = fail-closed ;
 - aucun achat/bid/checkout/paiement.
@@ -342,16 +418,15 @@ Architecture normale : TCGdex exact -> microvariant gates -> market providers. E
 
 # Workflows permanents
 
-Le tree `main` contient **16 workflows YAML** depuis le merge #145. Le détail est dans `docs/project-workflow-inventory.md`.
+Le tree `main` contient **16 workflows YAML**. Le détail est dans `docs/project-workflow-inventory.md`.
 
 À retenir :
 
 - Main Scanner et Fast Lane : cadence externe, pas de cron GitHub parallèle ;
 - Robot KB : collecte séparée ;
 - `v4-global-live-shadow.yml` : manuel/read-only ;
-- `v4-global-market-offline-validation.yml` : CI Global ;
-- `v4-global-notify.yml` : manual dry-run + schedule horaire activable explicitement ;
-- les one-shots de validation #142/#145 ont été supprimés ;
+- `v4-global-market-offline-validation.yml` : CI Global + live marketplace-first read-only sur PR pertinente ;
+- `v4-global-notify.yml` : manual dry-run + schedule horaire, cutover marketplace-first sans second cron ;
 - V5 lives : manuels/expérimentaux uniquement.
 
 ---
@@ -376,16 +451,20 @@ Pendant des enchères actives, éviter les changements risqués du cœur V4. Pr�
 
 ## Prochaine direction canonique
 
-Après merge #146 :
-
 ```text
 V4 production existante
-  -> continuer normalement ; cœur V4 inchangé par l'activation Global
+  -> continuer normalement ; cœur V4 inchangé par Global
 
-Global notifications
-  -> surveiller le premier run schedule réel à :41
-  -> vérifier NTFY_TOPIC/provider/state et sent/deduped
+Global marketplace-first
+  -> valider le cutover du workflow existant v4-global-notify.yml
+  -> ne créer aucun cron parallèle
+  -> conserver 10 évaluations/run tant qu'un scale-up n'est pas mesuré
+  -> après merge, vérifier le premier vrai run schedule sur main
   -> si anomalie : vars.GLOBAL_NOTIFY_ENABLED=false coupe immédiatement la lane
+
+Cardova
+  -> reste fail-closed AUTH_SESSION_INPUT_REQUIRED
+  -> ne jamais stocker un secret/session dans le repo
 ```
 
 Pikachu M-P reste un no-match externe propre sur le panel historique ; ne pas créer un alias ponctuel sans classe déterministe répétée.
