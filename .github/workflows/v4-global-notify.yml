@@ -23,13 +23,14 @@ concurrency:
 
 jobs:
   scan:
-    # Manual runs are always dry-run validation. Scheduled work does not even
-    # start until the repository variable is explicitly set to the literal true.
-    if: ${{ github.event_name == 'workflow_dispatch' || vars.GLOBAL_NOTIFY_ENABLED == 'true' }}
+    # Manual runs are always dry-run. Scheduled runs resolve an explicit
+    # activation gate after checkout: repository variable first, then the
+    # versioned activation marker. Literal repository variable false is an
+    # emergency override that disables the marker.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      GLOBAL_NOTIFY_ENABLED: ${{ github.event_name == 'schedule' && vars.GLOBAL_NOTIFY_ENABLED == 'true' && 'true' || 'false' }}
       GLOBAL_NOTIFY_DEDUPE_TTL_DAYS: ${{ vars.GLOBAL_NOTIFY_DEDUPE_TTL_DAYS || '14' }}
       GLOBAL_NOTIFY_REPRICE_DROP_PCT: ${{ vars.GLOBAL_NOTIFY_REPRICE_DROP_PCT || '5' }}
       GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"
@@ -53,13 +54,38 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Resolve notification activation
+        id: activation
+        shell: bash
+        env:
+          REPO_NOTIFY_FLAG: ${{ vars.GLOBAL_NOTIFY_ENABLED }}
+        run: |
+          enabled=false
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            marker=false
+            if [ -f .github/global-notify-activation ]; then
+              marker="$(tr -d '[:space:]' < .github/global-notify-activation)"
+            fi
+            if [ "$REPO_NOTIFY_FLAG" = "false" ]; then
+              enabled=false
+            elif [ "$REPO_NOTIFY_FLAG" = "true" ]; then
+              enabled=true
+            elif [ "$marker" = "true" ]; then
+              enabled=true
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "notification_activation=$enabled"
+
       - name: Set up Python
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
       - name: Restore Playwright browser cache
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         id: playwright-cache
         uses: actions/cache@v4
         with:
@@ -67,10 +93,12 @@ jobs:
           key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
 
       - name: Install Python dependencies
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         timeout-minutes: 3
         run: pip install -r requirements.txt
 
       - name: Ensure Chromium runtime is usable
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         timeout-minutes: 5
         shell: bash
         run: |
@@ -91,6 +119,7 @@ jobs:
           fi
 
       - name: Restore Global notification state
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         uses: actions/cache/restore@v4
         with:
           path: .global-notify-state
@@ -99,6 +128,9 @@ jobs:
             global-notify-state-${{ github.event_name }}-
 
       - name: Run confirmed Global notification lane
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
+        env:
+          GLOBAL_NOTIFY_ENABLED: ${{ github.event_name == 'schedule' && steps.activation.outputs.enabled == 'true' && 'true' || 'false' }}
         run: |
           python v4_global_notify_resilient.py \
             --state .global-notify-state/state.json \
@@ -107,17 +139,18 @@ jobs:
             --market-candidates "$GLOBAL_MARKET_CANDIDATES"
 
       - name: Assert no tracked runtime mutation
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         run: test -z "$(git status --porcelain --untracked-files=no)"
 
       - name: Save Global notification state
-        if: always()
+        if: ${{ always() && (github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true') }}
         uses: actions/cache/save@v4
         with:
           path: .global-notify-state
           key: global-notify-state-${{ github.event_name }}-${{ github.run_id }}
 
       - name: Upload Global notification report
-        if: always()
+        if: ${{ always() && (github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true') }}
         uses: actions/upload-artifact@v4
         with:
           name: v4-global-notify-${{ github.run_id }}
