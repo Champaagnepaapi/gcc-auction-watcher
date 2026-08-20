@@ -50,6 +50,7 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         text = self._text()
         self.assertIn('python v4_global_marketplace_notify_resilient.py', text)
         self.assertNotIn('python v4_global_notify_resilient.py', text)
+        self.assertIn('id: marketplace', text)
         self.assertIn('--max-evaluations "$GLOBAL_MARKETPLACE_MAX_EVALUATIONS"', text)
         self.assertIn('--gcc-live-pages 100', text)
         self.assertIn('--browser-detail-cap 100', text)
@@ -69,6 +70,30 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertIn('NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}', text)
         self.assertIn('persist-credentials: false', text)
         self.assertIn('contents: read', text)
+        self.assertIn('issues: write', text)
+
+    def test_scheduled_runs_register_minimal_safe_metadata_in_issue_150(self):
+        text = self._text()
+        self.assertIn('Register Global schedule run in issue #150', text)
+        self.assertIn("always() && github.event_name == 'schedule'", text)
+        self.assertIn('issue_number: 150', text)
+        self.assertIn("global_marketplace_out/global_marketplace_report.json", text)
+        self.assertIn('run_id=${context.runId}', text)
+        self.assertIn('commit_sha=${context.sha}', text)
+        self.assertIn('notification_activation=', text)
+        self.assertIn('marketplace_status=', text)
+        self.assertIn('inventory_seen=', text)
+        self.assertIn('selected_for_evaluation=', text)
+        self.assertIn('pending_after=', text)
+        self.assertIn('tcgdex_external_exact=', text)
+        self.assertIn('ppt_matched=', text)
+        self.assertIn('poketrace_matched=', text)
+        self.assertIn('confirmed_would_notify=', text)
+        self.assertIn('notifications_sent=', text)
+        self.assertIn('automatic_purchase=', text)
+        self.assertIn('automatic_bid=', text)
+        self.assertIn('automatic_checkout=', text)
+        self.assertIn('automatic_payment=', text)
 
 
 if __name__ == '__main__':
