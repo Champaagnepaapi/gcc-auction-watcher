@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: false
+      economic_confirmation:
+        description: "Run read-only PPT/PokeTrace economic confirmation diagnostic"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,6 +36,8 @@ jobs:
     env:
       NTFY_TOPIC: ""
       JAPAN_EDGE_NOTIFY_ENABLED: "false"
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@v4
@@ -38,26 +45,81 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Reject incompatible diagnostic modes
+        if: ${{ inputs.rejection_diagnostics && inputs.economic_confirmation }}
+        run: |
+          echo "::error::Choose rejection_diagnostics OR economic_confirmation, not both."
+          exit 1
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
-      - name: Install dependencies
+      # Reuse the Playwright cache strategy already proven by the canonical V4
+      # watcher instead of running apt + a full browser download on every live.
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        timeout-minutes: 3
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        timeout-minutes: 5
+        shell: bash
         run: |
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "Playwright browser cache miss: downloading Chromium"
+            playwright install chromium
+          else
+            echo "Playwright browser cache hit: Chromium payload restored"
+          fi
+
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          launch_status=$?
+          set -e
+
+          if [ "$launch_status" -ne 0 ]; then
+            echo "Chromium launch probe failed; bounded dependency repair"
+            timeout 180s playwright install --with-deps chromium
+            python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          fi
 
       - name: Run hardened read-only multi-market shadow
-        if: ${{ !inputs.rejection_diagnostics }}
+        if: ${{ !inputs.rejection_diagnostics && !inputs.economic_confirmation }}
         run: |
           python v4_global_live_shadow_hardened.py \
             --output-dir global_shadow_out \
             --max-identities "${{ inputs.max_identities }}" \
             --market-candidates "${{ inputs.market_candidates }}"
 
+      - name: Run read-only economic confirmation diagnostic
+        if: ${{ inputs.economic_confirmation && !inputs.rejection_diagnostics }}
+        run: |
+          python v4_global_live_confirmed.py \
+            --output-dir global_shadow_out \
+            --max-identities "${{ inputs.max_identities }}" \
+            --market-candidates "${{ inputs.market_candidates }}"
+
       - name: Run legacy read-only rejection diagnostics
-        if: ${{ inputs.rejection_diagnostics }}
+        if: ${{ inputs.rejection_diagnostics && !inputs.economic_confirmation }}
         run: |
           python v4_global_rejection_diagnostics.py \
             --output-dir global_shadow_out \
