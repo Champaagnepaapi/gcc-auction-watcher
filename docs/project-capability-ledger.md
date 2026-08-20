@@ -8,8 +8,9 @@ Ce fichier sert d'index anti-réimplémentation. Avant tout changement non trivi
 
 ```text
 V4 production branch            : main
-Global notification runtime     : PR #145 / merge 929d0d24ba959ba1ff30b2d73b1df5adc1d460e6
-Global notification activation  : PR #146 / marker versionné + override repo variable
+Global marketplace-first        : PR #147 / merge 5a1b0f050098b560e812a4dc6e64a9f8d40a8897
+Global notification runtime     : #145 + activation #146
+Global production cutover       : workflow existant v4-global-notify.yml -> marketplace-first après validation/merge cutover
 V5 expérimentale                : PR #8 / agent/v5-poketrace-cardmarket-market-data
 V5 head validé                  : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 TCGdex source pin               : af33c9ac882e2acfadffaf19e8083aa976d12983
@@ -121,7 +122,6 @@ Phase séparée au-dessus des décisions #140 et du bridge #142.
 - externe gradé >=3 ventes ;
 - déduplication persistante 14 jours ;
 - re-alert uniquement après TTL ou baisse >=5 % ;
-- rotation persistante ;
 - état corrompu = fail-closed si livraison activée ;
 - `workflow_dispatch` = toujours dry-run ;
 - cron horaire minute 41 ;
@@ -156,8 +156,6 @@ merge main                    929d0d24ba959ba1ff30b2d73b1df5adc1d460e6
 
 Activation explicitement autorisée après merge #145.
 
-Le connecteur ne permettant pas d'écrire directement les repository variables Actions, la lane utilise un feature flag versionné et auditable :
-
 - `.github/global-notify-activation = true` active les runs `schedule` ;
 - `vars.GLOBAL_NOTIFY_ENABLED=true` reste supporté ;
 - `vars.GLOBAL_NOTIFY_ENABLED=false` est un override d'urgence prioritaire ;
@@ -165,15 +163,66 @@ Le connecteur ne permettant pas d'écrire directement les repository variables A
 - `NTFY_TOPIC` absent/vide -> `GLOBAL_NOTIFY_ENABLED_WITHOUT_TOPIC` avant scan ;
 - aucune règle identité/prix modifiée ; aucune transaction ajoutée.
 
-Validation PR #146 avant merge :
+Preuve production : run `32379733361`, job `96459686467`, `GLOBAL_NOTIFICATION_ACTIVE`, activation true, 5 cartes, 0 candidat confirmé, 0 notification envoyée, cursor 0→5, aucune transaction.
+
+## #147 — marketplace-first discovery — `MAIN_SUPPORT`
+
+Discovery principale Global désormais **offre-first** :
 
 ```text
-head                          5311329f9e8f3a7ce164032a426d54b112132194
-Offline CI                    32368400673 SUCCESS
-Global tests                  166/166 PASS
-V4 regressions                 51/51 PASS
-compile/YAML/diff             PASS
+GCC / Fanatics / COMC / magi / Cardova
+ -> inventaire courant
+ -> identité exacte
+ -> TCGdex exact
+ -> PPT + PokeTrace
+ -> décision économique
 ```
+
+- bootstrap : tous les listings découverts sont mis en file immédiatement ;
+- ensuite : nouvelles annonces + changements économiques uniquement ;
+- disparition != SOLD ;
+- historique GCC = catalogue exact de retrieval + fair optionnel, jamais sélection préalable ;
+- `EXTERNAL_ONLY` autorisé uniquement avec externe exact/fort >=3 ventes ;
+- état discovery persistant ;
+- active auction non actionnable ; snapshot <=5 min reste observation, jamais SOLD ;
+- Cardova reste `AUTH_SESSION_INPUT_REQUIRED` sans session sûre.
+
+Régression GCC découverte et corrigée avant merge : l'API n'écho pas toujours `sellingTypeGroup` par row. Le scanner propage maintenant le type **de la requête** `FIXED_PRICE/AUCTION`; une enchère sans champ type ne peut plus tomber en `FIXED_ASK`.
+
+Validation finale :
+
+```text
+head                          2e65631416d0b39947de47ed4df3d37a4a87cbdc
+merge main                    5a1b0f050098b560e812a4dc6e64a9f8d40a8897
+CI/live                       32397363626 SUCCESS
+Global tests                  201/201 PASS
+V4 regressions                 51/51 PASS
+GCC exact                     1172
+Fanatics exact                1
+COMC exact                    11
+magi exact                    0
+inventory                     1184
+selected/pending              10 / 1174
+PPT                           1 match · 6 HTTP · 28 crédits
+PokeTrace                     4 matches · 6 requêtes
+confirmed_would_notify        0
+transactions                  false
+```
+
+## Cutover production marketplace-first — `GLOBAL_NOTIFY_ACTIVE` après merge
+
+Le workflow permanent `v4-global-notify.yml` est le seul cron Global. La phase de cutover remplace son ancien runner seed-rotation par `v4_global_marketplace_notify_resilient.py` et conserve :
+
+- cron `41 * * * *` ;
+- manual dispatch dry-run ;
+- marker #146 + override d'urgence repo variable ;
+- state `.global-marketplace-state` ;
+- 10 évaluations pending/run tant qu'un scale-up n'est pas mesuré ;
+- budgets PPT 12 HTTP / 60 crédits / floor 15000 ;
+- résilience TCGdex bornée ;
+- aucun achat/bid/checkout/paiement.
+
+Ne pas créer de second schedule parallèle. Ne considérer le cutover production prouvé qu'après CI/live de la PR puis un vrai run `schedule` sur `main`.
 
 PR #141 = `SUPERSEDED_DIAGNOSTIC`, ne pas merger comme fonctionnalité.
 
@@ -219,7 +268,8 @@ PR #106/#107 restent des shadows historiques séparés ; Global #140 utilise son
 - #108/#109/#110/#113/#114/#115/#138 : stack Global historique absorbée par #139 ;
 - #141 : diagnostic absorbé par #142 ;
 - #142 : absorbée dans #140 puis main ;
-- one-shots/temp : provenance uniquement, à supprimer après validation.
+- ancien runner seed-rotation Global : historique après cutover marketplace-first ;
+- one-shots/temp : provenance uniquement, à supprimer uniquement avec autorisation destructive explicite.
 
 ## Invariants
 
