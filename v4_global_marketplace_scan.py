@@ -97,7 +97,12 @@ def scan_gcc_inventory(
                     break
                 candidates += len(rows)
                 for row in rows:
-                    listing = gcc_listing_from_row(row, observed_at=observed_at)
+                    # The GCC response does not reliably echo sellingTypeGroup on
+                    # each row. Preserve the authoritative request context so an
+                    # AUCTION row can never fall through to the FIXED_ASK default.
+                    typed_row = dict(row)
+                    typed_row["sellingTypeGroup"] = selling
+                    listing = gcc_listing_from_row(typed_row, observed_at=observed_at)
                     if listing is not None:
                         output.append(listing)
                 if not _has_next(payload):
