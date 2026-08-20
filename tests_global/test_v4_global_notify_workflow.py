@@ -5,21 +5,34 @@ from pathlib import Path
 
 
 class GlobalNotifyWorkflowTests(unittest.TestCase):
-    def test_schedule_is_hourly_but_hard_default_off(self):
+    def test_schedule_is_hourly_and_activation_is_explicit(self):
         text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
         self.assertIn('workflow_dispatch:', text)
         self.assertIn('cron: "41 * * * *"', text)
-        self.assertIn("vars.GLOBAL_NOTIFY_ENABLED == 'true'", text)
+        self.assertIn('Resolve notification activation', text)
+        self.assertIn('REPO_NOTIFY_FLAG: ${{ vars.GLOBAL_NOTIFY_ENABLED }}', text)
+        self.assertIn('.github/global-notify-activation', text)
+        self.assertIn("steps.activation.outputs.enabled == 'true'", text)
         self.assertIn("github.event_name == 'workflow_dispatch'", text)
         self.assertIn("github.event_name == 'schedule'", text)
-        self.assertIn("&& 'true' || 'false'", text)
 
     def test_manual_dispatch_can_only_be_dry_run(self):
         text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
         env_line = next(line.strip() for line in text.splitlines() if line.strip().startswith('GLOBAL_NOTIFY_ENABLED:'))
         self.assertIn("github.event_name == 'schedule'", env_line)
+        self.assertIn("steps.activation.outputs.enabled == 'true'", env_line)
         self.assertNotIn('inputs.notify', text)
         self.assertNotIn('send_notifications', text)
+
+    def test_versioned_activation_marker_is_explicit_true(self):
+        marker = Path('.github/global-notify-activation').read_text(encoding='utf-8').strip()
+        self.assertEqual(marker, 'true')
+
+    def test_repository_false_is_emergency_override(self):
+        text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
+        self.assertIn('if [ "$REPO_NOTIFY_FLAG" = "false" ]; then', text)
+        self.assertIn('elif [ "$REPO_NOTIFY_FLAG" = "true" ]; then', text)
+        self.assertIn('elif [ "$marker" = "true" ]; then', text)
 
     def test_state_is_persistent_and_isolated_by_event(self):
         text = Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
