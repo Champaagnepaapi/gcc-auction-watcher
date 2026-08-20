@@ -88,7 +88,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          report = json.loads(Path('global_notify_out/global_notify_report.json').read_text())
+          report = json.loads(Path('global_notify_out/global_notification_report.json').read_text())
           assert report['notifications'] is False
           assert report['transactions'] is False
           delivery = report['notification_delivery']
