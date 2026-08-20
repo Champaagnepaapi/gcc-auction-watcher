@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import v4_global_live_confirmed as confirmed
 import v4_global_marketplace_notify as marketplace
+from v4_global_marketplace_hardening import install_marketplace_first_hardening
 from v4_global_provider_exact_bridge import install_global_provider_exact_bridge
 from v4_global_tcgdex_resilience import install_global_tcgdex_resilience
 
@@ -20,6 +21,7 @@ def _install_stack_with_global_bridges() -> None:
 
 
 def main() -> int:
+    install_marketplace_first_hardening()
     confirmed.install_global_external_market_stack = _install_stack_with_global_bridges
     return marketplace.main()
 
