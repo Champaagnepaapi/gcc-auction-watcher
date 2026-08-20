@@ -157,7 +157,7 @@ Le premier dry-run notification `32357750921` a validé les garde-fous mais TCGd
 - aucune règle d'identité n'est relâchée ;
 - le scanner V4 canonique n'installe pas ce wrapper.
 
-Validation offline du correctif :
+Validation fonctionnelle + live :
 
 ```text
 head fonctionnel pré-one-shot  3c459ac561013eaf49b5475d7d89222a8b9efdda
@@ -166,27 +166,33 @@ Dispatcher CI                 32359793463 SUCCESS
 Global tests                  164/164 PASS
 V4 regressions                 51/51 PASS
 compile/YAML/diff             PASS
+
+live run / job                32359861668 / 96396943369
+mode                          READ_ONLY_NOTIFICATION_VALIDATION
+TCGdex exact                  5/5
+PPT matched                   4/5
+PokeTrace matched             4/5
+confirmed_would_notify        0
+market conflicts              1 blocked
+sent                          0
+notifications                 false
+transactions                  false
+identity_gate_relaxed         false
+artifact                      9403172623
+artifact digest               sha256:68054acd9468b7f3e1ac5fdcb9720a9bcba38d19e7440dc96bbb59e61b1ad2b0
 ```
 
-Live dry-run résilient :
+Après suppression du one-shot et synchronisation README/ledger/inventaires, le head `c192fa2fb2647ad4b2ec1bd450081d22b97132a2` est validé par :
 
 ```text
-run / job              32359861668 / 96396943369
-mode                   READ_ONLY_NOTIFICATION_VALIDATION
-TCGdex exact           5/5
-PPT matched            4/5
-PokeTrace matched      4/5
-confirmed_would_notify 0
-market conflicts       1 blocked
-sent                   0
-notifications          false
-transactions           false
-identity_gate_relaxed  false
-artifact               9403172623
-artifact digest        sha256:68054acd9468b7f3e1ac5fdcb9720a9bcba38d19e7440dc96bbb59e61b1ad2b0
+Offline CI                    32360623413 SUCCESS
+Dispatcher CI                 32360623370 SUCCESS
+Global tests                  164/164 PASS
+V4 regressions                 51/51 PASS
+compile/YAML/diff             PASS
 ```
 
-Le one-shot ayant produit ce live est supprimé avant le head final de la PR. L'activation réelle `GLOBAL_NOTIFY_ENABLED=true` reste une **autorisation séparée** et ne doit pas être inférée d'un merge.
+Le one-shot ayant produit le live est supprimé avant le head final. L'activation réelle `GLOBAL_NOTIFY_ENABLED=true` reste une **autorisation séparée** et ne doit pas être inférée d'un merge.
 
 PR #141 = `SUPERSEDED_DIAGNOSTIC`, ne pas merger comme fonctionnalité.
 
