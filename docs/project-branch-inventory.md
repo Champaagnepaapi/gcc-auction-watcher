@@ -6,12 +6,12 @@
 
 ```text
 production canonique              main
-last functional/runtime merge     c012284c423e9526fd2712001fdbce3a5cfafda3
+Global notification runtime       feat/v4-global-notification-activation-20260820 / PR #145 mergée
+Global activation                 ops/v4-global-notify-activate-20260820 / PR #146
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / PR #8
-Global notification candidate     feat/v4-global-notification-activation-20260820 / PR #145
 ```
 
-Des commits docs-only suivent le baseline runtime `c012284c...` sur `main`. Toujours re-vérifier le HEAD GitHub live avant une action.
+Toujours re-vérifier le HEAD GitHub live avant une action.
 
 PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` sans autorisation explicite.
 
@@ -35,9 +35,10 @@ Toute suppression de branche exige un nouvel audit exhaustif + autorisation expl
 - `fix/v4-global-external-exact-bridge-20260820` — #142, absorbée dans #140 ;
 - `docs/v4-global-economic-confirmation-close-20260820` — #143, docs ;
 - `docs/fix-global-runtime-baseline-wording-20260820` — correction docs-only ;
-- `feat/v4-global-notification-activation-20260820` — **PR #145 active/draft**, notifications confirmées default-off + dédup/rotation + résilience TCGdex Global-only. Live dry-run `32359861668` SUCCESS ; activation réelle non autorisée.
+- `feat/v4-global-notification-activation-20260820` — PR #145 mergée, merge `929d0d24ba959ba1ff30b2d73b1df5adc1d460e6` ;
+- `ops/v4-global-notify-activate-20260820` — **PR #146 active/autorisée**, marker versionné d'activation réelle + repo variable false comme override d'urgence.
 
-Ces branches ne deviennent pas production ; `main` reste l'autorité jusqu'à merge explicite.
+`main` reste l'autorité après merge explicite.
 
 ## Historique à ne pas rejouer
 
