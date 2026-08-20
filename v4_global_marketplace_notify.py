@@ -210,7 +210,7 @@ def marketplace_notification_candidates(report: Mapping[str, Any]) -> list[tuple
             continue
         if min(offer_all_in, external_fair, confirmed_fair) <= 0 or discount < 0 or sales < 3:
             continue
-        offer = legacy_notify._offer_for_decision(card, decision)
+        offer = legacy_notify._matching_offer(card, decision)
         if offer is None or offer.get("evidence_type") not in {FIXED_ASK, AUCTION_SNAPSHOT_LE5}:
             continue
         output.append((card, decision, offer))
@@ -260,7 +260,7 @@ def _notify(
     reasons: Counter[str] = Counter()
     server = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
     for card, decision, offer in candidates:
-        fingerprint = legacy_notify._fingerprint(card, decision)
+        fingerprint = legacy_notify.notification_fingerprint(card, decision)
         previous = state["notified"].get(fingerprint)
         deliver, reason = legacy_notify._should_deliver(
             previous,
