@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: v4-global-confirmed-notifications
@@ -123,6 +124,7 @@ jobs:
             global-marketplace-state-${{ github.event_name }}-
 
       - name: Run marketplace-first Global notification lane
+        id: marketplace
         if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
         env:
           GLOBAL_NOTIFY_ENABLED: ${{ github.event_name == 'schedule' && steps.activation.outputs.enabled == 'true' && 'true' || 'false' }}
@@ -156,3 +158,75 @@ jobs:
           path: global_marketplace_out/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: "Register Global schedule run in issue #150"
+        if: ${{ always() && github.event_name == 'schedule' }}
+        uses: actions/github-script@v7
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          NOTIFICATION_ACTIVATION: ${{ steps.activation.outputs.enabled }}
+          MARKETPLACE_STATUS: ${{ steps.marketplace.outcome }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const reportPath = 'global_marketplace_out/global_marketplace_report.json';
+            let report = {};
+            let reportStatus = 'missing';
+            if (fs.existsSync(reportPath)) {
+              try {
+                report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                reportStatus = 'parsed';
+              } catch (error) {
+                reportStatus = 'parse_error';
+              }
+            }
+
+            const discovery = report.marketplace_discovery || {};
+            const inventory = discovery.inventory || {};
+            const economic = report.economic_confirmation || {};
+            const delivery = report.notification_delivery || {};
+            const safety = report.safety || {};
+            const value = (item) => item === undefined || item === null || item === '' ? 'unavailable' : String(item);
+
+            const body = [
+              `timestamp_utc=${new Date().toISOString()}`,
+              `run_id=${context.runId}`,
+              `run_attempt=${process.env.RUN_ATTEMPT}`,
+              `trigger=${context.eventName}`,
+              `commit_sha=${context.sha}`,
+              `notification_activation=${process.env.NOTIFICATION_ACTIVATION || 'unavailable'}`,
+              `marketplace_status=${process.env.MARKETPLACE_STATUS || 'unavailable'}`,
+              `report_status=${reportStatus}`,
+              `mode=${value(report.mode)}`,
+              `inventory_seen=${value(inventory.seen)}`,
+              `inventory_new=${value(inventory.new)}`,
+              `inventory_changed=${value(inventory.changed)}`,
+              `inventory_missing_not_sold=${value(inventory.missing_not_sold)}`,
+              `selected_for_evaluation=${value(discovery.selected_for_evaluation)}`,
+              `acknowledged=${value(discovery.acknowledged)}`,
+              `pending_after=${value(discovery.pending_after)}`,
+              `tcgdex_external_exact=${value(economic.tcgdex_external_exact)}`,
+              `ppt_matched=${value(economic.ppt_matched)}`,
+              `ppt_http_calls=${value(economic.ppt_http_calls)}`,
+              `ppt_credits=${value(economic.ppt_credits)}`,
+              `ppt_daily_remaining=${value(economic.ppt_daily_remaining)}`,
+              `poketrace_matched=${value(economic.poketrace_matched)}`,
+              `poketrace_requests=${value(economic.poketrace_requests)}`,
+              `market_conflicts_blocked=${value(economic.market_conflicts_blocked)}`,
+              `confirmed_would_notify=${value(economic.confirmed_would_notify)}`,
+              `confirmed_candidates=${value(delivery.confirmed_candidates)}`,
+              `notifications_sent=${value(delivery.sent)}`,
+              `identity_gate_relaxed=${value(safety.identity_gate_relaxed)}`,
+              `automatic_purchase=${value(safety.automatic_purchase)}`,
+              `automatic_bid=${value(safety.automatic_bid)}`,
+              `automatic_checkout=${value(safety.automatic_checkout)}`,
+              `automatic_payment=${value(safety.automatic_payment)}`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 150,
+              body,
+            });
