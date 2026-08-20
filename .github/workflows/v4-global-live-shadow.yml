@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       economic_confirmation:
-        description: "Run read-only PPT/PokeTrace economic confirmation diagnostic"
+        description: "Run read-only PPT/PokeTrace economic confirmation diagnostic with exact provider bridge"
         required: false
         type: boolean
         default: false
@@ -113,7 +113,7 @@ jobs:
       - name: Run read-only economic confirmation diagnostic
         if: ${{ inputs.economic_confirmation && !inputs.rejection_diagnostics }}
         run: |
-          python v4_global_live_confirmed.py \
+          python v4_global_live_confirmed_v2.py \
             --output-dir global_shadow_out \
             --max-identities "${{ inputs.max_identities }}" \
             --market-candidates "${{ inputs.market_candidates }}"
