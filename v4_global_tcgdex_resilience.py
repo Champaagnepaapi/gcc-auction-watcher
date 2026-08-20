@@ -105,7 +105,7 @@ def install_global_tcgdex_resilience() -> None:
     """Install the transport wrapper only in Global runners that opt into it."""
     global _ORIGINAL_JSON_GET
     current = canonical._json_get
-    if getattr(current, "_v4_global_tcgdex_resilience", False):
+    if getattr(current, "_v4_global_tcgdex_resilience", False) is True:
         return
     _ORIGINAL_JSON_GET = current
     _resilient_json_get._v4_global_tcgdex_resilience = True  # type: ignore[attr-defined]
