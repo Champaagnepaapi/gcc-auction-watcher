@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Activation is version-controlled so CI can prove the exact scheduled gate.
 import unittest
 from pathlib import Path
 
