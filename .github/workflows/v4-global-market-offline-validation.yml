@@ -16,6 +16,7 @@ on:
       - "v4_global_notify.py"
       - "v4_global_notify_resilient.py"
       - "v4_global_tcgdex_resilience.py"
+      - "v4_global_marketplace_*.py"
       - "v4_global_comc_hardening.py"
       - "v4_global_comc_hardening_v2.py"
       - "v4_global_magi_registry_hardening.py"
@@ -81,6 +82,7 @@ jobs:
           python -m py_compile v4_global_notify.py
           python -m py_compile v4_global_notify_resilient.py
           python -m py_compile v4_global_tcgdex_resilience.py
+          python -m py_compile v4_global_marketplace_*.py
           python -m py_compile v4_global_comc_hardening.py
           python -m py_compile v4_global_comc_hardening_v2.py
           python -m py_compile v4_global_magi_registry_hardening.py
@@ -118,6 +120,7 @@ jobs:
           python -m py_compile tests_global/test_v4_global_notify.py
           python -m py_compile tests_global/test_v4_global_notify_workflow.py
           python -m py_compile tests_global/test_v4_global_tcgdex_resilience.py
+          python -m py_compile tests_global/test_v4_global_marketplace_*.py
           python -m py_compile tests_global/test_v4_market_cardova.py
           python -m py_compile tests_global/test_v4_market_verified_offer.py
 
@@ -136,3 +139,117 @@ jobs:
 
       - name: Check diff whitespace
         run: git diff --check origin/${{ github.base_ref }}...HEAD
+
+  marketplace-live-once:
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GLOBAL_NOTIFY_ENABLED: "false"
+      GLOBAL_NOTIFY_DEDUPE_TTL_DAYS: "14"
+      GLOBAL_NOTIFY_REPRICE_DROP_PCT: "5"
+      GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"
+      GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"
+      GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"
+      GLOBAL_PPT_MAX_HTTP_CALLS: "12"
+      GLOBAL_PPT_MAX_CREDITS: "60"
+      GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      NTFY_TOPIC: ""
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        timeout-minutes: 3
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            playwright install chromium
+          fi
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          launch_status=$?
+          set -e
+          if [ "$launch_status" -ne 0 ]; then
+            timeout 180s playwright install --with-deps chromium
+          fi
+
+      - name: Run marketplace-first read-only bootstrap
+        run: |
+          python v4_global_marketplace_notify_resilient.py \
+            --state-dir .global-marketplace-state \
+            --output-dir global_marketplace_out \
+            --max-evaluations 10 \
+            --gcc-sold-pages 30 \
+            --gcc-live-pages 100 \
+            --browser-detail-cap 100 \
+            --browser-scroll-rounds 15 \
+            --comc-pages 10
+
+      - name: Assert live safety contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('global_marketplace_out/global_marketplace_report.json').read_text())
+          assert report.get('mode') == 'READ_ONLY_MARKETPLACE_DISCOVERY_VALIDATION'
+          assert report.get('notifications') is False
+          assert report.get('transactions') is False
+          safety = report.get('safety') or {}
+          assert safety.get('identity_gate_relaxed') is False
+          assert safety.get('marketplace_ask_is_sold') is False
+          for key in ('automatic_purchase','automatic_bid','automatic_checkout','automatic_payment'):
+              assert safety.get(key) is False
+          delivery = report.get('notification_delivery') or {}
+          assert delivery.get('enabled') is False
+          assert delivery.get('sent') == 0
+          print(json.dumps({
+              'mode': report.get('mode'),
+              'marketplace_discovery': report.get('marketplace_discovery'),
+              'economic_confirmation': report.get('economic_confirmation', {}),
+              'notification_delivery': delivery,
+              'safety': safety,
+          }, ensure_ascii=False))
+          PY
+
+      - name: Assert no tracked runtime mutation
+        run: test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Upload marketplace-first live artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-global-marketplace-live-once-${{ github.run_id }}
+          path: |
+            global_marketplace_out/
+            .global-marketplace-state/
+          if-no-files-found: error
+          retention-days: 7
