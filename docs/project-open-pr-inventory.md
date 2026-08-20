@@ -1,10 +1,10 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub vérifié le **20 août 2026** après fermeture de la phase docs #143.
+Snapshot GitHub vérifié le **20 août 2026** pendant la validation de la phase notifications Global #145.
 
-- dernier merge fonctionnel/runtime : `c012284c423e9526fd2712001fdbce3a5cfafda3`
+- dernier merge fonctionnel/runtime sur `main` : `c012284c423e9526fd2712001fdbce3a5cfafda3`
 - des commits docs-only suivent ce SHA sur `main` ; re-vérifier le HEAD live
-- PR ouvertes : **17**
+- PR ouvertes pertinentes recensées : **18**
 - PR #8 : expérimentale V5, draft, non mergée.
 
 ## PR ouvertes
@@ -28,14 +28,16 @@ Snapshot GitHub vérifié le **20 août 2026** après fermeture de la phase docs
 | #126 | oui | `fix/v4-poketrace-exact-provider-bridges-20260818` | **SUPERSEDED** par #127→#135. **Ne pas merger.** |
 | #138 | oui | `shadow/v4-global-current-main-reintegration-20260819` | `SUPERSEDED_BY_139`. |
 | #141 | oui | `diag/v4-global-provider-coverage-20260820` | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
+| #145 | oui | `feat/v4-global-notification-activation-20260820` | **ACTIVE / VALIDATED DEFAULT-OFF.** Notifications Global confirmées + dédup/rotation/cadence + résilience TCGdex bornée. Ne pas merger ni activer `GLOBAL_NOTIFY_ENABLED=true` sans autorisation explicite. |
 
-Contrôle : **17 lignes / 17 PR ouvertes** après fermeture de la PR docs #143.
+Contrôle : **18 lignes / 18 PR ouvertes pertinentes recensées** pendant cette phase.
 
-## Phase Global fermée
+## Phase Global
 
 - #139 : mergée vers main ;
 - #140 : confirmation économique mergée, dernier merge runtime `c012284c...` ;
 - #142 : bridge exact provider absorbé dans #140 ;
-- #143 : docs de fermeture, aucun runtime.
+- #143/#144 : docs de fermeture/correction, aucun runtime ;
+- #145 : phase notification default-off en cours de validation ; live dry-run résilient `32359861668` SUCCESS, TCGdex 5/5, PPT 4/5, PokeTrace 4/5, `sent=0`.
 
 Une PR ouverte n'est pas une tâche à merger. Toujours vérifier base/head/supersession/tests avant action.
