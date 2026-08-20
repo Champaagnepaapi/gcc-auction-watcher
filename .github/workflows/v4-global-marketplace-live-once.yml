@@ -6,6 +6,11 @@ on:
       - feat/v4-global-marketplace-discovery-20260820
     paths:
       - ".github/workflows/v4-global-marketplace-live-once.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/v4-global-marketplace-live-once.yml"
 
 permissions:
   contents: read
