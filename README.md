@@ -94,7 +94,7 @@ V4 multimarket                   51/51 PASS
 py_compile / YAML / diff-check  PASS
 ```
 
-Live dry-run résilient final :
+Live dry-run résilient :
 
 ```text
 run / job              32359861668 / 96396943369
@@ -113,6 +113,16 @@ artifact digest        sha256:68054acd9468b7f3e1ac5fdcb9720a9bcba38d19e7440dc96b
 ```
 
 La couverture saine 5/5 TCGdex + 4/5 PPT + 4/5 PokeTrace est donc récupérée sans relâcher l'identité. Les one-shots utilisés pour lancer ces validations ont été supprimés après usage.
+
+Validation finale du head docs/cleanup précédent `0c4a751381191e1c452dd7d63ba8195f3a42f4be` :
+
+```text
+V4 Global Market Offline        32360522416  SUCCESS
+V4 Global Shadow Dispatcher CI  32360522364  SUCCESS
+Global tests                    164/164 PASS
+V4 multimarket                   51/51 PASS
+py_compile / YAML / diff-check  PASS
+```
 
 **Important : merge #145 et activation réelle sont deux décisions distinctes.** `GLOBAL_NOTIFY_ENABLED=true` ne doit jamais être réglé sans autorisation explicite séparée. Tant que le flag reste absent/false, aucune notification scheduled ne part.
 
