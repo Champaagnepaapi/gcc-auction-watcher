@@ -74,11 +74,13 @@ jobs:
           fi
 
       - name: Compile diagnostic
-        run: python -m py_compile v4_global_provider_coverage_diagnostic.py
+        run: |
+          python -m py_compile v4_global_provider_coverage_diagnostic.py
+          python -m py_compile v4_global_provider_coverage_dimensions.py
 
       - name: Run read-only provider coverage diagnostic
         run: |
-          python v4_global_provider_coverage_diagnostic.py \
+          python v4_global_provider_coverage_dimensions.py \
             --output-dir global_provider_coverage_out \
             --max-identities "5" \
             --market-candidates "8"
