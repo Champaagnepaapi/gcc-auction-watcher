@@ -14,15 +14,42 @@ class RobotKbLocalMacMigrationTests(unittest.TestCase):
     def test_reuses_validated_p3_runtime_and_loopback_postgres(self):
         pin = "1d06fe33b6fc640657255e15a8d17251aa02b6ce"
         self.assertIn(pin, self.installer)
-        self.assertIn('postgresql://127.0.0.1/robot_pokemon_kb', self.installer)
-        self.assertIn('postgresql://127.0.0.1/robot_pokemon_kb', self.runner)
+        local_url = "postgresql://robotpokemon_kb@127.0.0.1/robot_pokemon_kb"
+        self.assertIn(local_url, self.installer)
+        self.assertIn(local_url, self.runner)
         self.assertIn('git -C "$REPO_ROOT" archive "$P3_SHA" robot_kb requirements-postgres.txt requirements.txt', self.installer)
 
-    def test_installation_refuses_unverified_parallel_database(self):
+    def test_existing_enterprisedb_postgres_is_reused_before_homebrew_fallback(self):
+        self.assertIn('/Library/PostgreSQL/18/bin', self.installer)
+        self.assertIn('/Library/PostgreSQL/17/bin', self.installer)
+        self.assertIn('/Library/PostgreSQL/16/bin', self.installer)
+        detection = self.installer.index('POSTGRES_BIN="$(find_postgres_bin || true)"')
+        fallback = self.installer.index('brew install postgresql@16')
+        self.assertLess(detection, fallback)
+        self.assertIn('PostgreSQL existant détecté', self.installer)
+
+    def test_local_database_password_is_generated_and_keychain_only(self):
+        self.assertIn('KEYCHAIN_SERVICE="RobotPokemonKB.local-postgres"', self.installer)
+        self.assertIn('openssl rand -hex 24', self.installer)
+        self.assertIn('security add-generic-password', self.installer)
+        self.assertIn('security find-generic-password', self.runner)
+        self.assertNotIn('PGPASSWORD":', self.installer)
+        launchagent_generation = self.installer.index('Generate LaunchAgents')
+        launchagent_tail = self.installer[launchagent_generation:]
+        self.assertNotIn('APP_PASSWORD', launchagent_tail)
+        self.assertNotIn('PGPASSWORD', launchagent_tail.split('unset PGPASSWORD')[0])
+
+    def test_admin_password_is_masked_and_never_persisted(self):
+        self.assertIn('read -r -s ADMIN_PASSWORD', self.installer)
+        self.assertIn('unset PGPASSWORD ADMIN_PASSWORD', self.installer)
+        self.assertNotIn('echo "$ADMIN_PASSWORD"', self.installer)
+        self.assertNotIn('security add-generic-password -U -a "$ADMIN_USER"', self.installer)
+
+    def test_installation_refuses_unverified_nonempty_database(self):
         self.assertIn('MIGRATION_MARKER="$DATA_ROOT/MIGRATION_VERIFIED"', self.installer)
-        self.assertIn('Une base locale existe mais aucune migration Neon vérifiée', self.installer)
+        self.assertIn('Une base locale non vide existe mais aucune migration Neon vérifiée', self.installer)
         self.assertIn('Migration Neon non vérifiée; activation locale refusée.', self.installer)
-        marker_check = self.installer.index('if [ ! -f "$MIGRATION_MARKER" ]')
+        marker_check = self.installer.index('if [ ! -f "$MIGRATION_MARKER" ] && [ "${local_table_count:-0}" -gt 0 ]')
         launchagent_generation = self.installer.index('Generate LaunchAgents')
         self.assertLess(marker_check, launchagent_generation)
 
@@ -33,7 +60,9 @@ class RobotKbLocalMacMigrationTests(unittest.TestCase):
         self.assertNotIn('printf "$NEON_URL"', self.migration)
         self.assertNotIn('ROBOT_KB_DATABASE_URL="$NEON_URL" >', self.migration)
 
-    def test_migration_requires_dump_restore_and_exact_fingerprint_verification(self):
+    def test_migration_requires_empty_local_db_dump_restore_and_fingerprint_verification(self):
+        self.assertIn('local_table_count=', self.migration)
+        self.assertIn('contient déjà des tables. Migration refusée', self.migration)
         self.assertIn('robot_kb.postgres_backup dump', self.migration)
         self.assertIn('restore_database', self.migration)
         self.assertIn('_database_fingerprints', self.migration)
