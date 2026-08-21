@@ -29,6 +29,7 @@ DEFAULT_MAX_RECORDS = 400
 DEFAULT_MAX_PAGE_PROBES = 40
 DEFAULT_MAX_SCAN_PAGES = 20
 MAX_CURSOR_IDS = 10_000
+DEFERRED_NONFINAL_STATUSES = frozenset({"WAITING_FOR_PAYMENT"})
 
 
 class SoldBackfillError(RuntimeError):
@@ -71,10 +72,27 @@ def _row_id(row: Mapping[str, Any]) -> str:
     return value.strip()
 
 
-def _validate_row(row: Mapping[str, Any]) -> tuple[str, str, datetime]:
-    status = str(row.get("status") or "").strip().upper()
+def _row_status(row: Mapping[str, Any]) -> str:
+    return str(row.get("status") or "").strip().upper()
+
+
+def _is_deferred_nonfinal(row: Mapping[str, Any]) -> bool:
+    status = _row_status(row)
+    if status in DEFERRED_NONFINAL_STATUSES:
+        # GCC can leak WAITING_FOR_PAYMENT rows into status=SOLD.  The fresh
+        # watermark lane owns their eventual finalization and keeps its cursor
+        # blocked; historical backfill must neither ingest them nor let them
+        # break page-boundary discovery.
+        _row_id(row)
+        return True
     if status != "SOLD":
         raise SoldBackfillError(f"historical SOLD scope returned {status or 'EMPTY'}")
+    return False
+
+
+def _validate_row(row: Mapping[str, Any]) -> tuple[str, str, datetime]:
+    if _is_deferred_nonfinal(row):
+        raise SoldBackfillError("deferred non-final row cannot be validated as SOLD")
     native_id = _row_id(row)
     sold_at_text = _canonical(row.get("soldAt"), field="soldAt")
     sold_at = _aware(sold_at_text, field="soldAt")
@@ -170,7 +188,8 @@ def _fetch_page(
         if not isinstance(raw, Mapping):
             raise SoldBackfillError(f"SOLD page {page} contains a non-object row")
         row = dict(raw)
-        _validate_row(row)
+        if not _is_deferred_nonfinal(row):
+            _validate_row(row)
         rows.append(row)
     next_page = info.get("nextPage")
     if next_page is not None and (
@@ -183,7 +202,13 @@ def _fetch_page(
 def _page_bounds(rows: list[dict[str, Any]]) -> tuple[Optional[datetime], Optional[datetime]]:
     if not rows:
         return None, None
-    dates = [_validate_row(row)[2] for row in rows]
+    dates: list[datetime] = []
+    for row in rows:
+        if _is_deferred_nonfinal(row):
+            continue
+        dates.append(_validate_row(row)[2])
+    if not dates:
+        return None, None
     return max(dates), min(dates)
 
 
@@ -319,6 +344,8 @@ def fetch_sold_backfill_batch(
 
     rows_out: list[dict[str, Any]] = []
     emitted: set[str] = set()
+    deferred_nonfinal_ids: set[str] = set()
+    deferred_nonfinal_status_counts: dict[str, int] = {}
     pages_scanned = 0
     api_exhausted = False
     page = start_page
@@ -334,6 +361,14 @@ def fetch_sold_backfill_batch(
             api_exhausted = True
             break
         for row in rows:
+            if _is_deferred_nonfinal(row):
+                native_id = _row_id(row)
+                deferred_nonfinal_ids.add(native_id)
+                status = _row_status(row)
+                deferred_nonfinal_status_counts[status] = (
+                    deferred_nonfinal_status_counts.get(status, 0) + 1
+                )
+                continue
             native_id, _, sold_at = _validate_row(row)
             eligible = sold_at < cursor or (
                 sold_at == cursor and not exclusive and native_id not in cursor_ids
@@ -387,6 +422,8 @@ def fetch_sold_backfill_batch(
         "complete": bool(next_state["complete"]),
         "cursor_before": cursor_text,
         "cursor_after": next_state["cursor_sold_at"],
+        "deferred_nonfinal_rows": len(deferred_nonfinal_ids),
+        "deferred_nonfinal_status_counts": dict(sorted(deferred_nonfinal_status_counts.items())),
         "next_state": next_state,
     }
     _atomic_json(output_fixture_path, rows_out)
