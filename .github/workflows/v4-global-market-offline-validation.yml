@@ -23,6 +23,8 @@ on:
       - "v4_global_magi_target_hardening.py"
       - "v4_global_magi_target_hardening_v2.py"
       - "v4_tcgdex_japanese_set_registry.py"
+      - "v4_tcgdex_japanese_set_aliases.py"
+      - "v4_poketrace_market_retrieval.py"
       - "v4_global_rejection_diagnostics.py"
       - "v4_global_retrieval_hardening.py"
       - "v4_global_retrieval_hardening_v2.py"
@@ -89,6 +91,8 @@ jobs:
           python -m py_compile v4_global_magi_target_hardening.py
           python -m py_compile v4_global_magi_target_hardening_v2.py
           python -m py_compile v4_tcgdex_japanese_set_registry.py
+          python -m py_compile v4_tcgdex_japanese_set_aliases.py
+          python -m py_compile v4_poketrace_market_retrieval.py
           python -m py_compile v4_global_rejection_diagnostics.py
           python -m py_compile v4_global_retrieval_hardening.py
           python -m py_compile v4_global_retrieval_hardening_v2.py
@@ -120,6 +124,7 @@ jobs:
           python -m py_compile tests_global/test_v4_global_notify.py
           python -m py_compile tests_global/test_v4_global_notify_workflow.py
           python -m py_compile tests_global/test_v4_global_tcgdex_resilience.py
+          python -m py_compile tests_global/test_v4_global_live_gap_recovery.py
           python -m py_compile tests_global/test_v4_global_marketplace_*.py
           python -m py_compile tests_global/test_v4_market_cardova.py
           python -m py_compile tests_global/test_v4_market_verified_offer.py
@@ -152,9 +157,11 @@ jobs:
       GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"
       GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"
       GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"
-      GLOBAL_PPT_MAX_HTTP_CALLS: "12"
-      GLOBAL_PPT_MAX_CREDITS: "60"
+      GLOBAL_PPT_MAX_HTTP_CALLS: "35"
+      GLOBAL_PPT_MAX_CREDITS: "180"
       GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
+      V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"
+      GLOBAL_POKETRACE_CANDIDATE_DIAGNOSTICS: "true"
       POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       NTFY_TOPIC: ""
@@ -208,7 +215,7 @@ jobs:
           python v4_global_marketplace_notify_resilient.py \
             --state-dir .global-marketplace-state \
             --output-dir global_marketplace_out \
-            --max-evaluations 20 \
+            --max-evaluations 50 \
             --gcc-sold-pages 30 \
             --gcc-live-pages 100 \
             --browser-detail-cap 100 \

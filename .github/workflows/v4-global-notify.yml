@@ -6,7 +6,7 @@ on:
       max_evaluations:
         description: "Max pending marketplace listings to evaluate economically"
         required: false
-        default: "20"
+        default: "50"
   schedule:
     - cron: "1,11,21,31,41,51 * * * *"
 
@@ -33,10 +33,11 @@ jobs:
       GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"
       GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"
       GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"
-      GLOBAL_PPT_MAX_HTTP_CALLS: "12"
-      GLOBAL_PPT_MAX_CREDITS: "60"
+      GLOBAL_PPT_MAX_HTTP_CALLS: "35"
+      GLOBAL_PPT_MAX_CREDITS: "180"
       GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
-      GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '20' }}
+      V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"
+      GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '50' }}
       POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
@@ -211,6 +212,7 @@ jobs:
               `ppt_http_calls=${value(economic.ppt_http_calls)}`,
               `ppt_credits=${value(economic.ppt_credits)}`,
               `ppt_daily_remaining=${value(economic.ppt_daily_remaining)}`,
+              `ppt_blocked_reason=${value(economic.ppt_blocked_reason)}`,
               `poketrace_matched=${value(economic.poketrace_matched)}`,
               `poketrace_requests=${value(economic.poketrace_requests)}`,
               `market_conflicts_blocked=${value(economic.market_conflicts_blocked)}`,

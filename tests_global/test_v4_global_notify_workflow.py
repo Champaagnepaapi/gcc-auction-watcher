@@ -26,8 +26,9 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
 
     def test_ten_minute_schedule_keeps_bounded_batch_and_non_overlapping_concurrency(self):
         text = self._text()
-        self.assertIn('default: "20"', text)
-        self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '20' }}", text)
+        self.assertIn('default: "50"', text)
+        self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '50' }}", text)
+        self.assertNotIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '20' }}", text)
         self.assertNotIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '15' }}", text)
         self.assertNotIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}", text)
         self.assertIn('group: v4-global-confirmed-notifications', text)
@@ -36,9 +37,10 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
 
     def test_scale_up_is_exercised_read_only_in_pr_validation(self):
         text = self._validation_text()
-        self.assertIn('--max-evaluations 20', text)
+        self.assertIn('--max-evaluations 50', text)
         self.assertIn('GLOBAL_NOTIFY_ENABLED: "false"', text)
         self.assertIn('NTFY_TOPIC: ""', text)
+        self.assertIn('GLOBAL_POKETRACE_CANDIDATE_DIAGNOSTICS: "true"', text)
 
     def test_manual_dispatch_can_only_be_dry_run(self):
         text = self._text()
@@ -84,13 +86,20 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertIn('GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"', text)
         self.assertIn('GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"', text)
         self.assertIn('GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"', text)
-        self.assertIn('GLOBAL_PPT_MAX_HTTP_CALLS: "12"', text)
-        self.assertIn('GLOBAL_PPT_MAX_CREDITS: "60"', text)
+        self.assertIn('GLOBAL_PPT_MAX_HTTP_CALLS: "35"', text)
+        self.assertIn('GLOBAL_PPT_MAX_CREDITS: "180"', text)
         self.assertIn('GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"', text)
+        self.assertIn('V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"', text)
         self.assertIn('NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}', text)
         self.assertIn('persist-credentials: false', text)
         self.assertIn('contents: read', text)
         self.assertIn('issues: write', text)
+
+        validation = self._validation_text()
+        self.assertIn('GLOBAL_PPT_MAX_HTTP_CALLS: "35"', validation)
+        self.assertIn('GLOBAL_PPT_MAX_CREDITS: "180"', validation)
+        self.assertIn('GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"', validation)
+        self.assertIn('V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"', validation)
 
     def test_scheduled_runs_register_minimal_safe_metadata_in_issue_150(self):
         text = self._text()
@@ -107,6 +116,7 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertIn('pending_after=', text)
         self.assertIn('tcgdex_external_exact=', text)
         self.assertIn('ppt_matched=', text)
+        self.assertIn('ppt_blocked_reason=', text)
         self.assertIn('poketrace_matched=', text)
         self.assertIn('confirmed_would_notify=', text)
         self.assertIn('notifications_sent=', text)
