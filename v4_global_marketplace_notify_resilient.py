@@ -10,6 +10,7 @@ from v4_global_marketplace_hardening import install_marketplace_first_hardening
 from v4_global_marketplace_queue import install_marketplace_queue_hardening
 from v4_global_provider_exact_bridge import install_global_provider_exact_bridge
 from v4_global_tcgdex_resilience import install_global_tcgdex_resilience
+from v4_tcgdex_detailed_variants import install_v4_tcgdex_detailed_variants
 
 
 _ORIGINAL_INSTALL = confirmed.install_global_external_market_stack
@@ -19,6 +20,10 @@ def _install_stack_with_global_bridges() -> None:
     install_global_tcgdex_resilience()
     _ORIGINAL_INSTALL()
     install_global_provider_exact_bridge()
+    # Install last so variants_detailed wraps both the final Global PokeTrace
+    # candidate gate and the Global PPT exact matcher. It remains identity-only:
+    # variant pricing is intentionally ignored for graded economics.
+    install_v4_tcgdex_detailed_variants()
 
 
 def main() -> int:

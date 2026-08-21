@@ -43,6 +43,7 @@ from v4_provider_rejection_observability import (
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
 from v4_structural_edge_hunter import install_v4_structural_edge_hunter
+from v4_tcgdex_detailed_variants import install_v4_tcgdex_detailed_variants
 from v4_tcgdex_exact_coordinate_recovery import install_v4_tcgdex_exact_coordinate_recovery
 from v4_tcgdex_generalized_coordinate_recovery import (
     install_v4_tcgdex_generalized_coordinate_recovery,
@@ -121,6 +122,11 @@ if __name__ == "__main__":
     # canonical card; all exact candidate/commercial/grade gates remain V4's.
     install_v4_poketrace_market_retrieval()
     install_multimarket_safety_hardening()
+    # TCGdex variants_detailed is consumed only after the final V4 provider gate
+    # exists, so it can narrow a proven exact card without creating a resolver or
+    # bypassing the source-pinned Japanese finish fallback. Missing detail keeps
+    # legacy behavior; malformed/conflicting material detail fails closed.
+    install_v4_tcgdex_detailed_variants()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
