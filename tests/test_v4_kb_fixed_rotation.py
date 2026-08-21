@@ -52,7 +52,7 @@ class FixedRotationTests(unittest.TestCase):
             params = dict(params or {})
             page = params.get("page", 1)
             calls.append(params)
-            total_items = 6800  # 68 pages
+            total_items = 6800
             next_page = page + 1 if page < 68 else None
             return FakeResponse({
                 "info": {
@@ -345,12 +345,14 @@ class FixedRotationTests(unittest.TestCase):
             self.assertEqual(current_state["last_page"], 4)
 
     def test_existing_collectors_and_pin_preserved_after_lane_split(self):
-        hourly = Path(".github/workflows/robot-kb-cloud-shadow.yml").read_text(encoding="utf-8")
-        sold = Path(".github/workflows/robot-kb-sold-shadow.yml").read_text(encoding="utf-8")
-        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", hourly)
-        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", sold)
-        self.assertIn("--live-gcc auction", hourly)
-        self.assertIn("--live-gcc sold", sold)
+        runner = Path("mac/robot-kb-local/robot_kb_local_runner.sh").read_text(encoding="utf-8")
+        installer = Path("mac/robot-kb-local/Installer Robot KB Local.command").read_text(encoding="utf-8")
+        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", installer)
+        self.assertIn("--live-gcc auction", runner)
+        self.assertIn("--live-gcc sold", runner)
+        self.assertIn("v4_kb_fixed_hybrid.py", runner)
+        self.assertIn("v4_kb_sold_watermark.py", runner)
+        self.assertIn("v4_kb_sold_backfill.py", runner)
 
     def test_v4_economic_invariants_untouched(self):
         self.assertEqual(watcher.MAX_PRICE, 100)
