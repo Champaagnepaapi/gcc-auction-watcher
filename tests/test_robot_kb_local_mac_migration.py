@@ -34,10 +34,9 @@ class RobotKbLocalMacMigrationTests(unittest.TestCase):
         self.assertIn('security add-generic-password', self.installer)
         self.assertIn('security find-generic-password', self.runner)
         self.assertNotIn('PGPASSWORD":', self.installer)
-        launchagent_generation = self.installer.index('Generate LaunchAgents')
-        launchagent_tail = self.installer[launchagent_generation:]
-        self.assertNotIn('APP_PASSWORD', launchagent_tail)
-        self.assertNotIn('PGPASSWORD', launchagent_tail.split('unset PGPASSWORD')[0])
+        launchagent_block = self.installer.split("<<'PY'", 1)[1].split("\nPY", 1)[0]
+        self.assertNotIn('APP_PASSWORD', launchagent_block)
+        self.assertNotIn('PGPASSWORD', launchagent_block)
 
     def test_admin_password_is_masked_and_never_persisted(self):
         self.assertIn('read -r -s ADMIN_PASSWORD', self.installer)
