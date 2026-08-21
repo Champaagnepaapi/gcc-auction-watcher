@@ -186,13 +186,37 @@ def sanitize_variants_detailed(
     return "USABLE", tuple(output)
 
 
+def _assign_dimension(
+    dimensions: dict[str, str],
+    opaque: set[str],
+    dimension: str,
+    value: str,
+) -> None:
+    """Record one material dimension without last-write-wins ambiguity.
+
+    A single TCGdex detailed entry can itself contain multiple subtype/stamp/foil
+    tokens. If two of those tokens assert incompatible values for the same
+    commercial axis, the entry is internally contradictory and must remain
+    blocking. Repeating the same value is harmless.
+    """
+
+    existing = dimensions.get(dimension)
+    if existing is None:
+        dimensions[dimension] = value
+        return
+    if existing == value:
+        return
+    first, second = sorted((existing, value))
+    opaque.add(f"conflict:{dimension}:{first}:{second}")
+
+
 def _variant_signature(entry: Mapping[str, object]) -> DetailedVariantSignature:
     dimensions: dict[str, str] = {}
     opaque: set[str] = set()
 
     variant_type = str(entry.get("type") or "")
     if variant_type in _FINISH_BY_TYPE:
-        dimensions["finish"] = _FINISH_BY_TYPE[variant_type]
+        _assign_dimension(dimensions, opaque, "finish", _FINISH_BY_TYPE[variant_type])
     elif variant_type:
         opaque.add(f"type:{variant_type}")
 
@@ -203,9 +227,9 @@ def _variant_signature(entry: Mapping[str, object]) -> DetailedVariantSignature:
     for subtype in entry.get("subtype") or ():
         token = str(subtype)
         if token == "shadowless":
-            dimensions["shadow"] = "shadowless"
+            _assign_dimension(dimensions, opaque, "shadow", "shadowless")
         elif token == "unlimited":
-            dimensions["edition"] = "unlimited"
+            _assign_dimension(dimensions, opaque, "edition", "unlimited")
         else:
             parsed = raw_consensus.parse_multilingual_commercial_dimensions(
                 token.replace("-", " ")
@@ -213,14 +237,14 @@ def _variant_signature(entry: Mapping[str, object]) -> DetailedVariantSignature:
             if parsed and all(value != "__conflict__" for value in parsed.values()):
                 for key, value in parsed.items():
                     if key in watcher.SENSITIVE_COMMERCIAL_DIMENSIONS:
-                        dimensions[key] = value
+                        _assign_dimension(dimensions, opaque, key, value)
             else:
                 opaque.add(f"subtype:{token}")
 
     for stamp in entry.get("stamp") or ():
         token = str(stamp)
         if token == "1st-edition":
-            dimensions["edition"] = "first_edition"
+            _assign_dimension(dimensions, opaque, "edition", "first_edition")
         else:
             # A generic "stamped" claim is not enough to identify a specific
             # stamp. Preserve the exact upstream token as an opaque material axis.
@@ -230,7 +254,7 @@ def _variant_signature(entry: Mapping[str, object]) -> DetailedVariantSignature:
         token = str(foil)
         special = _SPECIAL_FINISH_BY_FOIL.get(token)
         if special:
-            dimensions["special_finish"] = special
+            _assign_dimension(dimensions, opaque, "special_finish", special)
         else:
             opaque.add(f"foil:{token}")
 
