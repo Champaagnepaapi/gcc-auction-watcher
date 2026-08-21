@@ -77,6 +77,18 @@ class RobotKbLocalMacMigrationTests(unittest.TestCase):
         self.assertEqual(self.runner.count('$("$PYTHON" -c'), 4)
         self.assertNotIn('$($PYTHON -c', self.runner)
 
+    def test_local_runner_retries_only_bounded_transient_gcc_fetch_failures(self):
+        self.assertIn('retry_transient_gcc()', self.runner)
+        self.assertIn('local max_attempts=3', self.runner)
+        self.assertIn('local delay=2', self.runner)
+        self.assertIn("HTTP (429|500|502|503|504)", self.runner)
+        self.assertIn('HTTP request failed', self.runner)
+        self.assertEqual(self.runner.count('retry_transient_gcc "$PYTHON"'), 3)
+        self.assertIn('v4_kb_fixed_hybrid.py" fetch', self.runner)
+        self.assertIn('v4_kb_sold_watermark.py" rotate', self.runner)
+        self.assertIn('v4_kb_sold_backfill.py" fetch', self.runner)
+        self.assertIn('return "$status"', self.runner)
+
     def test_local_schedules_preserve_collection_cadence_and_backup(self):
         self.assertIn('write("com.robotpokemon.kb.fixed", "fixed", {"Minute": 32})', self.installer)
         self.assertIn('write("com.robotpokemon.kb.sold", "sold", [{"Minute": 17}, {"Minute": 47}])', self.installer)
