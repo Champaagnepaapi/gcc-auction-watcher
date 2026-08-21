@@ -237,21 +237,22 @@ class FixedHybridTests(unittest.TestCase):
             self.assertEqual(rotation_state.read_text(encoding="utf-8"), initial)
             self.assertFalse(target_state.exists())
 
-    def test_workflow_wires_hybrid_fixed_and_preserves_auction_and_sold_split(self):
-        hourly = Path(".github/workflows/robot-kb-cloud-shadow.yml").read_text(encoding="utf-8")
-        sold = Path(".github/workflows/robot-kb-sold-shadow.yml").read_text(encoding="utf-8")
-        self.assertIn('cron: "32 * * * *"', hourly)
-        self.assertIn("--recent-records 100", hourly)
-        self.assertIn("--rotation-pages 2", hourly)
-        self.assertIn("--target-records 100", hourly)
-        self.assertIn("v4_kb_fixed_hybrid.py fetch", hourly)
-        self.assertIn("v4_kb_fixed_hybrid.py commit", hourly)
-        self.assertIn("--live-gcc auction", hourly)
-        self.assertNotIn("--live-gcc sold", hourly)
-        self.assertIn('cron: "17,47 * * * *"', sold)
-        self.assertIn("--live-gcc sold", sold)
-        self.assertIn("timeout-minutes: 45", hourly)
-        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", hourly)
+    def test_local_runner_wires_hybrid_fixed_and_preserves_auction_sold_split(self):
+        runner = Path("mac/robot-kb-local/robot_kb_local_runner.sh").read_text(encoding="utf-8")
+        installer = Path("mac/robot-kb-local/Installer Robot KB Local.command").read_text(encoding="utf-8")
+        fixed_start = runner.index("run_fixed()")
+        sold_start = runner.index("run_sold()")
+        fixed = runner[fixed_start:sold_start]
+        self.assertIn('write("com.robotpokemon.kb.fixed", "fixed", {"Minute": 32})', installer)
+        self.assertIn('write("com.robotpokemon.kb.sold", "sold", [{"Minute": 17}, {"Minute": 47}])', installer)
+        self.assertIn("--recent-records 100", fixed)
+        self.assertIn("--rotation-pages 2", fixed)
+        self.assertIn("--target-records 100", fixed)
+        self.assertIn('v4_kb_fixed_hybrid.py" fetch', fixed)
+        self.assertIn('v4_kb_fixed_hybrid.py" commit', fixed)
+        self.assertIn("--live-gcc auction", fixed)
+        self.assertNotIn("--live-gcc sold", fixed)
+        self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", installer)
 
 
 if __name__ == "__main__":
