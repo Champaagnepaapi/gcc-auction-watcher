@@ -2,25 +2,25 @@
 
 > **Source de reprise technique canonique — lire ce fichier en premier dans toute nouvelle conversation.**
 >
-> Le code/GitHub live reste l'autorité. Ce README résume l'état fonctionnel courant ; les supersessions et détails de gouvernance sont dans `docs/`.
+> Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
 
 ## État canonique — 21 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main @ c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
-Dernier merge runtime            : PR #154 / TCGdex variants_detailed
-Global discovery                 : marketplace-first / #147 + #148
-Global cadence                   : toutes les 10 min / PR #153
-Global schedule run registry     : issue #150 / PR #151 / PROUVÉ LIVE
-Global activation                : PR #146 / marker versionné + repo-var override
+V4 production canonique          : main
+Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
+Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
+Global cadence                   : toutes les 10 min / workflow unique
+Global schedule run registry     : issue #150 / PROUVÉ LIVE
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
-Robot KB                         : Neon actif ; migration PostgreSQL Mac préparée par PR #157
+Robot KB durable                 : PostgreSQL local Mac ACTIF
+Neon                             : writers automatiques RETIRÉS ; rollback manuel conservé
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-Toujours re-vérifier le HEAD `main` live avant une action importante.
+Toujours re-vérifier le HEAD `main`, les PR et les workflows live avant une action importante.
 
 ---
 
@@ -98,7 +98,19 @@ identité exacte
 - avec GCC fair : fair confirmé = `min(GCC fair, external fair)` ;
 - sans GCC fair exact : `EXTERNAL_ONLY` possible si externe exact/fort.
 
-Le correctif #147 transmet explicitement le type GCC `FIXED_PRICE/AUCTION` depuis la requête : une auction dont la row omet `sellingTypeGroup` ne peut pas devenir `FIXED_ASK`.
+## Scale production — PR #156
+
+PR #156 est mergée en production.
+
+```text
+batch Global scheduled           50 listings/run
+PPT max HTTP                     35/run
+PPT max credits                  180/run
+PPT daily remaining floor        15000
+PokeTrace max requests           60/run
+```
+
+Preuve production observée : run `32467460797`, success, 50 selected/acknowledged, 27 identités commerciales, TCGdex exact 23, 7 conflits, 18 sans confirmation externe, 0 notification, `transactions=false`.
 
 ---
 
@@ -106,11 +118,7 @@ Le correctif #147 transmet explicitement le type GCC `FIXED_PRICE/AUCTION` depui
 
 La lignée #119→#135 reste l'autorité de récupération exacte : coordinate, aliases de set prouvés, unicité catalogue et fallback source-pinné immuable.
 
-## PR #154 — `variants_detailed` en production
-
-Merge : `c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c`.
-
-Après une identité TCGdex déjà exacte, V4/Global consomme désormais `variants_detailed` comme **preuve commerciale déterministe** :
+`variants_detailed` est exploité après identité TCGdex exacte comme preuve commerciale déterministe :
 
 - normal / holo / reverse ;
 - First Edition / Unlimited / Shadowless quand explicitement prouvés ;
@@ -118,98 +126,9 @@ Après une identité TCGdex déjà exacte, V4/Global consomme désormais `varian
 - langue exacte ;
 - axes inconnus, multiples, malformés ou contradictoires => blocage fail-closed.
 
-Une entrée qui affirme deux valeurs incompatibles sur le même axe, par exemple `Unlimited + 1st Edition` ou `Poké Ball + Master Ball`, reste bloquée : aucune logique “last write wins”.
+Une entrée affirmant deux valeurs incompatibles sur le même axe ne devient jamais un comparable exact. Le `pricing` / `thirdParty` de TCGdex n'est pas utilisé pour valoriser un slab.
 
-Le proof source-pinné japonais reste prioritaire lorsqu'il existe. Le `pricing` / `thirdParty` de `variants_detailed` est **ignoré pour la valorisation des slabs**.
-
-Validation #154 :
-
-```text
-head                           bb21aeb118c66a3da5df6bc949ce64d23bab2c1b
-merge main                     c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
-Global CI/live                 32444255909 SUCCESS
-validate/live jobs             96660771327 / 96660823079 SUCCESS
-Global tests                   221/221 PASS
-V4 multimarket                  51/51 PASS
-full V4 validation             SUCCESS
-compile / YAML / diff-check    PASS
-live mode                      READ_ONLY_MARKETPLACE_DISCOVERY_VALIDATION
-inventory                      1196
-selected / pending after       10 / 1186
-TCGdex exact                   5
-PPT                            1 match / 6 HTTP / 28 credits
-PokeTrace                      4 matches / 6 requests
-market conflicts               4 blocked
-confirmed_would_notify         0
-transactions                   false
-artifact                       9433579221
-artifact sha256                1779cb1e3613795e83e414f1ae1b7118a8ad495523ef0cb2c5b1b5427f6436a4
-```
-
-Le live read-only n'a pas relâché le gate d'identité et n'a envoyé aucune notification.
-
----
-
-# Notifications Global — production
-
-Workflow unique : `.github/workflows/v4-global-notify.yml`.
-
-```text
-workflow_dispatch   -> toujours dry-run
-schedule            -> 1,11,21,31,41,51 * * * *
-runner              -> v4_global_marketplace_notify_resilient.py
-batch               -> 10 pending/run actuellement
-state               -> .global-marketplace-state
-```
-
-PR #153 a accéléré **le même workflow** d'horaire à toutes les 10 minutes ; aucun second cron n'a été ajouté, les budgets/run restent inchangés.
-
-Activation :
-
-- `.github/global-notify-activation=true` ;
-- `vars.GLOBAL_NOTIFY_ENABLED=true` supportée ;
-- `vars.GLOBAL_NOTIFY_ENABLED=false` = kill switch prioritaire ;
-- `workflow_dispatch` reste dry-run ;
-- `NTFY_TOPIC` absent/vide => fail-closed avant scan.
-
-Budgets :
-
-```text
-PPT max HTTP                   12/run
-PPT max credits                60/run
-PPT daily remaining floor      15000
-TCGdex max attempts            2
-TCGdex timeout                 10 s
-TCGdex retry backoff           0.25 s
-```
-
-Dédup notification : TTL 14 jours ; re-alert seulement après expiration ou baisse de prix `>=5%`.
-
-## Registre schedule #150 — preuve production observée
-
-Depuis #151, chaque vrai `schedule` poste des **métadonnées agrégées minimales** dans l'issue #150. Aucun log complet, secret, session ou détail listing-level n'y est copié.
-
-Première preuve réelle post-#151 :
-
-```text
-run_id                 32411433425
-trigger                schedule
-commit                  c9539ca521f69b43b3d93e621fb21447a69f3fe7
-activation              true
-mode                    GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE
-marketplace_status      success
-selected/pending        10 / 1166
-TCGdex exact            3
-PPT                     0 match / 3 HTTP / 15 credits
-PokeTrace               1 match / 4 requests
-confirmed/sent          0 / 0
-identity relaxed        false
-transactions            false
-```
-
-La cadence 10 minutes de #153 est aussi prouvée en production. Dernier schedule observé avant le merge #154 : run `32443663511` sur `e79e939c...`, success, activation true, 10 évaluées, 1137 pending, 0 notification, transactions false.
-
-Un schedule spécifique au commit #154 n'était pas encore apparu dans #150 au moment de cette fermeture documentaire ; ne pas le revendiquer avant observation explicite.
+PR #159 reste une correction TCGdex séparée et **non mergée** ; la re-vérifier contre le `main` courant avant toute décision.
 
 ---
 
@@ -238,11 +157,11 @@ PSA scope économique : `8`, `8.5`, `9`, `10`. PSA <8 hors scope ; jamais de PSA
 
 ---
 
-# Robot KB — migration Neon → PostgreSQL local Mac
+# Robot KB — PostgreSQL local Mac ACTIF
 
-Robot KB reste séparé de la décision commerciale V4/Global.
+Robot KB reste séparé de la décision commerciale V4/Global. `V4_USE=false` tant que l'activation économique KB-first n'est pas explicitement décidée et suffisamment prouvée.
 
-Contrat historique inchangé :
+## Contrat historique
 
 - observations append-only, datées, immuables ;
 - payload brut + provenance ;
@@ -250,34 +169,75 @@ Contrat historique inchangé :
 - fixed : baseline puis changements utiles ;
 - auctions : SOLD final prioritaire ; snapshot `≤5 min` seulement fallback identifié ;
 - disparition/ask/live auction ne devient jamais vente ;
+- `WAITING_FOR_PAYMENT` n'est **jamais** un SOLD ;
 - objectif : courbes 30j/90j/1an/multi-années, liquidité, tendance, calibration.
 
-## PR #157 — lane Mac préparée, cutover Neon pas encore exécuté
+## Migration Neon → Mac : vérifiée
 
-Le quota Neon `robot-pokemon-kb` a atteint sa limite de stockage. La cible durable devient PostgreSQL local sur le Mac mini, sans exposer la base à Internet.
-
-PR #157 prépare :
+Migration réelle terminée et prouvée :
 
 ```text
-PostgreSQL 16 local             127.0.0.1 / robot_pokemon_kb
-runtime Robot KB                P3 validé @ 1d06fe33b6fc640657255e15a8d17251aa02b6ce
-fixed + auctions               LaunchAgent à :32
-SOLD fresh/backfill             LaunchAgent à :17 et :47
-backup                          LaunchAgent quotidien 03:10
-backups conservés               7 dumps complets locaux
+lignes source/local identiques   1,087,015
+nombre de tables                 35
+marker                           MIGRATION_VERIFIED
+PostgreSQL                       health OK
+schema versions                  [1, 2]
 ```
 
-Migration : saisie masquée de la DATABASE URL Neon → `pg_dump` secret-safe → restore local → comparaison fingerprints/row counts source/local → marker `MIGRATION_VERIFIED` seulement si identique.
+La migration ne doit pas être relancée sur une base déjà vérifiée.
 
-**Cutover volontairement en deux phases** :
+## Collecte locale active
 
-1. merger/préparer les scripts locaux tout en laissant les collectors Neon existants actifs ;
-2. exécuter et vérifier réellement la migration sur le Mac ;
-3. seulement ensuite retirer les schedules/workflow_run Neon dans une PR de cutover séparée et abandonner Neon.
+Cible : PostgreSQL local sur le Mac mini, loopback uniquement.
 
-Ne jamais supprimer le projet Neon avant la preuve source ↔ local. Si Neon refuse le dump à cause du quota, attendre le retour lecture/reset ou utiliser un accès temporaire permettant uniquement l'export ; ne jamais démarrer une base locale vide comme remplacement silencieux.
+```text
+database                         robot_pokemon_kb
+user                             robotpokemon_kb
+host                             127.0.0.1
+runtime P3 validé                1d06fe33b6fc640657255e15a8d17251aa02b6ce
+fixed + auctions                 LaunchAgent à :32
+SOLD fresh + backfill            LaunchAgent à :17 et :47
+backup                           LaunchAgent quotidien 03:10
+backups conservés                7 dumps complets locaux
+```
 
-Pas de hard gate KB-first tant que la profondeur exacte n'est pas suffisante.
+Dernier run local de preuve avant cutover cloud :
+
+```text
+fixed observations acceptées     494
+fresh SOLD nouveaux              6
+historical SOLD backfill         400
+fresh WAITING_FOR_PAYMENT         102 différés
+historical WAITING_FOR_PAYMENT    209 différés
+strict_sales                     546
+exact_tiers                      427
+kb_first_ready                   27
+grader_spreads                   0
+health                           OK
+transactions                     false
+```
+
+Le backfill historique était encore `complete=false` : il continue automatiquement via la lane locale, sans bloquer l'exploitation des données déjà présentes.
+
+## Viewer local
+
+Après `Pull origin`, double-clic :
+
+```text
+mac/robot-kb-local/Ouvrir Robot KB.command
+```
+
+Le viewer est **read-only**, lié à `127.0.0.1`, et permet de parcourir/rechercher les données sans exposer le mot de passe PostgreSQL.
+
+## Cutover Neon — PR #166
+
+PR #166 a retiré les **writers automatiques Neon** après preuve complète de la collecte locale :
+
+- `robot-kb-cloud-shadow.yml` : plus de cron ; manual-only ;
+- `robot-kb-sold-shadow.yml` : plus de cron ; manual-only ;
+- `v4-kb-shadow-ingest.yml` : plus de `workflow_run` automatique ; replay manuel avec `source_run_id` explicite.
+
+Le projet Neon et son secret ne sont **pas supprimés**. Ils restent disponibles comme rollback/recovery manuel borné. Ne pas réactiver les writers automatiques sans raison et validation explicites.
 
 ---
 
@@ -293,21 +253,18 @@ head         bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 
 ---
 
-# Workflows permanents
-
-Après merge de la préparation #157, le tree contient **17 workflows YAML** : les 16 workflows existants restent inchangés et `robot-kb-local-postgres-validation.yml` ajoute uniquement une validation CI/manual de la lane Mac.
+# Workflows / séparation des responsabilités
 
 À retenir :
 
 - Main Scanner et Fast Lane : cadence externe ;
-- Robot KB Neon : collecte encore active jusqu'au cutover Mac vérifié ;
-- Robot KB local Mac : scripts/LaunchAgents préparés, pas un workflow cloud de collecte ;
-- `v4-global-live-shadow.yml` : manuel/read-only ;
-- `v4-global-market-offline-validation.yml` : CI Global + live PR read-only ;
-- `v4-global-notify.yml` : unique Global schedule toutes les 10 min + registre #150 ;
+- Global : workflow schedule unique toutes les 10 min ;
+- Robot KB production : **LaunchAgents locaux Mac** ;
+- anciens workflows Neon Robot KB : **manual-only rollback/recovery** ;
+- `robot-kb-local-postgres-validation.yml` : validation CI/manual de la lane Mac ;
 - V5 lives : manuels/expérimentaux uniquement.
 
-Voir `docs/project-workflow-inventory.md`.
+Voir `docs/project-workflow-inventory.md` et toujours comparer avec le tree Git courant si l'inventaire documentaire est plus ancien.
 
 ---
 
@@ -315,17 +272,18 @@ Voir `docs/project-workflow-inventory.md`.
 
 1. lire entièrement ce README ;
 2. lire `.agents/rules/gcc-project-governance.md` ;
-3. lire capability ledger + inventaires pertinents ;
-4. vérifier `main`, SHA, PRs, branches et workflows live ;
-5. chercher une capacité existante avant de réimplémenter ;
-6. branche/PR dédiée ;
-7. SHA précis ;
-8. tests ciblés + suite pertinente ;
-9. compile/YAML/`git diff --check` ;
-10. live read-only lorsque pertinent ;
-11. aucune transaction/secret ;
-12. merge seulement avec l'autorisation requise ;
-13. mettre à jour README/ledger/inventaires après phase importante.
+3. lire `AGENTS.md` s'il existe ;
+4. lire capability ledger + inventaires pertinents ;
+5. vérifier `main`, SHA, PRs, branches et workflows live ;
+6. chercher une capacité existante avant de réimplémenter ;
+7. branche/PR dédiée ;
+8. SHA précis ;
+9. tests ciblés + suite pertinente ;
+10. compile/YAML/`git diff --check` ;
+11. live read-only lorsque pertinent ;
+12. aucune transaction/secret ;
+13. merge seulement avec l'autorisation requise ;
+14. mettre à jour le handoff documentaire après une phase importante.
 
 Documents de reprise :
 
@@ -336,29 +294,30 @@ Documents de reprise :
 - `docs/project-workflow-inventory.md`
 - `docs/project-issue-inventory.md`
 - `docs/project-repository-snapshot.md`
+- `docs/robot-kb-local-cutover-close-20260821.md`
 
 ---
 
 # Prochaine direction canonique
 
 ```text
-Global marketplace-first
-  -> observer/valider séparément les changements de scale de la PR #156
-
 Robot KB
-  -> merger la préparation locale #157 après CI verte
-  -> pull sur le Mac mini
-  -> exécuter Installer Robot KB Local.command
-  -> migrer Neon et obtenir MIGRATION_VERIFIED + health OK
-  -> seulement alors cutover des writers Neon
+  -> laisser le backfill local continuer
+  -> surveiller health/logs/backups locaux
+  -> accumuler davantage de SOLD exacts et de tiers exacts
+  -> intégrer PPT/PokeTrace à la KB dans une phase séparée si utile
+  -> ne pas activer KB-first économiquement sans profondeur/preuve suffisante
+
+Global
+  -> maintenir le scale #156 et surveiller la qualité d'identité/externe
 
 TCGdex
-  -> utiliser variants_detailed quand présent
-  -> ne jamais fabriquer une microvariante quand plusieurs axes restent possibles
+  -> traiter PR #159 séparément après rebase/revalidation si souhaité
+  -> ne jamais fabriquer une microvariante
 
-Cardova
-  -> reste fail-closed AUTH_SESSION_INPUT_REQUIRED
-  -> ne jamais stocker session/cookie/token dans le repo
+Neon
+  -> conserver comme rollback manuel pour l'instant
+  -> ne pas supprimer le projet tant qu'une période d'observation locale n'est pas terminée
 ```
 
 Aucun achat, bid, checkout ou paiement automatique.
