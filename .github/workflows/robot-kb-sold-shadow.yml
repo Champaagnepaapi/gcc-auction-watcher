@@ -1,17 +1,155 @@
-name: Robot KB SOLD shadow (retired — local Mac PostgreSQL)
+name: Robot KB SOLD shadow
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
 
 permissions:
   contents: read
 
+concurrency:
+  group: robot-kb-neon-shadow
+  cancel-in-progress: false
+
 jobs:
-  retired:
+  collect-sold-read-only:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ROBOT_KB_DATABASE_URL: ${{ secrets.ROBOT_KB_DATABASE_URL }}
+      SOLD_STATE: v4_kb_sold_watermark_state.json
+      SOLD_FIXTURE: v4_kb_sold_batch.json
+      SOLD_MANIFEST: v4_kb_sold_manifest.json
+      SOLD_BOOTSTRAP_SINCE: "2026-08-15T03:00:00Z"
+      SOLD_BACKFILL_STATE: v4_kb_sold_backfill_state.json
+      SOLD_BACKFILL_FIXTURE: v4_kb_sold_backfill_batch.json
+      SOLD_BACKFILL_MANIFEST: v4_kb_sold_backfill_manifest.json
+      ROI_SNAPSHOT: robot_kb_roi_snapshot.json
     steps:
-      - name: Robot KB cloud writer retired
+      - name: Checkout production repository
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install production dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Checkout validated P3 shadow candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 1d06fe33b6fc640657255e15a8d17251aa02b6ce
+          path: .robot-kb-shadow
+          fetch-depth: 1
+
+      - name: Install sidecar dependencies
+        working-directory: .robot-kb-shadow
+        run: python -m pip install -r requirements-postgres.txt
+
+      - name: Validate database secret presence
         run: |
-          echo "Robot KB SOLD cloud/Neon collection is retired."
-          echo "Collection now belongs to the local Mac PostgreSQL lane under mac/robot-kb-local/."
-          echo "No database connection, market request, notification, purchase, bid or checkout is performed here."
+          if [ -z "$ROBOT_KB_DATABASE_URL" ]; then
+            echo "Required repository secret ROBOT_KB_DATABASE_URL is absent." >&2
+            exit 1
+          fi
+
+      - name: Restore durable SOLD fresh + historical state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.SOLD_STATE }}
+            ${{ env.SOLD_BACKFILL_STATE }}
+          key: v4-kb-sold-watermark-${{ github.run_id }}
+          restore-keys: |
+            v4-kb-sold-watermark-
+
+      - name: Fetch lossless SOLD catch-up slice (GET only)
+        run: |
+          python v4_kb_sold_watermark.py rotate \
+            --state "$SOLD_STATE" \
+            --output-fixture "$SOLD_FIXTURE" \
+            --manifest "$SOLD_MANIFEST" \
+            --bootstrap-since "$SOLD_BOOTSTRAP_SINCE" \
+            --page-size 100 \
+            --max-records 400 \
+            --max-scan-pages 200
+
+      - name: Ingest proven fresh SOLD fixture (GET only)
+        run: |
+          observed_at=$(python -c 'import json; print(json.load(open("'"$SOLD_MANIFEST"'"))["retrieved_at"])')
+          cd .robot-kb-shadow
+          python -m robot_kb.sidecar \
+            --gcc-fixture "../$SOLD_FIXTURE" \
+            --observed-at "$observed_at"
+
+      - name: Fresh SOLD overlap safety-net (GET only)
+        run: |
+          cd .robot-kb-shadow
+          python -m robot_kb.sidecar \
+            --allow-live-read-only \
+            --live-gcc sold \
+            --page-size 20 \
+            --max-pages 1 \
+            --max-records 20
+
+      - name: Fetch historical SOLD backfill slice (GET only)
+        run: |
+          python v4_kb_sold_backfill.py fetch \
+            --state "$SOLD_BACKFILL_STATE" \
+            --output-fixture "$SOLD_BACKFILL_FIXTURE" \
+            --manifest "$SOLD_BACKFILL_MANIFEST" \
+            --bootstrap-before "$SOLD_BOOTSTRAP_SINCE" \
+            --page-size 100 \
+            --max-records 400 \
+            --max-page-probes 40 \
+            --max-scan-pages 20
+
+      - name: Ingest proven historical SOLD fixture (GET only)
+        run: |
+          count=$(python -c 'import json; print(json.load(open("'"$SOLD_BACKFILL_MANIFEST"'"))["records_count"])')
+          if [ "$count" -gt 0 ]; then
+            observed_at=$(python -c 'import json; print(json.load(open("'"$SOLD_BACKFILL_MANIFEST"'"))["retrieved_at"])')
+            cd .robot-kb-shadow
+            python -m robot_kb.sidecar \
+              --gcc-fixture "../$SOLD_BACKFILL_FIXTURE" \
+              --observed-at "$observed_at"
+          else
+            echo "Historical SOLD backfill is already complete or this slice is empty."
+          fi
+
+      - name: Commit SOLD fresh + historical cursors only after successful ingest
+        run: |
+          python v4_kb_sold_watermark.py commit \
+            --state "$SOLD_STATE" \
+            --manifest "$SOLD_MANIFEST"
+          python v4_kb_sold_backfill.py commit \
+            --state "$SOLD_BACKFILL_STATE" \
+            --manifest "$SOLD_BACKFILL_MANIFEST"
+
+      - name: Save durable SOLD fresh + historical state
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.SOLD_STATE }}
+            ${{ env.SOLD_BACKFILL_STATE }}
+          key: v4-kb-sold-watermark-${{ github.run_id }}
+
+      # Advisory analytics run only after collection cursors are already saved.
+      # It is a READ ONLY Neon transaction and cannot block/falsify SOLD ingest.
+      - name: Build Robot KB ROI readiness snapshot (read only)
+        continue-on-error: true
+        run: python robot_kb_roi_analytics.py --output "$ROI_SNAPSHOT"
+
+      - name: Upload Robot KB ROI readiness snapshot
+        if: ${{ always() && hashFiles('robot_kb_roi_snapshot.json') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: robot-kb-roi-readiness-${{ github.run_id }}
+          path: ${{ env.ROI_SNAPSHOT }}
+          if-no-files-found: ignore
+          retention-days: 14
