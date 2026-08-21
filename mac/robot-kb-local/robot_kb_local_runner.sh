@@ -10,13 +10,54 @@ WORK_DIR="$DATA_ROOT/work"
 BACKUP_DIR="$DATA_ROOT/backups/postgres"
 LOG_DIR="$HOME/Library/Logs/RobotPokemonKB"
 PYTHON="$VENV_DIR/bin/python"
-LOCAL_DATABASE_URL="${ROBOT_KB_DATABASE_URL:-postgresql://127.0.0.1/robot_pokemon_kb}"
+APP_DB_USER="robotpokemon_kb"
+KEYCHAIN_SERVICE="RobotPokemonKB.local-postgres"
+LOCAL_DATABASE_URL="${ROBOT_KB_DATABASE_URL:-postgresql://robotpokemon_kb@127.0.0.1/robot_pokemon_kb}"
 
-export ROBOT_KB_DATABASE_URL="$LOCAL_DATABASE_URL"
-export ROBOT_KB_BACKUP_DIR="$BACKUP_DIR"
-export PATH="/opt/homebrew/opt/postgresql@16/bin:/usr/local/opt/postgresql@16/bin:$PATH"
+find_postgres_bin() {
+  local candidate
+  if command -v psql >/dev/null 2>&1 && command -v pg_dump >/dev/null 2>&1; then
+    dirname "$(command -v psql)"
+    return 0
+  fi
+  for candidate in \
+    /Library/PostgreSQL/18/bin \
+    /Library/PostgreSQL/17/bin \
+    /Library/PostgreSQL/16/bin \
+    /opt/homebrew/opt/postgresql@18/bin \
+    /opt/homebrew/opt/postgresql@17/bin \
+    /opt/homebrew/opt/postgresql@16/bin \
+    /usr/local/opt/postgresql@18/bin \
+    /usr/local/opt/postgresql@17/bin \
+    /usr/local/opt/postgresql@16/bin; do
+    if [ -x "$candidate/psql" ] && [ -x "$candidate/pg_dump" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+POSTGRES_BIN="$(find_postgres_bin || true)"
+if [ -z "$POSTGRES_BIN" ]; then
+  echo "Outils PostgreSQL introuvables. Relance Installer Robot KB Local.command." >&2
+  exit 2
+fi
+export PATH="$POSTGRES_BIN:$PATH"
+
+if ! command -v security >/dev/null 2>&1; then
+  echo "Trousseau macOS indisponible." >&2
+  exit 2
+fi
+PGPASSWORD="$(security find-generic-password -w -a "$APP_DB_USER" -s "$KEYCHAIN_SERVICE" 2>/dev/null || true)"
+if [ -z "$PGPASSWORD" ]; then
+  echo "Identifiant PostgreSQL local Robot KB absent du Trousseau. Relance Installer Robot KB Local.command." >&2
+  exit 2
+fi
+export PGPASSWORD PGUSER="$APP_DB_USER" ROBOT_KB_DATABASE_URL="$LOCAL_DATABASE_URL" ROBOT_KB_BACKUP_DIR="$BACKUP_DIR"
 
 mkdir -p "$STATE_DIR" "$WORK_DIR" "$BACKUP_DIR" "$LOG_DIR" "$DATA_ROOT/locks"
+chmod 700 "$DATA_ROOT" "$STATE_DIR" "$WORK_DIR" "$BACKUP_DIR" "$LOG_DIR" "$DATA_ROOT/locks"
 
 if [ ! -x "$PYTHON" ] || [ ! -f "$RUNTIME_DIR/robot_kb/sidecar/__main__.py" ]; then
   echo "Robot KB local n'est pas installé. Lance d'abord Installer Robot KB Local.command." >&2
@@ -35,7 +76,7 @@ acquire_lock() {
     mkdir "$LOCK_DIR"
   fi
   echo $$ > "$LOCK_DIR/pid"
-  trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+  trap 'rm -rf "$LOCK_DIR"; unset PGPASSWORD' EXIT INT TERM
 }
 
 run_sidecar() {
@@ -100,7 +141,6 @@ run_sold() {
   observed_at="$($PYTHON -c 'import json,sys; print(json.load(open(sys.argv[1]))["retrieved_at"])' "$sold_manifest")"
   run_sidecar --gcc-fixture "$sold_fixture" --observed-at "$observed_at"
 
-  # Same read-only overlap safety-net as the former cloud lane.
   run_sidecar \
     --allow-live-read-only \
     --live-gcc sold \
@@ -131,14 +171,12 @@ run_sold() {
     --state "$backfill_state" \
     --manifest "$backfill_manifest"
 
-  # Advisory/read-only only; never blocks SOLD collection.
   "$PYTHON" "$REPO_ROOT/robot_kb_roi_analytics.py" --output "$WORK_DIR/robot_kb_roi_snapshot.json" || true
 }
 
 run_backup() {
   acquire_lock
   (cd "$RUNTIME_DIR" && "$PYTHON" -m robot_kb.postgres_backup dump --directory "$BACKUP_DIR")
-  # Keep the latest 7 compressed full backups. The durable history remains in PostgreSQL.
   "$PYTHON" - "$BACKUP_DIR" <<'PY'
 from pathlib import Path
 import sys
