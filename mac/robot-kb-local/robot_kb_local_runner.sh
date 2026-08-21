@@ -83,6 +83,43 @@ run_sidecar() {
   (cd "$RUNTIME_DIR" && "$PYTHON" -m robot_kb.sidecar "$@")
 }
 
+retry_transient_gcc() {
+  local max_attempts=3
+  local attempt=1
+  local delay=2
+  local status=0
+  local attempt_log
+  attempt_log="$(mktemp "$WORK_DIR/gcc-retry.XXXXXX")"
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    : > "$attempt_log"
+    if "$@" >"$attempt_log" 2>&1; then
+      cat "$attempt_log"
+      rm -f "$attempt_log"
+      return 0
+    else
+      status=$?
+    fi
+
+    cat "$attempt_log" >&2
+    if ! grep -Eq 'HTTP (429|500|502|503|504)([^0-9]|$)|HTTP request failed' "$attempt_log"; then
+      rm -f "$attempt_log"
+      return "$status"
+    fi
+
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      echo "GCC transient failure persisted after $max_attempts attempts." >&2
+      rm -f "$attempt_log"
+      return "$status"
+    fi
+
+    echo "GCC transient failure; retry $((attempt + 1))/$max_attempts in ${delay}s..." >&2
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt + 1))
+  done
+}
+
 run_fixed() {
   acquire_lock
   rotation_state="$STATE_DIR/v4_kb_fixed_rotation_state.json"
@@ -91,7 +128,7 @@ run_fixed() {
   rotation_manifest="$WORK_DIR/v4_kb_fixed_rotation_manifest.json"
   hybrid_manifest="$WORK_DIR/v4_kb_fixed_hybrid_manifest.json"
 
-  "$PYTHON" "$REPO_ROOT/v4_kb_fixed_hybrid.py" fetch \
+  retry_transient_gcc "$PYTHON" "$REPO_ROOT/v4_kb_fixed_hybrid.py" fetch \
     --rotation-state "$rotation_state" \
     --target-state "$target_state" \
     --output-fixture "$fixture" \
@@ -129,7 +166,7 @@ run_sold() {
   backfill_manifest="$WORK_DIR/v4_kb_sold_backfill_manifest.json"
   bootstrap_since="2026-08-15T03:00:00Z"
 
-  "$PYTHON" "$REPO_ROOT/v4_kb_sold_watermark.py" rotate \
+  retry_transient_gcc "$PYTHON" "$REPO_ROOT/v4_kb_sold_watermark.py" rotate \
     --state "$sold_state" \
     --output-fixture "$sold_fixture" \
     --manifest "$sold_manifest" \
@@ -148,7 +185,7 @@ run_sold() {
     --max-pages 1 \
     --max-records 20
 
-  "$PYTHON" "$REPO_ROOT/v4_kb_sold_backfill.py" fetch \
+  retry_transient_gcc "$PYTHON" "$REPO_ROOT/v4_kb_sold_backfill.py" fetch \
     --state "$backfill_state" \
     --output-fixture "$backfill_fixture" \
     --manifest "$backfill_manifest" \
