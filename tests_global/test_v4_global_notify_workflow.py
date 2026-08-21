@@ -9,6 +9,9 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
     def _text(self) -> str:
         return Path('.github/workflows/v4-global-notify.yml').read_text(encoding='utf-8')
 
+    def _validation_text(self) -> str:
+        return Path('.github/workflows/v4-global-market-offline-validation.yml').read_text(encoding='utf-8')
+
     def test_schedule_is_every_ten_minutes_and_activation_is_explicit(self):
         text = self._text()
         self.assertIn('workflow_dispatch:', text)
@@ -23,11 +26,18 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
 
     def test_ten_minute_schedule_keeps_bounded_batch_and_non_overlapping_concurrency(self):
         text = self._text()
-        self.assertIn('default: "10"', text)
-        self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}", text)
+        self.assertIn('default: "15"', text)
+        self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '15' }}", text)
+        self.assertNotIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}", text)
         self.assertIn('group: v4-global-confirmed-notifications', text)
         self.assertIn('cancel-in-progress: false', text)
         self.assertIn('timeout-minutes: 40', text)
+
+    def test_scale_up_is_exercised_read_only_in_pr_validation(self):
+        text = self._validation_text()
+        self.assertIn('--max-evaluations 15', text)
+        self.assertIn('GLOBAL_NOTIFY_ENABLED: "false"', text)
+        self.assertIn('NTFY_TOPIC: ""', text)
 
     def test_manual_dispatch_can_only_be_dry_run(self):
         text = self._text()
