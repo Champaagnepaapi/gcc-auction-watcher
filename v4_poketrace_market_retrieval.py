@@ -40,6 +40,12 @@ class PokeTraceRetrievalContext:
 _ACTIVE_CONTEXT: ContextVar[Optional[PokeTraceRetrievalContext]] = ContextVar(
     "v4_poketrace_retrieval_context", default=None
 )
+_ACTIVE_TARGET: ContextVar[
+    Optional[tuple[watcher.Lot, multimarket.CanonicalCard]]
+] = ContextVar("v4_poketrace_retrieval_target", default=None)
+_ACTIVE_DIAGNOSTICS: ContextVar[Optional[dict[str, int]]] = ContextVar(
+    "v4_poketrace_retrieval_diagnostics", default=None
+)
 _ORIGINAL_EVIDENCE = multimarket._poketrace_evidence
 _ORIGINAL_PACED_GET = multimarket._paced_poketrace_get
 _INSTALLED = False
@@ -200,6 +206,30 @@ def exact_provider_name_alias_matches(
     )
 
 
+def _record_sanitized_retrieval_counts(status: int, payload: object) -> None:
+    """Record counts only; never retain provider payloads, names or secrets."""
+
+    diagnostics = _ACTIVE_DIAGNOSTICS.get()
+    target = _ACTIVE_TARGET.get()
+    if diagnostics is None or target is None or status != 200:
+        return
+    lot, canonical = target
+    candidates = multimarket._extract_list_payload(payload)
+    diagnostics["provider_candidates"] = len(candidates)
+    diagnostics["exact_number_candidates"] = sum(
+        1
+        for candidate in candidates
+        if multimarket._same_card_number(
+            candidate.get("cardNumber"), canonical.full_number
+        )
+    )
+    diagnostics["exact_acceptance_candidates"] = sum(
+        1
+        for candidate in candidates
+        if multimarket._candidate_exact_for_canonical(lot, canonical, candidate)
+    )
+
+
 def _structured_paced_get(
     budget: multimarket.RequestBudget,
     url: str,
@@ -218,7 +248,31 @@ def _structured_paced_get(
     structured["game"] = context.game
     # Keep V4's market/result cap/product_type untouched. Exact acceptance still
     # runs afterward through the production fail-closed gate.
-    return _ORIGINAL_PACED_GET(budget, url, params=structured)
+    response = _ORIGINAL_PACED_GET(budget, url, params=structured)
+    status, payload, _headers = response
+    _record_sanitized_retrieval_counts(status, payload)
+    return response
+
+
+def _append_retrieval_diagnostics(
+    evidence: watcher.ExternalMarketEvidence,
+    diagnostics: Mapping[str, int],
+) -> watcher.ExternalMarketEvidence:
+    if "provider_candidates" not in diagnostics:
+        return evidence
+    if evidence.status not in {
+        watcher.EXTERNAL_CLEAN_NO_MATCH,
+        watcher.EXTERNAL_CLEAN_INSUFFICIENT,
+    }:
+        return evidence
+    summary = (
+        "PokeTrace retrieval "
+        f"candidates={diagnostics.get('provider_candidates', 0)}, "
+        f"exact_number={diagnostics.get('exact_number_candidates', 0)}, "
+        f"exact_acceptance={diagnostics.get('exact_acceptance_candidates', 0)}"
+    )
+    evidence.note = f"{evidence.note}; {summary}" if evidence.note else summary
+    return evidence
 
 
 def _structured_poketrace_evidence(
@@ -247,11 +301,17 @@ def _structured_poketrace_evidence(
             fetched_at=now,
         )
 
-    token = _ACTIVE_CONTEXT.set(context)
+    diagnostics: dict[str, int] = {}
+    context_token = _ACTIVE_CONTEXT.set(context)
+    target_token = _ACTIVE_TARGET.set((lot, canonical))
+    diagnostics_token = _ACTIVE_DIAGNOSTICS.set(diagnostics)
     try:
-        return _ORIGINAL_EVIDENCE(lot, canonical, budget, now)
+        evidence = _ORIGINAL_EVIDENCE(lot, canonical, budget, now)
+        return _append_retrieval_diagnostics(evidence, diagnostics)
     finally:
-        _ACTIVE_CONTEXT.reset(token)
+        _ACTIVE_DIAGNOSTICS.reset(diagnostics_token)
+        _ACTIVE_TARGET.reset(target_token)
+        _ACTIVE_CONTEXT.reset(context_token)
 
 
 def install_v4_poketrace_market_retrieval() -> None:
