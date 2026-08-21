@@ -101,6 +101,7 @@ if [ -z "$APP_PASSWORD" ]; then
   APP_PASSWORD="$(openssl rand -hex 24)"
 
   ADMIN_ARGS=(-h 127.0.0.1 -d postgres)
+  CREATEDB_ARGS=(-h 127.0.0.1)
   ADMIN_PASSWORD=""
   if ! psql "${ADMIN_ARGS[@]}" -Atqc 'SELECT 1' >/dev/null 2>&1; then
     echo
@@ -111,6 +112,7 @@ if [ -z "$APP_PASSWORD" ]; then
     IFS= read -r -s ADMIN_PASSWORD
     printf "\n"
     ADMIN_ARGS=(-h 127.0.0.1 -U "$ADMIN_USER" -d postgres)
+    CREATEDB_ARGS=(-h 127.0.0.1 -U "$ADMIN_USER")
     export PGPASSWORD="$ADMIN_PASSWORD"
     if ! psql "${ADMIN_ARGS[@]}" -Atqc 'SELECT 1' >/dev/null 2>&1; then
       unset PGPASSWORD ADMIN_PASSWORD
@@ -128,7 +130,7 @@ if [ -z "$APP_PASSWORD" ]; then
 
   db_exists="$(psql "${ADMIN_ARGS[@]}" -Atqc "SELECT 1 FROM pg_database WHERE datname='robot_pokemon_kb'")"
   if [ "$db_exists" != "1" ]; then
-    createdb "${ADMIN_ARGS[@]:0:${#ADMIN_ARGS[@]}-2}" -O "$APP_DB_USER" robot_pokemon_kb
+    createdb "${CREATEDB_ARGS[@]}" -O "$APP_DB_USER" robot_pokemon_kb
   else
     psql "${ADMIN_ARGS[@]}" -v ON_ERROR_STOP=1 -c "ALTER DATABASE robot_pokemon_kb OWNER TO $APP_DB_USER" >/dev/null
   fi
