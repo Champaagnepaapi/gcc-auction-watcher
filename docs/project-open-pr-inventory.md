@@ -6,7 +6,7 @@ Snapshot GitHub vérifié le **21 août 2026** pendant la préparation Robot KB 
 - recherche live après ouverture #156/#157 : **19 PR ouvertes** ;
 - PR #8 : expérimentale V5, draft, ouverte, non mergée, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`.
 
-Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** ; re-vérifier GitHub avant toute décision de merge. **Ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub** : le contrôle live GitHub reste l'autorité.
+Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** ; re-vérifier GitHub avant toute décision de merge. **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub** : le contrôle live GitHub reste l'autorité.
 
 ## PR ouvertes pertinentes
 
