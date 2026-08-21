@@ -38,6 +38,25 @@ L'installateur :
 
 Si Neon refuse les requêtes à cause du quota, **ne pas supprimer le projet Neon** : attendre son retour en lecture ou effectuer un upgrade temporaire uniquement pour exporter. Les collectors locaux ne sont pas activés sur une base vide par défaut.
 
+## Consultation manuelle
+
+Après `MIGRATION_VERIFIED`, double-cliquer :
+
+`Ouvrir Robot KB.command`
+
+Le viewer :
+
+- ouvre automatiquement une interface locale dans le navigateur ;
+- écoute uniquement sur `127.0.0.1` avec un port local aléatoire ;
+- ouvre PostgreSQL avec `default_transaction_read_only=on` et un timeout SQL de 5 secondes ;
+- lit le mot de passe local depuis le Trousseau macOS sans l'afficher ni le mettre dans l'URL ;
+- permet de rechercher une carte par nom, numéro ou set ;
+- montre les ventes SOLD prouvées, les observations, les identités non résolues et les tables PostgreSQL ;
+- masque `source_payload.payload_bytes` dans le navigateur ;
+- ne propose aucune action d'écriture, suppression ou modification.
+
+Fermer la fenêtre Terminal (ou `Ctrl+C`) arrête le viewer.
+
 ## État
 
 Double-cliquer `Etat Robot KB Local.command`.
