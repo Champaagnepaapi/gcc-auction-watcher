@@ -9,6 +9,7 @@ VENV_DIR="$DATA_ROOT/venv"
 LOG_DIR="$HOME/Library/Logs/RobotPokemonKB"
 P3_SHA="1d06fe33b6fc640657255e15a8d17251aa02b6ce"
 LOCAL_DATABASE_URL="postgresql://127.0.0.1/robot_pokemon_kb"
+MIGRATION_MARKER="$DATA_ROOT/MIGRATION_VERIFIED"
 
 mkdir -p "$DATA_ROOT" "$LOG_DIR"
 chmod 700 "$DATA_ROOT" "$LOG_DIR"
@@ -48,7 +49,17 @@ fi
 "$VENV_DIR/bin/python" -m pip install --quiet --upgrade pip
 "$VENV_DIR/bin/python" -m pip install --quiet -r "$REPO_ROOT/requirements.txt" -r "$RUNTIME_DIR/requirements-postgres.txt"
 
-if ! psql -h 127.0.0.1 -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='robot_pokemon_kb'" | grep -q '^1$'; then
+local_db_exists=false
+if psql -h 127.0.0.1 -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='robot_pokemon_kb'" | grep -q '^1$'; then
+  local_db_exists=true
+fi
+
+if [ ! -f "$MIGRATION_MARKER" ]; then
+  if [ "$local_db_exists" = true ]; then
+    echo "Une base locale existe mais aucune migration Neon vérifiée n'est enregistrée." >&2
+    echo "Collectors NON activés pour éviter de mélanger une base locale inconnue avec l'historique Neon." >&2
+    exit 3
+  fi
   echo
   echo "Il faut d'abord copier l'historique Neon dans le Mac avant d'activer les collectors locaux."
   printf "Lancer la migration Neon maintenant ? [O/n] "
@@ -61,6 +72,11 @@ if ! psql -h 127.0.0.1 -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datnam
       ;;
     *) /bin/bash "$SCRIPT_DIR/Migrer Robot KB Neon vers Mac.command" ;;
   esac
+fi
+
+if [ ! -f "$MIGRATION_MARKER" ]; then
+  echo "Migration Neon non vérifiée; activation locale refusée." >&2
+  exit 4
 fi
 
 export ROBOT_KB_DATABASE_URL="$LOCAL_DATABASE_URL"
