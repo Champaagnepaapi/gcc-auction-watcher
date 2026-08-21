@@ -241,6 +241,7 @@ def fetch_sold_catchup_batch(
     collected_ids: set[str] = set()
     seen_this_scan: set[str] = set()
     deferred_nonfinal_ids: set[str] = set()
+    deferred_nonfinal_unknown_time_ids: set[str] = set()
     deferred_nonfinal_status_counts: dict[str, int] = {}
     pages_scanned = 0
     caught_up = False
@@ -305,14 +306,24 @@ def fetch_sold_catchup_batch(
 
             if status in DEFERRED_NONFINAL_STATUSES:
                 native_id = _row_id(row)
-                _, sold_at_dt = _row_sold_at(row)
                 if native_id in seen_this_scan:
                     continue
                 seen_this_scan.add(native_id)
-                if sold_at_dt < base_dt:
-                    caught_up = True
-                    stop_page = True
-                    break
+
+                sold_at_value = row.get("soldAt")
+                if isinstance(sold_at_value, str) and sold_at_value.strip():
+                    try:
+                        _, sold_at_dt = _row_sold_at(row)
+                    except SoldWatermarkError:
+                        deferred_nonfinal_unknown_time_ids.add(native_id)
+                    else:
+                        if sold_at_dt < base_dt:
+                            caught_up = True
+                            stop_page = True
+                            break
+                else:
+                    deferred_nonfinal_unknown_time_ids.add(native_id)
+
                 deferred_nonfinal_ids.add(native_id)
                 deferred_nonfinal_status_counts[status] = (
                     deferred_nonfinal_status_counts.get(status, 0) + 1
@@ -417,6 +428,7 @@ def fetch_sold_catchup_batch(
         "caught_up": caught_up,
         "api_exhausted": api_exhausted,
         "deferred_nonfinal_rows": len(deferred_nonfinal_ids),
+        "deferred_nonfinal_unknown_time_rows": len(deferred_nonfinal_unknown_time_ids),
         "deferred_nonfinal_status_counts": dict(sorted(deferred_nonfinal_status_counts.items())),
         "watermark_blocked_by_nonfinal": watermark_blocked_by_nonfinal,
         "base_watermark_sold_at": base_text,
