@@ -102,7 +102,7 @@ run_fixed() {
     --rotation-pages 2 \
     --target-records 100
 
-  observed_at="$($PYTHON -c 'import json,sys; print(json.load(open(sys.argv[1]))["retrieved_at"])' "$hybrid_manifest")"
+  observed_at="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["retrieved_at"])' "$hybrid_manifest")"
   run_sidecar \
     --allow-live-read-only \
     --gcc-fixture "$fixture" \
@@ -138,7 +138,7 @@ run_sold() {
     --max-records 400 \
     --max-scan-pages 200
 
-  observed_at="$($PYTHON -c 'import json,sys; print(json.load(open(sys.argv[1]))["retrieved_at"])' "$sold_manifest")"
+  observed_at="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["retrieved_at"])' "$sold_manifest")"
   run_sidecar --gcc-fixture "$sold_fixture" --observed-at "$observed_at"
 
   run_sidecar \
@@ -158,9 +158,9 @@ run_sold() {
     --max-page-probes 40 \
     --max-scan-pages 20
 
-  backfill_count="$($PYTHON -c 'import json,sys; print(json.load(open(sys.argv[1]))["records_count"])' "$backfill_manifest")"
+  backfill_count="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["records_count"])' "$backfill_manifest")"
   if [ "$backfill_count" -gt 0 ]; then
-    backfill_observed_at="$($PYTHON -c 'import json,sys; print(json.load(open(sys.argv[1]))["retrieved_at"])' "$backfill_manifest")"
+    backfill_observed_at="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["retrieved_at"])' "$backfill_manifest")"
     run_sidecar --gcc-fixture "$backfill_fixture" --observed-at "$backfill_observed_at"
   fi
 
