@@ -7,7 +7,16 @@ from __future__ import annotations
 import v4_global_live_confirmed as confirmed
 import v4_global_marketplace_notify as marketplace
 from v4_global_marketplace_hardening import install_marketplace_first_hardening
+from v4_global_marketplace_identity_dimension_hardening import (
+    install_global_marketplace_identity_dimension_hardening,
+)
+from v4_global_marketplace_poketrace_recall import (
+    install_global_marketplace_poketrace_recall,
+)
 from v4_global_marketplace_queue import install_marketplace_queue_hardening
+from v4_global_marketplace_tcgdex_source_alias_recovery import (
+    install_global_marketplace_tcgdex_source_alias_recovery,
+)
 from v4_global_provider_exact_bridge import install_global_provider_exact_bridge
 from v4_global_tcgdex_resilience import install_global_tcgdex_resilience
 from v4_tcgdex_detailed_variants import install_v4_tcgdex_detailed_variants
@@ -19,15 +28,17 @@ _ORIGINAL_INSTALL = confirmed.install_global_external_market_stack
 def _install_stack_with_global_bridges() -> None:
     install_global_tcgdex_resilience()
     _ORIGINAL_INSTALL()
+    install_global_marketplace_tcgdex_source_alias_recovery()
     install_global_provider_exact_bridge()
-    # Install last so variants_detailed wraps both the final Global PokeTrace
-    # candidate gate and the Global PPT exact matcher. It remains identity-only:
-    # variant pricing is intentionally ignored for graded economics.
+    # Install detailed variants before the retrieval recall so every candidate
+    # returned by an optional recall still reaches the same final exact gate.
     install_v4_tcgdex_detailed_variants()
+    install_global_marketplace_poketrace_recall()
 
 
 def main() -> int:
     install_marketplace_first_hardening()
+    install_global_marketplace_identity_dimension_hardening()
     install_marketplace_queue_hardening()
     confirmed.install_global_external_market_stack = _install_stack_with_global_bridges
     return marketplace.main()
