@@ -30,6 +30,39 @@ _ALIASES = (
             "TCGdex SV10 official The Glory of Team Rocket set / GCC Japanese romanized label"
         ),
     ),
+    generalized.ExactSetAlias(
+        "ja",
+        "Inferno X",
+        "M2",
+        80,
+        require_numeric_denominator=True,
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex M2 source-pinned インフェルノX set / GCC Inferno X label"
+        ),
+    ),
+    generalized.ExactSetAlias(
+        "ja",
+        "S-P Promotional",
+        "S-P",
+        0,
+        required_reference_suffix="S-P",
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex S-P source-pinned Sword & Shield promo namespace / GCC S-P Promotional label"
+        ),
+    ),
+    generalized.ExactSetAlias(
+        "ja",
+        "SV-P Promos",
+        "SV-P",
+        0,
+        required_reference_suffix="SV-P",
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex SV-P source-pinned Scarlet & Violet promo namespace / GCC SV-P Promos label"
+        ),
+    ),
 )
 
 
