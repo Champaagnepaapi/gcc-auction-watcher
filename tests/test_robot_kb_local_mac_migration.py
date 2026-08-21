@@ -69,6 +69,10 @@ class RobotKbLocalMacMigrationTests(unittest.TestCase):
         self.assertIn('MIGRATION_VERIFY_MISMATCH', self.migration)
         self.assertIn('MIGRATION_VERIFIED', self.migration)
 
+    def test_migration_quotes_python_path_with_application_support_space(self):
+        self.assertIn('dump_path="$("$PYTHON" -c', self.migration)
+        self.assertNotIn('dump_path="$($PYTHON -c', self.migration)
+
     def test_local_schedules_preserve_collection_cadence_and_backup(self):
         self.assertIn('write("com.robotpokemon.kb.fixed", "fixed", {"Minute": 32})', self.installer)
         self.assertIn('write("com.robotpokemon.kb.sold", "sold", [{"Minute": 17}, {"Minute": 47}])', self.installer)
