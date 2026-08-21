@@ -43,6 +43,39 @@ _ALIASES = (
     ),
     generalized.ExactSetAlias(
         "ja",
+        "Mega Symphonia",
+        "M1S",
+        63,
+        require_numeric_denominator=True,
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex source pin data-asia/M/M1S.ts + M1S/087.ts / GCC Mega Symphonia label"
+        ),
+    ),
+    generalized.ExactSetAlias(
+        "ja",
+        "Mega Brave",
+        "M1L",
+        63,
+        require_numeric_denominator=True,
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex source pin data-asia/M/M1L.ts + M1L/064.ts / GCC Mega Brave label"
+        ),
+    ),
+    generalized.ExactSetAlias(
+        "ja",
+        "Super Electric Breaker",
+        "SV8",
+        106,
+        require_numeric_denominator=True,
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex source pin data-asia/SV/SV8.ts + SV8/112.ts / GCC Super Electric Breaker label"
+        ),
+    ),
+    generalized.ExactSetAlias(
+        "ja",
         "S-P Promotional",
         "S-P",
         0,
