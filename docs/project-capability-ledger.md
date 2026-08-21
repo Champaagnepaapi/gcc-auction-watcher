@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel vérifié le **20 août 2026** après le merge #151.
+Snapshot fonctionnel vérifié le **21 août 2026** après le merge #154.
 
 Ce fichier sert d'index anti-réimplémentation et de registre de supersession. Toujours re-vérifier `main` et les PRs live avant une action.
 
@@ -8,10 +8,12 @@ Ce fichier sert d'index anti-réimplémentation et de registre de supersession. 
 
 ```text
 V4 production branch             : main
-Dernier runtime Global           : #151 / c9539ca521f69b43b3d93e621fb21447a69f3fe7
+main runtime                     : #154 / c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
 Global marketplace-first         : #147 + #148
-Global schedule run registry     : issue #150 + #151
+Global cadence 10 min            : #153 / e79e939c22173a020d12cb8a0878aa682df2a7a5
+Global schedule run registry     : issue #150 + #151 / PROUVÉ LIVE
 Global activation                : #145 + #146
+TCGdex detailed variants         : #154
 V5 expérimentale                 : PR #8 / agent/v5-poketrace-cardmarket-market-data
 V5 head                          : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
@@ -70,6 +72,43 @@ Preuve prod #135 : run `32160680888` SUCCESS. Houndoom `100/098`, Meowth `109/09
 
 PR #126 = `SUPERSEDED`, ne pas merger.
 
+## #154 — TCGdex `variants_detailed` — `PROD_V4 / MAIN_SUPPORT`
+
+Après identité TCGdex déjà `EXACT`, la réponse détaillée peut désormais prouver des axes commerciaux sans créer un resolver parallèle :
+
+- `normal` / `holo` / `reverse` ;
+- `First Edition` / `Unlimited` / `Shadowless` quand explicites ;
+- special foils supportés : Poké Ball, Master Ball, Cosmos, Galaxy, Cracked Ice ;
+- langue détaillée doit rester compatible avec la langue canonique ;
+- axe inconnu, malformed, plusieurs signatures restantes ou contradiction interne => fail-closed.
+
+Une même entrée détaillée ne peut pas écraser silencieusement une valeur par une autre : `Unlimited + 1st Edition` ou `Poké Ball + Master Ball` devient `OPAQUE_MATERIAL_VARIANT` et bloque.
+
+Le proof source-pinné japonais conserve la priorité ; `variants_detailed` ne peut pas le rétrécir. `pricing` et `thirdParty` dans ce payload sont ignorés pour la fair value des slabs.
+
+Wiring : V4 canonical provider gate + Global PPT/PokeTrace après macro identité exacte.
+
+Validation #154 :
+
+```text
+head                    bb21aeb118c66a3da5df6bc949ce64d23bab2c1b
+merge                   c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
+run                     32444255909 SUCCESS
+validate/live           96660771327 / 96660823079 SUCCESS
+Global                  221/221 PASS
+V4 multimarket           51/51 PASS
+full V4 validation      SUCCESS
+inventory               1196
+selected/pending        10 / 1186
+TCGdex exact            5
+PPT                     1 match · 6 HTTP · 28 credits
+PokeTrace               4 matches · 6 requests
+conflicts               4 blocked
+would_notify            0
+artifact                9433579221
+transactions            false
+```
+
 ## Autres capacités V4 déjà présentes
 
 - queue anti-starvation ; smart external priority ; refresh adaptatif ;
@@ -86,7 +125,7 @@ PR #126 = `SUPERSEDED`, ne pas merger.
 
 A absorbé/revalidé le stack historique #108→#115 : common valuation, identité stricte, GCC/Cardova/magi/Fanatics/COMC, diagnostics, retrieval hardening, Magi SOLD guard, COMC fallback et live shadow read-only.
 
-#108/#109/#110/#113/#114/#115/#138 = historiques/superseded pour l'intégration.
+#108/#109/#110/#113/#114/#115/#138 = historiques/superseded pour l'intégration. Ce Stack #108→#115 reste `SHADOW/DEFERRED` en tant que provenance historique, pas une seconde production.
 
 ## #140 / #142 — économie + bridge exact — `MAIN_SUPPORT`
 
@@ -100,24 +139,20 @@ A absorbé/revalidé le stack historique #108→#115 : common valuation, identit
 - bridge provider seulement après preuve macro exacte ; aucun fuzzy ;
 - aucune transaction.
 
-Validation : Global 146/146, V4 51/51, live `32344120993`, TCGdex 5/5, PPT 4/5, PokeTrace 4/5, 1 conflit Mewtwo correctement bloqué.
-
 ## #145 / #146 — notifications + activation — `GLOBAL_NOTIFY_ACTIVE`
 
 - gate économique complet avant notification ;
 - dédup 14 jours ; re-alert TTL ou baisse `>=5%` ;
 - state corrompu = fail-closed si delivery active ;
 - `workflow_dispatch` toujours dry-run ;
-- schedule heure minute 41 ;
 - `.github/global-notify-activation=true` ;
 - repo var `true` supportée ; `false` = kill switch prioritaire ;
 - `NTFY_TOPIC` absent => fail-closed ;
-- TCGdex Global-only : 2 tentatives, timeout 10 s, backoff .25, retry transport/502/503/504 seulement ;
 - aucune transaction.
 
-Preuve activation : run `32379733361`, job `96459686467`, `GLOBAL_NOTIFICATION_ACTIVE`, activation true, 0 notification faute d'opportunité confirmée.
+Preuve activation historique : run `32379733361`.
 
-## #147 — marketplace-first discovery — `MAIN_SUPPORT`
+## #147 / #148 — marketplace-first + cutover — `GLOBAL_NOTIFY_ACTIVE`
 
 ```text
 GCC / Fanatics / COMC / magi / Cardova
@@ -129,71 +164,48 @@ GCC / Fanatics / COMC / magi / Cardova
  -> décision économique
 ```
 
-- bootstrap : inventaire existant mis en file immédiatement ;
-- ensuite : new/changed/retryable ;
+- bootstrap puis new/changed/retryable ;
 - disparition != SOLD ;
 - seed list = retrieval/benchmark seulement ;
 - GCC fair optionnel ; `EXTERNAL_ONLY` seulement avec externe exact/fort >=3 ventes ;
-- state discovery persistant ;
-- active auction non actionnable ; snapshot `≤5 min` observation seulement ;
-- Cardova `AUTH_SESSION_INPUT_REQUIRED` sans session sûre.
-
-Correctif GCC : le type de requête `FIXED_PRICE/AUCTION` est propagé explicitement au parser parce que `sellingTypeGroup` n'est pas toujours présent par row. Une auction sans champ type ne peut plus devenir `FIXED_ASK`.
-
-Validation : head `2e656314...`, merge `5a1b0f05...`, run `32397363626`, Global 201/201, V4 51/51, inventory 1184, selected/pending 10/1174, transactions false.
-
-## #148 — production cutover marketplace-first — `GLOBAL_NOTIFY_ACTIVE`
-
-Le workflow permanent `v4-global-notify.yml` reste l'unique cron Global et exécute `v4_global_marketplace_notify_resilient.py`.
-
-- cron `41 * * * *` inchangé ;
-- manual dry-run ; activation #146 inchangée ;
+- Cardova `AUTH_SESSION_INPUT_REQUIRED` sans session sûre ;
 - state `.global-marketplace-state` ;
-- 10 pending/run initialement ;
+- 10 pending/run actuellement ;
 - PPT 12 HTTP / 60 credits / floor 15000 ;
-- aucun second schedule ; aucune transaction.
+- aucune transaction.
 
-Validation : head `9ff96e9c...`, merge `ea9a69b3...`, run `32398465774`, Global 202/202, V4 51/51, inventory 1184, selected/pending 10/1174, TCGdex 5, PPT 1, PokeTrace 4, 4 conflits, 0 would-notify, transactions false.
+Correctif GCC #147 : le type de requête `FIXED_PRICE/AUCTION` est propagé explicitement ; une auction sans `sellingTypeGroup` row-level ne peut pas devenir `FIXED_ASK`.
 
 ## #151 — Global schedule run registry — `GLOBAL_NOTIFY_ACTIVE`
 
-Problème résolu : le connecteur ChatGPT disponible peut lire un run connu mais ne peut pas énumérer directement les runs GitHub Actions `schedule` sans `run_id`.
+Même pattern minimal que le registre V4 issue #1, mais registre séparé **issue #150**.
 
-Réutilisation : même pattern que le registre V4 issue #1 (`actions/github-script` + métadonnées minimales), mais registre séparé **issue #150** pour ne pas mélanger V4 et Global.
+- seul `schedule` écrit dans #150 ;
+- finalizer `always()` ;
+- run_id/SHA/activation/outcome + métriques agrégées ;
+- aucun log complet, secret, cookie/session, donnée listing-level ou paiement.
 
-Contrat #151 :
+**Preuve production observée** : premier commentaire post-#151 = run `32411433425`, trigger `schedule`, commit `c9539ca...`, activation true, mode `GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE`, status success, 10 évaluées / 1166 pending, 0 sent, identity relaxed false, transactions false.
 
-- `v4-global-notify.yml` reste le même unique cron ; aucun workflow/schedule supplémentaire ;
-- permission `issues: write` ajoutée uniquement pour commenter #150 ; `contents: read` conservé ;
-- seul `github.event_name == 'schedule'` écrit dans #150 ; manual dispatch reste dry-run et sans registre ;
-- finalizer `always()` ; si report absent/illisible, conserve au minimum run_id/SHA/activation/outcome/report_status ;
-- si report disponible : inventaire, selected/pending, TCGdex/PPT/PokeTrace, confirmed candidates, sent et flags transaction ;
-- aucun log complet, secret, cookie/session, donnée listing-level ou donnée de paiement recopié ;
-- issue #1 reste V4-only.
+## #153 — cadence Global 10 min — `GLOBAL_NOTIFY_ACTIVE`
 
-Validation #151 :
+Le **même** `v4-global-notify.yml` passe à :
 
 ```text
-branch                        ops/v4-global-run-registry-20260820
-head                          a424fb62cb5e0553929847d3b973411a8b61a561
-merge                         c9539ca521f69b43b3d93e621fb21447a69f3fe7
-CI/live                       32410224171 SUCCESS
-validate/live jobs            96558656377 / 96558728745 SUCCESS
-Global                        203/203 PASS
-V4                             51/51 PASS
-compile/YAML/diff             PASS
-inventory                     1186
-selected/pending              10 / 1176
-TCGdex exact                  5
-PPT                           1 match · 6 HTTP · 28 credits
-PokeTrace                     4 matches · 6 requests
-market conflicts              4 blocked
-confirmed_would_notify        0
-artifact                      9421951722
-transactions                  false
+1,11,21,31,41,51 * * * *
 ```
 
-La première vraie preuve du registre sera le premier commentaire automatique de #150 généré par un `schedule` post-#151 ; son `run_id` permettra ensuite l'inspection autonome jobs/logs/artifact.
+- aucun second cron ;
+- batch 10/run et budgets/run inchangés ;
+- manual toujours dry-run ; activation/kill switch inchangés.
+
+Preuve schedule #153 : run `32443663511` sur `e79e939c...`, success, activation true, inventory 1196, selected 10, pending 1137, TCGdex 6, PPT 1, PokeTrace 2, 0 sent, transactions false.
+
+---
+
+# Fondations récupérées / ne pas réimplémenter
+
+Le registre historique conserve notamment : P0/P1/P3 et PRs #51/#59/#60 ; PR #68/#72/#76 ; PR #62/#75 ; TCGdex identity cache ; `agent/source-scout-benchmark-20260814`. Aucun benchmark vérifié ne prouve un TCGdex `500/500`. #115 COMC fait partie du stack historique absorbé par #139.
 
 ---
 
@@ -219,7 +231,7 @@ branch  agent/v5-poketrace-cardmarket-market-data
 head    bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 ```
 
-TCGdex reste le resolver normal. Emergency seulement après panne technique réelle, toujours fail-closed. PR #92/#96 restent child/shadow/deferred.
+TCGdex reste le resolver normal. PR #92/#96 restent child/shadow/deferred.
 
 **PR #8 ne doit jamais être mergée dans `main` sans autorisation explicite.**
 

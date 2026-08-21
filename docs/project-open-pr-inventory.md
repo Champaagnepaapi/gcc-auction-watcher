@@ -1,8 +1,9 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub vérifié le **20 août 2026** après le merge #151.
+Snapshot GitHub vérifié le **21 août 2026** après le merge #154.
 
-- `main` vérifié : `c9539ca521f69b43b3d93e621fb21447a69f3fe7` (merge #151)
+- `main` vérifié : `c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c` (merge #154)
+- recherche live : **17 PR ouvertes** ;
 - PR #8 : expérimentale V5, draft, ouverte, non mergée, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`.
 
 Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub sans nouvel audit live.
@@ -29,18 +30,18 @@ Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** 
 | #138 | oui | `shadow/v4-global-current-main-reintegration-20260819` | `SUPERSEDED_BY_139`. |
 | #141 | oui | `diag/v4-global-provider-coverage-20260820` | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
 
-## Phase Global récente — fermée côté code
+Contrôle live : **17 lignes / 17 PR ouvertes**. Aucun de ces vieux shadows/superseded n'est requis pour #153/#154.
 
-- #139 : réintégration Global mergée ;
+## Phase récente mergée
+
+- #139 : réintégration Global ;
 - #140/#142 : confirmation économique + bridge exact ;
 - #145/#146 : notifications + activation ;
-- #147 : marketplace-first discovery, merge `5a1b0f050098b560e812a4dc6e64a9f8d40a8897` ;
-- #148 : cutover production, merge `ea9a69b375434031c935de8d25fcc12acd1a1c93` ;
-- #149 : fermeture documentaire #147/#148 ;
-- #151 : registre autonome des schedules Global vers issue #150, merge `c9539ca521f69b43b3d93e621fb21447a69f3fe7`.
+- #147/#148 : marketplace-first + cutover production ;
+- #151 : registre schedule vers issue #150 ;
+- #153 : cadence Global 10 min dans le workflow existant ;
+- #154 : `variants_detailed` TCGdex comme preuve microvariante déterministe.
 
-Validation #151 : run `32410224171` SUCCESS, **203/203 Global + 51/51 V4**, live read-only SUCCESS, aucune transaction.
+Preuves : premier schedule registre `32411433425`, cadence #153 observée `32443663511`, CI/live #154 `32444255909` SUCCESS, 221/221 Global + 51/51 V4 multimarket.
 
-La prochaine preuve attendue n'est pas une PR : c'est le premier commentaire automatique de l'issue #150 produit par un vrai `schedule` post-#151.
-
-Une PR ouverte n'est jamais une tâche à merger automatiquement. PR #8 reste explicitement protégée.
+PR #154 est mergée et n'appartient plus à la surface ouverte. Une PR ouverte n'est jamais une tâche à merger automatiquement. PR #8 reste explicitement protégée.
