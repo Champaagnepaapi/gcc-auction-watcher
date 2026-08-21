@@ -1,27 +1,66 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA_ROOT="${ROBOT_KB_LOCAL_ROOT:-$HOME/Library/Application Support/RobotPokemonKB}"
 RUNTIME_DIR="$DATA_ROOT/runtime-p3"
 VENV_DIR="$DATA_ROOT/venv"
 MIGRATION_DIR="$DATA_ROOT/migration-backup"
 PYTHON="$VENV_DIR/bin/python"
-LOCAL_DATABASE_URL="postgresql://127.0.0.1/robot_pokemon_kb"
-export PATH="/opt/homebrew/opt/postgresql@16/bin:/usr/local/opt/postgresql@16/bin:$PATH"
+APP_DB_USER="robotpokemon_kb"
+KEYCHAIN_SERVICE="RobotPokemonKB.local-postgres"
+LOCAL_DATABASE_URL="postgresql://robotpokemon_kb@127.0.0.1/robot_pokemon_kb"
+
+find_postgres_bin() {
+  local candidate
+  if command -v psql >/dev/null 2>&1 && command -v pg_dump >/dev/null 2>&1; then
+    dirname "$(command -v psql)"
+    return 0
+  fi
+  for candidate in \
+    /Library/PostgreSQL/18/bin \
+    /Library/PostgreSQL/17/bin \
+    /Library/PostgreSQL/16/bin \
+    /opt/homebrew/opt/postgresql@18/bin \
+    /opt/homebrew/opt/postgresql@17/bin \
+    /opt/homebrew/opt/postgresql@16/bin \
+    /usr/local/opt/postgresql@18/bin \
+    /usr/local/opt/postgresql@17/bin \
+    /usr/local/opt/postgresql@16/bin; do
+    if [ -x "$candidate/psql" ] && [ -x "$candidate/pg_dump" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+POSTGRES_BIN="$(find_postgres_bin || true)"
+if [ -z "$POSTGRES_BIN" ]; then
+  echo "Les outils PostgreSQL locaux sont absents." >&2
+  exit 2
+fi
+export PATH="$POSTGRES_BIN:$PATH"
 
 if [ ! -x "$PYTHON" ] || [ ! -f "$RUNTIME_DIR/robot_kb/postgres_backup.py" ]; then
   echo "Lance d'abord Installer Robot KB Local.command." >&2
   exit 2
 fi
 
-if ! command -v pg_dump >/dev/null || ! command -v pg_restore >/dev/null; then
-  echo "Les outils PostgreSQL locaux sont absents." >&2
+PGPASSWORD="$(security find-generic-password -w -a "$APP_DB_USER" -s "$KEYCHAIN_SERVICE" 2>/dev/null || true)"
+if [ -z "$PGPASSWORD" ]; then
+  echo "Identifiant PostgreSQL local Robot KB absent du Trousseau. Relance Installer Robot KB Local.command." >&2
+  exit 2
+fi
+export PGPASSWORD PGUSER="$APP_DB_USER"
+
+if ! psql "$LOCAL_DATABASE_URL" -Atqc 'SELECT 1' >/dev/null 2>&1; then
+  echo "La base locale robot_pokemon_kb n'est pas accessible." >&2
   exit 2
 fi
 
-if psql -h 127.0.0.1 -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='robot_pokemon_kb'" | grep -q '^1$'; then
-  echo "La base locale robot_pokemon_kb existe déjà. Migration refusée pour ne pas écraser des données." >&2
+local_table_count="$(psql "$LOCAL_DATABASE_URL" -Atqc "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')")"
+if [ "${local_table_count:-0}" -gt 0 ]; then
+  echo "La base locale robot_pokemon_kb contient déjà des tables. Migration refusée pour ne pas écraser des données." >&2
   echo "Si c'est une installation déjà migrée, utilise Etat Robot KB Local.command." >&2
   exit 3
 fi
@@ -38,7 +77,7 @@ mkdir -p "$MIGRATION_DIR"
 chmod 700 "$MIGRATION_DIR"
 
 cleanup_secret() {
-  unset NEON_URL ROBOT_KB_DATABASE_URL ROBOT_KB_SOURCE_URL ROBOT_KB_RESTORE_DATABASE_URL
+  unset NEON_URL ROBOT_KB_DATABASE_URL ROBOT_KB_SOURCE_URL ROBOT_KB_RESTORE_DATABASE_URL PGPASSWORD
 }
 trap cleanup_secret EXIT INT TERM
 
@@ -51,7 +90,6 @@ dump_json="$(cd "$RUNTIME_DIR" && "$PYTHON" -m robot_kb.postgres_backup dump --d
 dump_path="$($PYTHON -c 'import json,sys; print(json.loads(sys.argv[1])["backup"])' "$dump_json")"
 unset ROBOT_KB_DATABASE_URL
 
-createdb -h 127.0.0.1 robot_pokemon_kb
 restore_failed=0
 export ROBOT_KB_DATABASE_URL="$LOCAL_DATABASE_URL"
 if ! (cd "$RUNTIME_DIR" && "$PYTHON" - "$dump_path" <<'PY'
@@ -65,8 +103,11 @@ PY
 fi
 
 if [ "$restore_failed" -ne 0 ]; then
-  echo "Restore local échoué. La base locale créée pour cette tentative va être supprimée; le dump Neon est conservé." >&2
-  dropdb -h 127.0.0.1 robot_pokemon_kb || true
+  echo "Restore local échoué. Nettoyage de la base locale de cette tentative; le dump Neon est conservé." >&2
+  psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null || true
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public AUTHORIZATION robotpokemon_kb;
+SQL
   exit 4
 fi
 
