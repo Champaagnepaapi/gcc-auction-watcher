@@ -1,12 +1,12 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire workflows GitHub Actions
 
-Audit vérifié le **20 août 2026** après le merge #151.
+Audit vérifié le **21 août 2026** après le merge #154.
 
 ## Résultat clé
 
-Le tree `main` contient **16 fichiers workflow YAML**. #151 n'en ajoute aucun : `v4-global-notify.yml` reste l'unique lane Global schedule, marketplace-first, avec un finalizer de registre vers l'issue #150.
+Le tree `main` contient **16 fichiers workflow YAML**. L'API Actions peut conserver des records historiques de workflows supprimés ; **le tree Git courant est l'autorité**.
 
-L'API Actions peut conserver des records historiques de workflows supprimés ; **le tree Git courant est l'autorité**.
+`v4-global-notify.yml` reste l'**Unique lane Global production** : #153 a changé sa cadence à toutes les 10 minutes, sans créer de second workflow/cron. #154 ne modifie aucun trigger.
 
 ## Workflows permanents
 
@@ -22,7 +22,7 @@ L'API Actions peut conserver des records historiques de workflows supprimés ; *
 | `v4-gcc-coverage-audit.yml` | `workflow_dispatch` | Audit GCC manuel/read-only. |
 | `v4-global-live-shadow.yml` | `workflow_dispatch` | Global manuel/read-only. |
 | `v4-global-market-offline-validation.yml` | PR ciblée | CI Global + live marketplace-first read-only. |
-| `v4-global-notify.yml` | `workflow_dispatch` + `41 * * * *` | **Unique lane Global production.** Marketplace-first + registre schedule #150. Manual toujours dry-run. |
+| `v4-global-notify.yml` | `workflow_dispatch` + `1,11,21,31,41,51 * * * *` | **Unique lane Global production.** Marketplace-first + registre #150. Manual toujours dry-run. |
 | `v4-global-shadow-dispatch-ci.yml` | PR ciblée | Contrat dispatcher Global. |
 | `v4-kb-shadow-ingest.yml` | `workflow_run` après succès V4 | Ingestion passive Robot KB/Neon. |
 | `v5-gcc-catalog-refresh.yml` | `workflow_dispatch` + cron | Support V5 legacy actuel. |
@@ -31,7 +31,7 @@ L'API Actions peut conserver des records historiques de workflows supprimés ; *
 
 ---
 
-# Global production après #151
+# Global production
 
 ```text
 v4-global-notify.yml
@@ -39,8 +39,8 @@ v4-global-notify.yml
  -> restore .global-marketplace-state
  -> v4_global_marketplace_notify_resilient.py
  -> marketplace inventory discovery
- -> pending queue (max 10/run initialement)
- -> TCGdex exact + bounded retry
+ -> pending queue (max 10/run)
+ -> TCGdex exact + variants_detailed gate quand disponible
  -> PPT / PokeTrace confirmation
  -> MULTIMARKET_CONFIRMED gate
  -> dedupe notification
@@ -56,37 +56,27 @@ v4-global-notify.yml
 - `workflow_dispatch` = toujours dry-run ;
 - `NTFY_TOPIC` absent/vide = fail-closed avant scan.
 
-## État durable
+## Cadence #153
 
 ```text
-.global-marketplace-state/discovery.json
-.global-marketplace-state/notifications.json
+1,11,21,31,41,51 * * * *
 ```
 
-Cache séparé par event `schedule` / `workflow_dispatch`. Discovery : bootstrap, puis new/changed/retryable. Disparition != SOLD.
+La cadence augmente le nombre de batches, pas la taille d'un batch : 10 évaluations/run et budgets provider/run inchangés. Même `concurrency`, aucun second cron.
 
 ## Schedule run registry #150
 
-PR #151 ajoute au **même workflow** :
-
-```text
-permissions:
-  contents: read
-  issues: write
-```
-
-Le `issues: write` sert uniquement au commentaire automatique dans #150.
-
-Finalizer :
+Le finalizer #151 :
 
 - `if: always() && github.event_name == 'schedule'` ;
-- lit `global_marketplace_out/global_marketplace_report.json` si disponible ;
-- poste run_id/SHA/activation/outcome et métriques agrégées ;
-- report absent/illisible => `report_status` explicite, sans fabriquer de métriques ;
+- poste run_id/SHA/activation/outcome + métriques agrégées ;
+- aucun log complet, secret, session ou donnée listing-level ;
 - manual dispatch ne poste rien ;
-- aucun log complet, secret, session ou donnée listing-level n'est copié.
+- registre V4 issue #1 séparé.
 
-Le registre V4 issue #1 reste séparé.
+Le registre est **prouvé en production**. Premier record post-#151 : run `32411433425`, schedule, activation true, `GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE`, success, 0 notification, transactions false.
+
+La cadence #153 est aussi observée en production. Run `32443663511` sur `e79e939c...` : success, activation true, inventory 1196, selected 10, pending 1137, 0 sent, transactions false.
 
 ## Budgets / sécurité
 
@@ -105,20 +95,19 @@ TCGdex backoff           0.25 s
 - aucune transaction, achat, bid, checkout ou paiement ;
 - aucun gate identité relâché.
 
-## Preuves
+## Preuves récentes
 
 ```text
-#146 activation schedule        32379733361 SUCCESS
-#147 final marketplace live     32397363626 SUCCESS
-#148 cutover CI/live            32398465774 SUCCESS
 #151 registry CI/live           32410224171 SUCCESS
-#151 Global tests               203/203 PASS
-#151 V4 regressions              51/51 PASS
-#151 inventory                  1186
-#151 selected/pending           10 / 1176
+first schedule registry proof   32411433425 SUCCESS
+#153 10-min schedule proof      32443663511 SUCCESS
+#154 detailed variants CI/live  32444255909 SUCCESS
+#154 Global tests               221/221 PASS
+#154 V4 regressions              51/51 PASS
+#154 artifact                   9433579221
 ```
 
-Le premier vrai commentaire #150 produit par un `schedule` post-#151 reste la preuve finale attendue du registre en production.
+Le premier `schedule` contenant explicitement le merge #154 `c3e3da39...` reste à observer ; la validation read-only #154 est déjà verte.
 
 ---
 
@@ -131,7 +120,7 @@ Japan Edge Hunter
 Robot KB cloud shadow
 Robot KB SOLD shadow
 V5 GCC Catalog Refresh
-V4 Global Confirmed Notifications @ minute 41
+V4 Global Confirmed Notifications @ minutes 1,11,21,31,41,51
 ```
 
 Événement automatique :
