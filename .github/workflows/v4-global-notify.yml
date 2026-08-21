@@ -6,7 +6,7 @@ on:
       max_evaluations:
         description: "Max pending marketplace listings to evaluate economically"
         required: false
-        default: "10"
+        default: "15"
   schedule:
     - cron: "1,11,21,31,41,51 * * * *"
 
@@ -36,7 +36,7 @@ jobs:
       GLOBAL_PPT_MAX_HTTP_CALLS: "12"
       GLOBAL_PPT_MAX_CREDITS: "60"
       GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
-      GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}
+      GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '15' }}
       POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
       POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
       NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
