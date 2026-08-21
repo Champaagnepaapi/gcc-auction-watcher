@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-État pertinent vérifié le **21 août 2026** après merge #154.
+État pertinent vérifié le **21 août 2026** après merge #154 et préparation Robot KB #157.
 
 ## Autorités
 
@@ -12,6 +12,7 @@ Global schedule registry          ops/v4-global-run-registry-20260820 / PR #151 
 Global cadence 10 min             ops/v4-global-10min-cadence-20260820 / PR #153 mergée
 TCGdex detailed variants          feat/v4-tcgdex-detailed-variants-20260820 / PR #154 mergée
 Global activation                 ops/v4-global-notify-activate-20260820 / PR #146 mergée
+Robot KB local migration          feat/robot-kb-local-postgres-mac-20260821 / PR #157 OPEN
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / PR #8
 ```
 
@@ -21,7 +22,7 @@ PR #8 reste expérimentale/draft/non mergée, head `bc641dfe64c1cacc912b585d4e86
 
 ## Comptage
 
-Le dernier audit exhaustif, le 18 août, comptait **158 branches distantes**. Plusieurs branches ont été créées depuis ; **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
+Le dernier audit exhaustif, le 18 août, comptait **158 branches distantes**. Plusieurs branches ont été créées depuis, dont #156/#157 ; **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
 
 Toute suppression de branche exige un audit + autorisation explicite.
 
@@ -41,7 +42,9 @@ Toute suppression de branche exige un audit + autorisation explicite.
 - `ops/v4-global-run-registry-20260820` — #151 mergée, merge `c9539ca521f69b43b3d93e621fb21447a69f3fe7` ;
 - `ops/v4-global-10min-cadence-20260820` — #153 mergée, merge `e79e939c22173a020d12cb8a0878aa682df2a7a5` ;
 - `feat/v4-tcgdex-detailed-variants-20260820` — #154 mergée, merge `c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c` ;
-- `docs/v4-tcgdex-detailed-variants-close-20260821` — branche docs de fermeture actuelle.
+- `docs/v4-tcgdex-detailed-variants-close-20260821` — docs #155 ;
+- `feat/v4-global-scale-15-20260821` — PR #156 OPEN, ligne Global séparée ;
+- `feat/robot-kb-local-postgres-mac-20260821` — PR #157 OPEN, migration stockage Robot KB préparée ; Neon reste actif jusqu'au cutover local vérifié.
 
 `main` reste l'autorité après merge explicite. Les branches fonctionnelles mergées sont conservées comme provenance ; aucune suppression n'est autorisée implicitement.
 
