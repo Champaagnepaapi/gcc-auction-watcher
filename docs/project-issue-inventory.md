@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des issues
 
-> Audit GitHub re-vérifié le **20 août 2026** après la création du registre Global #150. Ce fichier couvre les vraies Issues GitHub hors pull requests.
+> Audit GitHub re-vérifié le **21 août 2026**. Ce fichier couvre les vraies Issues GitHub hors pull requests.
 
 ## Résultat exhaustif
 
@@ -13,51 +13,39 @@ GitHub Search retourne exactement **4 issues uniques** :
 | #58 `KB: harvest proven GCC SOLD sales + rotate fixed backup coverage` | OPEN / plan historique livré | `STALE_PLANNING_ISSUE` | Ne pas traiter comme backlog neuf ni fermer automatiquement. |
 | #150 `Global Run Registry — ChatGPT log access` | OPEN / registre Global vivant | `ACTIVE_GLOBAL_RUN_REGISTRY` | Conserver ouverte. Source des `run_id` des vrais schedules Global depuis PR #151. |
 
-Contrôle live du 20/08/2026 : **4 issues, 4 uniques**.
+Contrôle live : **4 issues, 4 uniques**.
 
 ---
 
 # Issue #1 — registre V4 vivant
 
-Contrat :
+Contrat : métadonnées minimales des runs V4, puis lecture des logs originaux via GitHub. Aucun log complet ni secret stocké dans l'issue.
 
-- métadonnées minimales de runs V4 ;
-- récupération du `run_id`, puis lecture des logs originaux via GitHub ;
-- aucun log complet ni secret stocké dans l'issue ;
-- registre volontairement ouvert.
+Classification : `ACTIVE_V4_RUN_REGISTRY`.
 
-Classification : `ACTIVE_V4_RUN_REGISTRY`, pas une dette fonctionnelle.
-
-Ne pas mélanger les runs Global dans #1.
+**Ne pas mélanger les runs Global dans #1.**
 
 ---
 
-# Issue #150 — registre Global vivant
+# Issue #150 — registre Global vivant et prouvé
 
-Créée pendant la phase #151 parce que le connecteur ChatGPT disponible sait lire un run connu mais ne peut pas énumérer directement les runs GitHub Actions `schedule` sans `run_id`.
-
-PR #151 fait écrire chaque vrai `schedule` du workflow `.github/workflows/v4-global-notify.yml` dans #150 avec seulement :
+PR #151 fait écrire chaque vrai `schedule` de `.github/workflows/v4-global-notify.yml` dans #150 avec uniquement :
 
 - timestamp UTC ;
 - `run_id`, attempt, trigger, commit SHA ;
-- activation et outcome du runner ;
+- activation et outcome ;
 - inventaire / selected / pending ;
 - compteurs TCGdex/PPT/PokeTrace ;
 - confirmed candidates / notifications sent ;
 - flags `automatic_purchase`, `automatic_bid`, `automatic_checkout`, `automatic_payment`.
 
-Sécurité :
-
-- aucun log complet ;
-- aucun secret/token/cookie/session ;
-- aucun détail listing-level nécessaire ;
-- aucune donnée de paiement ;
-- manual `workflow_dispatch` n'écrit pas dans ce registre ;
-- issue volontairement ouverte comme registre technique.
+Sécurité : aucun log complet, secret/token/cookie/session, détail listing-level ou donnée de paiement. `workflow_dispatch` n'écrit pas dans ce registre.
 
 Classification : `ACTIVE_GLOBAL_RUN_REGISTRY`.
 
-Le premier commentaire automatique post-#151 doit être utilisé pour récupérer le premier `run_id` schedule production marketplace-first, puis inspecter jobs/logs/artifact originaux.
+Preuve live : premier commentaire automatique post-#151 = run `32411433425`, trigger schedule, commit `c9539ca...`, activation true, mode `GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE`, status success, 0 sent, transactions false.
+
+La cadence #153 à toutes les 10 minutes est également visible dans le registre ; exemple récent avant merge #154 : run `32443663511` sur `e79e939c...`, success.
 
 ---
 
@@ -73,7 +61,7 @@ Classification : `SUPERSEDED_BY_IMPLEMENTATION`.
 
 État : open mais specification historique largement livrée par #59/#60/#62/#68/#72/#75/#76.
 
-Contrat actuel conservé : SOLD final prouvé seulement, `ENDED`/disparition/ask/auction active != vente, fresh SOLD + backfill cursors durables, fixed recent+rotation+targeted, ingestion séparée de V4.
+Contrat actuel : SOLD final prouvé seulement, `ENDED`/disparition/ask/auction active != vente, fresh SOLD + backfill cursors durables, fixed recent+rotation+targeted, ingestion séparée de V4.
 
 Classification : `STALE_PLANNING_ISSUE / SUPERSEDED_BY_DELIVERED_STACK`.
 
@@ -83,12 +71,6 @@ Ne pas fermer automatiquement sans autorisation utilisateur.
 
 # Règle future
 
-Avant de créer/reprendre une issue :
-
-1. vérifier son état live ;
-2. comparer body et code/PRs actuels ;
-3. consulter le capability ledger ;
-4. suivre les supersessions ;
-5. distinguer registre vivant, spec historique livrée et vraie tâche pending.
+Avant de créer/reprendre une issue : vérifier son état live, comparer body et code/PRs actuels, consulter le capability ledger, suivre les supersessions et distinguer registre vivant, spec historique livrée et vraie tâche pending.
 
 Une issue ouverte n'est pas automatiquement du backlog.
