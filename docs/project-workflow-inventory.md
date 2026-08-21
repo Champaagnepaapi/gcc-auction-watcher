@@ -1,22 +1,25 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire workflows GitHub Actions
 
-Audit vérifié le **21 août 2026** après le merge #154.
+Audit vérifié le **21 août 2026** après #154 et pendant la préparation Robot KB #157.
 
 ## Résultat clé
 
-Le tree `main` contient **16 fichiers workflow YAML**. L'API Actions peut conserver des records historiques de workflows supprimés ; **le tree Git courant est l'autorité**.
+`main` contient encore **16 fichiers workflow YAML** avant #157. La PR #157 ajoute **1 validation** `robot-kb-local-postgres-validation.yml`, donc le tree passera à **17** après merge de cette préparation.
 
-`v4-global-notify.yml` reste l'**Unique lane Global production** : #153 a changé sa cadence à toutes les 10 minutes, sans créer de second workflow/cron. #154 ne modifie aucun trigger.
+Les trois writers Robot KB/Neon existants restent intentionnellement inchangés pendant #157 : le cutover cloud est interdit avant migration locale vérifiée.
 
-## Workflows permanents
+`v4-global-notify.yml` reste l'**unique lane Global production** : #153 a changé sa cadence à toutes les 10 minutes, sans créer de second workflow/cron. #154 ne modifie aucun trigger.
+
+## Workflows permanents / préparés
 
 | Workflow | Trigger réel | Statut / notes |
 |---|---|---|
 | `japan-edge-hunter.yml` | `workflow_dispatch` + cron | PROD Japan Edge ; ASK reste ASK. |
 | `japan-edge-offline-validation.yml` | `workflow_dispatch` + PR ciblée | CI/offline Japan Edge. |
 | `psa-api-diagnostic.yml` | `workflow_dispatch` | Diagnostic PSA manuel. |
-| `robot-kb-cloud-shadow.yml` | `workflow_dispatch` + cron | Robot KB collecte séparée. |
-| `robot-kb-sold-shadow.yml` | `workflow_dispatch` + cron | Robot KB SOLD/backfill strict. |
+| `robot-kb-cloud-shadow.yml` | `workflow_dispatch` + cron | Robot KB Neon fixed/auction encore actif jusqu'au cutover Mac vérifié. |
+| `robot-kb-sold-shadow.yml` | `workflow_dispatch` + cron | Robot KB Neon SOLD/backfill encore actif jusqu'au cutover Mac vérifié. |
+| `robot-kb-local-postgres-validation.yml` | `workflow_dispatch` + PR ciblée | **#157** CI seulement : P3 + scripts Mac + contrat migration. Aucun collector cloud local. |
 | `v4-auction-discovery-validation.yml` | `workflow_dispatch` + PR ciblée | CI/comparaison V4 read-only. |
 | `v4-final-auction-check.yml` | `workflow_dispatch` | Fast Lane production, cadence externe. |
 | `v4-gcc-coverage-audit.yml` | `workflow_dispatch` | Audit GCC manuel/read-only. |
@@ -24,10 +27,40 @@ Le tree `main` contient **16 fichiers workflow YAML**. L'API Actions peut conser
 | `v4-global-market-offline-validation.yml` | PR ciblée | CI Global + live marketplace-first read-only. |
 | `v4-global-notify.yml` | `workflow_dispatch` + `1,11,21,31,41,51 * * * *` | **Unique lane Global production.** Marketplace-first + registre #150. Manual toujours dry-run. |
 | `v4-global-shadow-dispatch-ci.yml` | PR ciblée | Contrat dispatcher Global. |
-| `v4-kb-shadow-ingest.yml` | `workflow_run` après succès V4 | Ingestion passive Robot KB/Neon. |
+| `v4-kb-shadow-ingest.yml` | `workflow_run` après succès V4 | Ingestion passive Robot KB/Neon encore active jusqu'au cutover Mac vérifié. |
 | `v5-gcc-catalog-refresh.yml` | `workflow_dispatch` + cron | Support V5 legacy actuel. |
 | `v5-live-raw-pipeline-diagnostic.yml` | `workflow_dispatch` | V5 diagnostic manuel. |
 | `watcher.yml` | `workflow_dispatch` | V4 Main Scanner, cadence externe Cron-job.org. |
+
+---
+
+# Robot KB — transition Neon → Mac
+
+PR #157 **n'est pas le cutover**. Elle ajoute les scripts locaux sous `mac/robot-kb-local/` et une validation CI, tout en maintenant les writers Neon actifs.
+
+Lane locale préparée :
+
+```text
+Mac LaunchAgent fixed     : minute 32 de chaque heure
+Mac LaunchAgent SOLD      : minutes 17 et 47
+Mac LaunchAgent backup    : 03:10
+PostgreSQL                : 127.0.0.1 / robot_pokemon_kb
+runtime                   : P3 @ 1d06fe33b6fc640657255e15a8d17251aa02b6ce
+```
+
+Ordre de cutover obligatoire :
+
+1. installer PostgreSQL/runtime sur le Mac ;
+2. dump Neon secret-safe ;
+3. restore local ;
+4. fingerprints source/local identiques + `MIGRATION_VERIFIED` ;
+5. health-check local ;
+6. seulement ensuite PR séparée retirant :
+   - cron `robot-kb-cloud-shadow.yml` ;
+   - cron `robot-kb-sold-shadow.yml` ;
+   - `workflow_run` `v4-kb-shadow-ingest.yml`.
+
+Aucun writer Neon n'est retiré dans #157.
 
 ---
 
@@ -39,7 +72,7 @@ v4-global-notify.yml
  -> restore .global-marketplace-state
  -> v4_global_marketplace_notify_resilient.py
  -> marketplace inventory discovery
- -> pending queue (max 10/run)
+ -> pending queue
  -> TCGdex exact + variants_detailed gate quand disponible
  -> PPT / PokeTrace confirmation
  -> MULTIMARKET_CONFIRMED gate
@@ -62,7 +95,7 @@ v4-global-notify.yml
 1,11,21,31,41,51 * * * *
 ```
 
-La cadence augmente le nombre de batches, pas la taille d'un batch : 10 évaluations/run et budgets provider/run inchangés. Même `concurrency`, aucun second cron.
+La cadence augmente le nombre de batches, pas la taille d'un batch. #156 est une PR séparée qui expérimente le scale ; ne pas documenter son comportement comme production avant merge explicite.
 
 ## Schedule run registry #150
 
@@ -78,7 +111,7 @@ Le registre est **prouvé en production**. Premier record post-#151 : run `32411
 
 La cadence #153 est aussi observée en production. Run `32443663511` sur `e79e939c...` : success, activation true, inventory 1196, selected 10, pending 1137, 0 sent, transactions false.
 
-## Budgets / sécurité
+## Budgets / sécurité production #154
 
 ```text
 PPT max HTTP             12
@@ -107,11 +140,9 @@ first schedule registry proof   32411433425 SUCCESS
 #154 artifact                   9433579221
 ```
 
-Le premier `schedule` contenant explicitement le merge #154 `c3e3da39...` reste à observer ; la validation read-only #154 est déjà verte.
-
 ---
 
-# Triggers automatiques permanents
+# Triggers automatiques permanents avant cutover Mac
 
 GitHub cron :
 
@@ -150,4 +181,5 @@ Avant d'ajouter/modifier un workflow :
 4. diagnostics ponctuels : préférer manuel ;
 5. pas de second cron Main Scanner/Fast Lane/Global ;
 6. pas de suppression workflow/branche/issue sans autorisation destructive ;
-7. aucune transaction automatique.
+7. cutover Neon uniquement après migration Mac réellement vérifiée ;
+8. aucune transaction automatique.
