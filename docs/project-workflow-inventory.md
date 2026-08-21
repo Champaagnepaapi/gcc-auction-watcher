@@ -6,7 +6,7 @@ Audit vérifié le **21 août 2026** après #154 et pendant la préparation Robo
 
 `main` contient encore **16 fichiers workflow YAML** avant #157. La PR #157 ajoute **1 validation** `robot-kb-local-postgres-validation.yml`, donc le tree passera à **17** après merge de cette préparation.
 
-**L'API Actions peut conserver des records historiques** même lorsqu'un YAML a disparu du tree courant ; le tree Git `main` reste l'autorité pour l'existence réelle d'un workflow.
+**L'API Actions peut conserver des records historiques** même lorsqu'un YAML a disparu du tree courant ; **le tree Git courant est l'autorité** pour l'existence réelle d'un workflow.
 
 Les trois writers Robot KB/Neon existants restent intentionnellement inchangés pendant #157 : le cutover cloud est interdit avant migration locale vérifiée.
 
