@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
+from collections import Counter
 from contextvars import ContextVar
-from dataclasses import dataclass
-from typing import Mapping, Optional
+from dataclasses import dataclass, replace
+from typing import Any, Mapping, Optional
 
 import watcher
 import v4_canonical_multimarket as multimarket
@@ -40,6 +42,15 @@ class PokeTraceRetrievalContext:
 _ACTIVE_CONTEXT: ContextVar[Optional[PokeTraceRetrievalContext]] = ContextVar(
     "v4_poketrace_retrieval_context", default=None
 )
+_ACTIVE_DIAGNOSTIC_LOT: ContextVar[Optional[watcher.Lot]] = ContextVar(
+    "v4_poketrace_diagnostic_lot", default=None
+)
+_ACTIVE_DIAGNOSTIC_CANONICAL: ContextVar[Optional[multimarket.CanonicalCard]] = ContextVar(
+    "v4_poketrace_diagnostic_canonical", default=None
+)
+_ACTIVE_DIAGNOSTIC_RESULT: ContextVar[Optional[dict[str, Any]]] = ContextVar(
+    "v4_poketrace_diagnostic_result", default=None
+)
 _ORIGINAL_EVIDENCE = multimarket._poketrace_evidence
 _ORIGINAL_PACED_GET = multimarket._paced_poketrace_get
 _INSTALLED = False
@@ -49,6 +60,15 @@ _CARD_NUMBER_LABEL_PREFIX = re.compile(
     r"^(?:#\s*|no(?:\.|\s+)\s*|n[°º]\s*|number\s+)",
     flags=re.IGNORECASE,
 )
+
+
+def _diagnostics_enabled() -> bool:
+    return (
+        os.getenv("GLOBAL_POKETRACE_CANDIDATE_DIAGNOSTICS", "false")
+        .strip()
+        .casefold()
+        == "true"
+    )
 
 
 def _normalize_card_number(value: object) -> str:
@@ -200,6 +220,59 @@ def exact_provider_name_alias_matches(
     )
 
 
+def _diagnostic_rejection_reason(
+    lot: watcher.Lot,
+    canonical: multimarket.CanonicalCard,
+    candidate: Mapping[str, Any],
+) -> str:
+    """Classify a candidate without changing the production acceptance result."""
+
+    try:
+        # Always ask the actually installed final gate first. If it accepts, the
+        # diagnostic must never disagree with production.
+        if multimarket._candidate_exact_for_canonical(lot, canonical, candidate):
+            return "EXACT"
+
+        # Lazy import avoids the import cycle: safety imports this retrieval
+        # module during stack installation. At runtime the Global bridge exists.
+        import v4_global_provider_exact_bridge as bridge
+
+        # The provider bridge is installed before variants_detailed. If the
+        # bridge accepts but the final installed gate rejects, the remaining
+        # blocker is the detailed variant layer rather than retrieval/naming.
+        if bridge.global_candidate_exact_for_canonical(lot, canonical, candidate):
+            return "REJECT_DETAILED_VARIANT"
+        if canonical.status != "EXACT":
+            return "REJECT_CANONICAL"
+        if str(candidate.get("productType") or "single").strip().casefold() != "single":
+            return "REJECT_PRODUCT_TYPE"
+        if not bridge._full_number_exact(candidate.get("cardNumber"), canonical.full_number):
+            return "REJECT_NUMBER"
+        set_payload = candidate.get("set")
+        provider_set_name = (
+            str(set_payload.get("name") or "").strip()
+            if isinstance(set_payload, Mapping)
+            else ""
+        )
+        if not bridge._set_exact_or_catalog_prefix(canonical, provider_set_name):
+            return "REJECT_SET"
+        if not multimarket._poketrace_language_market_is_exact(lot, candidate):
+            return "REJECT_LANGUAGE"
+        if not bridge.mechanic_name_equivalent(
+            canonical.name,
+            candidate.get("name"),
+            language_code=canonical.language_code,
+        ):
+            return "REJECT_NAME"
+        if not bridge._sensitive_dimensions_compatible(lot, canonical, candidate):
+            return "REJECT_DIMENSIONS"
+        return "REJECT_OTHER"
+    except Exception:
+        # Diagnostics are strictly non-authoritative and must never alter a
+        # provider result or turn an observability defect into a market error.
+        return "REJECT_DIAGNOSTIC_ERROR"
+
+
 def _structured_paced_get(
     budget: multimarket.RequestBudget,
     url: str,
@@ -218,7 +291,23 @@ def _structured_paced_get(
     structured["game"] = context.game
     # Keep V4's market/result cap/product_type untouched. Exact acceptance still
     # runs afterward through the production fail-closed gate.
-    return _ORIGINAL_PACED_GET(budget, url, params=structured)
+    response = _ORIGINAL_PACED_GET(budget, url, params=structured)
+
+    if _diagnostics_enabled():
+        lot = _ACTIVE_DIAGNOSTIC_LOT.get()
+        canonical = _ACTIVE_DIAGNOSTIC_CANONICAL.get()
+        diagnostic = _ACTIVE_DIAGNOSTIC_RESULT.get()
+        if lot is not None and canonical is not None and diagnostic is not None:
+            _status, payload, _headers = response
+            candidates = multimarket._extract_list_payload(payload)
+            reasons = Counter(
+                _diagnostic_rejection_reason(lot, canonical, candidate)
+                for candidate in candidates
+            )
+            diagnostic["provider_candidates"] = len(candidates)
+            diagnostic["candidate_gate_counts"] = dict(sorted(reasons.items()))
+
+    return response
 
 
 def _structured_poketrace_evidence(
@@ -247,11 +336,39 @@ def _structured_poketrace_evidence(
             fetched_at=now,
         )
 
-    token = _ACTIVE_CONTEXT.set(context)
+    diagnostics = _diagnostics_enabled()
+    diagnostic: dict[str, Any] = {}
+    context_token = _ACTIVE_CONTEXT.set(context)
+    lot_token = canonical_token = result_token = None
+    if diagnostics:
+        lot_token = _ACTIVE_DIAGNOSTIC_LOT.set(lot)
+        canonical_token = _ACTIVE_DIAGNOSTIC_CANONICAL.set(canonical)
+        result_token = _ACTIVE_DIAGNOSTIC_RESULT.set(diagnostic)
     try:
-        return _ORIGINAL_EVIDENCE(lot, canonical, budget, now)
+        evidence = _ORIGINAL_EVIDENCE(lot, canonical, budget, now)
+        if not diagnostics:
+            return evidence
+        provider_candidates = int(diagnostic.get("provider_candidates", 0) or 0)
+        counts = diagnostic.get("candidate_gate_counts")
+        gate_summary = ""
+        if isinstance(counts, Mapping) and counts:
+            gate_summary = ",".join(
+                f"{key}:{int(value)}" for key, value in sorted(counts.items())
+            )
+        bounded = f"provider_candidates={provider_candidates}"
+        if gate_summary:
+            bounded += f"; candidate_gates={gate_summary}"
+        original_note = str(getattr(evidence, "note", "") or "").strip()
+        note = f"{original_note}; {bounded}" if original_note else bounded
+        return replace(evidence, note=note)
     finally:
-        _ACTIVE_CONTEXT.reset(token)
+        if result_token is not None:
+            _ACTIVE_DIAGNOSTIC_RESULT.reset(result_token)
+        if canonical_token is not None:
+            _ACTIVE_DIAGNOSTIC_CANONICAL.reset(canonical_token)
+        if lot_token is not None:
+            _ACTIVE_DIAGNOSTIC_LOT.reset(lot_token)
+        _ACTIVE_CONTEXT.reset(context_token)
 
 
 def install_v4_poketrace_market_retrieval() -> None:
