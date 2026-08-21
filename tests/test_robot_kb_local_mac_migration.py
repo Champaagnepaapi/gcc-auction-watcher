@@ -73,6 +73,10 @@ class RobotKbLocalMacMigrationTests(unittest.TestCase):
         self.assertIn('dump_path="$("$PYTHON" -c', self.migration)
         self.assertNotIn('dump_path="$($PYTHON -c', self.migration)
 
+    def test_local_runner_quotes_python_path_with_application_support_space(self):
+        self.assertEqual(self.runner.count('$("$PYTHON" -c'), 4)
+        self.assertNotIn('$($PYTHON -c', self.runner)
+
     def test_local_schedules_preserve_collection_cadence_and_backup(self):
         self.assertIn('write("com.robotpokemon.kb.fixed", "fixed", {"Minute": 32})', self.installer)
         self.assertIn('write("com.robotpokemon.kb.sold", "sold", [{"Minute": 17}, {"Minute": 47}])', self.installer)
