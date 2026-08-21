@@ -240,7 +240,12 @@ class FixedHybridTests(unittest.TestCase):
     def test_workflow_wires_hybrid_fixed_and_preserves_auction_and_sold_split(self):
         hourly = Path(".github/workflows/robot-kb-cloud-shadow.yml").read_text(encoding="utf-8")
         sold = Path(".github/workflows/robot-kb-sold-shadow.yml").read_text(encoding="utf-8")
-        self.assertIn('cron: "32 * * * *"', hourly)
+        installer = Path("mac/robot-kb-local/Installer Robot KB Local.command").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("workflow_dispatch:", hourly)
+        self.assertNotIn("\n  schedule:", hourly)
+        self.assertIn('write("com.robotpokemon.kb.fixed", "fixed", {"Minute": 32})', installer)
         self.assertIn("--recent-records 100", hourly)
         self.assertIn("--rotation-pages 2", hourly)
         self.assertIn("--target-records 100", hourly)
@@ -248,7 +253,9 @@ class FixedHybridTests(unittest.TestCase):
         self.assertIn("v4_kb_fixed_hybrid.py commit", hourly)
         self.assertIn("--live-gcc auction", hourly)
         self.assertNotIn("--live-gcc sold", hourly)
-        self.assertIn('cron: "17,47 * * * *"', sold)
+        self.assertIn("workflow_dispatch:", sold)
+        self.assertNotIn("\n  schedule:", sold)
+        self.assertIn('write("com.robotpokemon.kb.sold", "sold", [{"Minute": 17}, {"Minute": 47}])', installer)
         self.assertIn("--live-gcc sold", sold)
         self.assertIn("timeout-minutes: 45", hourly)
         self.assertIn("1d06fe33b6fc640657255e15a8d17251aa02b6ce", hourly)
