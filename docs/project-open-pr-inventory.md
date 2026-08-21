@@ -1,12 +1,12 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub vérifié le **21 août 2026** après le merge #154.
+Snapshot GitHub vérifié le **21 août 2026** pendant la préparation Robot KB #157.
 
-- `main` vérifié : `c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c` (merge #154)
-- recherche live : **17 PR ouvertes** ;
+- `main` runtime vérifié : `c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c` (#154), HEAD docs live `2738be454fe0323e7f1cf8d66309fa5bbff6964c` ;
+- recherche live après ouverture #156/#157 : **19 PR ouvertes** ;
 - PR #8 : expérimentale V5, draft, ouverte, non mergée, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`.
 
-Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub sans nouvel audit live.
+Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** ; re-vérifier GitHub avant toute décision de merge. **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub** : le contrôle live GitHub reste l'autorité.
 
 ## PR ouvertes pertinentes
 
@@ -29,8 +29,10 @@ Ce fichier recense les PR ouvertes **pertinentes pour la gouvernance courante** 
 | #126 | oui | `fix/v4-poketrace-exact-provider-bridges-20260818` | **SUPERSEDED** par #127→#135. **Ne pas merger.** |
 | #138 | oui | `shadow/v4-global-current-main-reintegration-20260819` | `SUPERSEDED_BY_139`. |
 | #141 | oui | `diag/v4-global-provider-coverage-20260820` | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
+| #156 | non | `feat/v4-global-scale-15-20260821` | Global scale/provider-gap work séparé ; ne pas mélanger avec Robot KB. |
+| #157 | non | `feat/robot-kb-local-postgres-mac-20260821` | `ROBOT_KB / PREPARED_LOCAL_MAC`. Prépare migration Neon→Mac ; cloud Neon reste actif jusqu'à migration vérifiée. |
 
-Contrôle live : **17 lignes / 17 PR ouvertes**. Aucun de ces vieux shadows/superseded n'est requis pour #153/#154.
+Contrôle live : **19 PR ouvertes** au moment de ce snapshot. Une PR ouverte n'est jamais automatiquement autorisée au merge.
 
 ## Phase récente mergée
 
@@ -40,8 +42,9 @@ Contrôle live : **17 lignes / 17 PR ouvertes**. Aucun de ces vieux shadows/supe
 - #147/#148 : marketplace-first + cutover production ;
 - #151 : registre schedule vers issue #150 ;
 - #153 : cadence Global 10 min dans le workflow existant ;
-- #154 : `variants_detailed` TCGdex comme preuve microvariante déterministe.
+- #154 : `variants_detailed` TCGdex comme preuve microvariante déterministe ;
+- #155 : docs-only fermeture #154, HEAD `2738be454fe0323e7f1cf8d66309fa5bbff6964c`.
 
 Preuves : premier schedule registre `32411433425`, cadence #153 observée `32443663511`, CI/live #154 `32444255909` SUCCESS, 221/221 Global + 51/51 V4 multimarket.
 
-PR #154 est mergée et n'appartient plus à la surface ouverte. Une PR ouverte n'est jamais une tâche à merger automatiquement. PR #8 reste explicitement protégée.
+PR #8 reste explicitement protégée. #156 et #157 sont deux lignes indépendantes et ne doivent pas être fusionnées conceptuellement.

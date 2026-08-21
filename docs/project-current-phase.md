@@ -1,20 +1,40 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **21 août 2026** après le merge #154.
+État vérifié le **21 août 2026** pendant la préparation Robot KB #157.
 
 ## Autorité
 
 ```text
-V4 production                  main @ c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
+V4 production                  runtime #154 / c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
+main HEAD docs                 2738be454fe0323e7f1cf8d66309fa5bbff6964c
 Global discovery               marketplace-first
 Global notification workflow   marketplace-first / cadence 10 min
 Global schedule registry       issue #150 / PROUVÉ LIVE
 TCGdex microvariantes          variants_detailed / #154
+Global scale expérimental      PR #156 OPEN / séparée
+Robot KB storage               PR #157 PREPARED_LOCAL_MAC / NEON_CUTOVER_PENDING
 V5                             PR #8 / draft / non mergée
-Robot KB / Neon                séparé
 ```
 
 Toujours re-vérifier le HEAD GitHub live ; des commits docs-only peuvent suivre le SHA runtime.
+
+## Robot KB — phase active #157
+
+Le quota Neon est saturé. La migration vise PostgreSQL local sur le Mac mini tout en conservant exactement le contrat Robot KB append-only/SOLD strict.
+
+Préparation :
+
+```text
+runtime réutilisé       P3 @ 1d06fe33b6fc640657255e15a8d17251aa02b6ce
+PostgreSQL local        127.0.0.1 / robot_pokemon_kb
+fixed + auction         LaunchAgent :32
+SOLD fresh/backfill     LaunchAgent :17 / :47
+backup                  03:10, 7 dumps complets locaux
+migration               pg_dump Neon -> restore -> fingerprints source/local
+activation locale       uniquement après MIGRATION_VERIFIED
+```
+
+**Neon reste actif pendant #157.** Le cutover cloud sera une PR séparée après migration et health-check réels sur le Mac. Ne pas démarrer une base locale vide et ne pas supprimer Neon avant vérification.
 
 ## Global marketplace-first
 
@@ -41,49 +61,22 @@ Le workflow `.github/workflows/v4-global-notify.yml` reste l'unique cron Global.
 schedule      1,11,21,31,41,51 * * * *
 manual        toujours dry-run
 state         .global-marketplace-state
-batch         10 pending/run
 kill switch   vars.GLOBAL_NOTIFY_ENABLED=false
 ```
 
-Aucun second schedule n'a été ajouté et les budgets/run sont inchangés.
+PR #156 expérimente séparément le scale Global ; ne pas confondre son état avec la production tant qu'elle n'est pas mergée.
 
-## Registre #150 / #151 — preuve réelle obtenue
+## Registre #150 / #151
 
-Chaque vrai `schedule` Global poste des métadonnées agrégées minimales dans **issue #150** : run_id/SHA/activation/outcome, inventory/selected/pending, TCGdex/PPT/PokeTrace, confirmed/sent et flags transaction.
+Chaque vrai `schedule` Global poste des métadonnées agrégées minimales dans **issue #150**. Première preuve post-#151 : run `32411433425`, schedule, activation true, success, 0 notification, transactions false.
 
-Première preuve post-#151 :
-
-```text
-run                     32411433425
-trigger                 schedule
-commit                  c9539ca521f69b43b3d93e621fb21447a69f3fe7
-activation              true
-mode                    GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE
-status                  success
-selected/pending        10 / 1166
-confirmed/sent          0 / 0
-identity relaxed        false
-transactions            false
-```
-
-La cadence #153 est également prouvée par plusieurs vrais schedules. Dernier observé avant merge #154 : run `32443663511` sur `e79e939c...`, success, activation true, inventory 1196, selected 10, pending 1137, 0 notification, transactions false.
+La cadence #153 est prouvée par le run `32443663511` sur `e79e939c...`, success, activation true, inventory 1196, selected 10, pending 1137, 0 notification, transactions false.
 
 ## TCGdex detailed variants #154
 
-`variants_detailed` est maintenant consommé **après** identité TCGdex exacte pour prouver les axes commerciaux : finish, édition/shadow et special foils supportés.
+`variants_detailed` est consommé **après** identité TCGdex exacte pour prouver finish, édition/shadow et special foils supportés. Plusieurs variantes, champ inconnu/malformed ou contradiction restent bloquants. Le source-pinned japonais reste prioritaire ; `pricing` / `thirdParty` TCGdex ne devient jamais fair value slab.
 
-Règles :
-
-- source-pinned japonais reste prioritaire ;
-- plusieurs variantes compatibles restantes => blocage ;
-- champ inconnu/malformed => blocage ;
-- contradiction dans une même entrée (`Unlimited + 1st Edition`, `Poké Ball + Master Ball`) => blocage ;
-- `pricing` / `thirdParty` TCGdex n'entre jamais dans la fair value slab ;
-- aucun fuzzy.
-
-Validation : run `32444255909` SUCCESS, **221/221 Global + 51/51 V4 multimarket**, full V4 validation SUCCESS, live read-only SUCCESS, artifact `9433579221`, transactions false.
-
-Un vrai schedule exécutant spécifiquement le commit #154 n'avait pas encore été observé dans #150 au moment de cette fermeture ; ne pas le revendiquer avant une ligne explicite sur `c3e3da39...` ou un SHA ultérieur contenant #154.
+Validation #154 : run `32444255909` SUCCESS, **221/221 Global + 51/51 V4 multimarket**, full V4 validation SUCCESS, live read-only SUCCESS, artifact `9433579221`, transactions false.
 
 ## Cardova
 
@@ -91,11 +84,12 @@ Un vrai schedule exécutant spécifiquement le commit #154 n'avait pas encore é
 
 ## Prochaine direction
 
-1. Observer le premier schedule #150 contenant #154.
-2. Laisser le backlog se drainer à 10 évaluations/run sous cadence 10 min.
-3. Mesurer débit/coût/conflits avant scale-up >10/run.
-4. Exploiter `variants_detailed` comme preuve lorsque présent, sans fabriquer les microvariantes absentes/ambiguës.
-5. En cas d'anomalie Global : `vars.GLOBAL_NOTIFY_ENABLED=false` coupe la lane.
+1. Finir CI #157 et merger la préparation locale si verte.
+2. Sur le Mac : pull main puis lancer `Installer Robot KB Local.command`.
+3. Obtenir `MIGRATION_VERIFIED` + health-check PostgreSQL local.
+4. Créer/valider le cutover qui retire les trois writers Neon.
+5. Seulement après cela, abandonner Neon.
+6. Garder #156 Global séparée de cette migration.
 
 ## Invariants
 
@@ -104,4 +98,5 @@ Un vrai schedule exécutant spécifiquement le commit #154 n'avait pas encore é
 - ASK/auction/disparition != SOLD ;
 - RAW != valeur slab ;
 - aucun achat, bid, checkout ou paiement automatique ;
-- Robot KB/Neon séparé.
+- Robot KB séparé de V4/V5 ;
+- Neon non coupé avant migration locale vérifiée.

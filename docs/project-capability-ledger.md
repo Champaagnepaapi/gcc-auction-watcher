@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel vérifié le **21 août 2026** après le merge #154.
+Snapshot fonctionnel vérifié le **21 août 2026** après le merge #154 et préparation de la migration Robot KB locale #157.
 
 Ce fichier sert d'index anti-réimplémentation et de registre de supersession. Toujours re-vérifier `main` et les PRs live avant une action.
 
@@ -14,12 +14,13 @@ Global cadence 10 min            : #153 / e79e939c22173a020d12cb8a0878aa682df2a7
 Global schedule run registry     : issue #150 + #151 / PROUVÉ LIVE
 Global activation                : #145 + #146
 TCGdex detailed variants         : #154
+Robot KB storage migration       : PR #157 / PREPARED_LOCAL_MAC / NEON_CUTOVER_PENDING
 V5 expérimentale                 : PR #8 / agent/v5-poketrace-cardmarket-market-data
 V5 head                          : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-Statuts utilisés : `PROD_V4`, `MAIN_SUPPORT`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`.
+Statuts utilisés : `PROD_V4`, `MAIN_SUPPORT`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB`, `PREPARED_LOCAL_MAC`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`.
 
 ---
 
@@ -209,7 +210,7 @@ Le registre historique conserve notamment : P0/P1/P3 et PRs #51/#59/#60 ; PR #68
 
 ---
 
-# Robot KB / Neon — `ROBOT_KB`
+# Robot KB — `ROBOT_KB`
 
 - append-only ; provenance + payload brut ;
 - SOLD uniquement si vente finale explicite + date + prix ;
@@ -220,6 +221,25 @@ Le registre historique conserve notamment : P0/P1/P3 et PRs #51/#59/#60 ; PR #68
 - aucun hard gate KB-first sans profondeur suffisante.
 
 Robot KB n'est pas la décision commerciale V4/Global.
+
+## #157 — Neon → PostgreSQL Mac — `PREPARED_LOCAL_MAC / NEON_CUTOVER_PENDING`
+
+La limite de stockage Neon a déclenché une migration de stockage, sans changement du contrat de données.
+
+Réutilisation obligatoire : runtime P3 validé `1d06fe33b6fc640657255e15a8d17251aa02b6ce`, avec `KnowledgeBase.open(postgresql://...)`, sidecar et `postgres_backup` existants. Ne pas réimplémenter un second repository Robot KB.
+
+Préparation #157 :
+
+- PostgreSQL 16 local sur `127.0.0.1`, base `robot_pokemon_kb` ;
+- migration source Neon par `pg_dump` secret-safe puis restore ;
+- vérification stricte fingerprints/row counts source ↔ local avant marker `MIGRATION_VERIFIED` ;
+- aucune URL Neon persistée : saisie masquée et variable éphémère seulement ;
+- fixed/auction local à `:32`, SOLD fresh/backfill à `:17/:47`, backup local `03:10` ;
+- 7 dumps complets locaux conservés ;
+- base locale existante sans marker de migration = activation refusée ;
+- cloud Neon reste actif pendant cette PR : le cutover est une phase séparée après preuve réelle sur le Mac.
+
+**Ne jamais supprimer/couper Neon avant migration locale vérifiée.** Si le quota bloque les reads/dump, conserver Neon jusqu'au reset ou à un accès temporaire permettant l'export.
 
 ---
 
@@ -267,4 +287,5 @@ PPT = `SOLD_AGGREGATED`, jamais item-level SOLD. PPT/PokeTrace/eBay peuvent êtr
 - aucun secret dans repo/logs ;
 - notification Global seulement après gate complet + activation ;
 - `vars.GLOBAL_NOTIFY_ENABLED=false` coupe la lane immédiatement ;
+- Robot KB local ne remplace Neon qu'après vérification source ↔ local ;
 - Cardova reste fail-closed sans session sûre.

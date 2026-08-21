@@ -16,7 +16,7 @@ Global cadence                   : toutes les 10 min / PR #153
 Global schedule run registry     : issue #150 / PR #151 / PROUVÉ LIVE
 Global activation                : PR #146 / marker versionné + repo-var override
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
-Robot KB / Neon                  : historique durable séparé de V4/V5
+Robot KB                         : Neon actif ; migration PostgreSQL Mac préparée par PR #157
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
@@ -238,9 +238,11 @@ PSA scope économique : `8`, `8.5`, `9`, `10`. PSA <8 hors scope ; jamais de PSA
 
 ---
 
-# Robot KB / Neon
+# Robot KB — migration Neon → PostgreSQL local Mac
 
 Robot KB reste séparé de la décision commerciale V4/Global.
+
+Contrat historique inchangé :
 
 - observations append-only, datées, immuables ;
 - payload brut + provenance ;
@@ -249,6 +251,31 @@ Robot KB reste séparé de la décision commerciale V4/Global.
 - auctions : SOLD final prioritaire ; snapshot `≤5 min` seulement fallback identifié ;
 - disparition/ask/live auction ne devient jamais vente ;
 - objectif : courbes 30j/90j/1an/multi-années, liquidité, tendance, calibration.
+
+## PR #157 — lane Mac préparée, cutover Neon pas encore exécuté
+
+Le quota Neon `robot-pokemon-kb` a atteint sa limite de stockage. La cible durable devient PostgreSQL local sur le Mac mini, sans exposer la base à Internet.
+
+PR #157 prépare :
+
+```text
+PostgreSQL 16 local             127.0.0.1 / robot_pokemon_kb
+runtime Robot KB                P3 validé @ 1d06fe33b6fc640657255e15a8d17251aa02b6ce
+fixed + auctions               LaunchAgent à :32
+SOLD fresh/backfill             LaunchAgent à :17 et :47
+backup                          LaunchAgent quotidien 03:10
+backups conservés               7 dumps complets locaux
+```
+
+Migration : saisie masquée de la DATABASE URL Neon → `pg_dump` secret-safe → restore local → comparaison fingerprints/row counts source/local → marker `MIGRATION_VERIFIED` seulement si identique.
+
+**Cutover volontairement en deux phases** :
+
+1. merger/préparer les scripts locaux tout en laissant les collectors Neon existants actifs ;
+2. exécuter et vérifier réellement la migration sur le Mac ;
+3. seulement ensuite retirer les schedules/workflow_run Neon dans une PR de cutover séparée et abandonner Neon.
+
+Ne jamais supprimer le projet Neon avant la preuve source ↔ local. Si Neon refuse le dump à cause du quota, attendre le retour lecture/reset ou utiliser un accès temporaire permettant uniquement l'export ; ne jamais démarrer une base locale vide comme remplacement silencieux.
 
 Pas de hard gate KB-first tant que la profondeur exacte n'est pas suffisante.
 
@@ -268,10 +295,13 @@ head         bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 
 # Workflows permanents
 
-Le tree `main` contient **16 workflows YAML**. À retenir :
+Après merge de la préparation #157, le tree contient **17 workflows YAML** : les 16 workflows existants restent inchangés et `robot-kb-local-postgres-validation.yml` ajoute uniquement une validation CI/manual de la lane Mac.
+
+À retenir :
 
 - Main Scanner et Fast Lane : cadence externe ;
-- Robot KB : collecte séparée ;
+- Robot KB Neon : collecte encore active jusqu'au cutover Mac vérifié ;
+- Robot KB local Mac : scripts/LaunchAgents préparés, pas un workflow cloud de collecte ;
 - `v4-global-live-shadow.yml` : manuel/read-only ;
 - `v4-global-market-offline-validation.yml` : CI Global + live PR read-only ;
 - `v4-global-notify.yml` : unique Global schedule toutes les 10 min + registre #150 ;
@@ -313,10 +343,14 @@ Documents de reprise :
 
 ```text
 Global marketplace-first
-  -> laisser la file se drainer à 10 évaluations/run
-  -> mesurer débit / coût / conflits sous cadence 10 min
-  -> observer le premier schedule exécutant le commit #154
-  -> scale-up >10/run seulement après mesure budget/runtime
+  -> observer/valider séparément les changements de scale de la PR #156
+
+Robot KB
+  -> merger la préparation locale #157 après CI verte
+  -> pull sur le Mac mini
+  -> exécuter Installer Robot KB Local.command
+  -> migrer Neon et obtenir MIGRATION_VERIFIED + health OK
+  -> seulement alors cutover des writers Neon
 
 TCGdex
   -> utiliser variants_detailed quand présent
