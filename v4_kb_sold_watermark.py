@@ -28,6 +28,7 @@ DEFAULT_PAGE_SIZE = 100
 DEFAULT_MAX_RECORDS = 400
 DEFAULT_MAX_SCAN_PAGES = 200
 MAX_PENDING_IDS = 50_000
+DEFERRED_NONFINAL_STATUSES = frozenset({"WAITING_FOR_PAYMENT"})
 
 
 class SoldWatermarkError(RuntimeError):
@@ -89,6 +90,10 @@ def _row_sold_at(row: Mapping[str, Any]) -> tuple[str, datetime]:
     return canonical, _parse_aware_timestamp(canonical, field="soldAt")
 
 
+def _row_status(row: Mapping[str, Any]) -> str:
+    return str(row.get("status") or "").strip().upper()
+
+
 def _has_final_price(row: Mapping[str, Any]) -> bool:
     cents = row.get("priceInCents")
     if isinstance(cents, bool):
@@ -102,7 +107,7 @@ def _has_final_price(row: Mapping[str, Any]) -> bool:
 
 
 def _validate_sold_row(row: Mapping[str, Any]) -> tuple[str, str, datetime]:
-    status = str(row.get("status") or "").strip().upper()
+    status = _row_status(row)
     if status != "SOLD":
         raise SoldWatermarkError(f"GCC SOLD scope returned non-SOLD row: {status or 'EMPTY'}")
     native_id = _row_id(row)
@@ -235,6 +240,8 @@ def fetch_sold_catchup_batch(
     rows_to_ingest: list[dict[str, Any]] = []
     collected_ids: set[str] = set()
     seen_this_scan: set[str] = set()
+    deferred_nonfinal_ids: set[str] = set()
+    deferred_nonfinal_status_counts: dict[str, int] = {}
     pages_scanned = 0
     caught_up = False
     cap_reached = False
@@ -294,13 +301,31 @@ def fetch_sold_catchup_batch(
             if not isinstance(raw_row, Mapping):
                 raise SoldWatermarkError(f"SOLD page {page} contains a non-object row")
             row = dict(raw_row)
+            status = _row_status(row)
+
+            if status in DEFERRED_NONFINAL_STATUSES:
+                native_id = _row_id(row)
+                _, sold_at_dt = _row_sold_at(row)
+                if native_id in seen_this_scan:
+                    continue
+                seen_this_scan.add(native_id)
+                if sold_at_dt < base_dt:
+                    caught_up = True
+                    stop_page = True
+                    break
+                deferred_nonfinal_ids.add(native_id)
+                deferred_nonfinal_status_counts[status] = (
+                    deferred_nonfinal_status_counts.get(status, 0) + 1
+                )
+                continue
+
             native_id, sold_at_text, sold_at_dt = _validate_sold_row(row)
 
             if native_id in seen_this_scan:
                 continue
             seen_this_scan.add(native_id)
 
-            # Track the newest sale timestamp/IDs observed while this backlog is open.
+            # Track the newest final sale timestamp/IDs observed while this backlog is open.
             if sold_at_dt > pending_target_dt:
                 pending_target_dt = sold_at_dt
                 pending_target_text = sold_at_text
@@ -352,6 +377,9 @@ def fetch_sold_catchup_batch(
             "raise --max-scan-pages to preserve lossless catch-up"
         )
 
+    watermark_blocked_by_nonfinal = bool(deferred_nonfinal_ids)
+    caught_up = caught_up and not watermark_blocked_by_nonfinal
+
     next_pending_seen = pending_seen | collected_ids
     if len(next_pending_seen) > MAX_PENDING_IDS:
         raise SoldWatermarkError(
@@ -388,6 +416,9 @@ def fetch_sold_catchup_batch(
         "cap_reached": cap_reached,
         "caught_up": caught_up,
         "api_exhausted": api_exhausted,
+        "deferred_nonfinal_rows": len(deferred_nonfinal_ids),
+        "deferred_nonfinal_status_counts": dict(sorted(deferred_nonfinal_status_counts.items())),
+        "watermark_blocked_by_nonfinal": watermark_blocked_by_nonfinal,
         "base_watermark_sold_at": base_text,
         "next_committed_watermark_sold_at": next_state["committed_watermark_sold_at"],
         "pending_ids_after_commit": len(next_state["pending_seen_ids"]),
@@ -463,6 +494,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "SOLD CATCH-UP: "
             f"records={manifest['records_count']} pages={manifest['pages_scanned']} "
             f"caught_up={manifest['caught_up']} cap_reached={manifest['cap_reached']} "
+            f"deferred_nonfinal={manifest['deferred_nonfinal_rows']} "
             f"pending_after_commit={manifest['pending_ids_after_commit']}"
         )
         return 0
