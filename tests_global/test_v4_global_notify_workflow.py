@@ -26,8 +26,9 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
 
     def test_ten_minute_schedule_keeps_bounded_batch_and_non_overlapping_concurrency(self):
         text = self._text()
-        self.assertIn('default: "15"', text)
-        self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '15' }}", text)
+        self.assertIn('default: "20"', text)
+        self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '20' }}", text)
+        self.assertNotIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '15' }}", text)
         self.assertNotIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}", text)
         self.assertIn('group: v4-global-confirmed-notifications', text)
         self.assertIn('cancel-in-progress: false', text)
@@ -35,7 +36,7 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
 
     def test_scale_up_is_exercised_read_only_in_pr_validation(self):
         text = self._validation_text()
-        self.assertIn('--max-evaluations 15', text)
+        self.assertIn('--max-evaluations 20', text)
         self.assertIn('GLOBAL_NOTIFY_ENABLED: "false"', text)
         self.assertIn('NTFY_TOPIC: ""', text)
 
