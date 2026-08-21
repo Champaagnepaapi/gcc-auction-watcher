@@ -30,6 +30,17 @@ def sold_row(native_id: str, sold_at: datetime, price: float = 50.0) -> dict[str
     }
 
 
+def waiting_row(native_id: str, sold_at: datetime | None = None) -> dict[str, Any]:
+    return {
+        "id": native_id,
+        "status": "WAITING_FOR_PAYMENT",
+        "soldAt": sold_at.isoformat().replace("+00:00", "Z") if sold_at else None,
+        "price": 50.0,
+        "priceInCents": 5000,
+        "item": {"id": f"item-{native_id}"},
+    }
+
+
 class PagedApi:
     def __init__(self, rows: list[dict[str, Any]], page_size: int) -> None:
         self.rows = rows
@@ -137,6 +148,33 @@ class SoldBackfillTests(unittest.TestCase):
             self.assertLess(
                 datetime.fromisoformat(committed["cursor_sold_at"].replace("Z", "+00:00")),
                 base,
+            )
+
+    def test_waiting_for_payment_without_sold_at_is_deferred_not_emitted(self) -> None:
+        base = datetime(2026, 8, 15, 3, tzinfo=timezone.utc)
+        rows = [
+            waiting_row("pending"),
+            sold_row("newer", base + timedelta(minutes=1)),
+            sold_row("old", base - timedelta(minutes=1)),
+            sold_row("older", base - timedelta(minutes=2)),
+        ]
+        api = PagedApi(rows, page_size=4)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = backfill.fetch_sold_backfill_batch(
+                root / "state.json",
+                root / "fixture.json",
+                root / "manifest.json",
+                bootstrap_before=base.isoformat(),
+                page_size=4,
+                http_get=api,
+            )
+            fixture = json.loads((root / "fixture.json").read_text())
+            self.assertEqual([row["id"] for row in fixture], ["old", "older"])
+            self.assertEqual(manifest["deferred_nonfinal_rows"], 1)
+            self.assertEqual(
+                manifest["deferred_nonfinal_status_counts"],
+                {"WAITING_FOR_PAYMENT": 1},
             )
 
     def test_non_final_or_missing_price_rows_fail_closed(self) -> None:
