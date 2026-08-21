@@ -87,7 +87,7 @@ export ROBOT_KB_DATABASE_URL="$NEON_URL"
 export ROBOT_KB_BACKUP_DIR="$MIGRATION_DIR"
 echo "Export Neon en cours..."
 dump_json="$(cd "$RUNTIME_DIR" && "$PYTHON" -m robot_kb.postgres_backup dump --directory "$MIGRATION_DIR")"
-dump_path="$($PYTHON -c 'import json,sys; print(json.loads(sys.argv[1])["backup"])' "$dump_json")"
+dump_path="$("$PYTHON" -c 'import json,sys; print(json.loads(sys.argv[1])["backup"])' "$dump_json")"
 unset ROBOT_KB_DATABASE_URL
 
 restore_failed=0
