@@ -123,13 +123,18 @@ class RobotKbLocalMacMigrationTests(unittest.TestCase):
         self.assertIn('for path in files[7:]:', self.runner)
         self.assertIn('MIGRATION_VERIFIED', self.status)
 
-    def test_cloud_collectors_remain_active_until_verified_cutover(self):
+    def test_cloud_collectors_are_manual_only_after_verified_cutover(self):
         cloud = Path('.github/workflows/robot-kb-cloud-shadow.yml').read_text(encoding='utf-8')
         sold = Path('.github/workflows/robot-kb-sold-shadow.yml').read_text(encoding='utf-8')
         ingest = Path('.github/workflows/v4-kb-shadow-ingest.yml').read_text(encoding='utf-8')
-        self.assertIn('cron: "32 * * * *"', cloud)
-        self.assertIn('cron: "17,47 * * * *"', sold)
-        self.assertIn('workflow_run:', ingest)
+        self.assertIn('workflow_dispatch:', cloud)
+        self.assertIn('workflow_dispatch:', sold)
+        self.assertIn('workflow_dispatch:', ingest)
+        self.assertNotIn('\n  schedule:', cloud)
+        self.assertNotIn('\n  schedule:', sold)
+        self.assertNotIn('\n  workflow_run:', ingest)
+        self.assertIn('source_run_id:', ingest)
+        self.assertIn('run-id: ${{ inputs.source_run_id }}', ingest)
         for text in (cloud, sold, ingest):
             self.assertIn('ROBOT_KB_DATABASE_URL', text)
 

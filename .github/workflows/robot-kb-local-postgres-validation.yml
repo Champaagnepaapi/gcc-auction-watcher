@@ -7,8 +7,12 @@ on:
       - "mac/robot-kb-local/**"
       - "tests/test_robot_kb_local_mac_migration.py"
       - "tests/test_robot_kb_local_viewer.py"
+      - ".github/workflows/robot-kb-cloud-shadow.yml"
+      - ".github/workflows/robot-kb-sold-shadow.yml"
+      - ".github/workflows/v4-kb-shadow-ingest.yml"
       - ".github/workflows/robot-kb-local-postgres-validation.yml"
       - "README.md"
+      - "docs/project-current-phase.md"
       - "docs/project-capability-ledger.md"
       - "docs/project-workflow-inventory.md"
       - "docs/project-branch-inventory.md"
@@ -64,14 +68,19 @@ jobs:
           bash -n "mac/robot-kb-local/Ouvrir Robot KB.command"
           python -m py_compile "mac/robot-kb-local/robot_kb_viewer.py"
 
-      - name: Assert cutover is not premature
+      - name: Assert automatic Neon writers are retired after verified cutover
         run: |
           grep -q 'ROBOT_KB_DATABASE_URL:' .github/workflows/robot-kb-cloud-shadow.yml
           grep -q 'ROBOT_KB_DATABASE_URL:' .github/workflows/robot-kb-sold-shadow.yml
           grep -q 'ROBOT_KB_DATABASE_URL:' .github/workflows/v4-kb-shadow-ingest.yml
-          grep -Fq 'cron: "32 * * * *"' .github/workflows/robot-kb-cloud-shadow.yml
-          grep -Fq 'cron: "17,47 * * * *"' .github/workflows/robot-kb-sold-shadow.yml
-          grep -q '^  workflow_run:' .github/workflows/v4-kb-shadow-ingest.yml
+          grep -q '^  workflow_dispatch:' .github/workflows/robot-kb-cloud-shadow.yml
+          grep -q '^  workflow_dispatch:' .github/workflows/robot-kb-sold-shadow.yml
+          grep -q '^  workflow_dispatch:' .github/workflows/v4-kb-shadow-ingest.yml
+          ! grep -q '^  schedule:' .github/workflows/robot-kb-cloud-shadow.yml
+          ! grep -q '^  schedule:' .github/workflows/robot-kb-sold-shadow.yml
+          ! grep -q '^  workflow_run:' .github/workflows/v4-kb-shadow-ingest.yml
+          grep -q 'source_run_id:' .github/workflows/v4-kb-shadow-ingest.yml
+          grep -Fq 'run-id: ${{ inputs.source_run_id }}' .github/workflows/v4-kb-shadow-ingest.yml
 
       - name: Parse workflows YAML
         run: |

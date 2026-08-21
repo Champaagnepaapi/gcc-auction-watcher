@@ -15,8 +15,9 @@ on:
         description: "Optional third TCGdex LANG:CARD_ID"
         required: false
         type: string
-  schedule:
-    - cron: "32 * * * *"
+
+# Automatic Neon scheduling was retired after the verified local PostgreSQL cutover.
+# This workflow is intentionally manual-only as a bounded rollback/recovery path.
 
 permissions:
   contents: read

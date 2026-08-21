@@ -2,8 +2,9 @@ name: Robot KB SOLD shadow
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17,47 * * * *"
+
+# Automatic Neon scheduling was retired after the verified local PostgreSQL cutover.
+# This workflow is intentionally manual-only as a bounded rollback/recovery path.
 
 permissions:
   contents: read

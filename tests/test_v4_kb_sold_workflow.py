@@ -10,10 +10,23 @@ class SoldWorkflowWiringTests(unittest.TestCase):
         self.sold = Path(".github/workflows/robot-kb-sold-shadow.yml").read_text(
             encoding="utf-8"
         )
+        self.installer = Path("mac/robot-kb-local/Installer Robot KB Local.command").read_text(
+            encoding="utf-8"
+        )
 
     def test_sold_is_split_to_independent_30_minute_lane(self):
-        self.assertIn('cron: "17,47 * * * *"', self.sold)
-        self.assertIn('cron: "32 * * * *"', self.hourly)
+        self.assertIn("workflow_dispatch:", self.sold)
+        self.assertIn("workflow_dispatch:", self.hourly)
+        self.assertNotIn("\n  schedule:", self.sold)
+        self.assertNotIn("\n  schedule:", self.hourly)
+        self.assertIn(
+            'write("com.robotpokemon.kb.sold", "sold", [{"Minute": 17}, {"Minute": 47}])',
+            self.installer,
+        )
+        self.assertIn(
+            'write("com.robotpokemon.kb.fixed", "fixed", {"Minute": 32})',
+            self.installer,
+        )
         self.assertIn("group: robot-kb-neon-shadow", self.sold)
         self.assertIn("group: robot-kb-neon-shadow", self.hourly)
         self.assertIn("cancel-in-progress: false", self.sold)
