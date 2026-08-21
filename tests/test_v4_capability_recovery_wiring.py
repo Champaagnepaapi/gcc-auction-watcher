@@ -41,101 +41,74 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
 
     def test_capability_ledger_records_shadow_not_as_production(self):
         ledger = Path("docs/project-capability-ledger.md").read_text(encoding="utf-8")
-        self.assertIn("Stack #108→#115", ledger)
-        self.assertIn("SHADOW/DEFERRED", ledger)
-        self.assertIn("PR #8", ledger)
-        self.assertIn("V5_ONLY", ledger)
-        self.assertIn("PRs structurantes : #9, #50, #52, #104", ledger)
-        self.assertIn("DISABLED", ledger)
+        for marker in (
+            "SHADOW",
+            "DEFERRED",
+            "DISABLED",
+            "V5_ONLY",
+            "PR #8",
+            "#108/#109/#110/#113/#114/#115/#138",
+            "Capacités structurantes : #9, #50, #52, #104",
+        ):
+            self.assertIn(marker, ledger)
+        self.assertIn("historiques/superseded", ledger)
 
     def test_capability_ledger_preserves_recovered_foundations(self):
         ledger = Path("docs/project-capability-ledger.md").read_text(encoding="utf-8")
         for marker in (
-            "P0/P1/P3 et PRs #51/#59/#60",
-            "PR #68/#72/#76",
-            "PR #62/#75",
-            "TCGdex identity cache",
-            "agent/source-scout-benchmark-20260814",
-            "Aucun benchmark vérifié ne prouve un TCGdex `500/500`",
-            "Stack #108→#115",
-            "#115 COMC",
+            "TCGdex / PokeTrace #119→#135",
+            "fallback générique catalogue immuable",
+            "Robot KB mirror/collectors séparés",
+            "#139 — réintégration",
+            "GCC/Cardova/magi/Fanatics/COMC",
+            "PPT = `SOLD_AGGREGATED`",
+            "PR #126 = `SUPERSEDED`",
         ):
             self.assertIn(marker, ledger)
 
-    def test_branch_inventory_has_complete_audited_snapshot(self):
+    def test_branch_inventory_preserves_audited_provenance_without_fake_current_count(self):
         inventory = Path("docs/project-branch-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("158/158", inventory)
-        self.assertIn("agent/v5-poketrace-cardmarket-market-data", inventory)
-        self.assertIn("fix/v4-recover-existing-capabilities-20260817", inventory)
-        self.assertIn("fix/v4-poketrace-deterministic-market-retrieval-20260817", inventory)
-        self.assertIn("fix/v4-poketrace-exact-provider-bridges-20260818", inventory)
-        self.assertIn("fix/v4-poketrace-preserve-provider-number-20260818", inventory)
-        self.assertIn("fix/v4-poketrace-provider-bridges-after-127-20260818", inventory)
-        self.assertIn("fix/v4-poketrace-ja-search-regression-20260818", inventory)
-        self.assertIn("diag/v4-provider-rejection-observability-20260818", inventory)
-        self.assertIn("agent/p0-card-knowledge-base-foundation", inventory)
-        self.assertIn("agent/source-scout-benchmark-20260814", inventory)
-        self.assertIn("feat/v4-global-multivault-edge-foundation", inventory)
-        self.assertIn("tmp-noop-check", inventory)
+        self.assertIn("dernier audit exhaustif", inventory)
+        self.assertIn("158 branches distantes", inventory)
+        self.assertIn("ne pas présenter `158` comme nombre actuel", inventory)
+        for marker in (
+            "agent/v5-poketrace-cardmarket-market-data",
+            "feat/v4-global-marketplace-discovery-20260820",
+            "ops/v4-global-marketplace-cutover-20260820",
+            "ops/v4-global-run-registry-20260820",
+            "shadow/v4-global-current-main-reintegration-20260819",
+            "PR #126 : superseded",
+            "Aucune branche n'a été supprimée",
+        ):
+            self.assertIn(marker, inventory)
 
-        raw_header = "## Liste exhaustive 158/158"
-        raw = inventory.split(raw_header, 1)[1]
-        code_block = raw.split("```text", 1)[1].split("```", 1)[0]
-        names = [line.strip() for line in code_block.splitlines() if line.strip()]
-        self.assertEqual(len(names), 158)
-        self.assertEqual(len(set(names)), 158)
-        self.assertIn("main", names)
-        self.assertIn("oops-no-more", names)
-
-    def test_open_pr_inventory_matches_audited_16_pr_snapshot(self):
+    def test_open_pr_inventory_tracks_governance_surface_without_claiming_exhaustive_count(self):
         inventory = Path("docs/project-open-pr-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("PR totales : **133**", inventory)
-        self.assertIn("PR ouvertes : **16**", inventory)
-        self.assertIn("Contrôle : **16 lignes / 16 PR ouvertes**", inventory)
+        self.assertIn("PR ouvertes **pertinentes pour la gouvernance courante**", inventory)
+        self.assertIn("ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub", inventory)
         rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ \|", line)]
         numbers = {
             int(re.match(r"^\| #(\d+) \|", line).group(1))
             for line in rows
         }
-        self.assertEqual(
-            numbers,
-            {8, 54, 87, 92, 96, 106, 107, 108, 109, 110, 111, 113, 114, 115, 126, 136},
-        )
-        self.assertEqual(len(rows), 16)
-        self.assertIn("#54", inventory)
+        self.assertTrue({8, 54, 87, 92, 96, 106, 107, 126, 138, 141}.issubset(numbers))
         self.assertIn("STALE_OPEN/SUPERSEDED", inventory)
-        self.assertIn("#87", inventory)
-        self.assertIn("décision produit V4 non déployée", inventory)
-        self.assertIn("#111", inventory)
-        self.assertIn("#126", inventory)
-        self.assertIn("SUPERSEDED/STALE_OPEN", inventory)
-        self.assertIn("#136", inventory)
-        self.assertIn("docs-only phase close", inventory)
-        self.assertIn("#129 à #135 ont été mergées/fermées", inventory)
-        self.assertIn("aucun changement de statut de PR #8", inventory)
+        self.assertIn("Décision produit V4 séparée/non déployée", inventory)
+        self.assertIn("SUPERSEDED_BY_139", inventory)
+        self.assertIn("SUPERSEDED_DIAGNOSTIC", inventory)
+        self.assertIn("PR #8 reste explicitement protégée", inventory)
 
-    def test_workflow_inventory_separates_14_current_files_from_80_records(self):
+    def test_workflow_inventory_tracks_current_tree_and_historical_registry_distinction(self):
         inventory = Path("docs/project-workflow-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("**14 fichiers workflow existent réellement", inventory)
-        self.assertIn("**80 enregistrements de workflows**", inventory)
-        self.assertIn("0ff115a95e8bbf8e4d04534e8efb343eb93cb128", inventory)
-        self.assertIn("append-readme-pr65.yml", inventory)
-        self.assertIn("fetch du fichier sur `main` retourne `404`", inventory)
-        self.assertIn("v5-gcc-catalog-refresh.yml", inventory)
-        self.assertIn("MAIN_SUPPORT / LEGACY_DEPENDENCY", inventory)
-
-        raw_header = "Liste exhaustive 80/80 des chemins enregistrés :"
-        raw = inventory.split(raw_header, 1)[1]
-        code_block = raw.split("```text", 1)[1].split("```", 1)[0]
-        names = [line.strip() for line in code_block.splitlines() if line.strip()]
-        self.assertEqual(len(names), 80)
-        self.assertEqual(len(set(names)), 80)
+        self.assertIn("**16 fichiers workflow YAML**", inventory)
+        self.assertIn("L'API Actions peut conserver des records historiques", inventory)
+        self.assertIn("le tree Git courant est l'autorité", inventory)
         for current in (
             "japan-edge-hunter.yml",
             "japan-edge-offline-validation.yml",
@@ -146,30 +119,36 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
             "v4-final-auction-check.yml",
             "v4-gcc-coverage-audit.yml",
             "v4-global-live-shadow.yml",
+            "v4-global-market-offline-validation.yml",
+            "v4-global-notify.yml",
             "v4-global-shadow-dispatch-ci.yml",
             "v4-kb-shadow-ingest.yml",
             "v5-gcc-catalog-refresh.yml",
             "v5-live-raw-pipeline-diagnostic.yml",
             "watcher.yml",
         ):
-            self.assertIn(current, names)
+            self.assertIn(current, inventory)
+        self.assertIn("Unique lane Global production", inventory)
+        self.assertIn("aucune transaction", inventory)
 
-    def test_issue_inventory_has_exactly_the_three_repository_issues(self):
+    def test_issue_inventory_tracks_all_repository_issues_and_separate_registries(self):
         inventory = Path("docs/project-issue-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("exactement **3 issues**", inventory)
+        self.assertIn("exactement **4 issues uniques**", inventory)
         rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ `", line)]
         numbers = {
             int(re.match(r"^\| #(\d+) `", line).group(1))
             for line in rows
         }
-        self.assertEqual(numbers, {1, 28, 58})
-        self.assertEqual(len(rows), 3)
-        self.assertIn("ACTIVE_REGISTRY", inventory)
+        self.assertEqual(numbers, {1, 28, 58, 150})
+        self.assertEqual(len(rows), 4)
+        self.assertIn("ACTIVE_V4_RUN_REGISTRY", inventory)
+        self.assertIn("ACTIVE_GLOBAL_RUN_REGISTRY", inventory)
         self.assertIn("SUPERSEDED_BY_IMPLEMENTATION", inventory)
         self.assertIn("STALE_PLANNING_ISSUE", inventory)
         self.assertIn("#59/#60/#62/#68/#72/#75/#76", inventory)
+        self.assertIn("Ne pas mélanger les runs Global dans #1", inventory)
 
 
 if __name__ == "__main__":
