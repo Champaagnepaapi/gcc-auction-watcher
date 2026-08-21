@@ -1,15 +1,15 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **20 août 2026** après le merge #151.
+État vérifié le **21 août 2026** après le merge #154.
 
 ## Autorité
 
 ```text
-V4 production                  main
-Dernier merge runtime Global   c9539ca521f69b43b3d93e621fb21447a69f3fe7 (#151)
+V4 production                  main @ c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
 Global discovery               marketplace-first
-Global notification workflow   marketplace-first
-Global schedule registry       issue #150
+Global notification workflow   marketplace-first / cadence 10 min
+Global schedule registry       issue #150 / PROUVÉ LIVE
+TCGdex microvariantes          variants_detailed / #154
 V5                             PR #8 / draft / non mergée
 Robot KB / Neon                séparé
 ```
@@ -22,7 +22,7 @@ Toujours re-vérifier le HEAD GitHub live ; des commits docs-only peuvent suivre
 GCC / Fanatics / COMC / magi / Cardova
  -> inventaire courant
  -> identité exacte
- -> TCGdex exact
+ -> TCGdex exact + microvariante déterministe
  -> GCC SOLD exact si disponible
  -> PPT + PokeTrace
  -> décision économique
@@ -33,60 +33,57 @@ Bootstrap : tout l'inventaire découvert est mis en file. Ensuite : nouvelles an
 
 Gate : `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5`, all-in prouvé, TCGdex exact, externe gradé exact >=3 ventes, décote >=30 %, conflit matériel bloquant. `ACTIVE_AUCTION` non actionnable. PPT/PokeTrace/eBay = une famille corrélée.
 
-Le correctif GCC #147 propage explicitement `FIXED_PRICE/AUCTION` depuis la requête ; une auction sans champ row type ne peut plus devenir `FIXED_ASK`.
+## Cadence production #153
 
-## Cutover #148
-
-Le workflow existant `.github/workflows/v4-global-notify.yml` est l'unique cron Global et utilise `v4_global_marketplace_notify_resilient.py`.
+Le workflow `.github/workflows/v4-global-notify.yml` reste l'unique cron Global.
 
 ```text
-schedule      41 * * * *
+schedule      1,11,21,31,41,51 * * * *
 manual        toujours dry-run
 state         .global-marketplace-state
-batch         10 pending/run initialement
+batch         10 pending/run
 kill switch   vars.GLOBAL_NOTIFY_ENABLED=false
 ```
 
-## Registre autonome #150 / PR #151
+Aucun second schedule n'a été ajouté et les budgets/run sont inchangés.
 
-Le connecteur ChatGPT ne peut pas énumérer directement les runs GitHub Actions `schedule` sans `run_id`. #151 réutilise le pattern du registre V4 issue #1 mais garde les deux lanes séparées.
+## Registre #150 / #151 — preuve réelle obtenue
 
-Chaque vrai `schedule` Global poste dans **issue #150** :
+Chaque vrai `schedule` Global poste des métadonnées agrégées minimales dans **issue #150** : run_id/SHA/activation/outcome, inventory/selected/pending, TCGdex/PPT/PokeTrace, confirmed/sent et flags transaction.
 
-- timestamp, `run_id`, attempt, trigger, SHA ;
-- activation + outcome marketplace ;
-- inventaire/selected/pending ;
-- TCGdex/PPT/PokeTrace ;
-- confirmed candidates / notifications sent ;
-- flags purchase/bid/checkout/payment.
-
-Aucun log complet, secret, cookie/session ou détail listing-level n'est copié. `workflow_dispatch` n'écrit pas dans #150. Le finalizer est `always()` afin de laisser un run_id/statut même après échec provider lorsque le job peut atteindre cette étape.
-
-Validation #151 :
+Première preuve post-#151 :
 
 ```text
-branch                  ops/v4-global-run-registry-20260820
-head                    a424fb62cb5e0553929847d3b973411a8b61a561
-merge                   c9539ca521f69b43b3d93e621fb21447a69f3fe7
-run                     32410224171 SUCCESS
-validate/live jobs      96558656377 / 96558728745 SUCCESS
-Global                  203/203 PASS
-V4                       51/51 PASS
-compile/YAML/diff       PASS
-inventory               1186
-selected/pending        10 / 1176
-TCGdex exact            5
-PPT                     1 match / 6 HTTP / 28 credits
-PokeTrace               4 matches / 6 requests
-market conflicts        4 blocked
-would_notify            0
+run                     32411433425
+trigger                 schedule
+commit                  c9539ca521f69b43b3d93e621fb21447a69f3fe7
+activation              true
+mode                    GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE
+status                  success
+selected/pending        10 / 1166
+confirmed/sent          0 / 0
+identity relaxed        false
 transactions            false
-artifact                9421951722
 ```
 
-## Preuve encore attendue
+La cadence #153 est également prouvée par plusieurs vrais schedules. Dernier observé avant merge #154 : run `32443663511` sur `e79e939c...`, success, activation true, inventory 1196, selected 10, pending 1137, 0 notification, transactions false.
 
-La mécanique du registre est offline + live read-only validée et mergée. Il reste à observer **le premier commentaire automatique de l'issue #150 produit par un vrai `schedule` sur `main` post-#151**. Ce commentaire donnera le `run_id`, après quoi jobs/logs/artifacts pourront être inspectés sans intervention utilisateur.
+## TCGdex detailed variants #154
+
+`variants_detailed` est maintenant consommé **après** identité TCGdex exacte pour prouver les axes commerciaux : finish, édition/shadow et special foils supportés.
+
+Règles :
+
+- source-pinned japonais reste prioritaire ;
+- plusieurs variantes compatibles restantes => blocage ;
+- champ inconnu/malformed => blocage ;
+- contradiction dans une même entrée (`Unlimited + 1st Edition`, `Poké Ball + Master Ball`) => blocage ;
+- `pricing` / `thirdParty` TCGdex n'entre jamais dans la fair value slab ;
+- aucun fuzzy.
+
+Validation : run `32444255909` SUCCESS, **221/221 Global + 51/51 V4 multimarket**, full V4 validation SUCCESS, live read-only SUCCESS, artifact `9433579221`, transactions false.
+
+Un vrai schedule exécutant spécifiquement le commit #154 n'avait pas encore été observé dans #150 au moment de cette fermeture ; ne pas le revendiquer avant une ligne explicite sur `c3e3da39...` ou un SHA ultérieur contenant #154.
 
 ## Cardova
 
@@ -94,11 +91,11 @@ La mécanique du registre est offline + live read-only validée et mergée. Il r
 
 ## Prochaine direction
 
-1. Lire le prochain commentaire #150 après le prochain cron minute 41.
-2. Inspecter automatiquement le run_id et confirmer le vrai mode production marketplace-first.
-3. Laisser le backlog se drainer par batches de 10.
-4. Mesurer débit/coût/backlog avant scale-up.
-5. Si anomalie : `vars.GLOBAL_NOTIFY_ENABLED=false` coupe la lane.
+1. Observer le premier schedule #150 contenant #154.
+2. Laisser le backlog se drainer à 10 évaluations/run sous cadence 10 min.
+3. Mesurer débit/coût/conflits avant scale-up >10/run.
+4. Exploiter `variants_detailed` comme preuve lorsque présent, sans fabriquer les microvariantes absentes/ambiguës.
+5. En cas d'anomalie Global : `vars.GLOBAL_NOTIFY_ENABLED=false` coupe la lane.
 
 ## Invariants
 
