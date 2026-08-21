@@ -208,7 +208,7 @@ jobs:
           python v4_global_marketplace_notify_resilient.py \
             --state-dir .global-marketplace-state \
             --output-dir global_marketplace_out \
-            --max-evaluations 10 \
+            --max-evaluations 15 \
             --gcc-sold-pages 30 \
             --gcc-live-pages 100 \
             --browser-detail-cap 100 \
