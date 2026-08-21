@@ -1,9 +1,15 @@
 name: V4 KB shadow ingest
 
 on:
-  workflow_run:
-    workflows: ["GCC Auction Watcher"]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful GCC Auction Watcher run ID to replay manually into legacy Neon"
+        required: true
+        type: string
+
+# Automatic workflow_run ingestion into Neon was retired after the verified
+# local PostgreSQL cutover. Manual replay remains available as a rollback path.
 
 permissions:
   contents: read
@@ -15,7 +21,6 @@ concurrency:
 
 jobs:
   ingest:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     # The first successful mirror can contain the whole fixed market baseline.
     # Later runs are normally much smaller because unchanged fixed rows are skipped.
@@ -46,7 +51,7 @@ jobs:
         with:
           name: v4-kb-shadow-spool
           path: v4-kb-shadow-artifact
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ inputs.source_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Restore independent KB mirror state
