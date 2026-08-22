@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
-from dataclasses import replace
 from typing import Any, Callable, Optional, Sequence
 
 import v4_canonical_multimarket as multimarket
@@ -39,10 +38,6 @@ _BARE_BEFORE_PSA_RE = re.compile(r"(?<![A-Za-z0-9])0*(?P<local>\d{1,4})\s+(?=PSA
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 _TRAILING_FINISH_RE = re.compile(
     r"\s+(?:MASTER\s*BALL|MASTERBALL|POK[EÉ]\s*BALL|POKEBALL|REVERSE\s+HOLO|REVERSE|HOLO)\s*$",
-    re.IGNORECASE,
-)
-_INLINE_DESCRIPTOR_RE = re.compile(
-    r"(?:^|\s[-|:]\s*)(?:FA|SAR|AR|SR|UR|HR|RRR|RR|CHR|CSR|SSR|HOLO|REVERSE)\s*/\s*",
     re.IGNORECASE,
 )
 
@@ -195,11 +190,14 @@ def _flexible_candidates(title: str) -> tuple[list[v1.FanaticsNativeCoordinate],
         ).strip(" -|:")
         add(lhs, rhs)
 
-    # Remove a trailing finish label and try both original and stripped forms.
-    left_forms = [left]
+    # An explicit trailing finish is a provider field, not part of the card
+    # name. Prefer the stripped shape before noisier original partitions so the
+    # bounded candidate cap cannot starve the exact set/name coordinate.
     stripped_finish = _TRAILING_FINISH_RE.sub("", left).strip()
+    left_forms: list[str] = []
     if stripped_finish and stripped_finish != left:
         left_forms.append(stripped_finish)
+    left_forms.append(left)
 
     for form in left_forms:
         tokens = form.split()
