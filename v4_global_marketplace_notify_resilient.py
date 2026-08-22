@@ -7,8 +7,8 @@ from __future__ import annotations
 import v4_global_live_confirmed as confirmed
 import v4_global_marketplace_notify as marketplace
 from v4_global_cardova_public_install import install_global_cardova_public_inventory
-from v4_global_marketplace_fanatics_native_v3 import (
-    install_global_marketplace_fanatics_native_v3,
+from v4_global_marketplace_fanatics_cross_locale import (
+    install_global_marketplace_fanatics_cross_locale,
 )
 from v4_global_marketplace_hardening import install_marketplace_first_hardening
 from v4_global_marketplace_identity_dimension_hardening import (
@@ -44,7 +44,7 @@ def main() -> int:
     install_marketplace_first_hardening()
     # Fanatics native identity is installed before Cardova because both wrap the
     # marketplace scan. Cardova must remain the outer public-inventory wrapper.
-    install_global_marketplace_fanatics_native_v3()
+    install_global_marketplace_fanatics_cross_locale()
     # Cardova public inventory is installed after the marketplace hardening so
     # it wraps the exact production scanner selected by that layer.
     install_global_cardova_public_inventory()
