@@ -14,6 +14,9 @@ from v4_global_marketplace_hardening import install_marketplace_first_hardening
 from v4_global_marketplace_identity_dimension_hardening import (
     install_global_marketplace_identity_dimension_hardening,
 )
+from v4_global_marketplace_magi_detail_coordinate import (
+    install_global_marketplace_magi_detail_coordinate,
+)
 from v4_global_marketplace_magi_native_identity import (
     install_global_marketplace_magi_native_identity,
 )
@@ -53,6 +56,10 @@ def main() -> int:
     # single-card coordinates natively through TCGdex; GCC history is no longer
     # an identity prerequisite for this vault.
     install_global_marketplace_magi_native_identity()
+    # Exact coordinate evidence may live in the current Magi detail body even
+    # when page.title() omits it. Related-item text remains stripped and every
+    # downstream TCGdex identity gate is unchanged.
+    install_global_marketplace_magi_detail_coordinate()
     # Cardova public inventory wraps the exact production scanner selected by
     # the preceding marketplace hardenings.
     install_global_cardova_public_inventory()
