@@ -54,7 +54,9 @@ class MagiDetailCoordinateTests(unittest.TestCase):
             "商品情報\n183/165\n[SV2a/ポケモンカード151]\n[SV6a/ナイトワンダラー]",
         )
         full_number, set_code, reason = detail.preflight_with_detail_coordinate(ask)
-        self.assertEqual(full_number, "183/165")
+        # Fail-closed preflight never returns a partial coordinate after the set
+        # axis becomes ambiguous.
+        self.assertEqual(full_number, "")
         self.assertEqual(set_code, "")
         self.assertEqual(reason, "set_code_ambiguous")
 
