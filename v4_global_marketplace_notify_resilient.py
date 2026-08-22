@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import v4_global_live_confirmed as confirmed
 import v4_global_marketplace_notify as marketplace
+from v4_global_cardova_public_install import install_global_cardova_public_inventory
 from v4_global_marketplace_hardening import install_marketplace_first_hardening
 from v4_global_marketplace_identity_dimension_hardening import (
     install_global_marketplace_identity_dimension_hardening,
@@ -38,6 +39,9 @@ def _install_stack_with_global_bridges() -> None:
 
 def main() -> int:
     install_marketplace_first_hardening()
+    # Cardova public inventory is installed after the marketplace hardening so
+    # it wraps the exact production scanner selected by that layer.
+    install_global_cardova_public_inventory()
     install_global_marketplace_identity_dimension_hardening()
     install_marketplace_queue_hardening()
     confirmed.install_global_external_market_stack = _install_stack_with_global_bridges
