@@ -54,16 +54,25 @@ class MagiDetailCoordinateTests(unittest.TestCase):
             "商品情報\n183/165\n[SV2a/ポケモンカード151]\n[SV6a/ナイトワンダラー]",
         )
         full_number, set_code, reason = detail.preflight_with_detail_coordinate(ask)
-        # Fail-closed preflight never returns a partial coordinate after the set
-        # axis becomes ambiguous.
         self.assertEqual(full_number, "")
         self.assertEqual(set_code, "")
         self.assertEqual(reason, "set_code_ambiguous")
 
-    def test_detail_english_marker_blocks(self):
+    def test_generic_latin_english_ui_label_is_not_card_language_evidence(self):
         ask = japan.Ask(
             "magi",
             "https://magi.camp/items/14",
+            "【PSA10】ミュウツー AR 1枚の通販",
+            25000,
+            "商品情報\nミュウツー 183/165 [SV2a/ポケモンカード151]\nEnglish\nお問い合わせ",
+        )
+        full_number, set_code, reason = detail.preflight_with_detail_coordinate(ask)
+        self.assertEqual((full_number, set_code, reason), ("183/165", "SV2a", "magi_native_detail_coordinate_parsed"))
+
+    def test_explicit_japanese_english_product_marker_blocks(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/15",
             "【PSA10】ミュウツー AR 1枚の通販",
             25000,
             "商品情報\n183/165\n[SV2a/ポケモンカード151]\n英語版",
@@ -73,10 +82,23 @@ class MagiDetailCoordinateTests(unittest.TestCase):
             ("", "", "explicit_non_japanese_language"),
         )
 
+    def test_latin_english_marker_in_product_title_blocks(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/16",
+            "【PSA10】Mewtwo English 1枚の通販",
+            25000,
+            "商品情報\n183/165\n[SV2a/ポケモンカード151]",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "explicit_non_japanese_language"),
+        )
+
     def test_detail_sensitive_variant_blocks(self):
         ask = japan.Ask(
             "magi",
-            "https://magi.camp/items/15",
+            "https://magi.camp/items/17",
             "【PSA10】ミュウツー 1枚の通販",
             25000,
             "商品情報\n183/165\n[SV2a/ポケモンカード151]\nMASTER BALL",
