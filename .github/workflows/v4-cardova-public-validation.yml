@@ -1,0 +1,116 @@
+name: V4 Cardova Public Read-Only Validation
+
+on:
+  pull_request:
+    paths:
+      - "v4_cardova_public_inventory.py"
+      - "v4_global_cardova_public_install.py"
+      - "v4_global_marketplace_notify_resilient.py"
+      - "tests_global/test_v4_cardova_public_inventory.py"
+      - ".github/workflows/v4-cardova-public-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cardova-public-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium
+        shell: bash
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            playwright install chromium
+          fi
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            timeout 180s playwright install --with-deps chromium
+          fi
+
+      - name: Run anonymous Cardova public capture
+        run: |
+          python - <<'PY'
+          import json
+          from playwright.sync_api import sync_playwright
+          from v4_cardova_public_inventory import capture_cardova_public_inventory
+          from v4_global_marketplace_discovery import cardova_inventory
+          from datetime import datetime, timezone
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              context = browser.new_context(locale="en-US", user_agent="Mozilla/5.0")
+              page = context.new_page()
+              capture = capture_cardova_public_inventory(page, max_pages_each=3, settle_ms=700)
+              context.close()
+              browser.close()
+
+          rows = cardova_inventory(
+              fixed_payload=capture.fixed_payload,
+              auction_payload=capture.auction_payload,
+              observed_at=datetime.now(timezone.utc),
+              buyer_fee_rate=0.0,
+              auction_buyer_premium_rate=None,
+              logistics_jpy=0.0,
+          )
+          summary = {
+              "status": capture.status,
+              "pages_visited": capture.pages_visited,
+              "json_responses": capture.json_responses,
+              "raw_listing_rows": capture.raw_listing_rows,
+              "scope_rows": capture.accepted_rows,
+              "parsed_en_ja_psa_rows": len(rows),
+              "rejected_rows": dict(capture.rejected_rows),
+              "complete": capture.complete,
+              "session_imported": False,
+              "credentials_used": False,
+              "notifications": False,
+              "transactions": False,
+          }
+          print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+          if capture.status != "OK":
+              raise SystemExit("CARDOVA_PUBLIC_CAPTURE_NOT_PROVEN")
+          if capture.json_responses <= 0 or capture.raw_listing_rows <= 0:
+              raise SystemExit("CARDOVA_PUBLIC_LISTINGS_NOT_OBSERVED")
+          PY
+
+      - name: Run focused offline tests
+        run: python -m unittest tests_global.test_v4_cardova_public_inventory -v
+
+      - name: Compile Cardova modules
+        run: |
+          python -m py_compile v4_cardova_public_inventory.py
+          python -m py_compile v4_global_cardova_public_install.py
+
+      - name: Assert no tracked mutation
+        run: test -z "$(git status --porcelain --untracked-files=no)"
