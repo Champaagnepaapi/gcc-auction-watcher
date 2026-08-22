@@ -24,6 +24,7 @@ class GlobalMarketplaceGapRecoveryV2Tests(unittest.TestCase):
 
     def test_new_source_pinned_set_aliases_match_only_exact_denominators(self):
         expected = {
+            "Battle Partners": ("SV9", 100, "102/100"),
             "Mega Symphonia": ("M1S", 63, "87/63"),
             "Mega Brave": ("M1L", 63, "64/63"),
             "Super Electric Breaker": ("SV8", 106, "112/106"),
@@ -44,11 +45,65 @@ class GlobalMarketplaceGapRecoveryV2Tests(unittest.TestCase):
                     )
                 )
 
-    def test_umbreon_gold_star_gap_is_still_not_fabricated(self):
-        self.assertNotIn(
-            "25th Anniversary Collection - Promo",
-            {alias.listing_set for alias in aliases._ALIASES},
+        battle_partners = self._alias("Battle Partners")
+        self.assertTrue(
+            generalized._validate_reference_for_alias("109/100", battle_partners)
         )
+
+    def test_unproven_live_gaps_are_still_not_fabricated(self):
+        labels = {alias.listing_set for alias in aliases._ALIASES}
+        self.assertNotIn("25th Anniversary Collection - Promo", labels)
+        self.assertNotIn("Starter Set Mega Gengar Ex", labels)
+
+    def test_battle_partners_source_alias_recovers_both_measured_collisions(self):
+        cases = (
+            ("Articuno", "102/100", "102", "SV9-102"),
+            ("N's Reshiram", "109/100", "109", "SV9-109"),
+        )
+        for name, reference, local_id, card_id in cases:
+            with self.subTest(name=name):
+                lot = watcher.Lot(
+                    url=f"https://example.invalid/{local_id}",
+                    title=name,
+                    current_price=1.0,
+                    source_type="fixed",
+                    grader="PSA",
+                    grade="10",
+                    card_number=reference,
+                    card_set="Battle Partners",
+                    language="Japanese",
+                )
+                original = multimarket.CanonicalCard(
+                    "AMBIGUOUS", reason="unique-coordinate denominator collision"
+                )
+                recovered = multimarket.CanonicalCard(
+                    "EXACT",
+                    card_id=card_id,
+                    set_id="SV9",
+                    set_name="Battle Partners",
+                    local_id=local_id,
+                    full_number=reference,
+                    name=name,
+                    language_code="ja",
+                    variants={"normal": False, "holo": False, "reverse": False},
+                    reason="TCGDEX_SOURCE_PINNED_SET_RECONCILED",
+                )
+                multimarket._DIAGNOSTICS = multimarket.MultiMarketDiagnostics()
+                multimarket._DIAGNOSTICS.tcgdex_ambiguous = 1
+                with mock.patch.object(
+                    source_recovery.reconciliation,
+                    "_recover_from_immutable_source",
+                    return_value=recovered,
+                ) as source:
+                    result = source_recovery.recover_reviewed_source_alias(lot, original)
+
+                self.assertEqual(result.status, "EXACT")
+                self.assertEqual(result.set_id, "SV9")
+                self.assertEqual(result.local_id, local_id)
+                self.assertEqual(result.reason, "TCGDEX_GLOBAL_SOURCE_ALIAS_RECOVERED")
+                self.assertEqual(multimarket._DIAGNOSTICS.tcgdex_ambiguous, 0)
+                self.assertEqual(multimarket._DIAGNOSTICS.tcgdex_exact, 1)
+                source.assert_called_once()
 
     def test_source_alias_can_recover_measured_ambiguous_coordinate(self):
         lot = watcher.Lot(
