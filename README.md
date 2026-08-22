@@ -4,7 +4,7 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
 
-## État canonique — 21 août 2026
+## État canonique — 22 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -12,8 +12,10 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 V4 production canonique          : main
 Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
 Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
-Global cadence                   : toutes les 10 min / workflow unique
-Global schedule run registry     : issue #150 / PROUVÉ LIVE
+Cardova public read-only         : PR #168 / 48caf402e851e2d888999ba94f93a9355f14d7bb
+Global schedule recovery         : PR #169 / 81db5cf2ffc788a517c9cb63d36cfd1f88c347a6
+Global cadence                   : toutes les 20 min / workflow unique
+Global schedule run registry     : issue #150 / finalizer séparé fail-visible
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
 Robot KB durable                 : PostgreSQL local Mac ACTIF
 Neon                             : writers automatiques RETIRÉS ; rollback manuel conservé
@@ -74,8 +76,10 @@ GCC       public /on-sale-items                  OK
 Fanatics  direct marketplace browse              OK
 COMC      direct PSA10 Pokemon inventory sweep   OK
 magi      broad Pokemon PSA10 inventory query    OK
-Cardova   AUTH_SESSION_INPUT_REQUIRED             fail-closed
+Cardova   public anonymous read-only inventory   OK
 ```
+
+Cardova n'utilise **aucun login/cookie/session** dans GitHub Actions : seules les réponses JSON publiques GET utiles sont capturées et sanitizées. Aucun token ou donnée de compte n'est conservé.
 
 ## Gate économique
 
@@ -111,6 +115,21 @@ PokeTrace max requests           60/run
 ```
 
 Preuve production observée : run `32467460797`, success, 50 selected/acknowledged, 27 identités commerciales, TCGdex exact 23, 7 conflits, 18 sans confirmation externe, 0 notification, `transactions=false`.
+
+## Cardova + récupération schedule — PR #168/#169
+
+PR #168 a activé la lecture Cardova publique anonyme en read-only, sans session persistante ni secret. PR #169 a corrigé l'exploitation du schedule Global après observation de runs dépassant la cadence historique de 10 min :
+
+```text
+cadence Global                   20 min (`1,21,41`)
+batch                            50 listings/run
+marketplace inner timeout        17 min
+job scan timeout                 25 min
+cache state                      sauvegardé seulement après scan success
+registre #150                    job séparé `register` + `always()`
+```
+
+Validation PR #169 : run `32567032852`, **240/240 Global + 51/51 V4 PASS**, compile/YAML/diff-check PASS, live marketplace read-only PASS et safety contract PASS. Aucune modification de l'identité, de l'économie ou des fournisseurs n'a été faite par #169.
 
 ---
 
@@ -258,7 +277,7 @@ head         bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 À retenir :
 
 - Main Scanner et Fast Lane : cadence externe ;
-- Global : workflow schedule unique toutes les 10 min ;
+- Global : workflow schedule unique toutes les 20 min ;
 - Robot KB production : **LaunchAgents locaux Mac** ;
 - anciens workflows Neon Robot KB : **manual-only rollback/recovery** ;
 - `robot-kb-local-postgres-validation.yml` : validation CI/manual de la lane Mac ;
@@ -309,7 +328,9 @@ Robot KB
   -> ne pas activer KB-first économiquement sans profondeur/preuve suffisante
 
 Global
+  -> vérifier le premier schedule production post-#169 dans le registre #150
   -> maintenir le scale #156 et surveiller la qualité d'identité/externe
+  -> poursuivre ensuite l'audit/fix vault-native Fanatics / magi / COMC
 
 TCGdex
   -> traiter PR #159 séparément après rebase/revalidation si souhaité
