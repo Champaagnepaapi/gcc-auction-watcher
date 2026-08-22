@@ -168,6 +168,25 @@ def fanatics_coordinate_candidates(title: str) -> tuple[list[v1.FanaticsNativeCo
     return output, "fanatics_h1_candidate_partitions" if output else "set_or_name_unproven"
 
 
+def _exposed_collector_numbers(text: str) -> set[str]:
+    """Return only slash tokens that can actually be collector numbers.
+
+    Fanatics can use slashes as display separators (for example `FA/Pikachu`).
+    The legacy generic detector intentionally accepts alphanumerics on both
+    sides, so using it raw would turn that display syntax into a fake conflicting
+    card number. A real collector coordinate must contain a digit on its left
+    side; this still preserves numeric and alphanumeric promo coordinates.
+    """
+    output: set[str] = set()
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    for match in v1._FULL_NUMBER_RE.finditer(normalized):
+        left = match.group("left")
+        if not re.search(r"\d", left):
+            continue
+        output.add(v1._norm_full_number(f"{left}/{match.group('right')}"))
+    return output
+
+
 def _resolve_coordinate(
     coordinate: v1.FanaticsNativeCoordinate,
     *,
@@ -187,7 +206,7 @@ def _resolve_coordinate(
     if v1._norm(canonical.name) != v1._norm(coordinate.name):
         return None, "tcgdex_card_name_conflict"
 
-    exposed = v1._exposed_full_numbers(f"{title}\n{proof_text}")
+    exposed = _exposed_collector_numbers(f"{title}\n{proof_text}")
     canonical_number = v1._norm_full_number(canonical.full_number)
     if exposed and canonical_number not in exposed:
         return None, "conflicting_full_fraction"
