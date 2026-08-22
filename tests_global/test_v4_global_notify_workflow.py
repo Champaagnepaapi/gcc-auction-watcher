@@ -12,11 +12,11 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
     def _validation_text(self) -> str:
         return Path('.github/workflows/v4-global-market-offline-validation.yml').read_text(encoding='utf-8')
 
-    def test_schedule_is_every_ten_minutes_and_activation_is_explicit(self):
+    def test_schedule_is_every_twenty_minutes_and_activation_is_explicit(self):
         text = self._text()
         self.assertIn('workflow_dispatch:', text)
-        self.assertIn('cron: "1,11,21,31,41,51 * * * *"', text)
-        self.assertNotIn('cron: "41 * * * *"', text)
+        self.assertIn('cron: "1,21,41 * * * *"', text)
+        self.assertNotIn('cron: "1,11,21,31,41,51 * * * *"', text)
         self.assertIn('Resolve notification activation', text)
         self.assertIn('REPO_NOTIFY_FLAG: ${{ vars.GLOBAL_NOTIFY_ENABLED }}', text)
         self.assertIn('.github/global-notify-activation', text)
@@ -24,7 +24,7 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", text)
         self.assertIn("github.event_name == 'schedule'", text)
 
-    def test_ten_minute_schedule_keeps_bounded_batch_and_non_overlapping_concurrency(self):
+    def test_twenty_minute_schedule_keeps_bounded_batch_and_non_overlapping_concurrency(self):
         text = self._text()
         self.assertIn('default: "50"', text)
         self.assertIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '50' }}", text)
@@ -33,7 +33,8 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertNotIn("GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '10' }}", text)
         self.assertIn('group: v4-global-confirmed-notifications', text)
         self.assertIn('cancel-in-progress: false', text)
-        self.assertIn('timeout-minutes: 40', text)
+        self.assertIn('timeout-minutes: 25', text)
+        self.assertIn('GLOBAL_MARKETPLACE_WALL_TIMEOUT_SECONDS: "1020"', text)
 
     def test_scale_up_is_exercised_read_only_in_pr_validation(self):
         text = self._validation_text()
@@ -60,13 +61,21 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertIn('elif [ "$REPO_NOTIFY_FLAG" = "true" ]; then', text)
         self.assertIn('elif [ "$marker" = "true" ]; then', text)
 
-    def test_marketplace_state_is_persistent_and_isolated_by_event(self):
+    def test_marketplace_state_is_persistent_only_after_success(self):
         text = self._text()
         self.assertIn('actions/cache/restore@v4', text)
         self.assertIn('actions/cache/save@v4', text)
         self.assertIn('global-marketplace-state-${{ github.event_name }}-', text)
         self.assertIn('--state-dir .global-marketplace-state', text)
+        self.assertIn("steps.marketplace.outcome == 'success'", text)
         self.assertNotIn('--state .global-notify-state/state.json', text)
+
+    def test_marketplace_step_has_inner_timeout_before_job_timeout(self):
+        text = self._text()
+        self.assertIn('timeout --signal=TERM --kill-after=30s "${GLOBAL_MARKETPLACE_WALL_TIMEOUT_SECONDS}s"', text)
+        self.assertIn('echo "timed_out=$timed_out" >> "$GITHUB_OUTPUT"', text)
+        self.assertIn('if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then', text)
+        self.assertIn('marketplace_timed_out: ${{ steps.marketplace.outputs.timed_out }}', text)
 
     def test_production_runner_is_marketplace_first_not_seed_rotation(self):
         text = self._text()
@@ -101,14 +110,21 @@ class GlobalNotifyWorkflowTests(unittest.TestCase):
         self.assertIn('GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"', validation)
         self.assertIn('V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"', validation)
 
-    def test_scheduled_runs_register_minimal_safe_metadata_in_issue_150(self):
+    def test_scheduled_runs_register_even_when_scan_job_fails_or_times_out(self):
         text = self._text()
         self.assertIn('Register Global schedule run in issue #150', text)
-        self.assertIn("always() && github.event_name == 'schedule'", text)
+        self.assertIn('needs: scan', text)
+        self.assertIn("if: ${{ always() && github.event_name == 'schedule' }}", text)
+        self.assertIn('actions/download-artifact@v4', text)
+        self.assertIn('continue-on-error: true', text)
+        self.assertIn('SCAN_JOB_RESULT: ${{ needs.scan.result }}', text)
+        self.assertIn('MARKETPLACE_TIMED_OUT: ${{ needs.scan.outputs.marketplace_timed_out }}', text)
         self.assertIn('issue_number: 150', text)
         self.assertIn("global_marketplace_out/global_marketplace_report.json", text)
         self.assertIn('run_id=${context.runId}', text)
         self.assertIn('commit_sha=${context.sha}', text)
+        self.assertIn('scan_job_result=', text)
+        self.assertIn('marketplace_timed_out=', text)
         self.assertIn('notification_activation=', text)
         self.assertIn('marketplace_status=', text)
         self.assertIn('inventory_seen=', text)
