@@ -34,7 +34,10 @@ _PSA_RE = re.compile(
 )
 _HASH_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])#0*(?P<local>\d{1,4})(?![A-Za-z0-9])")
 _NO_NUMBER_RE = re.compile(r"\bNo\.?\s*0*(?P<local>\d{1,4})\b", re.IGNORECASE)
-_BARE_BEFORE_PSA_RE = re.compile(r"(?<![A-Za-z0-9])0*(?P<local>\d{1,4})\s+(?=PSA\b)", re.IGNORECASE)
+# `_flexible_candidates` truncates the title immediately before the PSA token,
+# then strips the prefix. A bare collector number therefore sits at end-of-prefix,
+# not before a literal `PSA` lookahead.
+_BARE_BEFORE_PSA_RE = re.compile(r"(?<![A-Za-z0-9])0*(?P<local>\d{1,4})\s*$", re.IGNORECASE)
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 _TRAILING_FINISH_RE = re.compile(
     r"\s+(?:MASTER\s*BALL|MASTERBALL|POK[EÉ]\s*BALL|POKEBALL|REVERSE\s+HOLO|REVERSE|HOLO)\s*$",
