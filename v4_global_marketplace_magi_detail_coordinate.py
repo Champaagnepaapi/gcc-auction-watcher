@@ -1,18 +1,22 @@
 """Deterministic Magi detail-evidence coordinate recovery.
 
 The Magi detail fetch already keeps the current product body (with related-item
-sections stripped by ``japan.current_text``).  Some public Magi listings omit the
+sections stripped by ``japan.current_text``). Some public Magi listings omit the
 collector fraction or set code from ``page.title()`` while exposing it on the
-current product detail.  This layer allows that explicit detail evidence to feed
+current product detail. This layer allows that explicit detail evidence to feed
 the existing Magi-native TCGdex proof without guessing or fuzzy matching.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 
 import japan_edge_hunter as japan
 import v4_global_marketplace_magi_native_identity as native
 import v4_global_retrieval_hardening_v3 as retrieval_v3
+
+
+_EXPLICIT_JAPANESE_ENGLISH_RE = re.compile(r"英語(?:版)?", re.I)
 
 
 def _current_product_evidence(ask: japan.Ask) -> str:
@@ -65,10 +69,13 @@ def preflight_with_detail_coordinate(ask: japan.Ask) -> tuple[str, str, str]:
     if not retrieval_v3.PSA10_RE.search(unicodedata.normalize("NFKC", title)):
         return "", "", "psa10_unproven"
 
-    # Language/microvariant conflicts may be exposed in either the title or the
-    # current product detail. They remain blocking rather than being discarded.
-    if native._EXPLICIT_ENGLISH_RE.search(evidence):
+    # Magi's site chrome exposes a generic Latin "English" language selector on
+    # every product page. It is not card-language evidence. Latin EN/ENG claims
+    # therefore remain title-scoped; an explicit Japanese 英語/英語版 product
+    # claim in the current detail still blocks.
+    if native._EXPLICIT_ENGLISH_RE.search(title) or _EXPLICIT_JAPANESE_ENGLISH_RE.search(evidence):
         return "", "", "explicit_non_japanese_language"
+    # Material variant claims in the current product evidence stay blocking.
     if native._SENSITIVE_RE.search(evidence):
         return "", "", "sensitive_variant_unproven"
 
@@ -89,7 +96,7 @@ def install_global_marketplace_magi_detail_coordinate() -> None:
     if _INSTALLED:
         return
     # The native resolver intentionally looks up this helper at call time. Only
-    # explicit current-product evidence changes; every downstream TCGdex/name/
-    # set/localId/denominator/microvariant gate remains unchanged.
+    # explicit current-product coordinate evidence changes; every downstream
+    # TCGdex/name/set/localId/denominator/microvariant gate remains unchanged.
     native._preflight = preflight_with_detail_coordinate
     _INSTALLED = True
