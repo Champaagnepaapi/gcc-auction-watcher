@@ -29,6 +29,9 @@ from v4_global_marketplace_magi_promo_source_proof import (
 from v4_global_marketplace_magi_set_code_proof import (
     install_global_marketplace_magi_set_code_proof,
 )
+from v4_global_marketplace_magi_set_name_unique_card import (
+    install_global_marketplace_magi_set_name_unique_card,
+)
 from v4_global_marketplace_magi_unique_full_number import (
     install_global_marketplace_magi_unique_full_number,
 )
@@ -92,6 +95,10 @@ def main() -> int:
     # full-number uniqueness resolver. Exact Japanese card-name confirmation
     # remains mandatory and ambiguous coordinates stay blocked.
     install_global_marketplace_magi_unique_full_number()
+    # If Magi omits the number but states one exact Japanese set name, TCGdex may
+    # supply the coordinate only when exactly one card name from that set matches
+    # the current product title. Name-only listings remain blocked.
+    install_global_marketplace_magi_set_name_unique_card()
     # Cardova public inventory wraps the exact production scanner selected by
     # the preceding marketplace hardenings.
     install_global_cardova_public_inventory()
