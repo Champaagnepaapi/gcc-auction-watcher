@@ -29,6 +29,9 @@ from v4_global_marketplace_magi_promo_source_proof import (
 from v4_global_marketplace_magi_set_code_proof import (
     install_global_marketplace_magi_set_code_proof,
 )
+from v4_global_marketplace_magi_unique_full_number import (
+    install_global_marketplace_magi_unique_full_number,
+)
 from v4_global_marketplace_poketrace_recall import (
     install_global_marketplace_poketrace_recall,
 )
@@ -85,6 +88,10 @@ def main() -> int:
     # identity axis. Clean alias absence can fall back to the already-proved
     # Japanese TCGdex identity; conflicts/transients still fail closed.
     install_global_marketplace_magi_japanese_native_identity()
+    # If Magi omits only the set code, reuse the existing bounded TCGdex
+    # full-number uniqueness resolver. Exact Japanese card-name confirmation
+    # remains mandatory and ambiguous coordinates stay blocked.
+    install_global_marketplace_magi_unique_full_number()
     # Cardova public inventory wraps the exact production scanner selected by
     # the preceding marketplace hardenings.
     install_global_cardova_public_inventory()
