@@ -50,7 +50,7 @@ class MagiSetCodeProofTests(unittest.TestCase):
         self.ask = japan.Ask(
             "magi",
             "https://magi.camp/items/200",
-            "【PSA10】ミュウツー AR {183/165} [SV2a/X] 1枚の通販",
+            "【PSA10】ミュウツー AR {183/165} [SV2a/テスト] 1枚の通販",
             25000,
             "",
         )
