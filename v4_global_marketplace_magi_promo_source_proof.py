@@ -1,16 +1,16 @@
 """Pinned-source recovery for exact Magi Japanese S-P promo coordinates.
 
-Measured Magi listings expose coordinates such as ``324/S-P``.  The live
-TCGdex Japanese REST resolver currently treats these as an alphanumeric localId
-and returns ``TCGDEX_NO_ALPHANUMERIC_LOCALID``, while the immutable cards-database
-pin stores the same card at ``data-asia/S/S-P/324.ts``.
+Measured Magi listings expose coordinates such as ``324/S-P``. The live TCGdex
+Japanese REST resolver currently treats these as an alphanumeric localId, while
+the immutable cards-database pin stores the same card at
+``data-asia/S/S-P/324.ts``.
 
-This layer is intentionally narrow. It only recovers that exact failure for
-``S-P`` promos, requires numeric localId + denominator ``S-P``, requires the
-pinned card file to import the exact S-P set, and extracts the Japanese card
-name from that same immutable file. The normal Magi resolver still performs its
-provider-name proof and same-card Latin projection afterwards. No fuzzy match,
-translation or provider market metadata participates.
+This layer is intentionally narrow. For ``S-P`` only, it checks the immutable
+source *before* spending REST budget, requires numeric localId + denominator
+``S-P``, requires the pinned card file to import that exact set, and extracts
+the Japanese card name from the same file. The normal Magi resolver still
+performs provider-name proof and same-card Latin projection afterwards. No
+fuzzy match, translation or provider market metadata participates.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def _source_text(path: str) -> Optional[str]:
         return None
     _SOURCE_REQUESTS += 1
     try:
-        response = source_finish._SESSION.get(  # reuse the existing pinned-source session
+        response = source_finish._SESSION.get(
             f"{source_finish._SOURCE_RAW_BASE}/{path}",
             timeout=source_finish._SOURCE_TIMEOUT_SECONDS,
         )
@@ -62,7 +62,6 @@ def _card_name_ja(text: str, *, set_code: str) -> str:
     )
     if set_import.search(text) is None:
         return ""
-    # The card-level name block precedes attacks/abilities in the pinned source.
     head = text.split("illustrator:", 1)[0]
     match = re.search(
         r"\bname\s*:\s*\{\s*ja\s*:\s*['\"]([^'\"]+)['\"]",
@@ -88,8 +87,6 @@ def source_pinned_s_p_proof(
     if not numeric or int(numeric) <= 0:
         return None
 
-    # TCGdex source filenames preserve padding for some promos. Try only the
-    # deterministic raw and 3-digit forms; both still point inside the exact S-P set.
     candidates = tuple(dict.fromkeys((numeric, numeric.zfill(3))))
     for source_local in candidates:
         path = f"data-asia/S/S-P/{source_local}.ts"
@@ -114,22 +111,20 @@ def source_pinned_s_p_proof(
 
 def _proof_with_pinned_s_p(resolver, *, full_number, set_code, cache):
     assert _ORIGINAL_PROOF is not None
-    original = _ORIGINAL_PROOF(
+    # The provider coordinate itself selects S-P exactly. Probe the immutable
+    # source first so known REST namespace gaps do not consume the shared JA
+    # request budget and starve normal cards later in the Magi sweep.
+    if str(set_code or "").strip().casefold() == "s-p":
+        recovered = source_pinned_s_p_proof(full_number=full_number, set_code=set_code)
+        if recovered is not None:
+            cache[(str(set_code).casefold(), str(full_number).upper())] = recovered
+            return recovered
+    return _ORIGINAL_PROOF(
         resolver,
         full_number=full_number,
         set_code=set_code,
         cache=cache,
     )
-    if not (
-        original.status == "NO_MATCH"
-        and original.reason == "TCGDEX_NO_ALPHANUMERIC_LOCALID"
-    ):
-        return original
-    recovered = source_pinned_s_p_proof(full_number=full_number, set_code=set_code)
-    if recovered is None:
-        return original
-    cache[(str(set_code).casefold(), str(full_number).upper())] = recovered
-    return recovered
 
 
 def install_global_marketplace_magi_promo_source_proof() -> None:
