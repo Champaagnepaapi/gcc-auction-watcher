@@ -1,15 +1,10 @@
 """Recover Magi cards whose number is absent but exact Japanese set+name is proven.
 
-This path is deliberately narrower than a name search. It runs only after the
-normal Magi preflight reached ``collector_number_unproven`` and requires one
-explicit Japanese set name in the product title (for example
-``[旧裏第2弾/ポケモンジャングル]``). TCGdex must resolve that exact set and exactly
-one card name from that set may occur in the current product title. The full
-coordinate is then copied from that exact TCGdex card; it is never guessed from
-Magi text.
-
-Name-only listings, multiple matching cards, missing catalogue counts, provider
-errors, and any sensitive-variant rejection remain fail-closed.
+Recovery is exact-only. An explicit bracket set name remains accepted. If Magi
+omits that bracket, one complete Japanese TCGdex set name must occur literally
+in the current product title. TCGdex must then expose exactly one Japanese card
+name from that exact set in the same title. The collector coordinate is copied
+from TCGdex and is never guessed from provider text.
 """
 from __future__ import annotations
 
@@ -29,6 +24,7 @@ import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 _JP_SCRIPT_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 _SET_BRACKET_RE = re.compile(r"\[([^\]/]{1,50})/([^\]]{2,100})\]")
+_MIN_DISCOVERED_SET_CHARS = 4
 _ORIGINAL_RESOLVER = None
 _INSTALLED = False
 
@@ -45,6 +41,55 @@ def _explicit_japanese_set_name(title: str) -> tuple[str, str]:
     if len(names) != 1:
         return "", "japanese_set_name_ambiguous"
     return next(iter(names)), "explicit_japanese_set_name"
+
+
+def _list_rows(payload: object) -> list[Mapping[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, Mapping)]
+    if isinstance(payload, Mapping):
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, Mapping)]
+        for key in ("items", "sets", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, Mapping)]
+    return []
+
+
+def _compact_text(value: object) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).replace(" ", "").strip()
+
+
+def _catalog_set_name_in_title(
+    *,
+    resolver: retrieval_v3.TCGdexJapaneseProofResolver,
+    title: str,
+) -> tuple[str, str, str]:
+    """Return one exact TCGdex Japanese set whose full name is in the title."""
+    status, payload = resolver._get("sets")
+    if status == 0:
+        return "", "", "TCGDEX_BUDGET_EXHAUSTED"
+    if status != 200:
+        return "", "", f"TCGDEX_SET_CATALOG_HTTP_{status}"
+
+    candidates: dict[str, str] = {}
+    for row in _list_rows(payload):
+        set_id = str(row.get("id") or "").strip()
+        set_name = str(row.get("name") or "").strip()
+        if not set_id or not set_name or not _JP_SCRIPT_RE.search(set_name):
+            continue
+        if len(_compact_text(set_name)) < _MIN_DISCOVERED_SET_CHARS:
+            continue
+        if magi_hardening._jp_contains(title, set_name):
+            candidates[set_id] = set_name
+
+    if not candidates:
+        return "", "", "japanese_set_name_unproven"
+    if len(candidates) != 1:
+        return "", "", "japanese_set_name_ambiguous"
+    set_id, set_name = next(iter(candidates.items()))
+    return set_name, set_id, "tcgdex_exact_set_name_in_title"
 
 
 def _set_official_count(set_detail: Mapping[str, Any]) -> str:
@@ -69,8 +114,10 @@ def _fetch_unique_card_in_exact_set(
     resolver: retrieval_v3.TCGdexJapaneseProofResolver,
     title: str,
     set_name: str,
+    set_id: str = "",
 ) -> tuple[retrieval_v3.JapaneseCatalogProof | None, str]:
-    status, payload = resolver._get(f"sets/{quote(set_name, safe='')}")
+    lookup = set_id or set_name
+    status, payload = resolver._get(f"sets/{quote(lookup, safe='')}")
     if status == 0:
         return None, "TCGDEX_BUDGET_EXHAUSTED"
     if status == 404:
@@ -81,12 +128,14 @@ def _fetch_unique_card_in_exact_set(
     set_detail = resolver._detail_payload(payload)
     if not isinstance(set_detail, Mapping):
         return None, "TCGDEX_SET_NAME_INVALID_PAYLOAD"
-    set_id = str(set_detail.get("id") or "").strip()
+    catalog_set_id = str(set_detail.get("id") or "").strip()
     catalog_set_name = str(set_detail.get("name") or "").strip()
     official_count = _set_official_count(set_detail)
     cards = set_detail.get("cards")
-    if not set_id or not catalog_set_name or not official_count or not isinstance(cards, list):
+    if not catalog_set_id or not catalog_set_name or not official_count or not isinstance(cards, list):
         return None, "TCGDEX_SET_NAME_INCOMPLETE"
+    if set_id and catalog_set_id.casefold() != set_id.casefold():
+        return None, "TCGDEX_SET_ID_CONFLICT"
     if not _same_text(catalog_set_name, set_name):
         return None, "TCGDEX_SET_NAME_CONFLICT"
 
@@ -130,7 +179,7 @@ def _fetch_unique_card_in_exact_set(
         or not local_id
         or local_id != str(brief.get("localId") or "").strip()
         or not _same_text(name_ja, brief.get("name"))
-        or detail_set_id != set_id
+        or detail_set_id != catalog_set_id
         or not _same_text(detail_set_name, set_name)
     ):
         return None, "TCGDEX_CARD_DETAIL_CONFLICT"
@@ -139,7 +188,7 @@ def _fetch_unique_card_in_exact_set(
         status="EXACT",
         reason="TCGDEX_JA_EXACT_SET_NAME_UNIQUE_CARD",
         card_id=card_id,
-        set_id=set_id,
+        set_id=catalog_set_id,
         name_ja=name_ja,
         set_name_ja=detail_set_name,
         local_id=local_id,
@@ -158,13 +207,23 @@ def recover_set_name_unique_card_resolution(
 
     title = japan.current_text(ask.title)
     set_name, set_reason = _explicit_japanese_set_name(title)
+    set_id = ""
     if not set_name:
-        return native.MagiNativeResolution("NO_MATCH", set_reason)
+        set_name, set_id, set_reason = _catalog_set_name_in_title(
+            resolver=resolver,
+            title=title,
+        )
+        if not set_name:
+            status = "ERROR" if "HTTP_-1" in set_reason or "BUDGET" in set_reason else (
+                "AMBIGUOUS" if "AMBIGUOUS" in set_reason else "NO_MATCH"
+            )
+            return native.MagiNativeResolution(status, set_reason)
 
     proof, proof_reason = _fetch_unique_card_in_exact_set(
         resolver=resolver,
         title=title,
         set_name=set_name,
+        set_id=set_id,
     )
     if proof is None:
         status = "ERROR" if "HTTP_-1" in proof_reason or "BUDGET" in proof_reason else (
