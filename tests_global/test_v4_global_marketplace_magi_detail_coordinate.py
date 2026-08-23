@@ -20,6 +20,84 @@ class MagiDetailCoordinateTests(unittest.TestCase):
         self.assertEqual(set_code, "SV2a")
         self.assertEqual(reason, "magi_native_detail_coordinate_parsed")
 
+    def test_adjacent_magi_set_code_is_exact_coordinate(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/101",
+            "【PSA10】サンダースex SAR SV8a 209/187 1枚の通販",
+            13500,
+            "商品情報\nサンダースex SAR SV8a 209/187\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("209/187", "SV8a", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_adjacent_set_code_accepts_padded_fraction(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/102",
+            "【PSA10】カード SAR SV2D 080/071 1枚の通販",
+            12000,
+            "商品情報\nカード SAR SV2D 080/071\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("80/71", "SV2D", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_rarity_token_is_not_set_code(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/103",
+            "【PSA10】サンダースex SAR 209/187 1枚の通販",
+            13500,
+            "商品情報\nサンダースex SAR 209/187\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_unproven"),
+        )
+
+    def test_set_like_token_far_from_fraction_is_not_used(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/104",
+            "【PSA10】サンダースex SAR 209/187 1枚の通販",
+            13500,
+            "商品情報\nSV8a\nサンダースex SAR 209/187\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_unproven"),
+        )
+
+    def test_conflicting_adjacent_set_codes_are_ambiguous(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/105",
+            "【PSA10】サンダースex SAR SV8a 209/187 1枚の通販",
+            13500,
+            "商品情報\nSV8a 209/187\nSV2a 209/187\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_ambiguous"),
+        )
+
+    def test_bracket_and_adjacent_set_conflict_is_ambiguous(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/106",
+            "【PSA10】サンダースex SAR SV8a 209/187 1枚の通販",
+            13500,
+            "商品情報\nSV8a 209/187\n[SV2a/別セット]\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_ambiguous"),
+        )
+
     def test_related_item_coordinate_after_boundary_is_ignored(self):
         ask = japan.Ask(
             "magi",
