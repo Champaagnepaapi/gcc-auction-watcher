@@ -46,6 +46,58 @@ class MagiDetailCoordinateTests(unittest.TestCase):
             ("80/71", "SV2D", "magi_native_detail_coordinate_parsed"),
         )
 
+    def test_prefixed_local_classic_coordinate_recovers_clk(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/107",
+            "【PSA10】ポケモンカードゲーム Classic カメックス (CLK) PROMO CLK003/032 1枚の通販",
+            12000,
+            "商品情報\nカメックス (CLK) PROMO CLK003/032\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("3/32", "CLK", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_prefixed_local_classic_coordinate_recovers_cll(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/108",
+            "【PSA10】ポケモンカードゲーム Classic ホウオウex (CLL) PROMO CLL007/032 1枚の通販",
+            14000,
+            "商品情報\nホウオウex (CLL) PROMO CLL007/032\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("7/32", "CLL", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_prefixed_local_requires_independent_set_label(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/109",
+            "【PSA10】カメックス PROMO CLK003/032 1枚の通販",
+            12000,
+            "商品情報\nカメックス PROMO CLK003/032\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_unproven"),
+        )
+
+    def test_prefixed_local_never_treats_rarity_as_set(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/110",
+            "【PSA10】サンダースex SAR SAR209/187 1枚の通販",
+            13500,
+            "商品情報\nサンダースex SAR SAR209/187\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_unproven"),
+        )
+
     def test_rarity_token_is_not_set_code(self):
         ask = japan.Ask(
             "magi",
