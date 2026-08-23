@@ -18,6 +18,7 @@ import v4_global_magi_registry_hardening as magi_hardening
 import v4_global_marketplace_magi_detail_coordinate as detail_coordinate
 import v4_global_marketplace_magi_japanese_native_identity as japanese_native
 import v4_global_marketplace_magi_native_identity as native
+import v4_global_marketplace_magi_recovery_budget as recovery_budget
 import v4_tcgdex_generalized_coordinate_recovery as generalized
 from v4_global_market_core import CommercialIdentity
 
@@ -134,10 +135,11 @@ def recover_unique_full_number_resolution(
 def _resolve_with_unique_full_number(ask, **kwargs):
     assert _ORIGINAL_RESOLVER is not None
     original = _ORIGINAL_RESOLVER(ask, **kwargs)
+    resolver = recovery_budget.active_recovery_resolver(kwargs["resolver"])
     return recover_unique_full_number_resolution(
         ask,
         original,
-        resolver=kwargs["resolver"],
+        resolver=resolver,
     )
 
 
