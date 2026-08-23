@@ -29,6 +29,9 @@ from v4_global_marketplace_magi_native_identity import (
 from v4_global_marketplace_magi_promo_source_proof import (
     install_global_marketplace_magi_promo_source_proof,
 )
+from v4_global_marketplace_magi_recovery_budget import (
+    install_global_marketplace_magi_recovery_budget,
+)
 from v4_global_marketplace_magi_set_code_proof import (
     install_global_marketplace_magi_set_code_proof,
 )
@@ -96,6 +99,9 @@ def main() -> int:
     # identity axis. Clean alias absence can fall back to the already-proved
     # Japanese TCGdex identity; conflicts/transients still fail closed.
     install_global_marketplace_magi_japanese_native_identity()
+    # Recovery-only TCGdex paths have a separate bounded/cached budget so they
+    # can never starve the normal exact-coordinate resolver.
+    install_global_marketplace_magi_recovery_budget()
     # If Magi omits only the set code, reuse the existing bounded TCGdex
     # full-number uniqueness resolver. Exact Japanese card-name confirmation
     # remains mandatory and ambiguous coordinates stay blocked.
