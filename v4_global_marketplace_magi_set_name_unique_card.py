@@ -19,8 +19,10 @@ from typing import Any, Mapping
 from urllib.parse import quote
 
 import japan_edge_hunter as japan
+import v4_global_magi_registry_hardening as magi_hardening
 import v4_global_marketplace_magi_japanese_native_identity as japanese_native
 import v4_global_marketplace_magi_native_identity as native
+import v4_global_marketplace_magi_recovery_budget as recovery_budget
 from v4_global_market_core import CommercialIdentity
 import v4_global_retrieval_hardening_v3 as retrieval_v3
 
@@ -97,7 +99,7 @@ def _fetch_unique_card_in_exact_set(
         name = str(row.get("name") or "").strip()
         if not card_id or not local_id or len(name) < 2 or not _JP_SCRIPT_RE.search(name):
             continue
-        if japanese_native.magi_hardening._jp_contains(title, name):
+        if magi_hardening._jp_contains(title, name):
             matches[card_id] = row
 
     if not matches:
@@ -205,10 +207,11 @@ def recover_set_name_unique_card_resolution(
 def _resolve_with_set_name_unique_card(ask, **kwargs):
     assert _ORIGINAL_RESOLVER is not None
     original = _ORIGINAL_RESOLVER(ask, **kwargs)
+    resolver = recovery_budget.active_recovery_resolver(kwargs["resolver"])
     return recover_set_name_unique_card_resolution(
         ask,
         original,
-        resolver=kwargs["resolver"],
+        resolver=resolver,
     )
 
 
