@@ -100,8 +100,22 @@ class MagiUniqueFullNumberTests(unittest.TestCase):
         self.assertIs(result, original)
         self.assertEqual(resolver.calls, [])
 
+    def test_alphanumeric_local_id_does_not_spend_recovery_budget(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/5",
+            "【PSA10】カメックス CLL007/032 1枚の通販",
+            50000,
+            "【PSA10】カメックス CLL007/032 1枚の通販",
+        )
+        original = native.MagiNativeResolution("NO_MATCH", "set_code_unproven")
+        resolver = FakeResolver(exact_proof())
+        result = unique_full.recover_unique_full_number_resolution(ask, original, resolver=resolver)
+        self.assertIs(result, original)
+        self.assertEqual(resolver.calls, [])
+
     def test_other_rejection_reason_is_untouched(self):
-        ask = japan.Ask("magi", "https://magi.camp/items/5", CENTER_LADY, 50000, CENTER_LADY)
+        ask = japan.Ask("magi", "https://magi.camp/items/6", CENTER_LADY, 50000, CENTER_LADY)
         original = native.MagiNativeResolution("NO_MATCH", "collector_number_unproven")
         resolver = FakeResolver(exact_proof())
         result = unique_full.recover_unique_full_number_resolution(ask, original, resolver=resolver)
