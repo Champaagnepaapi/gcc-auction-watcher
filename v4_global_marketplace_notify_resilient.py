@@ -20,9 +20,6 @@ from v4_global_marketplace_magi_detail_coordinate import (
 from v4_global_marketplace_magi_native_identity import (
     install_global_marketplace_magi_native_identity,
 )
-from v4_global_marketplace_magi_prefixed_promo_coordinate import (
-    install_global_marketplace_magi_prefixed_promo_coordinate,
-)
 from v4_global_marketplace_magi_promo_source_proof import (
     install_global_marketplace_magi_promo_source_proof,
 )
@@ -68,12 +65,8 @@ def main() -> int:
     # Exact coordinate evidence may live in the current Magi detail body even
     # when page.title() omits it. Related-item/footer text remains excluded.
     install_global_marketplace_magi_detail_coordinate()
-    # Classic promos such as (CLL) CLL007/032 may expose the provider set code
-    # inside the printed localId. Only an independently repeated CLL/CLK token is
-    # accepted, and TCGdex must still prove the resulting coordinate.
-    install_global_marketplace_magi_prefixed_promo_coordinate()
-    # S-P promo coordinates such as 324/S-P can be recovered only from the same
-    # immutable TCGdex source pin when REST exposes the known namespace gap.
+    # S-P promo coordinates such as 324/S-P are checked directly against the
+    # immutable TCGdex source pin before spending the shared Japanese REST budget.
     install_global_marketplace_magi_promo_source_proof()
     # A provider-exposed exact set code can satisfy the set axis after TCGdex
     # proves the same set ID + localId + denominator + Japanese card name.
