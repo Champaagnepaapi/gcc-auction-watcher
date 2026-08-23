@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import v4_global_marketplace_magi_promo_source_proof as promo
+import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
 SOURCE_324 = '''
@@ -39,6 +41,55 @@ class MagiPromoSourceProofTests(unittest.TestCase):
         self.assertEqual(proof.name_ja, "ルギアV")
         self.assertEqual(proof.reason, "TCGDEX_SOURCE_PINNED_S_P_PROMO_EXACT")
         self.assertEqual(calls, ["data-asia/S/S-P/324.ts"])
+
+    def test_s_p_source_proof_runs_before_rest_resolver(self):
+        recovered = retrieval_v3.JapaneseCatalogProof(
+            status="EXACT",
+            reason="TCGDEX_SOURCE_PINNED_S_P_PROMO_EXACT",
+            card_id="S-P-324",
+            set_id="S-P",
+            name_ja="ルギアV",
+            set_name_ja="S-P",
+            local_id="324",
+        )
+        rest_calls = []
+
+        def original(*_args, **_kwargs):
+            rest_calls.append(True)
+            return retrieval_v3.JapaneseCatalogProof("NO_MATCH", "should_not_run")
+
+        old = promo._ORIGINAL_PROOF
+        promo._ORIGINAL_PROOF = original
+        try:
+            with patch.object(promo, "source_pinned_s_p_proof", return_value=recovered):
+                cache = {}
+                result = promo._proof_with_pinned_s_p(
+                    object(), full_number="324/S-P", set_code="S-P", cache=cache
+                )
+        finally:
+            promo._ORIGINAL_PROOF = old
+        self.assertEqual(result, recovered)
+        self.assertEqual(rest_calls, [])
+        self.assertEqual(cache[("s-p", "324/S-P")], recovered)
+
+    def test_non_s_p_still_uses_original_resolver(self):
+        expected = retrieval_v3.JapaneseCatalogProof("NO_MATCH", "original")
+        rest_calls = []
+
+        def original(*_args, **_kwargs):
+            rest_calls.append(True)
+            return expected
+
+        old = promo._ORIGINAL_PROOF
+        promo._ORIGINAL_PROOF = original
+        try:
+            result = promo._proof_with_pinned_s_p(
+                object(), full_number="209/187", set_code="SV8a", cache={}
+            )
+        finally:
+            promo._ORIGINAL_PROOF = old
+        self.assertEqual(result, expected)
+        self.assertEqual(rest_calls, [True])
 
     def test_wrong_source_set_import_stays_blocked(self):
         bad = SOURCE_324.replace('../S-P', '../SV-P')
