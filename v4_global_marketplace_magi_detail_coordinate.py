@@ -1,10 +1,10 @@
 """Deterministic Magi detail-evidence coordinate recovery.
 
 The Magi detail fetch already keeps the current product body. Some public Magi
-listings omit the collector fraction or set code from ``page.title()`` while
-exposing it on the current product detail. This layer allows that explicit
-product evidence to feed the existing Magi-native TCGdex proof without guessing
-or fuzzy matching.
+listings omit the collector fraction or bracketed set code from ``page.title()``
+while exposing an exact coordinate such as ``SV8a 209/187`` in the current
+product detail. This layer allows that explicit product evidence to feed the
+existing Magi-native TCGdex proof without guessing or fuzzy matching.
 """
 from __future__ import annotations
 
@@ -20,6 +20,9 @@ _EXPLICIT_JAPANESE_ENGLISH_RE = re.compile(r"英語(?:版)?", re.I)
 _MAGI_FOOTER_BOUNDARY_RE = re.compile(
     r"\n(?:絞り込み|カテゴリで絞り込む|magiについて)\s*(?:\n|$)",
     re.I,
+)
+_ADJACENT_SET_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9.-])([A-Za-z][A-Za-z0-9.-]{1,12})[ \t]*(?:[\[{(][ \t]*)?$"
 )
 
 
@@ -48,17 +51,45 @@ def _full_number_from_evidence(text: str) -> tuple[str, str]:
     return next(iter(tokens)), "full_collector_number_exact_detail"
 
 
+def _adjacent_set_codes(text: str, full_number: str) -> set[str]:
+    """Return set-id shaped tokens immediately preceding the proven fraction.
+
+    Magi commonly renders ``... SAR SV8a 209/187 ...`` without brackets. Only
+    the token immediately adjacent to the *same already-proven full fraction*
+    may participate. A rarity token such as ``SAR`` is rejected by the existing
+    strict set-id grammar, and a set-looking token elsewhere on the page is not
+    considered.
+    """
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    output: set[str] = set()
+    for match in japan.CARD_RE.finditer(normalized.upper()):
+        if japan.number(match.group(0)) != full_number:
+            continue
+        prefix = normalized[max(0, match.start() - 32) : match.start()]
+        token_match = _ADJACENT_SET_TOKEN_RE.search(prefix)
+        if token_match is None:
+            continue
+        candidate = token_match.group(1).strip()
+        if native._SET_ID_RE.fullmatch(candidate):
+            output.add(candidate)
+    return output
+
+
 def _set_code_from_evidence(text: str, full_number: str) -> tuple[str, str]:
     normalized = unicodedata.normalize("NFKC", str(text or ""))
-    codes = {
+    bracket_codes = {
         match.group(1).strip()
         for match in retrieval_v3.MAGI_SET_CODE_RE.finditer(normalized)
         if match.group(1).strip()
     }
-    if len(codes) > 1:
+    adjacent_codes = _adjacent_set_codes(normalized, full_number)
+    explicit_codes = bracket_codes | adjacent_codes
+    if len(explicit_codes) > 1:
         return "", "set_code_ambiguous"
-    if len(codes) == 1:
-        return next(iter(codes)), "explicit_set_code_detail"
+    if len(explicit_codes) == 1:
+        code = next(iter(explicit_codes))
+        reason = "explicit_set_code_detail" if code in bracket_codes else "adjacent_set_code_detail"
+        return code, reason
 
     if "/" in full_number:
         denominator = full_number.split("/", 1)[1]
