@@ -20,6 +20,9 @@ from v4_global_marketplace_magi_detail_coordinate import (
 from v4_global_marketplace_magi_native_identity import (
     install_global_marketplace_magi_native_identity,
 )
+from v4_global_marketplace_magi_promo_source_proof import (
+    install_global_marketplace_magi_promo_source_proof,
+)
 from v4_global_marketplace_magi_set_code_proof import (
     install_global_marketplace_magi_set_code_proof,
 )
@@ -62,6 +65,9 @@ def main() -> int:
     # Exact coordinate evidence may live in the current Magi detail body even
     # when page.title() omits it. Related-item/footer text remains excluded.
     install_global_marketplace_magi_detail_coordinate()
+    # S-P promo coordinates such as 324/S-P can be recovered only from the same
+    # immutable TCGdex source pin when REST exposes the known namespace gap.
+    install_global_marketplace_magi_promo_source_proof()
     # A provider-exposed exact set code can satisfy the set axis after TCGdex
     # proves the same set ID + localId + denominator + Japanese card name.
     install_global_marketplace_magi_set_code_proof()
