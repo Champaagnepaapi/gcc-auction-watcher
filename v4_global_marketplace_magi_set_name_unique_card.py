@@ -196,6 +196,15 @@ def _fetch_unique_card_in_exact_set(
     ), "TCGDEX_JA_EXACT_SET_NAME_UNIQUE_CARD"
 
 
+def _resolution_status(reason: str) -> str:
+    lowered = str(reason or "").casefold()
+    if "http_-1" in lowered or "budget" in lowered:
+        return "ERROR"
+    if "ambiguous" in lowered:
+        return "AMBIGUOUS"
+    return "NO_MATCH"
+
+
 def recover_set_name_unique_card_resolution(
     ask: japan.Ask,
     original: native.MagiNativeResolution,
@@ -214,10 +223,7 @@ def recover_set_name_unique_card_resolution(
             title=title,
         )
         if not set_name:
-            status = "ERROR" if "HTTP_-1" in set_reason or "BUDGET" in set_reason else (
-                "AMBIGUOUS" if "AMBIGUOUS" in set_reason else "NO_MATCH"
-            )
-            return native.MagiNativeResolution(status, set_reason)
+            return native.MagiNativeResolution(_resolution_status(set_reason), set_reason)
 
     proof, proof_reason = _fetch_unique_card_in_exact_set(
         resolver=resolver,
@@ -226,10 +232,10 @@ def recover_set_name_unique_card_resolution(
         set_id=set_id,
     )
     if proof is None:
-        status = "ERROR" if "HTTP_-1" in proof_reason or "BUDGET" in proof_reason else (
-            "AMBIGUOUS" if "AMBIGUOUS" in proof_reason else "NO_MATCH"
+        return native.MagiNativeResolution(
+            _resolution_status(proof_reason),
+            f"target_catalog_unproven:{proof_reason}",
         )
-        return native.MagiNativeResolution(status, f"target_catalog_unproven:{proof_reason}")
 
     if not proof.local_id or not proof.official_count:
         return native.MagiNativeResolution(
