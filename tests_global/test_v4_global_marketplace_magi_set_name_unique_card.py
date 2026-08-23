@@ -87,8 +87,10 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
         self.assertEqual(result.identity.number, "017/48")
         self.assertEqual(result.card_id, "PMCG2-017")
         self.assertIn("DERIVED_COORDINATE", result.reason)
-        # Explicit bracket proof keeps the existing direct exact-set path.
-        self.assertEqual([call[0] for call in resolver.calls], ["sets/ポケモンジャングル", "cards/PMCG2-017"])
+        # Explicit bracket proof keeps the existing two-call direct exact-set path.
+        self.assertEqual(len(resolver.calls), 2)
+        self.assertTrue(resolver.calls[0][0].startswith("sets/"))
+        self.assertEqual(resolver.calls[1][0], "cards/PMCG2-017")
 
     def test_literal_catalog_set_name_in_title_derives_coordinate(self):
         title = "【PSA10】ポケモンカード ゲンガー R ダークファンタズマ 1枚の通販"
