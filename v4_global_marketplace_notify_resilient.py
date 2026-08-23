@@ -17,6 +17,9 @@ from v4_global_marketplace_identity_dimension_hardening import (
 from v4_global_marketplace_magi_detail_coordinate import (
     install_global_marketplace_magi_detail_coordinate,
 )
+from v4_global_marketplace_magi_detail_retry import (
+    install_global_marketplace_magi_detail_retry,
+)
 from v4_global_marketplace_magi_japanese_native_identity import (
     install_global_marketplace_magi_japanese_native_identity,
 )
@@ -81,6 +84,8 @@ def main() -> int:
     # Exact coordinate evidence may live in the current Magi detail body even
     # when page.title() omits it. Related-item/footer text remains excluded.
     install_global_marketplace_magi_detail_coordinate()
+    # Retry the exact same public detail URL once on transport failure only.
+    install_global_marketplace_magi_detail_retry()
     # S-P promo coordinates such as 324/S-P are checked directly against the
     # immutable TCGdex source pin before spending the shared Japanese REST budget.
     install_global_marketplace_magi_promo_source_proof()
