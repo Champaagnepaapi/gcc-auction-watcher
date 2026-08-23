@@ -20,9 +20,6 @@ from v4_global_marketplace_magi_detail_coordinate import (
 from v4_global_marketplace_magi_native_identity import (
     install_global_marketplace_magi_native_identity,
 )
-from v4_global_marketplace_magi_rejection_diagnostics import (
-    install_global_marketplace_magi_rejection_diagnostics,
-)
 from v4_global_marketplace_magi_set_code_proof import (
     install_global_marketplace_magi_set_code_proof,
 )
@@ -68,9 +65,6 @@ def main() -> int:
     # A provider-exposed exact set code can satisfy the set axis after TCGdex
     # proves the same set ID + localId + denominator + Japanese card name.
     install_global_marketplace_magi_set_code_proof()
-    # PR-live only: print a bounded set of public rejection examples. This
-    # wrapper is observational and returns the exact underlying resolution.
-    install_global_marketplace_magi_rejection_diagnostics()
     # Cardova public inventory wraps the exact production scanner selected by
     # the preceding marketplace hardenings.
     install_global_cardova_public_inventory()
