@@ -1,10 +1,10 @@
 """Deterministic Magi detail-evidence coordinate recovery.
 
-The Magi detail fetch already keeps the current product body (with related-item
-sections stripped by ``japan.current_text``). Some public Magi listings omit the
-collector fraction or set code from ``page.title()`` while exposing it on the
-current product detail. This layer allows that explicit detail evidence to feed
-the existing Magi-native TCGdex proof without guessing or fuzzy matching.
+The Magi detail fetch already keeps the current product body. Some public Magi
+listings omit the collector fraction or set code from ``page.title()`` while
+exposing it on the current product detail. This layer allows that explicit
+product evidence to feed the existing Magi-native TCGdex proof without guessing
+or fuzzy matching.
 """
 from __future__ import annotations
 
@@ -17,10 +17,21 @@ import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
 _EXPLICIT_JAPANESE_ENGLISH_RE = re.compile(r"英語(?:版)?", re.I)
+_MAGI_FOOTER_BOUNDARY_RE = re.compile(
+    r"\n(?:絞り込み|カテゴリで絞り込む|magiについて)\s*(?:\n|$)",
+    re.I,
+)
 
 
 def _current_product_evidence(ask: japan.Ask) -> str:
-    return japan.current_text("\n".join(value for value in (ask.title, ask.text) if value))
+    """Keep current-listing evidence and exclude Magi navigation/footer chrome.
+
+    Magi's footer contains a permanent ``magi（英語版）`` link. That is a site
+    navigation label, not card-language evidence. Product description text above
+    the footer remains authoritative, so a real ``英語版`` claim still blocks.
+    """
+    evidence = japan.current_text("\n".join(value for value in (ask.title, ask.text) if value))
+    return _MAGI_FOOTER_BOUNDARY_RE.split(evidence, maxsplit=1)[0]
 
 
 def _full_number_from_evidence(text: str) -> tuple[str, str]:
@@ -69,10 +80,9 @@ def preflight_with_detail_coordinate(ask: japan.Ask) -> tuple[str, str, str]:
     if not retrieval_v3.PSA10_RE.search(unicodedata.normalize("NFKC", title)):
         return "", "", "psa10_unproven"
 
-    # Magi's site chrome exposes a generic Latin "English" language selector on
-    # every product page. It is not card-language evidence. Latin EN/ENG claims
-    # therefore remain title-scoped; an explicit Japanese 英語/英語版 product
-    # claim in the current detail still blocks.
+    # Latin EN/ENG claims are title-scoped. Japanese 英語/英語版 remains blocking
+    # anywhere in the bounded current-product evidence, but footer navigation is
+    # excluded before this check.
     if native._EXPLICIT_ENGLISH_RE.search(title) or _EXPLICIT_JAPANESE_ENGLISH_RE.search(evidence):
         return "", "", "explicit_non_japanese_language"
     # Material variant claims in the current product evidence stay blocking.
