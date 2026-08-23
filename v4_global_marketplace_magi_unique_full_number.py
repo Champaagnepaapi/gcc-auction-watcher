@@ -6,10 +6,11 @@ same official count, probes the exact localId, and returns EXACT only when the
 coordinate is globally unique.  Magi previously never reached that path because
 its native preflight required an explicit provider set code first.
 
-This Global-only wrapper reuses that proven resolver after ``set_code_unproven``.
-The exact Japanese card name must also be present in the bounded current-product
-evidence. Ambiguity, provider errors, missing names and non-numeric denominators
-remain blocking. No fuzzy matching or translation is introduced.
+This Global-only wrapper reuses that proven resolver after ``set_code_unproven``
+for numeric localId/denominator coordinates only. The exact Japanese card name
+must also be present in the bounded current-product evidence. Ambiguity, provider
+errors, missing names and alphanumeric/non-numeric coordinates remain blocking.
+No fuzzy matching or translation is introduced.
 """
 from __future__ import annotations
 
@@ -43,7 +44,10 @@ def recover_unique_full_number_resolution(
         return native.MagiNativeResolution("NO_MATCH", number_reason or "collector_number_unproven")
 
     local, denominator = full_number.split("/", 1)
-    if not local or not denominator.isdigit():
+    # The measured CLL/CLK Classic coordinates are not present in the pinned
+    # TCGdex catalogue. Do not burn denominator-scan budget on an alphanumeric
+    # localId that cannot be proven by this numeric-coordinate fallback.
+    if not local.isdigit() or not denominator.isdigit():
         return original
 
     synthetic = japan.Identity(
