@@ -69,6 +69,21 @@ class MagiDetailCoordinateTests(unittest.TestCase):
         full_number, set_code, reason = detail.preflight_with_detail_coordinate(ask)
         self.assertEqual((full_number, set_code, reason), ("183/165", "SV2a", "magi_native_detail_coordinate_parsed"))
 
+    def test_real_magi_english_footer_is_not_card_language_evidence(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/141",
+            "【PSA10】ミュウツー AR 1枚の通販",
+            25000,
+            (
+                "商品情報\nミュウツー 183/165 [SV2a/ポケモンカード151]\nPSA10\n"
+                "商品ID: 141\n絞り込み\nカテゴリで絞り込む\n"
+                "magiについて\nHOME\nmagi（英語版）\nお問い合わせ"
+            ),
+        )
+        full_number, set_code, reason = detail.preflight_with_detail_coordinate(ask)
+        self.assertEqual((full_number, set_code, reason), ("183/165", "SV2a", "magi_native_detail_coordinate_parsed"))
+
     def test_explicit_japanese_english_product_marker_blocks(self):
         ask = japan.Ask(
             "magi",
