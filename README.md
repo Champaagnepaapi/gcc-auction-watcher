@@ -4,12 +4,15 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
 
-## État canonique — 22 août 2026
+## État canonique — 24 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main
+V4 production canonique          : main @ 950694d66b04112fc1182f0b21d6008bb4560204
+V4 eBay hard-hang isolation      : PR #175 / MERGED / 950694d66b04112fc1182f0b21d6008bb4560204
+Magi native identity             : PR #173 / MERGED / b5ddc393850303e7ca542ae68e4ed4d1145340d3
+Magi coverage hardening          : PR #174 / OPEN / DRAFT / NON MERGED
 Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
 Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
 Cardova public read-only         : PR #168 / 48caf402e851e2d888999ba94f93a9355f14d7bb
@@ -131,6 +134,22 @@ registre #150                    job séparé `register` + `always()`
 
 Validation PR #169 : run `32567032852`, **240/240 Global + 51/51 V4 PASS**, compile/YAML/diff-check PASS, live marketplace read-only PASS et safety contract PASS. Aucune modification de l'identité, de l'économie ou des fournisseurs n'a été faite par #169.
 
+## Magi native identity — PR #173
+
+PR #173 est mergée. Magi n'est plus dépendant d'une projection latine lorsque l'identité japonaise TCGdex est déjà prouvée exactement.
+
+- preuve japonaise TCGdex exacte obligatoire ;
+- nom japonais exact présent dans le contenu produit ;
+- set/localId/dénominateur compatibles ;
+- source TCGdex japonaise immuable prioritaire pour les promos `S-P` ;
+- absence propre d'alias latin peut retomber sur une identité commerciale japonaise native ;
+- aucune traduction/fuzzy ; erreurs provider/budget restent bloquantes ;
+- ASK Magi reste ASK, jamais SOLD.
+
+Preuve production post-merge : run `32634964197` sur `b5ddc393850303e7ca542ae68e4ed4d1145340d3`, SUCCESS, Magi **9 exact**, sécurité verte, aucune transaction.
+
+PR #174 poursuit séparément la récupération déterministe des annonces Magi encore sous-spécifiées. Elle reste **OPEN / DRAFT / NON MERGED** ; aucune identité incertaine ne doit être forcée pour augmenter la couverture.
+
 ---
 
 # TCGdex — identité et microvariantes
@@ -161,6 +180,44 @@ Cron-job.org ~toutes les 10 min
   -> .github/workflows/watcher.yml
   -> run_watcher_multimarket.py
 ```
+
+Le workflow V4 utilise :
+
+```text
+concurrency.group        gcc-auction-watcher
+cancel-in-progress       false
+```
+
+Donc un run V4 bloqué peut faire attendre les runs suivants de **la même lane V4**, sans bloquer les workflows indépendants.
+
+## Incident eBay hard hang — PR #175
+
+Deux runs V4 production (`32664106071`, `32682740195`) sont restés bloqués environ 6 h. Le dernier événement scanner était une requête eBay : `page.goto(... timeout=10000)` n'a ni retourné ni levé `TimeoutError`, ce qui indiquait un blocage du RPC Playwright/driver, pas un simple timeout navigation.
+
+PR #175 est mergée sur `main` au SHA **`950694d66b04112fc1182f0b21d6008bb4560204`**.
+
+Correctif :
+
+- chaque scrape eBay SOLD est isolé dans un sous-processus/browser jetable ;
+- deadline dure bornée à 30 s par défaut ;
+- en cas de hang, kill du groupe de processus ;
+- retour `PROVIDER_ERROR` fail-closed puis V4 continue ;
+- credentials inutiles retirés de l'environnement enfant ;
+- aucun changement du matching, de la fair value, des seuils notification ou des règles commerciales.
+
+Validation pré-merge : **771 tests PASS**, compile/YAML/live comparison read-only PASS.
+
+Preuve production post-merge sur le SHA #175 :
+
+```text
+32738091183   SUCCESS   578 s
+32739149539   SUCCESS   464 s
+32740157203   SUCCESS   496 s
+32741180104   SUCCESS   598 s
+32742259467   SUCCESS   129 s
+```
+
+Le mode de panne de 6 h n'est plus observé sur ces runs. Continuer à surveiller la lane V4 lors des périodes d'enchères denses, notamment le dimanche.
 
 ## Fast Lane
 
@@ -320,17 +377,22 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
+V4
+  -> incident eBay #175 corrigé et prouvé en production
+  -> surveiller les runs, surtout lors des enchères dominicales
+  -> ne jamais laisser un provider externe immobiliser la lane entière
+
+Global / Magi
+  -> reprendre PR #174 depuis le main courant post-#175
+  -> continuer uniquement les récupérations d'identité déterministes
+  -> maintenir les ambiguïtés / variantes sensibles fail-closed
+
 Robot KB
   -> laisser le backfill local continuer
   -> surveiller health/logs/backups locaux
   -> accumuler davantage de SOLD exacts et de tiers exacts
   -> intégrer PPT/PokeTrace à la KB dans une phase séparée si utile
   -> ne pas activer KB-first économiquement sans profondeur/preuve suffisante
-
-Global
-  -> vérifier le premier schedule production post-#169 dans le registre #150
-  -> maintenir le scale #156 et surveiller la qualité d'identité/externe
-  -> poursuivre ensuite l'audit/fix vault-native Fanatics / magi / COMC
 
 TCGdex
   -> traiter PR #159 séparément après rebase/revalidation si souhaité
