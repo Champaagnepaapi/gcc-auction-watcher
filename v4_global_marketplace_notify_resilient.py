@@ -32,6 +32,9 @@ from v4_global_marketplace_magi_promo_source_proof import (
 from v4_global_marketplace_magi_rejection_probe import (
     install_global_marketplace_magi_rejection_probe,
 )
+from v4_global_marketplace_magi_rumble_source_proof import (
+    install_global_marketplace_magi_rumble_source_proof,
+)
 from v4_global_marketplace_magi_standard_source_proof import (
     install_global_marketplace_magi_standard_source_proof,
 )
@@ -121,6 +124,11 @@ def main() -> int:
     # supply the coordinate only when exactly one card name from that set matches
     # the current product title. Name-only listings remain blocked.
     install_global_marketplace_magi_set_name_unique_card()
+    # Historical Pokemon Rumble cards are absent from the Japanese REST set
+    # projection but present in the immutable TCGdex source as the complete ru1
+    # 16-card set. Recover only exact 0xx/016 Magi listings whose Japanese name
+    # maps through the same pinned source table to the exact ru1 card file.
+    install_global_marketplace_magi_rumble_source_proof()
     # PR validation can opt into bounded public listing-level reject diagnostics.
     # Production schedules do not set this flag, so the probe is inert there.
     install_global_marketplace_magi_rejection_probe()
