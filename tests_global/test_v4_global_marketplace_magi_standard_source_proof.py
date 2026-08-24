@@ -30,6 +30,19 @@ export default card;
 '''
 
 
+def exact_source_proof():
+    return retrieval_v3.JapaneseCatalogProof(
+        status="EXACT",
+        reason="TCGDEX_SOURCE_PINNED_STANDARD_COORDINATE_EXACT",
+        card_id="SM11b-063",
+        set_id="SM11b",
+        name_ja="ソルガレオ&ルナアーラGX",
+        set_name_ja="ドリームリーグ",
+        local_id="063",
+        official_count="49",
+    )
+
+
 class MagiStandardSourceProofTests(unittest.TestCase):
     def _source(self, path: str):
         mapping = {
@@ -79,24 +92,16 @@ class MagiStandardSourceProofTests(unittest.TestCase):
             )
         )
 
-    def test_transient_rest_failure_can_recover_but_clean_no_match_cannot(self):
+    def test_transient_rest_failure_and_clean_no_match_can_recover(self):
         original = source_proof._ORIGINAL_PROOF
+        old_source = source_proof.source_pinned_standard_proof
         try:
+            source_proof.source_pinned_standard_proof = lambda **kwargs: exact_source_proof()
+
             source_proof._ORIGINAL_PROOF = lambda *args, **kwargs: retrieval_v3.JapaneseCatalogProof(
                 "ERROR", reason="TCGDEX_HTTP_-1"
             )
             cache = {}
-            old_source = source_proof.source_pinned_standard_proof
-            source_proof.source_pinned_standard_proof = lambda **kwargs: retrieval_v3.JapaneseCatalogProof(
-                status="EXACT",
-                reason="TCGDEX_SOURCE_PINNED_STANDARD_COORDINATE_EXACT",
-                card_id="SM11b-063",
-                set_id="SM11b",
-                name_ja="ソルガレオ&ルナアーラGX",
-                set_name_ja="ドリームリーグ",
-                local_id="063",
-                official_count="49",
-            )
             recovered = source_proof._proof_with_standard_source_fallback(
                 object(), full_number="63/49", set_code="SM11b", cache=cache
             )
@@ -106,14 +111,33 @@ class MagiStandardSourceProofTests(unittest.TestCase):
             source_proof._ORIGINAL_PROOF = lambda *args, **kwargs: retrieval_v3.JapaneseCatalogProof(
                 "NO_MATCH", reason="TCGDEX_NO_CARD_FOR_FULL_NUMBER"
             )
+            clean_cache = {}
             clean = source_proof._proof_with_standard_source_fallback(
-                object(), full_number="63/49", set_code="SM11b", cache={}
+                object(), full_number="63/49", set_code="SM11b", cache=clean_cache
             )
-            self.assertEqual(clean.status, "NO_MATCH")
+            self.assertEqual(clean.status, "EXACT")
+            self.assertIn(("sm11b", "63/49"), clean_cache)
         finally:
             source_proof._ORIGINAL_PROOF = original
-            if 'old_source' in locals():
-                source_proof.source_pinned_standard_proof = old_source
+            source_proof.source_pinned_standard_proof = old_source
+
+    def test_ambiguous_rest_result_is_never_overridden(self):
+        original = source_proof._ORIGINAL_PROOF
+        old_source = source_proof.source_pinned_standard_proof
+        called = []
+        try:
+            source_proof._ORIGINAL_PROOF = lambda *args, **kwargs: retrieval_v3.JapaneseCatalogProof(
+                "AMBIGUOUS", reason="TCGDEX_MULTIPLE_CARDS_FOR_FULL_NUMBER"
+            )
+            source_proof.source_pinned_standard_proof = lambda **kwargs: called.append(kwargs) or exact_source_proof()
+            result = source_proof._proof_with_standard_source_fallback(
+                object(), full_number="63/49", set_code="SM11b", cache={}
+            )
+            self.assertEqual(result.status, "AMBIGUOUS")
+            self.assertEqual(called, [])
+        finally:
+            source_proof._ORIGINAL_PROOF = original
+            source_proof.source_pinned_standard_proof = old_source
 
 
 if __name__ == "__main__":
