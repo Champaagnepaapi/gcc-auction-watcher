@@ -18,9 +18,14 @@ Required proof:
 The resulting CommercialIdentity reuses the existing representation:
 ``finish=reverse`` and ``variant=poke_ball|master_ball``. No new variant
 convention, fuzzy matching or per-card exception is introduced.
+
+This path has its own tiny source-pin budget so unrelated source recoveries
+cannot starve a material-variant proof late in the Magi inventory scan. It still
+uses the exact same immutable TCGdex commit and is strictly read-only.
 """
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 from typing import Callable, Optional
@@ -40,8 +45,46 @@ _MARKERS = {
 }
 _SET_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{1,6}\d+[A-Za-z0-9.-]*)(?![A-Za-z0-9])")
 _EXPECTED_PRIOR_REASON = "sensitive_variant_unproven"
+_SOURCE_MAX_REQUESTS = max(
+    0, int(os.getenv("GLOBAL_MAGI_SENSITIVE_SOURCE_MAX_REQUESTS", "8"))
+)
+_SOURCE_REQUESTS = 0
+_SOURCE_CACHE: dict[str, Optional[str]] = {}
 _ORIGINAL_RESOLVER = None
 _INSTALLED = False
+
+
+def clear_sensitive_source_runtime_state() -> None:
+    global _SOURCE_REQUESTS
+    _SOURCE_REQUESTS = 0
+    _SOURCE_CACHE.clear()
+
+
+def _source_text(path: str) -> Optional[str]:
+    """Bounded immutable-source getter dedicated to sensitive variants."""
+    global _SOURCE_REQUESTS
+    if path in _SOURCE_CACHE:
+        return _SOURCE_CACHE[path]
+    if _SOURCE_REQUESTS >= _SOURCE_MAX_REQUESTS:
+        return None
+    _SOURCE_REQUESTS += 1
+    try:
+        response = source_finish._SESSION.get(
+            f"{source_finish._SOURCE_RAW_BASE}/{path}",
+            timeout=source_finish._SOURCE_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return None
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status != 200:
+        if status == 404:
+            _SOURCE_CACHE[path] = None
+        return None
+    text = str(getattr(response, "text", "") or "")
+    if not text or len(text) > 250_000:
+        return None
+    _SOURCE_CACHE[path] = text
+    return text
 
 
 def _variant_marker(evidence: str) -> tuple[str, str]:
@@ -90,8 +133,9 @@ def _pinned_variant_supported(card_text: str, special_variant: str) -> bool:
 def source_pinned_sensitive_variant_identity(
     *,
     evidence: str,
-    source_text_get: Callable[[str], Optional[str]] = standard_source._source_text,
+    source_text_get: Optional[Callable[[str], Optional[str]]] = None,
 ) -> tuple[Optional[CommercialIdentity], str, str]:
+    source_text_get = source_text_get or _source_text
     current = japan.current_text(evidence)
     _marker, special_variant = _variant_marker(current)
     if not special_variant:
@@ -150,7 +194,7 @@ def recover_sensitive_variant_resolution(
     ask: japan.Ask,
     original: native.MagiNativeResolution,
     *,
-    source_text_get: Callable[[str], Optional[str]] = standard_source._source_text,
+    source_text_get: Optional[Callable[[str], Optional[str]]] = None,
 ) -> native.MagiNativeResolution:
     if original.status != "NO_MATCH" or original.reason != _EXPECTED_PRIOR_REASON:
         return original
