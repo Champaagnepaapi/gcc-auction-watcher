@@ -29,6 +29,9 @@ from v4_global_marketplace_magi_native_identity import (
 from v4_global_marketplace_magi_promo_source_proof import (
     install_global_marketplace_magi_promo_source_proof,
 )
+from v4_global_marketplace_magi_rejection_probe import (
+    install_global_marketplace_magi_rejection_probe,
+)
 from v4_global_marketplace_magi_standard_source_proof import (
     install_global_marketplace_magi_standard_source_proof,
 )
@@ -95,10 +98,10 @@ def main() -> int:
     # S-P promo coordinates such as 324/S-P are checked directly against the
     # immutable TCGdex source pin before spending the shared Japanese REST budget.
     install_global_marketplace_magi_promo_source_proof()
-    # If normal Japanese TCGdex REST is transiently unavailable, an already
-    # explicit numeric set+number coordinate may be recovered only when the same
-    # immutable source pin proves exact set id, official count, card path, set
-    # import and Japanese card/set names. Clean REST NO_MATCH is never overridden.
+    # An explicit numeric set+number coordinate may use the same immutable TCGdex
+    # source pin if REST is transient, budget-exhausted or stale NO_MATCH. The
+    # pin must prove exact set id/count, card path/import and Japanese names;
+    # AMBIGUOUS REST results are never overridden.
     install_global_marketplace_magi_standard_source_proof()
     # A provider-exposed exact set code can satisfy the set axis after TCGdex
     # proves the same set ID + localId + denominator + Japanese card name.
@@ -118,6 +121,9 @@ def main() -> int:
     # supply the coordinate only when exactly one card name from that set matches
     # the current product title. Name-only listings remain blocked.
     install_global_marketplace_magi_set_name_unique_card()
+    # PR validation can opt into bounded public listing-level reject diagnostics.
+    # Production schedules do not set this flag, so the probe is inert there.
+    install_global_marketplace_magi_rejection_probe()
     # Cardova public inventory wraps the exact production scanner selected by
     # the preceding marketplace hardenings.
     install_global_cardova_public_inventory()
