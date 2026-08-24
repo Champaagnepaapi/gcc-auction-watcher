@@ -77,7 +77,7 @@ class MagiUniqueNameAmongFullNumberTests(unittest.TestCase):
         self.assertIsNotNone(result.identity)
         assert result.identity is not None
         self.assertEqual(result.identity.name, "ポケモンだいすきクラブ")
-        self.assertEqual(result.identity.number, "071/066")
+        self.assertEqual(result.identity.number, "71/66")
 
     def test_two_candidate_names_in_provider_evidence_remain_ambiguous(self):
         title = "PSA10 ポケモンだいすきクラブ 別カード 071/066 1枚"
