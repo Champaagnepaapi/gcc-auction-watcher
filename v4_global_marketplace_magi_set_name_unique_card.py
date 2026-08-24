@@ -2,11 +2,9 @@
 
 Recovery is exact-only. An explicit bracket set name remains accepted. If Magi
 omits that bracket, one complete Japanese TCGdex set name must occur literally
-in the bounded current-product evidence. TCGdex must then expose exactly one
-Japanese card name from that exact set in the same bounded evidence. The
-collector coordinate is copied from TCGdex and is never guessed from provider
-text. Magi navigation, related products and footer chrome are excluded by the
-existing detail-evidence boundary before they can participate.
+in the current product title. TCGdex must then expose exactly one Japanese card
+name from that exact set in the same title. The collector coordinate is copied
+from TCGdex and is never guessed from provider text.
 """
 from __future__ import annotations
 
@@ -17,7 +15,6 @@ from urllib.parse import quote
 
 import japan_edge_hunter as japan
 import v4_global_magi_registry_hardening as magi_hardening
-import v4_global_marketplace_magi_detail_coordinate as detail_coordinate
 import v4_global_marketplace_magi_japanese_native_identity as japanese_native
 import v4_global_marketplace_magi_native_identity as native
 import v4_global_marketplace_magi_recovery_budget as recovery_budget
@@ -64,12 +61,12 @@ def _compact_text(value: object) -> str:
     return unicodedata.normalize("NFKC", str(value or "")).replace(" ", "").strip()
 
 
-def _catalog_set_name_in_evidence(
+def _catalog_set_name_in_title(
     *,
     resolver: retrieval_v3.TCGdexJapaneseProofResolver,
-    evidence: str,
+    title: str,
 ) -> tuple[str, str, str]:
-    """Return one exact TCGdex Japanese set whose full name is in product evidence."""
+    """Return one exact TCGdex Japanese set whose full name is in the title."""
     status, payload = resolver._get("sets")
     if status == 0:
         return "", "", "TCGDEX_BUDGET_EXHAUSTED"
@@ -84,7 +81,7 @@ def _catalog_set_name_in_evidence(
             continue
         if len(_compact_text(set_name)) < _MIN_DISCOVERED_SET_CHARS:
             continue
-        if magi_hardening._jp_contains(evidence, set_name):
+        if magi_hardening._jp_contains(title, set_name):
             candidates[set_id] = set_name
 
     if not candidates:
@@ -92,7 +89,7 @@ def _catalog_set_name_in_evidence(
     if len(candidates) != 1:
         return "", "", "japanese_set_name_ambiguous"
     set_id, set_name = next(iter(candidates.items()))
-    return set_name, set_id, "tcgdex_exact_set_name_in_product_evidence"
+    return set_name, set_id, "tcgdex_exact_set_name_in_title"
 
 
 def _set_official_count(set_detail: Mapping[str, Any]) -> str:
@@ -115,7 +112,7 @@ def _same_text(left: object, right: object) -> bool:
 def _fetch_unique_card_in_exact_set(
     *,
     resolver: retrieval_v3.TCGdexJapaneseProofResolver,
-    evidence: str,
+    title: str,
     set_name: str,
     set_id: str = "",
 ) -> tuple[retrieval_v3.JapaneseCatalogProof | None, str]:
@@ -151,7 +148,7 @@ def _fetch_unique_card_in_exact_set(
         name = str(row.get("name") or "").strip()
         if not card_id or not local_id or len(name) < 2 or not _JP_SCRIPT_RE.search(name):
             continue
-        if magi_hardening._jp_contains(evidence, name):
+        if magi_hardening._jp_contains(title, name):
             matches[card_id] = row
 
     if not matches:
@@ -218,20 +215,19 @@ def recover_set_name_unique_card_resolution(
         return original
 
     title = japan.current_text(ask.title)
-    evidence = detail_coordinate._current_product_evidence(ask)
     set_name, set_reason = _explicit_japanese_set_name(title)
     set_id = ""
     if not set_name:
-        set_name, set_id, set_reason = _catalog_set_name_in_evidence(
+        set_name, set_id, set_reason = _catalog_set_name_in_title(
             resolver=resolver,
-            evidence=evidence,
+            title=title,
         )
         if not set_name:
             return native.MagiNativeResolution(_resolution_status(set_reason), set_reason)
 
     proof, proof_reason = _fetch_unique_card_in_exact_set(
         resolver=resolver,
-        evidence=evidence,
+        title=title,
         set_name=set_name,
         set_id=set_id,
     )
