@@ -67,6 +67,9 @@ def _worker_env() -> dict[str, str]:
     ):
         if key in os.environ:
             output[key] = os.environ[key]
+    # Prevent the child navigation-resilience installer from recursively
+    # enabling this process-isolation layer again.
+    output["V4_EBAY_ISOLATED_WORKER"] = "1"
     return output
 
 
