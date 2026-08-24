@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from urllib.parse import urlparse
 
 import watcher
@@ -123,7 +124,12 @@ def resilient_scrape_psa_apr(page, *args, **kwargs):
 
 
 def install_v4_external_provider_navigation_resilience() -> None:
-    """Wrap current provider scrapers without changing matching/economics/budgets."""
+    """Wrap current providers, then hard-isolate eBay in the production parent.
+
+    The child eBay worker sets V4_EBAY_ISOLATED_WORKER=1 so it receives only
+    this normal TimeoutError/usable-DOM salvage layer and cannot recursively
+    spawn another worker.
+    """
     global _INSTALLED, _ORIGINAL_SCRAPE_EBAY_SOLD, _ORIGINAL_SCRAPE_PSA_APR
     if _INSTALLED:
         return
@@ -133,3 +139,10 @@ def install_v4_external_provider_navigation_resilience() -> None:
     watcher.scrape_ebay_sold = resilient_scrape_ebay_sold
     watcher.scrape_psa_apr = resilient_scrape_psa_apr
     _INSTALLED = True
+
+    if os.getenv("V4_EBAY_ISOLATED_WORKER", "0").strip() != "1":
+        from v4_ebay_hard_timeout_isolation import (
+            install_v4_ebay_hard_timeout_isolation,
+        )
+
+        install_v4_ebay_hard_timeout_isolation()
