@@ -175,6 +175,58 @@ class MagiDetailCoordinateTests(unittest.TestCase):
         self.assertEqual(set_code, "")
         self.assertEqual(reason, "collector_number_ambiguous")
 
+    def test_unique_set_qualified_line_beats_unpaired_seo_fraction(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/1257952557",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nソルガレオ&ルナアーラGX SR SM11b 063/049\n検索用 020/165\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("63/49", "SM11b", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_two_set_qualified_lines_remain_collector_ambiguous(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/201",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nSM11b 063/049\nSV2a 183/165\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "collector_number_ambiguous"),
+        )
+
+    def test_separate_set_label_does_not_rescue_two_bare_numbers(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/202",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nSM11b\n063/049\n020/165\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "collector_number_ambiguous"),
+        )
+
+    def test_line_scoped_coordinate_still_blocks_global_set_conflict(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/203",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nSM11b 063/049\n検索用 020/165\n[SV2a/別セット]\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_ambiguous"),
+        )
+
     def test_multiple_current_product_set_codes_are_ambiguous(self):
         ask = japan.Ask(
             "magi",
