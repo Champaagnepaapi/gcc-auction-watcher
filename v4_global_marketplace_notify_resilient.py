@@ -53,6 +53,9 @@ from v4_global_marketplace_magi_set_name_unique_card import (
 from v4_global_marketplace_magi_unique_full_number import (
     install_global_marketplace_magi_unique_full_number,
 )
+from v4_global_marketplace_magi_unique_name_among_full_number import (
+    install_global_marketplace_magi_unique_name_among_full_number,
+)
 from v4_global_marketplace_poketrace_recall import (
     install_global_marketplace_poketrace_recall,
 )
@@ -123,6 +126,11 @@ def main() -> int:
     # full-number uniqueness resolver. Exact Japanese card-name confirmation
     # remains mandatory and ambiguous coordinates stay blocked.
     install_global_marketplace_magi_unique_full_number()
+    # A globally non-unique full number remains blocked unless exactly one of
+    # the exact TCGdex coordinate candidates has its exact Japanese card name in
+    # the bounded current Magi product evidence. Cached coordinate reads make
+    # this a disambiguation axis rather than a larger network search.
+    install_global_marketplace_magi_unique_name_among_full_number()
     # If Magi omits the number but states one exact Japanese set name, TCGdex may
     # supply the coordinate only when exactly one card name from that set matches
     # the current product title. Name-only listings remain blocked.
