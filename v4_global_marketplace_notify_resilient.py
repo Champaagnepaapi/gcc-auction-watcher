@@ -29,6 +29,9 @@ from v4_global_marketplace_magi_native_identity import (
 from v4_global_marketplace_magi_promo_source_proof import (
     install_global_marketplace_magi_promo_source_proof,
 )
+from v4_global_marketplace_magi_standard_source_proof import (
+    install_global_marketplace_magi_standard_source_proof,
+)
 from v4_global_marketplace_magi_recovery_budget import (
     install_global_marketplace_magi_recovery_budget,
 )
@@ -92,6 +95,11 @@ def main() -> int:
     # S-P promo coordinates such as 324/S-P are checked directly against the
     # immutable TCGdex source pin before spending the shared Japanese REST budget.
     install_global_marketplace_magi_promo_source_proof()
+    # If normal Japanese TCGdex REST is transiently unavailable, an already
+    # explicit numeric set+number coordinate may be recovered only when the same
+    # immutable source pin proves exact set id, official count, card path, set
+    # import and Japanese card/set names. Clean REST NO_MATCH is never overridden.
+    install_global_marketplace_magi_standard_source_proof()
     # A provider-exposed exact set code can satisfy the set axis after TCGdex
     # proves the same set ID + localId + denominator + Japanese card name.
     install_global_marketplace_magi_set_code_proof()
