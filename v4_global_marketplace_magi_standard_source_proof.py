@@ -1,9 +1,10 @@
 """Immutable TCGdex-source fallback for explicit numeric Magi coordinates.
 
-This recovery is used only after the normal Japanese TCGdex REST proof returns a
-transient/provider error or exhausts its bounded budget.  The Magi provider must
-already expose an exact set code plus numeric ``local/official`` coordinate.
-The immutable cards-database pin must then prove all of:
+The Magi provider must already expose an exact set code plus numeric
+``local/official`` coordinate. Normal Japanese TCGdex REST remains the fast
+path, but a transient/provider error, bounded-budget exhaustion, or a clean REST
+NO_MATCH may be superseded when the immutable cards-database pin independently
+proves all of:
 
 - exact set file and set id;
 - exact Japanese set name;
@@ -12,8 +13,9 @@ The immutable cards-database pin must then prove all of:
 - that card file imports the same exact set;
 - exact Japanese card name from that pinned card file.
 
-No fuzzy matching, translation, current market metadata or per-card exception is
-used.  Clean REST NO_MATCH results are never overridden by this fallback.
+This follows the existing V4 source-pinned reconciliation contract for stale
+TCGdex REST projections. An AMBIGUOUS REST result is never overridden. No fuzzy
+matching, translation, current market metadata or per-card exception is used.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ import v4_tcgdex_source_pinned_finish as source_finish
 
 
 _SOURCE_MAX_REQUESTS_PER_RUN = max(
-    0, int(os.getenv("GLOBAL_MAGI_STANDARD_SOURCE_MAX_REQUESTS", "32"))
+    0, int(os.getenv("GLOBAL_MAGI_STANDARD_SOURCE_MAX_REQUESTS", "48"))
 )
 _SOURCE_REQUESTS = 0
 _SOURCE_TEXT_CACHE: dict[str, Optional[str]] = {}
@@ -107,7 +109,10 @@ def _local_candidates(local: str) -> tuple[str, ...]:
     if not local.isdigit():
         return ()
     value = str(int(local))
-    return tuple(dict.fromkeys((value, value.zfill(2), value.zfill(3), value.zfill(4))))
+    # Asian TCGdex numeric card files are normally zero-padded to three digits.
+    # Probe that deterministic representation first to avoid burning source
+    # budget on a predictable 404, while retaining the raw/2/4-digit variants.
+    return tuple(dict.fromkeys((value.zfill(3), value, value.zfill(2), value.zfill(4))))
 
 
 def source_pinned_standard_proof(
@@ -161,8 +166,8 @@ def source_pinned_standard_proof(
     return None
 
 
-def _transient_or_budget(proof: retrieval_v3.JapaneseCatalogProof) -> bool:
-    if proof.status == "BUDGET":
+def _source_recovery_allowed(proof: retrieval_v3.JapaneseCatalogProof) -> bool:
+    if proof.status in {"BUDGET", "NO_MATCH"}:
         return True
     if proof.status != "ERROR":
         return False
@@ -177,7 +182,7 @@ def _proof_with_standard_source_fallback(resolver, *, full_number, set_code, cac
         set_code=set_code,
         cache=cache,
     )
-    if not _transient_or_budget(original):
+    if not _source_recovery_allowed(original):
         return original
     recovered = source_pinned_standard_proof(
         full_number=full_number,
@@ -190,7 +195,7 @@ def _proof_with_standard_source_fallback(resolver, *, full_number, set_code, cac
 
 
 def install_global_marketplace_magi_standard_source_proof() -> None:
-    """Install transient-only immutable fallback inside the Global Magi process."""
+    """Install immutable exact-coordinate fallback inside Global Magi only."""
     global _ORIGINAL_PROOF, _INSTALLED
     if _INSTALLED:
         return
