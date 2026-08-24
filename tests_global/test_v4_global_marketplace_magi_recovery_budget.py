@@ -14,6 +14,9 @@ class FakeRecoveryResolver:
     def __init__(self, *, max_requests):
         self.max_requests = max_requests
         self.requests_used = 7
+        self.request_breakdown = {"set_coordinate": 3, "sets_filtered": 4}
+        self.cache_hits = {"sets_filtered": 2}
+        self.exhausted_breakdown = {"card_detail": 1}
         self.closed = False
         type(self).instances.append(self)
 
@@ -25,6 +28,43 @@ class MagiRecoveryBudgetTests(unittest.TestCase):
     def tearDown(self):
         budget._ACTIVE_RECOVERY_RESOLVER = None
         FakeRecoveryResolver.instances.clear()
+
+    def test_request_classes_are_stable_and_aggregate_only(self):
+        self.assertEqual(budget._request_class("sets"), "sets_catalog")
+        self.assertEqual(
+            budget._request_class("sets", {"cardCount.official": "eq:80"}),
+            "sets_filtered",
+        )
+        self.assertEqual(budget._request_class("sets/SV2a"), "set_detail")
+        self.assertEqual(budget._request_class("sets/SV2a/151"), "set_coordinate")
+        self.assertEqual(budget._request_class("cards"), "card_search")
+        self.assertEqual(budget._request_class("cards/SV2a-151"), "card_detail")
+        self.assertEqual(budget._request_class("other/path"), "other")
+
+    def test_cached_resolver_distinguishes_request_cache_and_exhaustion(self):
+        def fake_parent_get(resolver, path, *, params=None):
+            if resolver.requests_used >= resolver.max_requests:
+                return 0, {"error": "budget_exhausted"}
+            resolver.requests_used += 1
+            return 200, []
+
+        with mock.patch.object(
+            budget.retrieval_v3.TCGdexJapaneseProofResolver,
+            "_get",
+            new=fake_parent_get,
+        ):
+            resolver = budget.CachedRecoveryResolver(max_requests=1)
+            try:
+                self.assertEqual(resolver._get("sets"), (200, []))
+                self.assertEqual(resolver._get("sets"), (200, []))
+                self.assertEqual(resolver._get("cards/SV2a-151")[0], 0)
+            finally:
+                resolver.close()
+
+        self.assertEqual(resolver.requests_used, 1)
+        self.assertEqual(resolver.request_breakdown, {"sets_catalog": 1})
+        self.assertEqual(resolver.cache_hits, {"sets_catalog": 1})
+        self.assertEqual(resolver.exhausted_breakdown, {"card_detail": 1})
 
     def test_scan_scopes_separate_recovery_resolver_and_reports_usage(self):
         seen = []
@@ -45,6 +85,12 @@ class MagiRecoveryBudgetTests(unittest.TestCase):
         self.assertTrue(FakeRecoveryResolver.instances[0].closed)
         self.assertIsNone(budget._ACTIVE_RECOVERY_RESOLVER)
         self.assertIn("tcgdex_recovery_requests=7", status.detail)
+        self.assertIn(
+            "tcgdex_recovery_breakdown=set_coordinate:3,sets_filtered:4",
+            status.detail,
+        )
+        self.assertIn("tcgdex_recovery_cache_hits=sets_filtered:2", status.detail)
+        self.assertIn("tcgdex_recovery_exhausted=card_detail:1", status.detail)
 
     def test_unique_full_number_wrapper_prefers_active_recovery_resolver(self):
         main_resolver = object()
