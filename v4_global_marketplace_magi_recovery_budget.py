@@ -3,12 +3,13 @@
 The native exact-coordinate lane owns its existing Japanese resolver budget.
 Fallbacks for provider-missing set/number evidence must not starve that lane, so
 this module gives recovery paths a separate resolver for the duration of one
-Magi scan.  The recovery resolver caches only successful top-level set-list
-queries keyed by exact parameters; card-coordinate/detail calls remain normal
-TCGdex requests and every identity gate remains unchanged.
+Magi scan. The recovery resolver caches successful top-level set-list queries
+keyed by exact parameters and exposes aggregate request-class diagnostics. No
+listing data is emitted and every identity gate remains unchanged.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from typing import Mapping, Optional
 
@@ -22,20 +23,49 @@ _ORIGINAL_SCAN = None
 _INSTALLED = False
 
 
+def _request_class(path: str, params: Optional[Mapping[str, str]] = None) -> str:
+    normalized = str(path or "").strip().lstrip("/")
+    if normalized == "sets":
+        return "sets_filtered" if params else "sets_catalog"
+    if normalized.startswith("sets/"):
+        parts = [part for part in normalized.split("/") if part]
+        return "set_detail" if len(parts) == 2 else "set_coordinate"
+    if normalized == "cards":
+        return "card_search"
+    if normalized.startswith("cards/"):
+        return "card_detail"
+    return "other"
+
+
+def _compact_counts(values: Mapping[str, int]) -> str:
+    return ",".join(f"{key}:{int(values[key])}" for key in sorted(values) if int(values[key]) > 0) or "none"
+
+
 class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
-    """Cache only successful exact set-list queries inside one recovery scan."""
+    """Cache safe set-list queries and expose aggregate request diagnostics."""
 
     def __init__(self, *, max_requests: int = _MAX_RECOVERY_REQUESTS):
         super().__init__(max_requests=max_requests)
         self._set_list_cache: dict[tuple[tuple[str, str], ...], object] = {}
+        self.request_breakdown: Counter[str] = Counter()
+        self.cache_hits: Counter[str] = Counter()
+        self.exhausted_breakdown: Counter[str] = Counter()
 
     def _get(self, path: str, *, params: Optional[Mapping[str, str]] = None):
         normalized_path = str(path or "").strip().lstrip("/")
+        request_class = _request_class(normalized_path, params)
         cache_key = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
         if normalized_path == "sets" and cache_key in self._set_list_cache:
+            self.cache_hits[request_class] += 1
             return 200, self._set_list_cache[cache_key]
 
+        before = self.requests_used
         status, payload = super()._get(path, params=params)
+        if self.requests_used > before:
+            self.request_breakdown[request_class] += self.requests_used - before
+        elif status == 0:
+            self.exhausted_breakdown[request_class] += 1
+
         if normalized_path == "sets" and status == 200:
             self._set_list_cache[cache_key] = payload
         return status, payload
@@ -60,7 +90,17 @@ def _scan_with_recovery_budget(*args, **kwargs):
     try:
         rows, status = _ORIGINAL_SCAN(*args, **kwargs)
         detail = str(status.detail or "")
-        suffix = f"tcgdex_recovery_requests={recovery.requests_used}"
+        suffixes = [f"tcgdex_recovery_requests={recovery.requests_used}"]
+        breakdown = getattr(recovery, "request_breakdown", {})
+        cache_hits = getattr(recovery, "cache_hits", {})
+        exhausted = getattr(recovery, "exhausted_breakdown", {})
+        if breakdown:
+            suffixes.append(f"tcgdex_recovery_breakdown={_compact_counts(breakdown)}")
+        if cache_hits:
+            suffixes.append(f"tcgdex_recovery_cache_hits={_compact_counts(cache_hits)}")
+        if exhausted:
+            suffixes.append(f"tcgdex_recovery_exhausted={_compact_counts(exhausted)}")
+        suffix = "; ".join(suffixes)
         return rows, replace(status, detail=f"{detail}; {suffix}" if detail else suffix)
     finally:
         _ACTIVE_RECOVERY_RESOLVER = None
