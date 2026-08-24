@@ -87,7 +87,6 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
         self.assertEqual(result.identity.number, "017/48")
         self.assertEqual(result.card_id, "PMCG2-017")
         self.assertIn("DERIVED_COORDINATE", result.reason)
-        # Explicit bracket proof keeps the existing two-call direct exact-set path.
         self.assertEqual(len(resolver.calls), 2)
         self.assertTrue(resolver.calls[0][0].startswith("sets/"))
         self.assertEqual(resolver.calls[1][0], "cards/PMCG2-017")
@@ -117,10 +116,55 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
         self.assertEqual(result.identity.number, "023/71")
         self.assertEqual([call[0] for call in resolver.calls], ["sets", "sets/S10a", "cards/S10a-023"])
 
+    def test_literal_set_and_card_in_bounded_detail_derive_coordinate(self):
+        title = "【PSA10】ポケモンカード 1枚の通販"
+        text = f"{title}\n商品説明\nゲンガー\nダークファンタズマ\n絞り込み\nポケモンジャングル"
+        resolver = FakeResolver(
+            set_id="S10a",
+            set_name="ダークファンタズマ",
+            official_count=71,
+            cards=[{"id": "S10a-023", "localId": "023", "name": "ゲンガー"}],
+            detail_name="ゲンガー",
+            set_catalog=[
+                {"id": "S10a", "name": "ダークファンタズマ"},
+                {"id": "PMCG2", "name": "ポケモンジャングル"},
+            ],
+        )
+        with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
+            result = set_unique.recover_set_name_unique_card_resolution(
+                japan.Ask("magi", "https://magi.camp/items/3", title, 50000, text),
+                native.MagiNativeResolution("NO_MATCH", "collector_number_unproven"),
+                resolver=resolver,
+            )
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.identity.name, "ゲンガー")
+        self.assertEqual(result.identity.number, "023/71")
+        self.assertEqual([call[0] for call in resolver.calls], ["sets", "sets/S10a", "cards/S10a-023"])
+
+    def test_footer_or_related_set_name_cannot_prove_identity(self):
+        title = "【PSA10】ポケモンカード 1枚の通販"
+        text = f"{title}\n商品説明\n絞り込み\nゲンガー\nダークファンタズマ"
+        resolver = FakeResolver(
+            set_id="S10a",
+            set_name="ダークファンタズマ",
+            official_count=71,
+            cards=[{"id": "S10a-023", "localId": "023", "name": "ゲンガー"}],
+            detail_name="ゲンガー",
+            set_catalog=[{"id": "S10a", "name": "ダークファンタズマ"}],
+        )
+        result = set_unique.recover_set_name_unique_card_resolution(
+            japan.Ask("magi", "https://magi.camp/items/4", title, 50000, text),
+            native.MagiNativeResolution("NO_MATCH", "collector_number_unproven"),
+            resolver=resolver,
+        )
+        self.assertEqual(result.status, "NO_MATCH")
+        self.assertEqual(result.reason, "japanese_set_name_unproven")
+        self.assertEqual([call[0] for call in resolver.calls], ["sets"])
+
     def test_name_only_listing_checks_catalog_but_never_infers_a_set(self):
         ask = japan.Ask(
             "magi",
-            "https://magi.camp/items/3",
+            "https://magi.camp/items/5",
             "かんこうきゃく SR PSA10 ポケモンカード 1枚の通販",
             50000,
             "",
@@ -135,14 +179,14 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
         self.assertEqual(result.reason, "japanese_set_name_unproven")
         self.assertEqual([call[0] for call in resolver.calls], ["sets"])
 
-    def test_multiple_literal_catalog_sets_in_title_are_ambiguous(self):
+    def test_multiple_literal_catalog_sets_in_product_evidence_are_ambiguous(self):
         title = "PSA10 ゲンガー ダークファンタズマ ポケモンジャングル 1枚の通販"
         resolver = FakeResolver(set_catalog=[
             {"id": "S10a", "name": "ダークファンタズマ"},
             {"id": "PMCG2", "name": "ポケモンジャングル"},
         ])
         result = set_unique.recover_set_name_unique_card_resolution(
-            japan.Ask("magi", "https://magi.camp/items/4", title, 50000, title),
+            japan.Ask("magi", "https://magi.camp/items/6", title, 50000, title),
             native.MagiNativeResolution("NO_MATCH", "collector_number_unproven"),
             resolver=resolver,
         )
@@ -162,7 +206,7 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
             detail_set_id="WRONG",
         )
         result = set_unique.recover_set_name_unique_card_resolution(
-            japan.Ask("magi", "https://magi.camp/items/5", title, 50000, title),
+            japan.Ask("magi", "https://magi.camp/items/7", title, 50000, title),
             native.MagiNativeResolution("NO_MATCH", "collector_number_unproven"),
             resolver=resolver,
         )
@@ -177,7 +221,7 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
             {"id": "PMCG2-025", "localId": "025", "name": "ピカチュウ"},
         ])
         result = set_unique.recover_set_name_unique_card_resolution(
-            japan.Ask("magi", "https://magi.camp/items/6", title, 50000, title),
+            japan.Ask("magi", "https://magi.camp/items/8", title, 50000, title),
             native.MagiNativeResolution("NO_MATCH", "collector_number_unproven"),
             resolver=resolver,
         )
@@ -188,7 +232,7 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
     def test_detail_name_conflict_fails_closed(self):
         resolver = FakeResolver(detail_name="別のカード")
         result = set_unique.recover_set_name_unique_card_resolution(
-            japan.Ask("magi", "https://magi.camp/items/7", SCYTHER, 50000, SCYTHER),
+            japan.Ask("magi", "https://magi.camp/items/9", SCYTHER, 50000, SCYTHER),
             native.MagiNativeResolution("NO_MATCH", "collector_number_unproven"),
             resolver=resolver,
         )
@@ -199,7 +243,7 @@ class MagiSetNameUniqueCardTests(unittest.TestCase):
         resolver = FakeResolver()
         original = native.MagiNativeResolution("NO_MATCH", "set_code_unproven")
         result = set_unique.recover_set_name_unique_card_resolution(
-            japan.Ask("magi", "https://magi.camp/items/8", SCYTHER, 50000, SCYTHER),
+            japan.Ask("magi", "https://magi.camp/items/10", SCYTHER, 50000, SCYTHER),
             original,
             resolver=resolver,
         )
