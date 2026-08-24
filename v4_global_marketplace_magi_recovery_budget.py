@@ -3,9 +3,9 @@
 The native exact-coordinate lane owns its existing Japanese resolver budget.
 Fallbacks for provider-missing set/number evidence must not starve that lane, so
 this module gives recovery paths a separate resolver for the duration of one
-Magi scan. The recovery resolver caches successful top-level set-list queries
-keyed by exact parameters and exposes aggregate request-class diagnostics. No
-listing data is emitted and every identity gate remains unchanged.
+Magi scan. The recovery resolver caches safe set-list queries and clean set-card
+coordinate reads, and exposes aggregate request-class diagnostics. No listing
+data is emitted and every identity gate remains unchanged.
 """
 from __future__ import annotations
 
@@ -42,11 +42,12 @@ def _compact_counts(values: Mapping[str, int]) -> str:
 
 
 class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
-    """Cache safe set-list queries and expose aggregate request diagnostics."""
+    """Cache deterministic recovery reads and expose aggregate diagnostics."""
 
     def __init__(self, *, max_requests: int = _MAX_RECOVERY_REQUESTS):
         super().__init__(max_requests=max_requests)
         self._set_list_cache: dict[tuple[tuple[str, str], ...], object] = {}
+        self._coordinate_cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[int, object]] = {}
         self.request_breakdown: Counter[str] = Counter()
         self.cache_hits: Counter[str] = Counter()
         self.exhausted_breakdown: Counter[str] = Counter()
@@ -54,10 +55,17 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
     def _get(self, path: str, *, params: Optional[Mapping[str, str]] = None):
         normalized_path = str(path or "").strip().lstrip("/")
         request_class = _request_class(normalized_path, params)
-        cache_key = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
-        if normalized_path == "sets" and cache_key in self._set_list_cache:
+        params_key = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
+        if normalized_path == "sets" and params_key in self._set_list_cache:
             self.cache_hits[request_class] += 1
-            return 200, self._set_list_cache[cache_key]
+            return 200, self._set_list_cache[params_key]
+
+        parts = [part for part in normalized_path.split("/") if part]
+        coordinate_key = (normalized_path, params_key)
+        is_set_coordinate = len(parts) >= 3 and parts[0] == "sets"
+        if is_set_coordinate and coordinate_key in self._coordinate_cache:
+            self.cache_hits[request_class] += 1
+            return self._coordinate_cache[coordinate_key]
 
         before = self.requests_used
         status, payload = super()._get(path, params=params)
@@ -67,7 +75,12 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
             self.exhausted_breakdown[request_class] += 1
 
         if normalized_path == "sets" and status == 200:
-            self._set_list_cache[cache_key] = payload
+            self._set_list_cache[params_key] = payload
+        # A clean 200/404 coordinate answer is deterministic for this one scan
+        # and safe to reuse. Never cache transport/rate-limit/server failures or
+        # budget exhaustion because they must remain retryable/fail-closed.
+        if is_set_coordinate and status in {200, 404}:
+            self._coordinate_cache[coordinate_key] = (status, payload)
         return status, payload
 
 
