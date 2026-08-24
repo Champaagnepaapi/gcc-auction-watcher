@@ -1,26 +1,54 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **21 août 2026** après le cutover Robot KB local.
+État vérifié le **24 août 2026** après merge #175 et preuves production post-fix.
 
 ## Autorité
 
 ```text
-V4 production                  main
+V4 production                  main @ 950694d66b04112fc1182f0b21d6008bb4560204
+V4 eBay hang isolation        #175 MERGED / PROD PROUVÉE
 Global discovery               marketplace-first
-Global scale                   PR #156 MERGED / batch 50
-Global cadence                 10 min
+Global scale                   #156 MERGED / batch 50
+Global cadence                 20 min
 Global schedule registry       issue #150 / PROUVÉ LIVE
+Magi native identity           #173 MERGED / PROD
+Magi coverage                  #174 OPEN / DRAFT / NON MERGED
 Robot KB storage               PostgreSQL local Mac ACTIF
-Robot KB cutover               PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
 Neon writers                   AUTOMATIQUES OFF / rollback manuel conservé
 V5                             PR #8 / draft / non mergée
 ```
 
 Toujours re-vérifier le HEAD GitHub live ; des commits docs-only peuvent suivre le SHA runtime.
 
-## Robot KB — phase active
+## Incident V4 eBay — clos techniquement
 
-La migration Neon → PostgreSQL local a été exécutée et vérifiée :
+Deux runs V4 (`32664106071`, `32682740195`) ont bloqué environ 6 h sur un deadlock Playwright/eBay. Comme le workflow V4 utilise une concurrency unique avec `cancel-in-progress=false`, les runs suivants de la même lane attendaient derrière, ce qui pouvait créer une fenêtre de non-scan pendant des enchères actives.
+
+#175 isole eBay dans un sous-processus avec hard timeout/kill fail-closed. Production post-merge sur `950694d...` :
+
+```text
+32738091183   SUCCESS   578 s
+32739149539   SUCCESS   464 s
+32740157203   SUCCESS   496 s
+32741180104   SUCCESS   598 s
+32742259467   SUCCESS   129 s
+```
+
+Le mode de panne 6 h n'est plus observé. Continuer la surveillance lors des périodes d'enchères denses, notamment le dimanche.
+
+## Global / Magi
+
+#173 est en production et permet l'identité commerciale japonaise native après preuve TCGdex japonaise exacte, sans imposer une traduction/projection latine.
+
+Preuve prod #173 : run `32634964197`, SUCCESS, Magi 9 exact, safety verte.
+
+#174 est la ligne active pour réduire les rejets Magi restants uniquement avec des preuves déterministes. Dernier head avant synchronisation post-#175 : `b2bb6087cd7d6122b20a9a919839334f09e773a6`.
+
+#174 doit être reprise sur le `main` courant avant nouvelle modification. **Aucun merge de #174 sans autorisation explicite.**
+
+## Robot KB
+
+Migration Neon → PostgreSQL local exécutée et vérifiée :
 
 ```text
 lignes source/local            1,087,015
@@ -30,48 +58,15 @@ PostgreSQL health              OK
 schema versions                [1, 2]
 ```
 
-Collecte locale prouvée :
+Collecte locale : fixed/auction `:32`, SOLD fresh/backfill `:17/:47`, backup `03:10`, 7 dumps locaux. `WAITING_FOR_PAYMENT` reste non-SOLD. `V4_USE=false`.
 
-```text
-fixed/auction                  LaunchAgent :32
-SOLD fresh + backfill          LaunchAgent :17 / :47
-backup                         03:10 / 7 dumps locaux
-fixed acceptés dernier run     494
-fresh SOLD nouveaux            6
-backfill SOLD                  400
-strict_sales                   546
-exact_tiers                    427
-kb_first_ready                 27
-V4_USE                         false
-```
-
-`WAITING_FOR_PAYMENT` reste non-SOLD et est différé. Le backfill historique est encore en progression (`complete=false`) mais fonctionne sans erreur et avance automatiquement.
-
-PR #166 a retiré les déclencheurs automatiques Neon :
-
-- `robot-kb-cloud-shadow.yml` : manual-only ;
-- `robot-kb-sold-shadow.yml` : manual-only ;
-- `v4-kb-shadow-ingest.yml` : replay manuel avec `source_run_id` explicite.
-
-Le projet Neon n'est pas supprimé et aucun secret n'a été modifié. Il sert uniquement de rollback/recovery manuel pour l'instant.
-
-## Global marketplace-first
-
-PR #156 est en production :
-
-```text
-batch                          50/run
-PPT                            35 HTTP / 180 credits / floor 15000
-PokeTrace                      60 requests/run
-```
-
-Run production de preuve `32467460797` : success, 50 selected/acknowledged, 27 identités commerciales, 23 TCGdex exactes, 7 conflits, 18 sans confirmation externe, 0 notification, `transactions=false`.
+PR #166 a retiré les triggers automatiques Neon. Neon reste rollback/recovery manuel et n'est pas supprimé.
 
 ## TCGdex
 
-- `variants_detailed` reste la preuve de microvariante déterministe quand disponible.
-- source pin japonais immuable prioritaire lorsqu'il existe.
-- PR #159 reste séparée, ouverte/non mergée et doit être revalidée contre le `main` courant avant décision.
+- `variants_detailed` reste une preuve microvariante déterministe après identité exacte ;
+- source pin japonais immuable prioritaire lorsqu'il existe ;
+- PR #159 reste séparée, ouverte/non mergée et doit être revalidée contre le `main` courant avant décision ;
 - aucune identité incertaine ne devient comparable exact.
 
 ## V5
@@ -82,10 +77,10 @@ Ne jamais merger #8 sans autorisation explicite utilisateur.
 
 ## Prochaine phase recommandée
 
-1. Laisser le backfill PostgreSQL local continuer et surveiller health/logs/backups.
-2. Accumuler davantage de SOLD exacts et tiers exacts avant toute activation KB-first.
-3. Étudier séparément la persistance PPT/PokeTrace dans Robot KB si utile.
-4. Garder Neon comme rollback manuel pendant une période d'observation ; ne pas le supprimer immédiatement.
-5. Traiter PR #159 séparément si souhaité.
+1. Reprendre #174 sur `main@950694d...` sans perdre le hotfix #175.
+2. Continuer la récupération Magi uniquement si la preuve est déterministe ; ambiguïtés/variantes sensibles restent fail-closed.
+3. Surveiller V4 pendant le prochain pic d'enchères, en particulier dimanche.
+4. Laisser le backfill PostgreSQL local continuer et surveiller health/logs/backups.
+5. Garder Neon comme rollback manuel.
 
 Aucun achat, bid, checkout ou paiement automatique.
