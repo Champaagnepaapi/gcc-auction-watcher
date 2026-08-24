@@ -156,7 +156,7 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
         self.assertEqual(proxy.goto("https://www.ebay.fr/sch/i.html?q=pokemon"), "ok")
         self.assertEqual(len(page.goto_calls), 1)
 
-    def test_installer_wraps_current_scrapers_and_preserves_delegate_results(self):
+    def test_installer_wraps_current_scrapers_then_enables_hard_ebay_isolation(self):
         ebay_delegate = Mock(return_value="ebay-result")
         apr_delegate = Mock(return_value="apr-result")
         watcher.scrape_ebay_sold = ebay_delegate
@@ -165,8 +165,12 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
         resilience._ORIGINAL_SCRAPE_EBAY_SOLD = None
         resilience._ORIGINAL_SCRAPE_PSA_APR = None
 
-        resilience.install_v4_external_provider_navigation_resilience()
+        with patch(
+            "v4_ebay_hard_timeout_isolation.install_v4_ebay_hard_timeout_isolation"
+        ) as hard_install:
+            resilience.install_v4_external_provider_navigation_resilience()
 
+        hard_install.assert_called_once_with()
         page = _Page()
         self.assertEqual(watcher.scrape_ebay_sold(page, "lot"), "ebay-result")
         self.assertEqual(watcher.scrape_psa_apr(page, "lot"), "apr-result")
@@ -180,6 +184,24 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
         )
         self.assertEqual(ebay_delegate.call_args.args[0]._provider, "ebay")
         self.assertEqual(apr_delegate.call_args.args[0]._provider, "psa_apr")
+
+    def test_child_worker_marker_skips_recursive_hard_isolation(self):
+        ebay_delegate = Mock(return_value="ebay-result")
+        watcher.scrape_ebay_sold = ebay_delegate
+        resilience._INSTALLED = False
+        resilience._ORIGINAL_SCRAPE_EBAY_SOLD = None
+        resilience._ORIGINAL_SCRAPE_PSA_APR = None
+
+        with (
+            patch.dict(resilience.os.environ, {"V4_EBAY_ISOLATED_WORKER": "1"}),
+            patch(
+                "v4_ebay_hard_timeout_isolation.install_v4_ebay_hard_timeout_isolation"
+            ) as hard_install,
+        ):
+            resilience.install_v4_external_provider_navigation_resilience()
+
+        hard_install.assert_not_called()
+        self.assertIs(watcher.scrape_ebay_sold, resilience.resilient_scrape_ebay_sold)
 
 
 if __name__ == "__main__":
