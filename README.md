@@ -4,12 +4,14 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
 
-## État canonique — 22 août 2026
+## État canonique — 25 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main
+V4 production canonique          : main @ 3d1589e0086c264e9f910a15fb6b037e20938970
+Magi coverage production         : PR #174 MERGED
+Magi production proof            : run 32893130902 SUCCESS / 31 EXACT sur 96
 Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
 Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
 Cardova public read-only         : PR #168 / 48caf402e851e2d888999ba94f93a9355f14d7bb
@@ -102,9 +104,7 @@ identité exacte
 - avec GCC fair : fair confirmé = `min(GCC fair, external fair)` ;
 - sans GCC fair exact : `EXTERNAL_ONLY` possible si externe exact/fort.
 
-## Scale production — PR #156
-
-PR #156 est mergée en production.
+## Scale production
 
 ```text
 batch Global scheduled           50 listings/run
@@ -112,24 +112,86 @@ PPT max HTTP                     35/run
 PPT max credits                  180/run
 PPT daily remaining floor        15000
 PokeTrace max requests           60/run
-```
-
-Preuve production observée : run `32467460797`, success, 50 selected/acknowledged, 27 identités commerciales, TCGdex exact 23, 7 conflits, 18 sans confirmation externe, 0 notification, `transactions=false`.
-
-## Cardova + récupération schedule — PR #168/#169
-
-PR #168 a activé la lecture Cardova publique anonyme en read-only, sans session persistante ni secret. PR #169 a corrigé l'exploitation du schedule Global après observation de runs dépassant la cadence historique de 10 min :
-
-```text
-cadence Global                   20 min (`1,21,41`)
-batch                            50 listings/run
+cadence                          20 min (`1,21,41`)
 marketplace inner timeout        17 min
 job scan timeout                 25 min
-cache state                      sauvegardé seulement après scan success
-registre #150                    job séparé `register` + `always()`
 ```
 
-Validation PR #169 : run `32567032852`, **240/240 Global + 51/51 V4 PASS**, compile/YAML/diff-check PASS, live marketplace read-only PASS et safety contract PASS. Aucune modification de l'identité, de l'économie ou des fournisseurs n'a été faite par #169.
+Le workflow Global production reste unique : `.github/workflows/v4-global-notify.yml`.
+
+---
+
+# Magi — identité native japonaise en production
+
+## PR #173 + #174
+
+PR #174 a été mergée dans `main` le 25 août 2026 :
+
+```text
+feature head                     593c417ec526aba39f7d388bb3a61d868650c15a
+merge main                       3d1589e0086c264e9f910a15fb6b037e20938970
+premier schedule production      32893130902
+résultat                         SUCCESS
+Magi candidates                  96
+Magi EXACT                       31
+TCGdex recovery budget           36 max/run
+notifications envoyées           0
+transactions                     false
+```
+
+Le premier vrai schedule post-merge a chargé exactement `main@3d1589e...`, activation Global `true`, puis terminé avec les jobs `scan` et `register` en succès.
+
+Couverture Magi observée dans ce run :
+
+```text
+31 EXACT / 96
+54 sold_listing filtrés
+5 japanese_set_name_unproven
+4 target_catalog_unproven:TCGDEX_NO_CARD_FOR_FULL_NUMBER
+2 target_japanese_card_name_unproven
+```
+
+Recovery TCGdex :
+
+```text
+requests total                   36
+card_detail                      4
+card_search                      4
+set_coordinate                  19
+set_detail                       1
+sets_catalog                     1
+sets_filtered                    7
+```
+
+Le plafond n'a pas été augmenté pour gagner la couverture.
+
+## Classes déterministes ajoutées
+
+#174 n'ajoute pas un resolver fuzzy. Les chemins récupérés restent bornés et revalidés :
+
+- full collector number globalement unique ;
+- détail Magi retry borné ;
+- coordinate/set exact avec cache recovery ;
+- exact Japanese name + reviewed rarity + unicité puis revalidation card-detail ;
+- preuves source-pinnées pour certaines classes standard/sensibles lorsque l'identité commerciale est déterministe ;
+- priorité du budget recovery pour éviter qu'un travail redondant consomme la preuve finale d'une identité utile.
+
+Exemples validés pendant la phase :
+
+- `かんこうきゃく TR` : `TR` est traité comme le token commercial revu correspondant au `Rare Holo` TCGdex uniquement dans la lane exact-name + rarity + unicité + detail revalidation ;
+- Solgaleo & Lunala GX SR : récupéré sans augmenter le plafond recovery.
+
+## Ce qui reste volontairement bloqué
+
+Les cinq classes `japanese_set_name_unproven` restent bloquées tant qu'une preuve déterministe suffisante n'existe pas :
+
+- Lugia `GR団参上！` old-back promo ;
+- Misty's Horsea / `カスミのタッツー` old-back No.116 ;
+- Pokémon Pal City Battle Road Summer 2007 ;
+- Rayquaza VMAX Dragon Pokémon Get Challenge promo ;
+- Scizor Championship Series 2025 promo.
+
+Ne pas ajouter un fallback name-only ou un treadmill d'alias carte-par-carte pour forcer ces cinq cas.
 
 ---
 
@@ -191,9 +253,7 @@ Robot KB reste séparé de la décision commerciale V4/Global. `V4_USE=false` ta
 - `WAITING_FOR_PAYMENT` n'est **jamais** un SOLD ;
 - objectif : courbes 30j/90j/1an/multi-années, liquidité, tendance, calibration.
 
-## Migration Neon → Mac : vérifiée
-
-Migration réelle terminée et prouvée :
+Migration Neon → Mac vérifiée :
 
 ```text
 lignes source/local identiques   1,087,015
@@ -203,15 +263,10 @@ PostgreSQL                       health OK
 schema versions                  [1, 2]
 ```
 
-La migration ne doit pas être relancée sur une base déjà vérifiée.
-
-## Collecte locale active
-
-Cible : PostgreSQL local sur le Mac mini, loopback uniquement.
+Collecte locale :
 
 ```text
 database                         robot_pokemon_kb
-user                             robotpokemon_kb
 host                             127.0.0.1
 runtime P3 validé                1d06fe33b6fc640657255e15a8d17251aa02b6ce
 fixed + auctions                 LaunchAgent à :32
@@ -220,43 +275,7 @@ backup                           LaunchAgent quotidien 03:10
 backups conservés                7 dumps complets locaux
 ```
 
-Dernier run local de preuve avant cutover cloud :
-
-```text
-fixed observations acceptées     494
-fresh SOLD nouveaux              6
-historical SOLD backfill         400
-fresh WAITING_FOR_PAYMENT         102 différés
-historical WAITING_FOR_PAYMENT    209 différés
-strict_sales                     546
-exact_tiers                      427
-kb_first_ready                   27
-grader_spreads                   0
-health                           OK
-transactions                     false
-```
-
-Le backfill historique était encore `complete=false` : il continue automatiquement via la lane locale, sans bloquer l'exploitation des données déjà présentes.
-
-## Viewer local
-
-Après `Pull origin`, double-clic :
-
-```text
-mac/robot-kb-local/Ouvrir Robot KB.command
-```
-
-Le viewer est **read-only**, lié à `127.0.0.1`, et permet de parcourir/rechercher les données sans exposer le mot de passe PostgreSQL.
-
-## Cutover Neon — PR #166
-
-PR #166 a retiré les **writers automatiques Neon** après preuve complète de la collecte locale :
-
-- `robot-kb-cloud-shadow.yml` : plus de cron ; manual-only ;
-- `robot-kb-sold-shadow.yml` : plus de cron ; manual-only ;
-- `v4-kb-shadow-ingest.yml` : plus de `workflow_run` automatique ; replay manuel avec `source_run_id` explicite.
-
-Le projet Neon et son secret ne sont **pas supprimés**. Ils restent disponibles comme rollback/recovery manuel borné. Ne pas réactiver les writers automatiques sans raison et validation explicites.
+PR #166 a retiré les writers automatiques Neon. Le projet Neon reste disponible uniquement comme rollback/recovery manuel borné.
 
 ---
 
@@ -268,13 +287,13 @@ branch       agent/v5-poketrace-cardmarket-market-data
 head         bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 ```
 
+TCGdex reste le resolver normal V5 ; PokeTrace sert au marché/prix après identité.
+
 **Ne jamais merger PR #8 dans `main` sans autorisation explicite.**
 
 ---
 
 # Workflows / séparation des responsabilités
-
-À retenir :
 
 - Main Scanner et Fast Lane : cadence externe ;
 - Global : workflow schedule unique toutes les 20 min ;
@@ -295,7 +314,7 @@ Voir `docs/project-workflow-inventory.md` et toujours comparer avec le tree Git 
 4. lire capability ledger + inventaires pertinents ;
 5. vérifier `main`, SHA, PRs, branches et workflows live ;
 6. chercher une capacité existante avant de réimplémenter ;
-7. branche/PR dédiée ;
+7. branche/PR dédiée pour les changements runtime ;
 8. SHA précis ;
 9. tests ciblés + suite pertinente ;
 10. compile/YAML/`git diff --check` ;
@@ -320,25 +339,28 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
+Global / Magi
+  -> #174 est en production et prouvé à 31/96 EXACT
+  -> conserver les 5 set-name cases bloqués tant qu'aucune preuve exacte n'existe
+  -> chercher seulement des classes déterministes répétées, pas des aliases carte-par-carte
+  -> surveiller les schedules post-merge et le budget recovery 36
+
+TCGdex
+  -> traiter PR #159 séparément si souhaité, après revalidation sur main courant
+  -> ne jamais fabriquer une microvariante
+
 Robot KB
   -> laisser le backfill local continuer
   -> surveiller health/logs/backups locaux
   -> accumuler davantage de SOLD exacts et de tiers exacts
-  -> intégrer PPT/PokeTrace à la KB dans une phase séparée si utile
   -> ne pas activer KB-first économiquement sans profondeur/preuve suffisante
 
-Global
-  -> vérifier le premier schedule production post-#169 dans le registre #150
-  -> maintenir le scale #156 et surveiller la qualité d'identité/externe
-  -> poursuivre ensuite l'audit/fix vault-native Fanatics / magi / COMC
-
-TCGdex
-  -> traiter PR #159 séparément après rebase/revalidation si souhaité
-  -> ne jamais fabriquer une microvariante
+V5
+  -> PR #8 reste expérimentale/draft/non mergée
+  -> aucun merge sans autorisation explicite
 
 Neon
-  -> conserver comme rollback manuel pour l'instant
-  -> ne pas supprimer le projet tant qu'une période d'observation locale n'est pas terminée
+  -> conserver comme rollback manuel
 ```
 
 Aucun achat, bid, checkout ou paiement automatique.
