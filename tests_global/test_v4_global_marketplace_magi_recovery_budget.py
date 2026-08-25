@@ -66,6 +66,39 @@ class MagiRecoveryBudgetTests(unittest.TestCase):
         self.assertEqual(resolver.cache_hits, {"sets_catalog": 1})
         self.assertEqual(resolver.exhausted_breakdown, {"card_detail": 1})
 
+    def test_cached_resolver_reuses_parameterized_card_search_and_detail(self):
+        def fake_parent_get(resolver, path, *, params=None):
+            if resolver.requests_used >= resolver.max_requests:
+                return 0, {"error": "budget_exhausted"}
+            resolver.requests_used += 1
+            if path == "cards":
+                return 200, [{"id": "SM11-094"}]
+            if path == "cards/SM11-094":
+                return 200, {"id": "SM11-094"}
+            raise AssertionError(path)
+
+        with mock.patch.object(
+            budget.retrieval_v3.TCGdexJapaneseProofResolver,
+            "_get",
+            new=fake_parent_get,
+        ):
+            resolver = budget.CachedRecoveryResolver(max_requests=2)
+            try:
+                params = {"name": "eq:かんこうきゃく"}
+                first_search = resolver._get("cards", params=params)
+                second_search = resolver._get("cards", params=params)
+                first_detail = resolver._get("cards/SM11-094")
+                second_detail = resolver._get("cards/SM11-094")
+            finally:
+                resolver.close()
+
+        self.assertEqual(first_search, second_search)
+        self.assertEqual(first_detail, second_detail)
+        self.assertEqual(resolver.requests_used, 2)
+        self.assertEqual(resolver.request_breakdown, {"card_search": 1, "card_detail": 1})
+        self.assertEqual(resolver.cache_hits, {"card_search": 1, "card_detail": 1})
+        self.assertEqual(resolver.exhausted_breakdown, {})
+
     def test_scan_scopes_separate_recovery_resolver_and_reports_usage(self):
         seen = []
 
