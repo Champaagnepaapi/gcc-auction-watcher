@@ -1,28 +1,32 @@
 """Recover exact Magi cards when reviewed rarity makes identity deterministic.
 
-Two fail-closed lanes live here so rarity normalization stays centralized:
+Three fail-closed lanes live here so rarity normalization stays centralized:
 
 1. Existing exact-set lane: an exact Japanese set name is already proved, but
    multiple same-name cards exist inside that set. A reviewed rarity token may
    select exactly one revalidated card.
 2. Missing-set lane: the listing has no provable set/collector coordinate, but
-   an exact Japanese card-name token immediately precedes a reviewed rarity and
+   an exact title card-name token immediately precedes a reviewed rarity and
    that exact name+rarity resolves to exactly one card across TCGdex Japanese.
+3. Detail-number-noise lane: the bounded detail body produced an ambiguous
+   collector-number result while the title itself contains no collector fraction.
+   The same exact title-name + reviewed-rarity proof may recover one unique card.
 
 Reviewed provider normalization is deliberately narrow:
 - standalone Magi ``R``  -> TCGdex ``Rare``;
 - standalone Magi ``SR`` -> TCGdex ``Ultra Rare``;
 - standalone Magi ``TR`` -> TCGdex ``Rare Holo``.
 
-The TR mapping is accepted only through the same exact-name candidate search
-and card-detail revalidation as the other reviewed rarities; it is not a
-per-card alias. No fuzzy matching or translation is used. Provider errors,
-missing official count, multiple candidates and all unreviewed rarity tokens
-remain blocked.
+Global name+rarity searches use both documented strict TCGdex filters. Returned
+rows are still revalidated through exact card-detail reads, including exact
+name, rarity, ID/localId, set and official count. No fuzzy matching, translation
+or per-card alias is used. Genuine title coordinates, provider errors, missing
+official count, multiple candidates and unreviewed rarity tokens remain blocked.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Mapping
 from urllib.parse import quote
 
@@ -38,11 +42,14 @@ import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 _EXPECTED_REASON = "target_catalog_unproven:TCGDEX_SET_NAME_CARD_NAME_AMBIGUOUS"
 _EXPECTED_MISSING_SET_REASON = "japanese_set_name_unproven"
+_EXPECTED_DETAIL_NUMBER_NOISE_REASON = "collector_number_ambiguous"
 _RARITY_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9])(SAR|CSR|CHR|RRR|SR|AR|RR|UR|HR|TR|R)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-_JP_NAME_AT_END_RE = re.compile(r"([ぁ-んァ-ヶ一-龯々ー・]+)\s*$")
+_EXACT_NAME_AT_END_RE = re.compile(
+    r"([ぁ-んァ-ヶ一-龯々ー・][ぁ-んァ-ヶ一-龯々ー・A-Za-z0-9&＋+.-]{1,79})\s*$"
+)
 _REVIEWED_RARITY_MAP = {
     "R": "Rare",
     "SR": "Ultra Rare",
@@ -67,13 +74,13 @@ def _provider_rarity(title: str) -> tuple[str, str]:
 
 
 def _exact_title_name_before_rarity(title: str) -> tuple[str, str]:
-    """Return one exact Japanese token immediately before one reviewed rarity.
+    """Return one exact title token immediately before one reviewed rarity.
 
-    This is intentionally a narrow retrieval key. It never becomes identity by
-    itself; the TCGdex detail must return the exact same Japanese name and all
-    material catalog coordinates before identity is emitted.
+    Japanese names may include a Latin commercial suffix such as ``GX``/``ex``
+    and ``&``. The token is retrieval-only: TCGdex must return the exact same
+    normalized name and independently prove the full catalog coordinate.
     """
-    text = str(title or "")
+    text = unicodedata.normalize("NFKC", str(title or ""))
     rarity_matches = list(_RARITY_TOKEN_RE.finditer(text))
     if len(rarity_matches) != 1:
         return "", "magi_name_rarity_position_ambiguous"
@@ -81,13 +88,18 @@ def _exact_title_name_before_rarity(title: str) -> tuple[str, str]:
     token = rarity_match.group(1).upper()
     if token not in _REVIEWED_RARITY_MAP:
         return "", "magi_rarity_mapping_unreviewed"
-    name_match = _JP_NAME_AT_END_RE.search(text[: rarity_match.start()])
+    name_match = _EXACT_NAME_AT_END_RE.search(text[: rarity_match.start()])
     if not name_match:
         return "", "magi_exact_name_before_rarity_unproven"
     name = name_match.group(1).strip()
     if not name or name in _GENERIC_TITLE_LABELS:
         return "", "magi_exact_name_before_rarity_unproven"
     return name, "magi_exact_name_before_rarity"
+
+
+def _title_has_collector_fraction(title: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", str(title or "")).upper()
+    return any(japan.CARD_RE.finditer(normalized))
 
 
 def _same_text(left: object, right: object) -> bool:
@@ -190,12 +202,15 @@ def _global_candidate_details_by_exact_name_and_rarity(
 ) -> tuple[list[retrieval_v3.JapaneseCatalogProof], str]:
     """Globally revalidate one exact Japanese name + reviewed rarity.
 
-    The API search is retrieval only. Every row is re-read through the exact
-    card-detail endpoint and must reproduce ID/localId/name/set/official count
-    plus rarity. This deliberately does not trust a missing-set Magi title to
-    identify a set.
+    TCGdex's documented strict ``eq:`` filters are used for both name and rarity
+    to avoid reading unrelated same-name printings. Every returned row is still
+    re-read through the exact card-detail endpoint and must reproduce
+    ID/localId/name/set/official count plus rarity before identity is emitted.
     """
-    status, payload = resolver._get("cards", params={"name": f"eq:{exact_name}"})
+    status, payload = resolver._get(
+        "cards",
+        params={"name": f"eq:{exact_name}", "rarity": f"eq:{rarity}"},
+    )
     if status == 0:
         return [], "TCGDEX_BUDGET_EXHAUSTED"
     if status != 200:
@@ -212,9 +227,9 @@ def _global_candidate_details_by_exact_name_and_rarity(
         if _same_text(name, exact_name):
             briefs[card_id] = row
     if not briefs:
-        return [], "TCGDEX_EXACT_NAME_NOT_FOUND"
+        return [], "TCGDEX_EXACT_NAME_RARITY_NOT_FOUND"
     if len(briefs) > _MAX_GLOBAL_NAME_CANDIDATES:
-        return [], "TCGDEX_EXACT_NAME_TOO_MANY_CANDIDATES"
+        return [], "TCGDEX_EXACT_NAME_RARITY_TOO_MANY_CANDIDATES"
 
     matching: list[retrieval_v3.JapaneseCatalogProof] = []
     for card_id, brief in briefs.items():
@@ -247,7 +262,7 @@ def _global_candidate_details_by_exact_name_and_rarity(
         ):
             return [], "TCGDEX_CARD_DETAIL_CONFLICT"
         if detail_rarity != rarity:
-            continue
+            return [], "TCGDEX_CARD_DETAIL_RARITY_CONFLICT"
         matching.append(
             retrieval_v3.JapaneseCatalogProof(
                 status="EXACT",
@@ -310,22 +325,19 @@ def _exact_resolution_from_proof(
     )
 
 
-def _recover_missing_set_global_name_rarity(
+def _global_name_rarity_resolution(
     ask: japan.Ask,
-    original: native.MagiNativeResolution,
     *,
     resolver: retrieval_v3.TCGdexJapaneseProofResolver,
-) -> native.MagiNativeResolution:
-    if original.status != "NO_MATCH" or original.reason != _EXPECTED_MISSING_SET_REASON:
-        return original
-
+    reason_prefix: str,
+) -> native.MagiNativeResolution | None:
     title = japan.current_text(ask.title)
     rarity, rarity_reason = _provider_rarity(title)
     if not rarity:
-        return original
+        return None
     exact_name, _name_reason = _exact_title_name_before_rarity(title)
     if not exact_name:
-        return original
+        return None
 
     matches, proof_reason = _global_candidate_details_by_exact_name_and_rarity(
         resolver=resolver,
@@ -342,8 +354,46 @@ def _recover_missing_set_global_name_rarity(
     return _exact_resolution_from_proof(
         matches[0],
         rarity_reason=rarity_reason,
+        reason_prefix=reason_prefix,
+    )
+
+
+def _recover_missing_set_global_name_rarity(
+    ask: japan.Ask,
+    original: native.MagiNativeResolution,
+    *,
+    resolver: retrieval_v3.TCGdexJapaneseProofResolver,
+) -> native.MagiNativeResolution:
+    if original.status != "NO_MATCH" or original.reason != _EXPECTED_MISSING_SET_REASON:
+        return original
+    recovered = _global_name_rarity_resolution(
+        ask,
+        resolver=resolver,
         reason_prefix="MAGI_NATIVE_TCGDEX_JA_EXACT_GLOBAL_NAME_RARITY_UNIQUE_CARD",
     )
+    return recovered if recovered is not None else original
+
+
+def _recover_detail_number_noise_global_name_rarity(
+    ask: japan.Ask,
+    original: native.MagiNativeResolution,
+    *,
+    resolver: retrieval_v3.TCGdexJapaneseProofResolver,
+) -> native.MagiNativeResolution:
+    if original.status != "NO_MATCH" or original.reason != _EXPECTED_DETAIL_NUMBER_NOISE_REASON:
+        return original
+    title = japan.current_text(ask.title)
+    # Never override a genuinely ambiguous/conflicting coordinate in the title.
+    # This lane exists only for number noise introduced by the bounded detail
+    # body while the title itself carries no collector fraction at all.
+    if _title_has_collector_fraction(title):
+        return original
+    recovered = _global_name_rarity_resolution(
+        ask,
+        resolver=resolver,
+        reason_prefix="MAGI_NATIVE_TCGDEX_JA_TITLE_NAME_RARITY_UNIQUE_CARD",
+    )
+    return recovered if recovered is not None else original
 
 
 def recover_set_name_rarity_unique_card_resolution(
@@ -359,6 +409,14 @@ def recover_set_name_rarity_unique_card_resolution(
     )
     if missing_set is not original:
         return missing_set
+
+    detail_noise = _recover_detail_number_noise_global_name_rarity(
+        ask,
+        original,
+        resolver=resolver,
+    )
+    if detail_noise is not original:
+        return detail_noise
 
     if original.status != "AMBIGUOUS" or original.reason != _EXPECTED_REASON:
         return original
