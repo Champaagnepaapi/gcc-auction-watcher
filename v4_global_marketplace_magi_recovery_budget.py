@@ -3,9 +3,10 @@
 The native exact-coordinate lane owns its existing Japanese resolver budget.
 Fallbacks for provider-missing set/number evidence must not starve that lane, so
 this module gives recovery paths a separate resolver for the duration of one
-Magi scan. The recovery resolver caches safe set-list queries and clean set-card
-coordinate reads, and exposes aggregate request-class diagnostics. No listing
-data is emitted and every identity gate remains unchanged.
+Magi scan. The recovery resolver caches safe set-list queries, clean set-card
+coordinate reads, exact parameterized card searches and clean card-detail reads,
+and exposes aggregate request-class diagnostics. No listing data is emitted and
+every identity gate remains unchanged.
 """
 from __future__ import annotations
 
@@ -48,6 +49,8 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         super().__init__(max_requests=max_requests)
         self._set_list_cache: dict[tuple[tuple[str, str], ...], object] = {}
         self._coordinate_cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[int, object]] = {}
+        self._card_search_cache: dict[tuple[tuple[str, str], ...], object] = {}
+        self._card_detail_cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[int, object]] = {}
         self.request_breakdown: Counter[str] = Counter()
         self.cache_hits: Counter[str] = Counter()
         self.exhausted_breakdown: Counter[str] = Counter()
@@ -59,13 +62,23 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         if normalized_path == "sets" and params_key in self._set_list_cache:
             self.cache_hits[request_class] += 1
             return 200, self._set_list_cache[params_key]
+        # Only parameterized card searches are cached. This keeps the cache
+        # bounded to explicit recovery queries (for example exact name=eq:...)
+        # and avoids accidentally retaining an unfiltered cards catalog.
+        if normalized_path == "cards" and params_key and params_key in self._card_search_cache:
+            self.cache_hits[request_class] += 1
+            return 200, self._card_search_cache[params_key]
 
         parts = [part for part in normalized_path.split("/") if part]
         coordinate_key = (normalized_path, params_key)
         is_set_coordinate = len(parts) >= 3 and parts[0] == "sets"
+        is_card_detail = len(parts) == 2 and parts[0] == "cards"
         if is_set_coordinate and coordinate_key in self._coordinate_cache:
             self.cache_hits[request_class] += 1
             return self._coordinate_cache[coordinate_key]
+        if is_card_detail and coordinate_key in self._card_detail_cache:
+            self.cache_hits[request_class] += 1
+            return self._card_detail_cache[coordinate_key]
 
         before = self.requests_used
         status, payload = super()._get(path, params=params)
@@ -76,11 +89,16 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
 
         if normalized_path == "sets" and status == 200:
             self._set_list_cache[params_key] = payload
-        # A clean 200/404 coordinate answer is deterministic for this one scan
-        # and safe to reuse. Never cache transport/rate-limit/server failures or
-        # budget exhaustion because they must remain retryable/fail-closed.
+        if normalized_path == "cards" and params_key and status == 200:
+            self._card_search_cache[params_key] = payload
+        # Clean 200/404 exact-coordinate and exact-card-detail answers are
+        # deterministic for this one scan and safe to reuse. Never cache
+        # transport/rate-limit/server failures or budget exhaustion because
+        # they must remain retryable/fail-closed.
         if is_set_coordinate and status in {200, 404}:
             self._coordinate_cache[coordinate_key] = (status, payload)
+        if is_card_detail and status in {200, 404}:
+            self._card_detail_cache[coordinate_key] = (status, payload)
         return status, payload
 
 
