@@ -36,10 +36,11 @@ jobs:
       - name: Run existing V4 multimarket regression tests
         run: python -m unittest discover -s tests -p "test_v4_*multimarket*.py" -v
 
-      - name: Compile changed Python
+      - name: Compile candidate Python
         run: |
           python -m py_compile v4_global_marketplace_magi_set_name_rarity_unique_card.py
           python -m py_compile tests_global/test_v4_global_marketplace_magi_set_name_rarity_unique_card.py
+          python -m compileall -q .
 
       - name: Check candidate diff whitespace
         run: git diff --check 631ae6627295ad5e9a2e91fa4f416d49996a2cb0..2a22e1a68b53069928f74747a328304966d1c5cd
