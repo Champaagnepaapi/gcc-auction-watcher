@@ -45,6 +45,7 @@ _REVIEWED_RARITY_MAP = {
     "R": "Rare",
     "SR": "Ultra Rare",
 }
+_GENERIC_TITLE_LABELS = frozenset({"ポケモン", "ポケモンカード", "ポケモンカードゲーム"})
 _MAX_GLOBAL_NAME_CANDIDATES = 8
 _ORIGINAL_RESOLVER = None
 _INSTALLED = False
@@ -81,7 +82,7 @@ def _exact_title_name_before_rarity(title: str) -> tuple[str, str]:
     if not name_match:
         return "", "magi_exact_name_before_rarity_unproven"
     name = name_match.group(1).strip()
-    if not name:
+    if not name or name in _GENERIC_TITLE_LABELS:
         return "", "magi_exact_name_before_rarity_unproven"
     return name, "magi_exact_name_before_rarity"
 
