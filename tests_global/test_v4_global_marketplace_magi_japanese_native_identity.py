@@ -158,6 +158,31 @@ class MagiJapaneseNativeIdentityTests(unittest.TestCase):
         self.assertEqual(reason, "tcgdex_alias_not_found")
         self.assertEqual(called, [])
 
+    def test_source_pinned_standard_coordinate_skips_unnecessary_latin_requests(self):
+        exact = proof(
+            card_id="SM11b-063",
+            set_id="SM11b",
+            name_ja="ソルガレオ&ルナアーラGX",
+            set_name_ja="ドリームリーグ",
+            local_id="063",
+            official_count="49",
+            reason="TCGDEX_SOURCE_PINNED_STANDARD_COORDINATE_EXACT",
+        )
+        called = []
+
+        def original_fetch(_proof, *, json_get):
+            called.append(json_get)
+            return {"id": "unexpected"}, "unexpected"
+
+        with mock.patch.object(japanese_native, "_ORIGINAL_ALIAS_FETCH", original_fetch):
+            card, reason = japanese_native._alias_fetch_with_source_native(
+                exact,
+                json_get=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network called")),
+            )
+        self.assertIsNone(card)
+        self.assertEqual(reason, "tcgdex_alias_not_found")
+        self.assertEqual(called, [])
+
 
 if __name__ == "__main__":
     unittest.main()

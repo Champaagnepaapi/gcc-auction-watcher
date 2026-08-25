@@ -46,6 +46,58 @@ class MagiDetailCoordinateTests(unittest.TestCase):
             ("80/71", "SV2D", "magi_native_detail_coordinate_parsed"),
         )
 
+    def test_prefixed_local_classic_coordinate_recovers_clk(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/107",
+            "【PSA10】ポケモンカードゲーム Classic カメックス (CLK) PROMO CLK003/032 1枚の通販",
+            12000,
+            "商品情報\nカメックス (CLK) PROMO CLK003/032\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("3/32", "CLK", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_prefixed_local_classic_coordinate_recovers_cll(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/108",
+            "【PSA10】ポケモンカードゲーム Classic ホウオウex (CLL) PROMO CLL007/032 1枚の通販",
+            14000,
+            "商品情報\nホウオウex (CLL) PROMO CLL007/032\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("7/32", "CLL", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_prefixed_local_requires_independent_set_label(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/109",
+            "【PSA10】カメックス PROMO CLK003/032 1枚の通販",
+            12000,
+            "商品情報\nカメックス PROMO CLK003/032\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_unproven"),
+        )
+
+    def test_prefixed_local_never_treats_rarity_as_set(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/110",
+            "【PSA10】サンダースex SAR SAR209/187 1枚の通販",
+            13500,
+            "商品情報\nサンダースex SAR SAR209/187\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_unproven"),
+        )
+
     def test_rarity_token_is_not_set_code(self):
         ask = japan.Ask(
             "magi",
@@ -122,6 +174,58 @@ class MagiDetailCoordinateTests(unittest.TestCase):
         self.assertEqual(full_number, "")
         self.assertEqual(set_code, "")
         self.assertEqual(reason, "collector_number_ambiguous")
+
+    def test_unique_set_qualified_line_beats_unpaired_seo_fraction(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/1257952557",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nソルガレオ&ルナアーラGX SR SM11b 063/049\n検索用 020/165\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("63/49", "SM11b", "magi_native_detail_coordinate_parsed"),
+        )
+
+    def test_two_set_qualified_lines_remain_collector_ambiguous(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/201",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nSM11b 063/049\nSV2a 183/165\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "collector_number_ambiguous"),
+        )
+
+    def test_separate_set_label_does_not_rescue_two_bare_numbers(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/202",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nSM11b\n063/049\n020/165\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "collector_number_ambiguous"),
+        )
+
+    def test_line_scoped_coordinate_still_blocks_global_set_conflict(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/203",
+            "【PSA10】ソルガレオ&ルナアーラGX SR 1枚の通販",
+            70000,
+            "商品情報\nSM11b 063/049\n検索用 020/165\n[SV2a/別セット]\nPSA10",
+        )
+        self.assertEqual(
+            detail.preflight_with_detail_coordinate(ask),
+            ("", "", "set_code_ambiguous"),
+        )
 
     def test_multiple_current_product_set_codes_are_ambiguous(self):
         ask = japan.Ask(

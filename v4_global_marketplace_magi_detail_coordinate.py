@@ -24,6 +24,19 @@ _MAGI_FOOTER_BOUNDARY_RE = re.compile(
 _ADJACENT_SET_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9.-])([A-Za-z][A-Za-z0-9.-]{1,12})[ \t]*(?:[\[{(][ \t]*)?$"
 )
+_PREFIXED_LOCAL_RE = re.compile(r"^([A-Z]{2,6})(\d{1,4})/(\d+)$", re.I)
+_NON_SET_PREFIXES = {
+    "AR",
+    "SAR",
+    "SR",
+    "RR",
+    "RRR",
+    "UR",
+    "HR",
+    "CSR",
+    "CHR",
+    "TR",
+}
 
 
 def _current_product_evidence(ask: japan.Ask) -> str:
@@ -98,6 +111,72 @@ def _set_code_from_evidence(text: str, full_number: str) -> tuple[str, str]:
     return "", "set_code_unproven"
 
 
+def _line_scoped_explicit_coordinate(text: str) -> tuple[str, str, str]:
+    """Recover one exact set+number pair while ignoring unpaired number noise.
+
+    Some Magi product pages expose the real coordinate on one product line but
+    also contain another bare collector fraction in SEO/current-page text. A bare
+    number can no longer poison a line that independently proves both the set
+    code and its full fraction. This is deliberately narrow: exactly one
+    set-qualified line may survive. Two distinct set-qualified coordinates remain
+    ambiguous, and the selected pair is rechecked against the whole bounded
+    product evidence before use.
+    """
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    candidates: set[tuple[str, str]] = set()
+    for raw_line in normalized.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        numbers = {
+            japan.number(match.group(0))
+            for match in japan.CARD_RE.finditer(line.upper())
+            if japan.number(match.group(0))
+        }
+        if len(numbers) != 1:
+            continue
+        full_number = next(iter(numbers))
+        set_code, _ = _set_code_from_evidence(line, full_number)
+        if set_code:
+            candidates.add((full_number, set_code))
+
+    if not candidates:
+        return "", "", "collector_number_ambiguous"
+    if len(candidates) != 1:
+        return "", "", "collector_number_ambiguous"
+    full_number, set_code = next(iter(candidates))
+    return full_number, set_code, "line_scoped_explicit_coordinate_detail"
+
+
+def _prefixed_local_coordinate(text: str, full_number: str) -> tuple[str, str, str]:
+    """Split provider notation like ``CLK003/032`` only with independent prefix proof.
+
+    Some Magi Classic listings fuse a letter-only set namespace into the printed
+    localId while also exposing the same namespace as a standalone label, e.g.
+    ``(CLK) PROMO CLK003/032``.  The standalone repetition is mandatory so an
+    arbitrary alphanumeric localId cannot manufacture a set. Known rarity tokens
+    are explicitly excluded. Downstream TCGdex set/localId/denominator/name proof
+    remains mandatory.
+    """
+    match = _PREFIXED_LOCAL_RE.fullmatch(str(full_number or "").upper())
+    if match is None:
+        return "", "", "prefixed_local_unproven"
+    prefix, local, denominator = match.groups()
+    prefix = prefix.upper()
+    if prefix in _NON_SET_PREFIXES:
+        return "", "", "prefixed_local_rarity_token"
+
+    normalized = unicodedata.normalize("NFKC", str(text or "")).upper()
+    standalone = re.compile(rf"(?<![A-Z0-9]){re.escape(prefix)}(?![A-Z0-9])")
+    if standalone.search(normalized) is None:
+        return "", "", "prefixed_local_set_label_unproven"
+
+    canonical = japan.number(f"{local}/{denominator}")
+    if not canonical:
+        return "", "", "prefixed_local_number_unproven"
+    return canonical, prefix, "prefixed_local_set_code_detail"
+
+
 def preflight_with_detail_coordinate(ask: japan.Ask) -> tuple[str, str, str]:
     title = japan.current_text(ask.title)
     evidence = _current_product_evidence(ask)
@@ -121,9 +200,25 @@ def preflight_with_detail_coordinate(ask: japan.Ask) -> tuple[str, str, str]:
         return "", "", "sensitive_variant_unproven"
 
     full_number, number_reason = _full_number_from_evidence(evidence)
+    line_set_code = ""
+    if not full_number and number_reason == "collector_number_ambiguous":
+        full_number, line_set_code, number_reason = _line_scoped_explicit_coordinate(evidence)
     if not full_number:
         return "", "", number_reason
+
     set_code, set_reason = _set_code_from_evidence(evidence, full_number)
+    if line_set_code:
+        # Recheck the line-scoped proof against all bounded current-product set
+        # evidence. A second explicit conflicting set remains fail-closed.
+        if not set_code:
+            return "", "", set_reason
+        if set_code.casefold() != line_set_code.casefold():
+            return "", "", "set_code_ambiguous"
+
+    if not set_code and set_reason == "set_code_unproven":
+        canonical_number, prefixed_set, _ = _prefixed_local_coordinate(evidence, full_number)
+        if canonical_number and prefixed_set:
+            full_number, set_code = canonical_number, prefixed_set
     if not set_code:
         return "", "", set_reason
     return full_number, set_code, "magi_native_detail_coordinate_parsed"

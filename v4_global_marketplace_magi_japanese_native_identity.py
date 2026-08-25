@@ -6,9 +6,10 @@ collector denominator, Japanese card name and PSA 10, a clean absence of an
 EN/ID projection must not erase that exact identity.
 
 This layer remains fail-closed: coordinate conflicts, transient/provider errors,
-ambiguous set aliases and unproved Japanese names still block. It is installed
-only in the Global marketplace process and reuses the existing source-pinned
-Japanese alias registry for resolver-compatible set labels.
+ambiguous set aliases and unproved Japanese names still block. Immutable
+source-pinned exact proofs may skip the redundant Latin projection entirely.
+It is installed only in the Global marketplace process and reuses the existing
+source-pinned Japanese alias registry for resolver-compatible set labels.
 """
 from __future__ import annotations
 
@@ -31,7 +32,12 @@ from v4_global_marketplace_unicode_identity import (
 _RECOVERABLE_ALIAS_ABSENCE = frozenset(
     {"tcgdex_alias_not_found", "tcgdex_alias_non_latin_identity"}
 )
-_SOURCE_PINNED_S_P_REASON = "TCGDEX_SOURCE_PINNED_S_P_PROMO_EXACT"
+_SOURCE_PINNED_NATIVE_REASONS = frozenset(
+    {
+        "TCGDEX_SOURCE_PINNED_S_P_PROMO_EXACT",
+        "TCGDEX_SOURCE_PINNED_STANDARD_COORDINATE_EXACT",
+    }
+)
 _ORIGINAL_RESOLVER = None
 _ORIGINAL_ALIAS_FETCH = None
 _ORIGINAL_SCAN = None
@@ -145,9 +151,10 @@ def recover_japanese_native_resolution(
 
 def _alias_fetch_with_source_native(proof, *, json_get):
     assert _ORIGINAL_ALIAS_FETCH is not None
-    # S-P source proof is already immutable exact card proof. Do not spend two
-    # Latin projection requests merely to learn that those projections are absent.
-    if proof.status == "EXACT" and proof.reason == _SOURCE_PINNED_S_P_REASON:
+    # An immutable source-pinned card proof already proves the exact Japanese
+    # identity. Do not make a redundant Latin projection request that can fail
+    # during the same TCGdex outage we just recovered from.
+    if proof.status == "EXACT" and proof.reason in _SOURCE_PINNED_NATIVE_REASONS:
         return None, "tcgdex_alias_not_found"
     return _ORIGINAL_ALIAS_FETCH(proof, json_get=json_get)
 
