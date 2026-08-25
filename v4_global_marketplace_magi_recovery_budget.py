@@ -7,6 +7,10 @@ Magi scan. The recovery resolver caches safe set-list queries, clean set-card
 coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
+
+The final two requests of the fixed recovery budget are reserved for exact
+card-search/card-detail proof. Broader set discovery/coordinate scans fail closed
+once that reserve is reached; the total ceiling remains unchanged.
 """
 from __future__ import annotations
 
@@ -19,6 +23,8 @@ import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
 _MAX_RECOVERY_REQUESTS = 36
+_CARD_IDENTITY_RESERVE_REQUESTS = 2
+_CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
 _ACTIVE_RECOVERY_RESOLVER: Optional[retrieval_v3.TCGdexJapaneseProofResolver] = None
 _ORIGINAL_SCAN = None
 _INSTALLED = False
@@ -53,7 +59,14 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         self._card_detail_cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[int, object]] = {}
         self.request_breakdown: Counter[str] = Counter()
         self.cache_hits: Counter[str] = Counter()
+        self.reserved_breakdown: Counter[str] = Counter()
         self.exhausted_breakdown: Counter[str] = Counter()
+        # Tiny unit-test budgets should keep their historical semantics. The
+        # production 36-request budget reserves exactly two requests.
+        self._card_identity_reserve = min(
+            _CARD_IDENTITY_RESERVE_REQUESTS,
+            max(0, int(max_requests) - 2),
+        )
 
     def _get(self, path: str, *, params: Optional[Mapping[str, str]] = None):
         normalized_path = str(path or "").strip().lstrip("/")
@@ -79,6 +92,19 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         if is_card_detail and coordinate_key in self._card_detail_cache:
             self.cache_hits[request_class] += 1
             return self._card_detail_cache[coordinate_key]
+
+        # Preserve the last two production requests for the strongest bounded
+        # recovery class: exact parameterized card search followed by exact card
+        # detail revalidation. Broader set scans simply fail closed at the
+        # reserve boundary; they never borrow from or increase the 36-call cap.
+        reserve_floor = max(0, self.max_requests - self._card_identity_reserve)
+        if (
+            self._card_identity_reserve
+            and request_class not in _CARD_IDENTITY_PRIORITY_CLASSES
+            and self.requests_used >= reserve_floor
+        ):
+            self.reserved_breakdown[request_class] += 1
+            return 0, {"error": "budget_reserved_for_card_identity"}
 
         before = self.requests_used
         status, payload = super()._get(path, params=params)
@@ -124,11 +150,14 @@ def _scan_with_recovery_budget(*args, **kwargs):
         suffixes = [f"tcgdex_recovery_requests={recovery.requests_used}"]
         breakdown = getattr(recovery, "request_breakdown", {})
         cache_hits = getattr(recovery, "cache_hits", {})
+        reserved = getattr(recovery, "reserved_breakdown", {})
         exhausted = getattr(recovery, "exhausted_breakdown", {})
         if breakdown:
             suffixes.append(f"tcgdex_recovery_breakdown={_compact_counts(breakdown)}")
         if cache_hits:
             suffixes.append(f"tcgdex_recovery_cache_hits={_compact_counts(cache_hits)}")
+        if reserved:
+            suffixes.append(f"tcgdex_recovery_reserved={_compact_counts(reserved)}")
         if exhausted:
             suffixes.append(f"tcgdex_recovery_exhausted={_compact_counts(exhausted)}")
         suffix = "; ".join(suffixes)
