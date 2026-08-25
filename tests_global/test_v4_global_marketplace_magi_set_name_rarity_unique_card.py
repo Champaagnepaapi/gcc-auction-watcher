@@ -44,6 +44,7 @@ class FakeResolver:
         if path == "cards" and params == {"name": "eq:かんこうきゃく"}:
             rows = [
                 {"id": "SM7a-056", "localId": "056", "name": "かんこうきゃく"},
+                {"id": "SM11-094", "localId": "094", "name": "かんこうきゃく"},
                 {"id": "SM12a-149", "localId": "149", "name": "かんこうきゃく"},
                 {"id": "SM12a-192", "localId": "192", "name": "かんこうきゃく"},
             ]
@@ -76,6 +77,18 @@ class FakeResolver:
                     "id": "SM7a",
                     "name": "迅雷スパーク",
                     "cardCount": {"official": 60},
+                },
+            }
+        if path == "cards/SM11-094":
+            return 200, {
+                "id": "SM11-094",
+                "localId": "094",
+                "name": "かんこうきゃく",
+                "rarity": "Rare Holo",
+                "set": {
+                    "id": "SM11",
+                    "name": "ミラクルツイン",
+                    "cardCount": {"official": 94},
                 },
             }
         if path == "cards/SM12a-149":
@@ -174,16 +187,25 @@ class MagiSetNameRarityUniqueCardTests(unittest.TestCase):
         self.assertIn("magi_rarity_exact:SR", result.reason)
         self.assertEqual(resolver.calls[0], ("cards", {"name": "eq:かんこうきゃく"}))
 
-    def test_sightseer_tr_stays_blocked_without_network(self):
+    def test_sightseer_tr_recovers_globally_unique_exact_name_and_rarity(self):
         resolver = FakeResolver()
-        original = self._missing_set()
-        result = rarity_unique.recover_set_name_rarity_unique_card_resolution(
-            japan.Ask("magi", "https://magi.camp/items/1238824877", SIGHTSEER_TR, 50000, SIGHTSEER_TR),
-            original,
-            resolver=resolver,
-        )
-        self.assertIs(result, original)
-        self.assertEqual(resolver.calls, [])
+        ask = japan.Ask("magi", "https://magi.camp/items/1238824877", SIGHTSEER_TR, 50000, SIGHTSEER_TR)
+        with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
+            result = rarity_unique.recover_set_name_rarity_unique_card_resolution(
+                ask,
+                self._missing_set(),
+                resolver=resolver,
+            )
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.card_id, "SM11-094")
+        self.assertEqual(result.set_id, "SM11")
+        self.assertIsNotNone(result.identity)
+        assert result.identity is not None
+        self.assertEqual(result.identity.name, "かんこうきゃく")
+        self.assertEqual(result.identity.set_name, "ミラクルツイン")
+        self.assertEqual(result.identity.number, "094/94")
+        self.assertIn("magi_rarity_exact:TR", result.reason)
+        self.assertEqual(resolver.calls[0], ("cards", {"name": "eq:かんこうきゃく"}))
 
     def test_two_global_sr_candidates_stay_ambiguous(self):
         resolver = FakeResolver(global_duplicate=True)
