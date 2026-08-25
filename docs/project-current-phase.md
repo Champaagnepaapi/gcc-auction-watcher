@@ -1,26 +1,70 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **21 août 2026** après le cutover Robot KB local.
+État vérifié le **25 août 2026** après merge et première preuve production de la PR #174.
 
 ## Autorité
 
 ```text
 V4 production                  main
+runtime Magi                   #174 / 3d1589e0086c264e9f910a15fb6b037e20938970
 Global discovery               marketplace-first
-Global scale                   PR #156 MERGED / batch 50
-Global cadence                 10 min
+Global scale                   50 listings/run
+Global cadence                 20 min (`1,21,41`)
 Global schedule registry       issue #150 / PROUVÉ LIVE
 Robot KB storage               PostgreSQL local Mac ACTIF
-Robot KB cutover               PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
+Robot KB cutover               PR #166
 Neon writers                   AUTOMATIQUES OFF / rollback manuel conservé
-V5                             PR #8 / draft / non mergée
+V5                             PR #8 / OPEN / DRAFT / NON MERGED
 ```
 
 Toujours re-vérifier le HEAD GitHub live ; des commits docs-only peuvent suivre le SHA runtime.
 
-## Robot KB — phase active
+## Magi — phase #174 fermée en production
 
-La migration Neon → PostgreSQL local a été exécutée et vérifiée :
+PR #174 est mergée :
+
+```text
+feature head                   593c417ec526aba39f7d388bb3a61d868650c15a
+merge                          3d1589e0086c264e9f910a15fb6b037e20938970
+```
+
+Premier schedule Global production post-merge : **run `32893130902` SUCCESS**.
+
+```text
+mode                           GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE
+activation                     true
+Magi candidates                96
+Magi EXACT                     31
+sold_listing                   54
+japanese_set_name_unproven     5
+target_catalog_unproven        4
+target_japanese_card_name      2
+TCGdex recovery requests       36
+notifications sent             0
+identity gate relaxed          false
+transactions                   false
+```
+
+Le plafond recovery reste **36**. Les cinq `japanese_set_name_unproven` ne doivent pas être forcées par un fallback name-only ou des aliases carte-par-carte.
+
+## Global marketplace-first
+
+Production actuelle :
+
+```text
+batch                          50/run
+PPT                            35 HTTP / 180 credits / floor 15000
+PokeTrace                      60 requests/run
+cadence                        20 min
+inner timeout                  17 min
+job timeout                    25 min
+```
+
+Le schedule `32893130902` a restauré l'état précédent, traité 50 listings, sauvegardé le nouvel état et enregistré le run dans issue #150.
+
+## Robot KB
+
+La migration Neon → PostgreSQL local est exécutée et vérifiée :
 
 ```text
 lignes source/local            1,087,015
@@ -30,49 +74,16 @@ PostgreSQL health              OK
 schema versions                [1, 2]
 ```
 
-Collecte locale prouvée :
+Collecte locale :
 
 ```text
 fixed/auction                  LaunchAgent :32
 SOLD fresh + backfill          LaunchAgent :17 / :47
 backup                         03:10 / 7 dumps locaux
-fixed acceptés dernier run     494
-fresh SOLD nouveaux            6
-backfill SOLD                  400
-strict_sales                   546
-exact_tiers                    427
-kb_first_ready                 27
 V4_USE                         false
 ```
 
-`WAITING_FOR_PAYMENT` reste non-SOLD et est différé. Le backfill historique est encore en progression (`complete=false`) mais fonctionne sans erreur et avance automatiquement.
-
-PR #166 a retiré les déclencheurs automatiques Neon :
-
-- `robot-kb-cloud-shadow.yml` : manual-only ;
-- `robot-kb-sold-shadow.yml` : manual-only ;
-- `v4-kb-shadow-ingest.yml` : replay manuel avec `source_run_id` explicite.
-
-Le projet Neon n'est pas supprimé et aucun secret n'a été modifié. Il sert uniquement de rollback/recovery manuel pour l'instant.
-
-## Global marketplace-first
-
-PR #156 est en production :
-
-```text
-batch                          50/run
-PPT                            35 HTTP / 180 credits / floor 15000
-PokeTrace                      60 requests/run
-```
-
-Run production de preuve `32467460797` : success, 50 selected/acknowledged, 27 identités commerciales, 23 TCGdex exactes, 7 conflits, 18 sans confirmation externe, 0 notification, `transactions=false`.
-
-## TCGdex
-
-- `variants_detailed` reste la preuve de microvariante déterministe quand disponible.
-- source pin japonais immuable prioritaire lorsqu'il existe.
-- PR #159 reste séparée, ouverte/non mergée et doit être revalidée contre le `main` courant avant décision.
-- aucune identité incertaine ne devient comparable exact.
+Neon reste uniquement rollback/recovery manuel. Robot KB n'est pas encore un hard gate économique V4.
 
 ## V5
 
@@ -80,12 +91,16 @@ PR #8 reste **OPEN / DRAFT / NON MERGED** sur `agent/v5-poketrace-cardmarket-mar
 
 Ne jamais merger #8 sans autorisation explicite utilisateur.
 
+## PR séparée encore pertinente
+
+PR #159 reste ouverte pour Battle Partners TCGdex exact. Elle n'est pas incluse dans #174 et doit être revalidée sur le `main` courant avant décision.
+
 ## Prochaine phase recommandée
 
-1. Laisser le backfill PostgreSQL local continuer et surveiller health/logs/backups.
-2. Accumuler davantage de SOLD exacts et tiers exacts avant toute activation KB-first.
-3. Étudier séparément la persistance PPT/PokeTrace dans Robot KB si utile.
-4. Garder Neon comme rollback manuel pendant une période d'observation ; ne pas le supprimer immédiatement.
-5. Traiter PR #159 séparément si souhaité.
+1. Surveiller quelques schedules Global post-#174 pour confirmer la stabilité de `31/96` Magi sans dérive du budget recovery.
+2. Pour les cinq set-name restantes, n'accepter qu'une nouvelle classe déterministe prouvée ; sinon laisser bloqué.
+3. Traiter #159 séparément si utile.
+4. Laisser Robot KB accumuler les SOLD exacts et poursuivre le backfill local.
+5. Garder PR #8 V5 isolée et non mergée.
 
 Aucun achat, bid, checkout ou paiement automatique.
