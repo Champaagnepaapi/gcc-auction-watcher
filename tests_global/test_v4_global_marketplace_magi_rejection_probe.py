@@ -38,6 +38,44 @@ class MagiRejectionProbeTests(unittest.TestCase):
         self.assertIn("PSA10 ミュウツー", text)
         self.assertNotIn("ignored body", text)
 
+    def test_public_tcgdex_ids_are_included_without_payload(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/125",
+            "PSA10 ポケモンごっこ 197/190",
+            10000,
+            "ignored body",
+        )
+        result = native.MagiNativeResolution(
+            "NO_MATCH",
+            "target_japanese_card_name_unproven",
+            card_id="S4a-197",
+            set_id="S4a",
+        )
+        out = io.StringIO()
+        with mock.patch.object(probe, "_ENABLED", True), redirect_stdout(out):
+            probe._record(ask, result)
+        text = out.getvalue()
+        self.assertIn("tcgdex_card_id=S4a-197", text)
+        self.assertIn("tcgdex_set_id=S4a", text)
+        self.assertNotIn("ignored body", text)
+
+    def test_non_public_id_shape_is_redacted(self):
+        ask = japan.Ask("magi", "https://magi.camp/items/126", "PSA10 card", 10000, "")
+        result = native.MagiNativeResolution(
+            "NO_MATCH",
+            "x",
+            card_id="bad id with spaces",
+            set_id="SV2a",
+        )
+        out = io.StringIO()
+        with mock.patch.object(probe, "_ENABLED", True), redirect_stdout(out):
+            probe._record(ask, result)
+        text = out.getvalue()
+        self.assertNotIn("bad id with spaces", text)
+        self.assertIn("tcgdex_card_id=-", text)
+        self.assertIn("tcgdex_set_id=SV2a", text)
+
     def test_invalid_url_is_never_logged(self):
         ask = japan.Ask("magi", "https://example.com/private", "PSA10 card", 10000, "secret")
         result = native.MagiNativeResolution("NO_MATCH", "x")
