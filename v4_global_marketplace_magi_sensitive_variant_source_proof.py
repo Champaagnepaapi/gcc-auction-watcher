@@ -5,6 +5,11 @@ wrapper keeps that default and recovers only the two ball-mirror classes already
 represented by the V4 detailed-variant contract when immutable TCGdex source
 proof makes every material axis deterministic.
 
+The supported material-variant claim must be explicit in the current product
+title. Magi detail bodies are allowed only to supplement a missing coordinate;
+they cannot create a variant claim or negate an exact title claim with unrelated
+page text. Conflicting sensitive claims in the title itself remain blocking.
+
 The PR-only rejection diagnostic can emit a bounded stage enum for failed ball
 mirror proof. It never logs body text, source payloads, credentials or prices.
 """
@@ -84,7 +89,7 @@ def _variant_marker(evidence: str) -> tuple[str, str]:
     marker, variant = found[0]
     remainder = normalized.replace(marker, " ")
     # The selected ball-mirror marker is the only sensitive claim this recovery
-    # can prove. Edition/error/stamp/other finish claims remain blocking.
+    # can prove. Edition/error/stamp/other finish claims in the title block.
     if native._SENSITIVE_RE.search(remainder):
         return "", ""
     return marker, variant
@@ -157,7 +162,10 @@ def _resolve_sensitive_variant_identity(
     """Return exact identity plus a bounded diagnostic stage enum."""
     source_text_get = source_text_get or _source_text
     current = japan.current_text(evidence)
-    _marker, special_variant = _variant_marker(current)
+    # Material variant identity is authoritative only from the current product
+    # title. The detail body is known to contain provider/UI noise and is used
+    # below only when the title omits coordinate/set evidence.
+    _marker, special_variant = _variant_marker(_first_line(current))
     if not special_variant:
         return None, "", "", "variant_marker_or_conflict_unproven"
 
