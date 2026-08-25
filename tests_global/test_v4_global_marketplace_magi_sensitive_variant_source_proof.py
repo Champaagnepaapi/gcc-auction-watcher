@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 import japan_edge_hunter as japan
@@ -147,6 +149,32 @@ class MagiSensitiveVariantSourceProofTests(unittest.TestCase):
                 source_text_get=source_for(),
             )
         self.assertIsNone(identity)
+
+    def test_diagnostic_stage_is_bounded_and_body_free(self):
+        ask = japan.Ask(
+            "magi",
+            "https://magi.camp/items/533992530",
+            TITLE,
+            50000,
+            TITLE + " secret-body-text 初版",
+        )
+        original = native.MagiNativeResolution("NO_MATCH", "sensitive_variant_unproven")
+        out = io.StringIO()
+        with (
+            mock.patch.object(variant_source, "_DIAGNOSTICS_ENABLED", True),
+            redirect_stdout(out),
+        ):
+            result = variant_source.recover_sensitive_variant_resolution(
+                ask,
+                original,
+                source_text_get=source_for(),
+            )
+        self.assertIs(result, original)
+        text = out.getvalue()
+        self.assertIn("[MAGI_VARIANT_DIAG]", text)
+        self.assertIn("variant_marker_or_conflict_unproven", text)
+        self.assertIn("https://magi.camp/items/533992530", text)
+        self.assertNotIn("secret-body-text", text)
 
     def test_wrapper_only_handles_sensitive_variant_rejection(self):
         ask = japan.Ask("magi", "https://magi.camp/items/1", TITLE, 50000, TITLE)
