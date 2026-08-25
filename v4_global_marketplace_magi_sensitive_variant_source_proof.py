@@ -103,15 +103,57 @@ def _variant_marker(evidence: str) -> tuple[str, str]:
 
 def _set_tokens(evidence: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", str(evidence or ""))
-    values = []
+    values: list[str] = []
+    seen: set[str] = set()
     for match in _SET_TOKEN_RE.finditer(normalized):
         token = match.group(1).strip()
         upper = token.upper()
         if upper.startswith("PSA"):
             continue
-        if token not in values:
+        key = token.casefold()
+        if key not in seen:
+            seen.add(key)
             values.append(token)
     return tuple(values)
+
+
+def _first_line(evidence: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(evidence or ""))
+    return normalized.splitlines()[0].strip() if normalized.splitlines() else normalized.strip()
+
+
+def _full_number_for_sensitive(evidence: str) -> str:
+    """Prefer exact title coordinate before bounded body fallback.
+
+    Magi product bodies can repeat SEO/search fractions unrelated to the current
+    exact coordinate. A title that already proves one full collector number is
+    narrower and therefore preferred. If the title omits the number, reuse the
+    existing bounded detail logic; ambiguity remains blocking.
+    """
+    first = _first_line(evidence)
+    full_number, _ = detail_coordinate._full_number_from_evidence(first)
+    if full_number:
+        return full_number
+
+    full_number, reason = detail_coordinate._full_number_from_evidence(evidence)
+    if full_number:
+        return full_number
+    if reason == "collector_number_ambiguous":
+        line_number, _line_set, _ = detail_coordinate._line_scoped_explicit_coordinate(evidence)
+        return line_number
+    return ""
+
+
+def _set_tokens_for_sensitive(evidence: str) -> tuple[str, ...]:
+    """Prefer exact title set token; fall back to bounded product evidence.
+
+    Repeated case variants of the same provider token are one set axis, while
+    two genuinely different set-like tokens remain ambiguous.
+    """
+    first_tokens = _set_tokens(_first_line(evidence))
+    if first_tokens:
+        return first_tokens
+    return _set_tokens(evidence)
 
 
 def _pinned_variant_supported(card_text: str, special_variant: str) -> bool:
@@ -141,15 +183,19 @@ def source_pinned_sensitive_variant_identity(
     if not special_variant:
         return None, "", ""
 
-    full_number, _ = detail_coordinate._full_number_from_evidence(current)
+    full_number = _full_number_for_sensitive(current)
     if not full_number or "/" not in full_number:
         return None, "", ""
     local, denominator = full_number.split("/", 1)
     if not local.isdigit() or not denominator.isdigit():
         return None, "", ""
 
-    proofs = []
-    for set_code in _set_tokens(current):
+    set_tokens = _set_tokens_for_sensitive(current)
+    if len(set_tokens) != 1:
+        return None, "", ""
+
+    proofs = {}
+    for set_code in set_tokens:
         proof = standard_source.source_pinned_standard_proof(
             full_number=full_number,
             set_code=set_code,
@@ -163,11 +209,12 @@ def source_pinned_sensitive_variant_identity(
             continue
         if not magi_hardening._jp_contains(current, proof.set_name_ja):
             continue
-        proofs.append(proof)
+        key = (proof.card_id, proof.set_id.casefold(), str(proof.local_id))
+        proofs[key] = proof
     if len(proofs) != 1:
         return None, "", ""
 
-    proof = proofs[0]
+    proof = next(iter(proofs.values()))
     series = source_finish._asia_series_for_set_id(proof.set_id)
     if not series or not proof.local_id:
         return None, "", ""
