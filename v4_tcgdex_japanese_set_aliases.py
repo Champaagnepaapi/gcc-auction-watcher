@@ -32,6 +32,17 @@ _ALIASES = (
     ),
     generalized.ExactSetAlias(
         "ja",
+        "Battle Partners",
+        "SV9",
+        100,
+        require_numeric_denominator=True,
+        allow_localized_name_mismatch=True,
+        provenance=(
+            "TCGdex source pin data-asia/SV/SV9.ts + SV9/102.ts + SV9/109.ts / GCC Battle Partners label"
+        ),
+    ),
+    generalized.ExactSetAlias(
+        "ja",
         "Inferno X",
         "M2",
         80,
