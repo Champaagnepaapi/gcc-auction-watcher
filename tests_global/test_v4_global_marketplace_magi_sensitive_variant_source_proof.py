@@ -95,6 +95,19 @@ class MagiSensitiveVariantSourceProofTests(unittest.TestCase):
         self.assertEqual(card_id, "SV2a-094")
         self.assertEqual(set_id, "SV2a")
 
+    def test_body_sensitive_noise_cannot_negate_exact_title_variant(self):
+        evidence = TITLE + "\n関連表示 マスターボール 初版"
+        with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
+            identity, card_id, set_id = variant_source.source_pinned_sensitive_variant_identity(
+                evidence=evidence,
+                source_text_get=source_for(),
+            )
+        self.assertIsNotNone(identity)
+        assert identity is not None
+        self.assertEqual(card_id, "SV2a-094")
+        self.assertEqual(set_id, "SV2a")
+        self.assertEqual(identity.variant, "poke_ball")
+
     def test_two_distinct_title_set_tokens_remain_blocked(self):
         title = TITLE + " S4a"
         calls = []
@@ -132,7 +145,7 @@ class MagiSensitiveVariantSourceProofTests(unittest.TestCase):
             )
         self.assertIsNone(identity)
 
-    def test_other_sensitive_claim_stays_blocked(self):
+    def test_other_sensitive_claim_in_title_stays_blocked(self):
         title = TITLE + " 初版"
         with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
             identity, _, _ = variant_source.source_pinned_sensitive_variant_identity(
@@ -151,12 +164,13 @@ class MagiSensitiveVariantSourceProofTests(unittest.TestCase):
         self.assertIsNone(identity)
 
     def test_diagnostic_stage_is_bounded_and_body_free(self):
+        unsupported_title = TITLE.replace("モンスターボールミラー", "リバース")
         ask = japan.Ask(
             "magi",
             "https://magi.camp/items/533992530",
-            TITLE,
+            unsupported_title,
             50000,
-            TITLE + " secret-body-text 初版",
+            unsupported_title + " secret-body-text",
         )
         original = native.MagiNativeResolution("NO_MATCH", "sensitive_variant_unproven")
         out = io.StringIO()
