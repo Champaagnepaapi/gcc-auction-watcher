@@ -68,6 +68,47 @@ class MagiSensitiveVariantSourceProofTests(unittest.TestCase):
         self.assertEqual(identity.finish, "reverse")
         self.assertEqual(identity.variant, "poke_ball")
 
+    def test_title_coordinate_wins_over_unpaired_body_fraction_noise(self):
+        evidence = TITLE + "\n検索用 020/165"
+        with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
+            identity, card_id, set_id = variant_source.source_pinned_sensitive_variant_identity(
+                evidence=evidence,
+                source_text_get=source_for(),
+            )
+        self.assertIsNotNone(identity)
+        assert identity is not None
+        self.assertEqual(card_id, "SV2a-094")
+        self.assertEqual(set_id, "SV2a")
+        self.assertEqual(identity.number, "94/165")
+        self.assertEqual(identity.variant, "poke_ball")
+
+    def test_title_set_token_wins_over_case_variant_body_repeat(self):
+        evidence = TITLE + "\nSV2A 094/165"
+        with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
+            identity, card_id, set_id = variant_source.source_pinned_sensitive_variant_identity(
+                evidence=evidence,
+                source_text_get=source_for(),
+            )
+        self.assertIsNotNone(identity)
+        self.assertEqual(card_id, "SV2a-094")
+        self.assertEqual(set_id, "SV2a")
+
+    def test_two_distinct_title_set_tokens_remain_blocked(self):
+        title = TITLE + " S4a"
+        calls = []
+
+        def source(path: str):
+            calls.append(path)
+            return source_for()(path)
+
+        with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
+            identity, _, _ = variant_source.source_pinned_sensitive_variant_identity(
+                evidence=title,
+                source_text_get=source,
+            )
+        self.assertIsNone(identity)
+        self.assertEqual(calls, [])
+
     def test_masterball_marker_uses_masterball_variant(self):
         title = TITLE.replace("モンスターボールミラー", "マスターボールミラー")
         with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
