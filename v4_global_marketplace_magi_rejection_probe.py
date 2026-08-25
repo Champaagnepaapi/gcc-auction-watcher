@@ -1,9 +1,10 @@
 """Bounded PR-only diagnostics for final Magi identity rejections.
 
-The probe is inert unless ``GLOBAL_MAGI_REJECTION_DIAGNOSTICS=true``.  It wraps
+The probe is inert unless ``GLOBAL_MAGI_REJECTION_DIAGNOSTICS=true``. It wraps
 the final Magi native resolver after all exact recovery layers and prints only
-public Magi item URL/title plus the final rejection reason.  No payload body,
-credentials, cookies, provider responses or market values are logged.
+public Magi item URL/title, final rejection reason, and already-resolved public
+TCGdex card/set IDs when present. No payload body, credentials, cookies,
+provider responses or market values are logged.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ _ENABLED = os.getenv("GLOBAL_MAGI_REJECTION_DIAGNOSTICS", "false").strip().lower
 _MAX_TOTAL = max(0, int(os.getenv("GLOBAL_MAGI_REJECTION_DIAGNOSTICS_MAX_TOTAL", "30")))
 _MAX_PER_REASON = max(1, int(os.getenv("GLOBAL_MAGI_REJECTION_DIAGNOSTICS_MAX_PER_REASON", "4")))
 _ITEM_URL_RE = re.compile(r"^https://magi\.camp/items/\d+(?:[/?#].*)?$", re.I)
+_PUBLIC_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _COUNTS: Counter[str] = Counter()
 _TOTAL = 0
 _ORIGINAL_RESOLVER = None
@@ -43,6 +45,11 @@ def _safe_url(value: object) -> str:
     return text if _ITEM_URL_RE.fullmatch(text) else ""
 
 
+def _safe_public_id(value: object) -> str:
+    text = str(value or "").strip()
+    return text if _PUBLIC_ID_RE.fullmatch(text) else ""
+
+
 def _record(ask: japan.Ask, result: native.MagiNativeResolution) -> None:
     global _TOTAL
     if not _ENABLED or _TOTAL >= _MAX_TOTAL:
@@ -56,9 +63,17 @@ def _record(ask: japan.Ask, result: native.MagiNativeResolution) -> None:
     title = _safe_title(ask.title)
     if not url:
         return
+    card_id = _safe_public_id(result.card_id)
+    set_id = _safe_public_id(result.set_id)
+    coordinate = ""
+    if card_id or set_id:
+        coordinate = f" | tcgdex_card_id={card_id or '-'} | tcgdex_set_id={set_id or '-'}"
     _COUNTS[reason] += 1
     _TOTAL += 1
-    print(f"[MAGI_REJECT] reason={reason} | url={url} | title={title}", flush=True)
+    print(
+        f"[MAGI_REJECT] reason={reason}{coordinate} | url={url} | title={title}",
+        flush=True,
+    )
 
 
 def _resolve_with_probe(ask, **kwargs):
