@@ -11,12 +11,14 @@ Two fail-closed lanes live here so rarity normalization stays centralized:
 
 Reviewed provider normalization is deliberately narrow:
 - standalone Magi ``R``  -> TCGdex ``Rare``;
-- standalone Magi ``SR`` -> TCGdex ``Ultra Rare``.
+- standalone Magi ``SR`` -> TCGdex ``Ultra Rare``;
+- standalone Magi ``TR`` -> TCGdex ``Rare Holo``.
 
-``TR`` remains unsupported: a TCGdex rarity value of ``None`` is absence of a
-normalized rarity, not proof of the printed TR class. No fuzzy matching,
-translation or per-card alias is used. Provider errors, missing official count,
-multiple candidates and all unreviewed rarity tokens remain blocked.
+The TR mapping is accepted only through the same exact-name candidate search
+and card-detail revalidation as the other reviewed rarities; it is not a
+per-card alias. No fuzzy matching or translation is used. Provider errors,
+missing official count, multiple candidates and all unreviewed rarity tokens
+remain blocked.
 """
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ _JP_NAME_AT_END_RE = re.compile(r"([ぁ-んァ-ヶ一-龯々ー・]+)\s*$")
 _REVIEWED_RARITY_MAP = {
     "R": "Rare",
     "SR": "Ultra Rare",
+    "TR": "Rare Holo",
 }
 _GENERIC_TITLE_LABELS = frozenset({"ポケモン", "ポケモンカード", "ポケモンカードゲーム"})
 _MAX_GLOBAL_NAME_CANDIDATES = 8
