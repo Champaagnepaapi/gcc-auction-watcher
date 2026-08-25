@@ -1,0 +1,46 @@
+name: PR174 Vintage Name Offline Validation
+
+on:
+  push:
+    branches:
+      - ci/pr174-vintage-name-validation-20260825
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run targeted vintage Magi tests
+        run: python -m unittest tests_global.test_v4_global_marketplace_magi_vintage_name_unique_card -v
+
+      - name: Run full global-market tests
+        run: python -m unittest discover -s tests_global -p "test*.py" -v
+
+      - name: Run existing V4 multimarket regression tests
+        run: python -m unittest discover -s tests -p "test_v4_*multimarket*.py" -v
+
+      - name: Compile candidate Python
+        run: python -m compileall -q .
+
+      - name: Check candidate diff whitespace
+        run: git diff --check 2a22e1a68b53069928f74747a328304966d1c5cd..8760ea773bc5dd8b15d897816c5518c5346c2556
+
+      - name: Assert no tracked mutation
+        run: test -z "$(git status --porcelain --untracked-files=no)"
