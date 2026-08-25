@@ -5,23 +5,8 @@ wrapper keeps that default and recovers only the two ball-mirror classes already
 represented by the V4 detailed-variant contract when immutable TCGdex source
 proof makes every material axis deterministic.
 
-Required proof:
-- prior final reason is ``sensitive_variant_unproven``;
-- exactly one explicit Japanese marker: モンスターボールミラー or
-  マスターボールミラー, with no other sensitive marker remaining;
-- one exact numeric full collector coordinate in current Magi evidence;
-- exactly one set-code-shaped provider token whose immutable TCGdex set/card
-  coordinate proves exact set id, official denominator, local id and Japanese
-  card/set names;
-- the exact pinned card file contains ``reverse`` with the requested foil.
-
-The resulting CommercialIdentity reuses the existing representation:
-``finish=reverse`` and ``variant=poke_ball|master_ball``. No new variant
-convention, fuzzy matching or per-card exception is introduced.
-
-This path has its own tiny source-pin budget so unrelated source recoveries
-cannot starve a material-variant proof late in the Magi inventory scan. It still
-uses the exact same immutable TCGdex commit and is strictly read-only.
+The PR-only rejection diagnostic can emit a bounded stage enum for failed ball
+mirror proof. It never logs body text, source payloads, credentials or prices.
 """
 from __future__ import annotations
 
@@ -44,7 +29,11 @@ _MARKERS = {
     unicodedata.normalize("NFKC", "マスターボールミラー"): "master_ball",
 }
 _SET_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{1,6}\d+[A-Za-z0-9.-]*)(?![A-Za-z0-9])")
+_ITEM_URL_RE = re.compile(r"^https://magi\.camp/items/\d+(?:[/?#].*)?$", re.I)
 _EXPECTED_PRIOR_REASON = "sensitive_variant_unproven"
+_DIAGNOSTICS_ENABLED = os.getenv("GLOBAL_MAGI_REJECTION_DIAGNOSTICS", "false").strip().lower() in {
+    "1", "true", "yes"
+}
 _SOURCE_MAX_REQUESTS = max(
     0, int(os.getenv("GLOBAL_MAGI_SENSITIVE_SOURCE_MAX_REQUESTS", "8"))
 )
@@ -119,17 +108,12 @@ def _set_tokens(evidence: str) -> tuple[str, ...]:
 
 def _first_line(evidence: str) -> str:
     normalized = unicodedata.normalize("NFKC", str(evidence or ""))
-    return normalized.splitlines()[0].strip() if normalized.splitlines() else normalized.strip()
+    lines = normalized.splitlines()
+    return lines[0].strip() if lines else normalized.strip()
 
 
 def _full_number_for_sensitive(evidence: str) -> str:
-    """Prefer exact title coordinate before bounded body fallback.
-
-    Magi product bodies can repeat SEO/search fractions unrelated to the current
-    exact coordinate. A title that already proves one full collector number is
-    narrower and therefore preferred. If the title omits the number, reuse the
-    existing bounded detail logic; ambiguity remains blocking.
-    """
+    """Prefer exact title coordinate before bounded body fallback."""
     first = _first_line(evidence)
     full_number, _ = detail_coordinate._full_number_from_evidence(first)
     if full_number:
@@ -145,11 +129,7 @@ def _full_number_for_sensitive(evidence: str) -> str:
 
 
 def _set_tokens_for_sensitive(evidence: str) -> tuple[str, ...]:
-    """Prefer exact title set token; fall back to bounded product evidence.
-
-    Repeated case variants of the same provider token are one set axis, while
-    two genuinely different set-like tokens remain ambiguous.
-    """
+    """Prefer exact title set token; fall back to bounded product evidence."""
     first_tokens = _set_tokens(_first_line(evidence))
     if first_tokens:
         return first_tokens
@@ -160,9 +140,6 @@ def _pinned_variant_supported(card_text: str, special_variant: str) -> bool:
     foil = {"poke_ball": "pokeball", "master_ball": "masterball"}.get(special_variant)
     if not foil:
         return False
-    # TCGdex source stores both axes in each variant object. The bounded span
-    # prevents a foil token from being associated with an unrelated distant
-    # variant declaration while allowing nested thirdParty metadata.
     return bool(
         re.search(
             rf"\btype\s*:\s*['\"]reverse['\"][\s\S]{{0,180}}?\bfoil\s*:\s*['\"]{foil}['\"]",
@@ -172,27 +149,28 @@ def _pinned_variant_supported(card_text: str, special_variant: str) -> bool:
     )
 
 
-def source_pinned_sensitive_variant_identity(
+def _resolve_sensitive_variant_identity(
     *,
     evidence: str,
     source_text_get: Optional[Callable[[str], Optional[str]]] = None,
-) -> tuple[Optional[CommercialIdentity], str, str]:
+) -> tuple[Optional[CommercialIdentity], str, str, str]:
+    """Return exact identity plus a bounded diagnostic stage enum."""
     source_text_get = source_text_get or _source_text
     current = japan.current_text(evidence)
     _marker, special_variant = _variant_marker(current)
     if not special_variant:
-        return None, "", ""
+        return None, "", "", "variant_marker_or_conflict_unproven"
 
     full_number = _full_number_for_sensitive(current)
     if not full_number or "/" not in full_number:
-        return None, "", ""
+        return None, "", "", "full_number_unproven"
     local, denominator = full_number.split("/", 1)
     if not local.isdigit() or not denominator.isdigit():
-        return None, "", ""
+        return None, "", "", "numeric_coordinate_unproven"
 
     set_tokens = _set_tokens_for_sensitive(current)
     if len(set_tokens) != 1:
-        return None, "", ""
+        return None, "", "", f"set_token_count_{len(set_tokens)}"
 
     proofs = {}
     for set_code in set_tokens:
@@ -212,15 +190,17 @@ def source_pinned_sensitive_variant_identity(
         key = (proof.card_id, proof.set_id.casefold(), str(proof.local_id))
         proofs[key] = proof
     if len(proofs) != 1:
-        return None, "", ""
+        return None, "", "", f"source_coordinate_proof_count_{len(proofs)}"
 
     proof = next(iter(proofs.values()))
     series = source_finish._asia_series_for_set_id(proof.set_id)
     if not series or not proof.local_id:
-        return None, "", ""
+        return None, "", "", "source_series_or_local_unproven"
     card_text = source_text_get(f"data-asia/{series}/{proof.set_id}/{proof.local_id}.ts")
-    if not card_text or not _pinned_variant_supported(card_text, special_variant):
-        return None, "", ""
+    if not card_text:
+        return None, "", "", "source_card_text_unavailable"
+    if not _pinned_variant_supported(card_text, special_variant):
+        return None, "", "", "source_requested_foil_unproven"
 
     identity = CommercialIdentity(
         name=proof.name_ja,
@@ -233,8 +213,20 @@ def source_pinned_sensitive_variant_identity(
         variant=special_variant,
     )
     if not identity.complete_for_exact_market or not identity.opportunity_language:
-        return None, "", ""
-    return identity, proof.card_id, proof.set_id
+        return None, "", "", "commercial_identity_incomplete"
+    return identity, proof.card_id, proof.set_id, "exact"
+
+
+def source_pinned_sensitive_variant_identity(
+    *,
+    evidence: str,
+    source_text_get: Optional[Callable[[str], Optional[str]]] = None,
+) -> tuple[Optional[CommercialIdentity], str, str]:
+    identity, card_id, set_id, _reason = _resolve_sensitive_variant_identity(
+        evidence=evidence,
+        source_text_get=source_text_get,
+    )
+    return identity, card_id, set_id
 
 
 def recover_sensitive_variant_resolution(
@@ -246,11 +238,16 @@ def recover_sensitive_variant_resolution(
     if original.status != "NO_MATCH" or original.reason != _EXPECTED_PRIOR_REASON:
         return original
     evidence = detail_coordinate._current_product_evidence(ask)
-    identity, card_id, set_id = source_pinned_sensitive_variant_identity(
+    identity, card_id, set_id, diagnostic = _resolve_sensitive_variant_identity(
         evidence=evidence,
         source_text_get=source_text_get,
     )
     if identity is None:
+        if _DIAGNOSTICS_ENABLED and _ITEM_URL_RE.fullmatch(str(ask.url or "").strip()):
+            print(
+                f"[MAGI_VARIANT_DIAG] reason={diagnostic} | url={str(ask.url).strip()}",
+                flush=True,
+            )
         return original
     return native.MagiNativeResolution(
         "EXACT",
