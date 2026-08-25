@@ -1,0 +1,48 @@
+name: PR174 TR Offline Validation
+
+on:
+  push:
+    branches:
+      - ci/pr174-tr-offline-validation-20260825
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run targeted Magi TR tests
+        run: python -m unittest tests_global.test_v4_global_marketplace_magi_set_name_rarity_unique_card -v
+
+      - name: Run full global-market tests
+        run: python -m unittest discover -s tests_global -p "test*.py" -v
+
+      - name: Run existing V4 multimarket regression tests
+        run: python -m unittest discover -s tests -p "test_v4_*multimarket*.py" -v
+
+      - name: Compile changed Python
+        run: |
+          python -m py_compile v4_global_marketplace_magi_set_name_rarity_unique_card.py
+          python -m py_compile tests_global/test_v4_global_marketplace_magi_set_name_rarity_unique_card.py
+
+      - name: Check candidate diff whitespace
+        run: git diff --check 631ae6627295ad5e9a2e91fa4f416d49996a2cb0..2a22e1a68b53069928f74747a328304966d1c5cd
+
+      - name: Assert no tracked mutation
+        run: test -z "$(git status --porcelain --untracked-files=no)"
