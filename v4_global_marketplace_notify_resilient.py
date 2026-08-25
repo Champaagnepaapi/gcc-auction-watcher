@@ -59,9 +59,6 @@ from v4_global_marketplace_magi_unique_full_number import (
 from v4_global_marketplace_magi_unique_name_among_full_number import (
     install_global_marketplace_magi_unique_name_among_full_number,
 )
-from v4_global_marketplace_magi_vintage_name_unique_card import (
-    install_global_marketplace_magi_vintage_name_unique_card,
-)
 from v4_global_marketplace_poketrace_recall import (
     install_global_marketplace_poketrace_recall,
 )
@@ -142,13 +139,10 @@ def main() -> int:
     # the current product title. Name-only listings remain blocked.
     install_global_marketplace_magi_set_name_unique_card()
     # If that exact set+name path yields several same-name prints, a reviewed
-    # explicit provider rarity token may disambiguate them. R/SR/TR mappings are
-    # accepted only through exact-name candidate search and detail revalidation.
+    # explicit provider rarity token may disambiguate them. Currently only the
+    # standalone Magi token R -> TCGdex Rare is accepted; all other mappings stay
+    # blocked until independently reviewed.
     install_global_marketplace_magi_set_name_rarity_unique_card()
-    # A vintage listing with no set/collector coordinate may recover only when
-    # it exposes the classic LV.xx + No.xxx pattern and TCGdex proves the leading
-    # Japanese name globally unique plus the same printed Pokédex number.
-    install_global_marketplace_magi_vintage_name_unique_card()
     # Historical Pokemon Rumble cards are absent from the Japanese REST set
     # projection but present in the immutable TCGdex source as the complete ru1
     # 16-card set. Recover only exact 0xx/016 Magi listings whose Japanese name
