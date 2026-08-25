@@ -17,11 +17,14 @@ Reviewed provider normalization is deliberately narrow:
 - standalone Magi ``SR`` -> TCGdex ``Ultra Rare``;
 - standalone Magi ``TR`` -> TCGdex ``Rare Holo``.
 
-Global name+rarity searches use both documented strict TCGdex filters. Returned
-rows are still revalidated through exact card-detail reads, including exact
-name, rarity, ID/localId, set and official count. No fuzzy matching, translation
-or per-card alias is used. Genuine title coordinates, provider errors, missing
-official count, multiple candidates and unreviewed rarity tokens remain blocked.
+Exact name+rarity searches use documented strict TCGdex filters. When an exact
+set is already proved and the title exposes the exact card name immediately
+before rarity, the same search is additionally constrained by exact ``set.id``.
+Returned rows are always revalidated through exact card-detail reads, including
+exact name, rarity, ID/localId, set and official count. No fuzzy matching,
+translation or per-card alias is used. Genuine title coordinates, provider
+errors, missing official count, multiple candidates and unreviewed rarity tokens
+remain blocked.
 """
 from __future__ import annotations
 
@@ -106,6 +109,96 @@ def _same_text(left: object, right: object) -> bool:
     return set_unique._same_text(left, right)
 
 
+def _strict_set_name_rarity_candidates(
+    *,
+    resolver: retrieval_v3.TCGdexJapaneseProofResolver,
+    exact_name: str,
+    set_id: str,
+    set_name: str,
+    rarity: str,
+) -> tuple[list[retrieval_v3.JapaneseCatalogProof], str]:
+    """Revalidate exact name+rarity inside one already-proved exact set.
+
+    The list endpoint is retrieval-only. Exact ``set.id`` saves the extra set
+    detail + unrelated same-name detail reads previously needed for this lane.
+    Every returned brief is still re-read through ``cards/{id}``; if the API
+    ignores or contradicts any filter, the lane fails closed.
+    """
+    status, payload = resolver._get(
+        "cards",
+        params={
+            "name": f"eq:{exact_name}",
+            "rarity": f"eq:{rarity}",
+            "set.id": f"eq:{set_id}",
+        },
+    )
+    if status == 0:
+        return [], "TCGDEX_BUDGET_EXHAUSTED"
+    if status != 200:
+        return [], f"TCGDEX_CARD_SEARCH_HTTP_{status}"
+    rows = resolver._list_payload(payload)
+
+    briefs: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        card_id = str(row.get("id") or "").strip()
+        local_id = str(row.get("localId") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not card_id or not local_id or not name:
+            continue
+        if _same_text(name, exact_name):
+            briefs[card_id] = row
+    if not briefs:
+        return [], "TCGDEX_EXACT_SET_NAME_RARITY_NOT_FOUND"
+    if len(briefs) > _MAX_GLOBAL_NAME_CANDIDATES:
+        return [], "TCGDEX_EXACT_SET_NAME_RARITY_TOO_MANY_CANDIDATES"
+
+    matching: list[retrieval_v3.JapaneseCatalogProof] = []
+    for card_id, brief in briefs.items():
+        status, detail_payload = resolver._get(f"cards/{quote(card_id, safe='')}")
+        if status == 0:
+            return [], "TCGDEX_BUDGET_EXHAUSTED"
+        if status != 200:
+            return [], f"TCGDEX_CARD_DETAIL_HTTP_{status}"
+        card = resolver._detail_payload(detail_payload)
+        if not isinstance(card, Mapping):
+            return [], "TCGDEX_CARD_DETAIL_INVALID_PAYLOAD"
+
+        detail_id = str(card.get("id") or "").strip()
+        local_id = str(card.get("localId") or "").strip()
+        name_ja = str(card.get("name") or "").strip()
+        detail_rarity = str(card.get("rarity") or "").strip()
+        card_set = card.get("set")
+        if not isinstance(card_set, Mapping):
+            return [], "TCGDEX_CARD_DETAIL_SET_MISSING"
+        detail_set_id = str(card_set.get("id") or "").strip()
+        detail_set_name = str(card_set.get("name") or "").strip()
+        official_count = retrieval_v3.TCGdexJapaneseProofResolver._official(card)
+        if (
+            detail_id != card_id
+            or local_id != str(brief.get("localId") or "").strip()
+            or not _same_text(name_ja, exact_name)
+            or detail_set_id.casefold() != set_id.casefold()
+            or not _same_text(detail_set_name, set_name)
+            or not official_count
+        ):
+            return [], "TCGDEX_CARD_DETAIL_CONFLICT"
+        if detail_rarity != rarity:
+            return [], "TCGDEX_CARD_DETAIL_RARITY_CONFLICT"
+        matching.append(
+            retrieval_v3.JapaneseCatalogProof(
+                status="EXACT",
+                reason="TCGDEX_JA_EXACT_SET_NAME_RARITY_UNIQUE_CARD",
+                card_id=card_id,
+                set_id=detail_set_id,
+                name_ja=name_ja,
+                set_name_ja=detail_set_name,
+                local_id=local_id,
+                official_count=official_count,
+            )
+        )
+    return matching, "TCGDEX_JA_EXACT_SET_NAME_RARITY_UNIQUE_CARD"
+
+
 def _candidate_details_by_name_and_rarity(
     *,
     resolver: retrieval_v3.TCGdexJapaneseProofResolver,
@@ -114,6 +207,25 @@ def _candidate_details_by_name_and_rarity(
     set_name: str,
     rarity: str,
 ) -> tuple[list[retrieval_v3.JapaneseCatalogProof], str]:
+    # Fast exact path: the set is already independently proved by
+    # _catalog_set_name_in_title(), and an exact title card name immediately
+    # before the reviewed rarity gives TCGdex three strict retrieval filters.
+    # This saves one deterministic recovery request for the measured Gengar R
+    # class without weakening the legacy fallback below.
+    exact_name, _ = _exact_title_name_before_rarity(title)
+    if exact_name:
+        return _strict_set_name_rarity_candidates(
+            resolver=resolver,
+            exact_name=exact_name,
+            set_id=set_id,
+            set_name=set_name,
+            rarity=rarity,
+        )
+
+    # Compatibility fallback for exact-set listings whose title layout does not
+    # expose the card name immediately before rarity. It retains the previous
+    # fail-closed set-detail proof and therefore cannot lose a supported class
+    # merely because of formatting.
     status, payload = resolver._get(f"sets/{quote(set_id, safe='')}")
     if status == 0:
         return [], "TCGDEX_BUDGET_EXHAUSTED"
