@@ -8,9 +8,10 @@ coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
-The final eight requests of the fixed production recovery budget are reserved
-for exact card-search/card-detail proof. Broader set discovery/coordinate scans
-fail closed once that reserve is reached; the total ceiling remains unchanged.
+The production recovery budget keeps at most 28 broad set/discovery requests,
+leaving capacity for up to eight exact card-search/card-detail requests. The
+broad cap is counted independently from exact-card calls, so request ordering
+cannot consume the reserve prematurely. The total ceiling remains 36.
 """
 from __future__ import annotations
 
@@ -62,6 +63,7 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         self.cache_hits: Counter[str] = Counter()
         self.reserved_breakdown: Counter[str] = Counter()
         self.exhausted_breakdown: Counter[str] = Counter()
+        self._nonpriority_requests_used = 0
         requested_budget = int(max_requests)
         # Small/direct test resolvers keep the historical two-call reserve so
         # existing cache/error semantics do not change accidentally. The real
@@ -76,6 +78,10 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         self._card_identity_reserve = min(
             reserve_target,
             max(0, requested_budget - 2),
+        )
+        self._nonpriority_request_cap = max(
+            0,
+            requested_budget - self._card_identity_reserve,
         )
 
     def _get(self, path: str, *, params: Optional[Mapping[str, str]] = None):
@@ -103,23 +109,28 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
             self.cache_hits[request_class] += 1
             return self._card_detail_cache[coordinate_key]
 
-        # Preserve the production reserve for the strongest bounded recovery
-        # class: exact parameterized card search followed by exact card-detail
-        # revalidation. Broader set scans simply fail closed at the reserve
-        # boundary; they never borrow from or increase the 36-call cap.
-        reserve_floor = max(0, self.max_requests - self._card_identity_reserve)
+        # Cap broad set/discovery traffic independently from exact card proof.
+        # Counting against total requests here was order-dependent: early exact
+        # card calls made later broad calls hit the reserve before broad traffic
+        # had actually consumed its 28-call production allowance. The separate
+        # counter preserves the same total 36-call ceiling while making the
+        # reserve invariant to listing order.
+        is_priority = request_class in _CARD_IDENTITY_PRIORITY_CLASSES
         if (
             self._card_identity_reserve
-            and request_class not in _CARD_IDENTITY_PRIORITY_CLASSES
-            and self.requests_used >= reserve_floor
+            and not is_priority
+            and self._nonpriority_requests_used >= self._nonpriority_request_cap
         ):
             self.reserved_breakdown[request_class] += 1
             return 0, {"error": "budget_reserved_for_card_identity"}
 
         before = self.requests_used
         status, payload = super()._get(path, params=params)
-        if self.requests_used > before:
-            self.request_breakdown[request_class] += self.requests_used - before
+        delta = max(0, self.requests_used - before)
+        if delta:
+            self.request_breakdown[request_class] += delta
+            if not is_priority:
+                self._nonpriority_requests_used += delta
         elif status == 0:
             self.exhausted_breakdown[request_class] += 1
 
@@ -160,6 +171,7 @@ def _scan_with_recovery_budget(*args, **kwargs):
         suffixes = [
             f"tcgdex_recovery_requests={recovery.requests_used}",
             f"tcgdex_recovery_card_identity_reserve={getattr(recovery, '_card_identity_reserve', 0)}",
+            f"tcgdex_recovery_nonpriority_requests={getattr(recovery, '_nonpriority_requests_used', 0)}",
         ]
         breakdown = getattr(recovery, "request_breakdown", {})
         cache_hits = getattr(recovery, "cache_hits", {})
