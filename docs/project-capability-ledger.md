@@ -8,7 +8,8 @@ Ce fichier sert d'index anti-réimplémentation et de registre de supersession. 
 
 ```text
 V4 production branch             : main
-main HEAD                         : ac5f7c734685422612a0f24690af22910eefa951
+main runtime #180                : 9365f5cd9f8949580c4e48f00ba8c4e419c22145
+main docs closeout               : 6fcda6b5dda576f2648c1f6a05a98f7d8638d385
 Magi native identity             : #173 + #174 + #177 / PROD_V4
 Magi recovery budget             : #178 MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
 Global schedule watchdog         : #179 MERGED / ac5f7c734685422612a0f24690af22910eefa951
@@ -20,7 +21,7 @@ Global activation                : #145 + #146
 Cardova public read-only         : #168
 Global timeout recovery          : #169
 Robot KB local cutover           : #166 / PostgreSQL Mac ACTIF
-Robot KB multisource candidate   : #180 OPEN / DRAFT / NON MERGED
+Robot KB multisource             : #180 MERGED / code prêt / Mac install PENDING
 Neon writers                     : automatiques OFF / rollback manuel
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
 V5 head                          : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
@@ -176,11 +177,11 @@ backup                           03:10 / 7 dumps
 V4_USE                           false
 ```
 
-**Robot KB mirror/collectors séparés** : les collectors historiques GCC locaux ci-dessus sont la production actuelle. Les writers Neon automatiques sont retirés ; Neon reste rollback/recovery manuel. Robot KB reste séparé de la décision commerciale V4/Global.
+**Robot KB mirror/collectors séparés** : les collectors historiques GCC locaux ci-dessus restent actifs. Les writers Neon automatiques sont retirés ; Neon reste rollback/recovery manuel. Robot KB reste séparé de la décision commerciale V4/Global.
 
-## #180 — multisource local — `ROBOT_KB / CANDIDATE`
+## #180 — multisource local — `ROBOT_KB / MERGED`
 
-PR #180 est **OPEN / DRAFT / NON MERGED**. Elle n'est donc **pas encore déployée sur le Mac**.
+PR #180 est **MERGED** sur `main@9365f5cd9f8949580c4e48f00ba8c4e419c22145`. Le code et l'installateur sont disponibles sur `main`, mais la nouvelle lane n'est **pas encore prouvée installée/chargée sur le Mac**.
 
 Elle ajoute, sans toucher au gate économique V4 :
 
@@ -188,12 +189,22 @@ Elle ajoute, sans toucher au gate économique V4 :
 - PokeTrace : US/EU, Pokémon EN/JP, `product_type=single`, prix courants + historique `period=all`, priorité PSA10/PSA9/PSA8-8.5 ;
 - PokemonPriceTracker : sets EN/JP, historique 180 jours, eBay gradé agrégé + métriques CardMarket/TCGplayer ;
 - clés PokeTrace/PPT uniquement dans le Trousseau macOS ;
-- lane `markets` toutes les 2 h à `:05` et lane `paid` à 01:08/07:08/13:08/19:08 après merge + installation ;
+- lane `markets` toutes les 2 h à `:05` et lane `paid` à 01:08/07:08/13:08/19:08 après installation ;
 - locks séparés des collectors GCC et réserves de quota pour ne pas affamer V4.
 
 Sémantique obligatoire : `SOLD_AGGREGATED` n'est jamais item-level SOLD ; `cardmarket_unsold` reste `FIXED_ASK_AGGREGATED` ; une annonce courante reste ASK. Le stockage conserve provenance/payload/date sans fabriquer une vente.
 
-CI Robot KB dédié : run `32994235269` SUCCESS au head `6a8c6c15d8035ec07524f277633aa0aa75865cc9`. Le V4 large n'avait plus que des marqueurs documentaires de gouvernance à réaligner ; aucun échec runtime Robot KB n'était observé.
+Validation exacte du head mergé `4194730490efbf879188069de4cc4d17642aad46` :
+
+```text
+Robot KB local PostgreSQL validation   32999776457 SUCCESS
+V4 Auction Discovery Validation        32999776492 SUCCESS
+V4 complete tests / compile / YAML     PASS
+live discovery comparison              PASS
+whitespace check                       PASS
+```
+
+Prochaine preuve nécessaire : exécuter l'installateur #180 sur le Mac, vérifier les LaunchAgents, les premiers catch-ups et les nouvelles observations PostgreSQL sans fuite de secret.
 
 ---
 
@@ -227,7 +238,7 @@ Les branches/PRs **historiques/superseded** restent provenance uniquement ; ne p
 - #108/#109/#110/#113/#114/#115/#138 : absorbées par #139 ;
 - #141 : diagnostic superseded par #142/#140 ;
 - #159 : superseded fonctionnellement par #177 mergée ; reste ouverte comme provenance, ne pas merger telle quelle ;
-- #174/#177/#178/#179 : **MERGED**, ne plus traiter comme PR pending ;
+- #174/#177/#178/#179/#180 : **MERGED**, ne plus traiter comme PR pending ;
 - ancien moteur seed-rotation Global : benchmark/historique après #147/#148 ;
 - one-shots/temp : provenance uniquement, suppression seulement avec autorisation destructive explicite.
 
