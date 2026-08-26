@@ -88,9 +88,11 @@ Axes inconnus, multiples, malformés ou contradictoires restent fail-closed. `pr
 
 # Global Multi-Vault — `GLOBAL_NOTIFY_ACTIVE`
 
-## Architecture
+## #139 — réintégration du stack Global historique
 
 #139 a absorbé/revalidé le stack historique #108→#115. #140/#142 ont ajouté la confirmation économique exacte. #145/#146 ont ajouté puis activé la notification. #147/#148 ont basculé la découverte en marketplace-first. #151 a ajouté le registre #150. #179 ajoute la récupération des schedules GitHub manqués depuis le heartbeat Main Scanner sans créer une seconde lane économique.
+
+Surface marketplace canonique : **GCC/Cardova/magi/Fanatics/COMC**.
 
 ```text
 GCC / Fanatics / COMC / magi / Cardova
@@ -191,7 +193,7 @@ Elle ajoute, sans toucher au gate économique V4 :
 
 Sémantique obligatoire : `SOLD_AGGREGATED` n'est jamais item-level SOLD ; `cardmarket_unsold` reste `FIXED_ASK_AGGREGATED` ; une annonce courante reste ASK. Le stockage conserve provenance/payload/date sans fabriquer une vente.
 
-CI dédié Robot KB au head `9c5379b593bee620bcdd2783973096656526ebd4` : **SUCCESS**. La validation V4 large a ensuite échoué uniquement sur trois marqueurs docs devenus obsolètes ; ce closeout docs corrige ces marqueurs avant re-run complet.
+CI Robot KB dédié : run `32994235269` SUCCESS au head `6a8c6c15d8035ec07524f277633aa0aa75865cc9`. Le V4 large n'avait plus que des marqueurs documentaires de gouvernance à réaligner ; aucun échec runtime Robot KB n'était observé.
 
 ---
 
