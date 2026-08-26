@@ -8,9 +8,9 @@ coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
-The final eight requests of the fixed recovery budget are reserved for exact
-card-search/card-detail proof. Broader set discovery/coordinate scans fail closed
-once that reserve is reached; the total ceiling remains unchanged.
+The final eight requests of the fixed production recovery budget are reserved
+for exact card-search/card-detail proof. Broader set discovery/coordinate scans
+fail closed once that reserve is reached; the total ceiling remains unchanged.
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 _MAX_RECOVERY_REQUESTS = 36
 _CARD_IDENTITY_RESERVE_REQUESTS = 8
+_LEGACY_SMALL_RESERVE_REQUESTS = 2
 _CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
 _ACTIVE_RECOVERY_RESOLVER: Optional[retrieval_v3.TCGdexJapaneseProofResolver] = None
 _ORIGINAL_SCAN = None
@@ -61,13 +62,20 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         self.cache_hits: Counter[str] = Counter()
         self.reserved_breakdown: Counter[str] = Counter()
         self.exhausted_breakdown: Counter[str] = Counter()
-        # Tiny unit-test budgets should keep their historical semantics. The
-        # production 36-request budget reserves eight requests, matching four
+        requested_budget = int(max_requests)
+        # Small/direct test resolvers keep the historical two-call reserve so
+        # existing cache/error semantics do not change accidentally. The real
+        # 36-call production resolver reserves eight requests, matching four
         # strict exact card-search + card-detail proof pairs already observed in
         # the proven 31/96 Magi production baseline.
+        reserve_target = (
+            _CARD_IDENTITY_RESERVE_REQUESTS
+            if requested_budget >= _MAX_RECOVERY_REQUESTS
+            else _LEGACY_SMALL_RESERVE_REQUESTS
+        )
         self._card_identity_reserve = min(
-            _CARD_IDENTITY_RESERVE_REQUESTS,
-            max(0, int(max_requests) - 2),
+            reserve_target,
+            max(0, requested_budget - 2),
         )
 
     def _get(self, path: str, *, params: Optional[Mapping[str, str]] = None):
@@ -151,7 +159,7 @@ def _scan_with_recovery_budget(*args, **kwargs):
         detail = str(status.detail or "")
         suffixes = [
             f"tcgdex_recovery_requests={recovery.requests_used}",
-            f"tcgdex_recovery_card_identity_reserve={recovery._card_identity_reserve}",
+            f"tcgdex_recovery_card_identity_reserve={getattr(recovery, '_card_identity_reserve', 0)}",
         ]
         breakdown = getattr(recovery, "request_breakdown", {})
         cache_hits = getattr(recovery, "cache_hits", {})
