@@ -8,9 +8,10 @@ coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
-The final two requests of the fixed recovery budget are reserved for exact
-card-search/card-detail proof. Broader set discovery/coordinate scans fail closed
-once that reserve is reached; the total ceiling remains unchanged.
+The production recovery budget keeps at most 28 broad set/discovery requests,
+leaving capacity for up to eight exact card-search/card-detail requests. The
+broad cap is counted independently from exact-card calls, so request ordering
+cannot consume the reserve prematurely. The total ceiling remains 36.
 """
 from __future__ import annotations
 
@@ -23,7 +24,8 @@ import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
 _MAX_RECOVERY_REQUESTS = 36
-_CARD_IDENTITY_RESERVE_REQUESTS = 2
+_CARD_IDENTITY_RESERVE_REQUESTS = 8
+_LEGACY_SMALL_RESERVE_REQUESTS = 2
 _CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
 _ACTIVE_RECOVERY_RESOLVER: Optional[retrieval_v3.TCGdexJapaneseProofResolver] = None
 _ORIGINAL_SCAN = None
@@ -61,11 +63,25 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         self.cache_hits: Counter[str] = Counter()
         self.reserved_breakdown: Counter[str] = Counter()
         self.exhausted_breakdown: Counter[str] = Counter()
-        # Tiny unit-test budgets should keep their historical semantics. The
-        # production 36-request budget reserves exactly two requests.
+        self._nonpriority_requests_used = 0
+        requested_budget = int(max_requests)
+        # Small/direct test resolvers keep the historical two-call reserve so
+        # existing cache/error semantics do not change accidentally. The real
+        # 36-call production resolver reserves eight requests, matching four
+        # strict exact card-search + card-detail proof pairs already observed in
+        # the proven 31/96 Magi production baseline.
+        reserve_target = (
+            _CARD_IDENTITY_RESERVE_REQUESTS
+            if requested_budget >= _MAX_RECOVERY_REQUESTS
+            else _LEGACY_SMALL_RESERVE_REQUESTS
+        )
         self._card_identity_reserve = min(
-            _CARD_IDENTITY_RESERVE_REQUESTS,
-            max(0, int(max_requests) - 2),
+            reserve_target,
+            max(0, requested_budget - 2),
+        )
+        self._nonpriority_request_cap = max(
+            0,
+            requested_budget - self._card_identity_reserve,
         )
 
     def _get(self, path: str, *, params: Optional[Mapping[str, str]] = None):
@@ -93,23 +109,28 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
             self.cache_hits[request_class] += 1
             return self._card_detail_cache[coordinate_key]
 
-        # Preserve the last two production requests for the strongest bounded
-        # recovery class: exact parameterized card search followed by exact card
-        # detail revalidation. Broader set scans simply fail closed at the
-        # reserve boundary; they never borrow from or increase the 36-call cap.
-        reserve_floor = max(0, self.max_requests - self._card_identity_reserve)
+        # Cap broad set/discovery traffic independently from exact card proof.
+        # Counting against total requests here was order-dependent: early exact
+        # card calls made later broad calls hit the reserve before broad traffic
+        # had actually consumed its 28-call production allowance. The separate
+        # counter preserves the same total 36-call ceiling while making the
+        # reserve invariant to listing order.
+        is_priority = request_class in _CARD_IDENTITY_PRIORITY_CLASSES
         if (
             self._card_identity_reserve
-            and request_class not in _CARD_IDENTITY_PRIORITY_CLASSES
-            and self.requests_used >= reserve_floor
+            and not is_priority
+            and self._nonpriority_requests_used >= self._nonpriority_request_cap
         ):
             self.reserved_breakdown[request_class] += 1
             return 0, {"error": "budget_reserved_for_card_identity"}
 
         before = self.requests_used
         status, payload = super()._get(path, params=params)
-        if self.requests_used > before:
-            self.request_breakdown[request_class] += self.requests_used - before
+        delta = max(0, self.requests_used - before)
+        if delta:
+            self.request_breakdown[request_class] += delta
+            if not is_priority:
+                self._nonpriority_requests_used += delta
         elif status == 0:
             self.exhausted_breakdown[request_class] += 1
 
@@ -147,7 +168,11 @@ def _scan_with_recovery_budget(*args, **kwargs):
     try:
         rows, status = _ORIGINAL_SCAN(*args, **kwargs)
         detail = str(status.detail or "")
-        suffixes = [f"tcgdex_recovery_requests={recovery.requests_used}"]
+        suffixes = [
+            f"tcgdex_recovery_requests={recovery.requests_used}",
+            f"tcgdex_recovery_card_identity_reserve={getattr(recovery, '_card_identity_reserve', 0)}",
+            f"tcgdex_recovery_nonpriority_requests={getattr(recovery, '_nonpriority_requests_used', 0)}",
+        ]
         breakdown = getattr(recovery, "request_breakdown", {})
         cache_hits = getattr(recovery, "cache_hits", {})
         reserved = getattr(recovery, "reserved_breakdown", {})

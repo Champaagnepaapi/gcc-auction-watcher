@@ -1,12 +1,13 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **25 août 2026** après merge et première preuve production de la PR #174.
+État vérifié le **26 août 2026** après merge de #177 et validation read-only de la correction de budget Magi #178.
 
 ## Autorité
 
 ```text
-V4 production                  main
-runtime Magi                   #174 / 3d1589e0086c264e9f910a15fb6b037e20938970
+V4 production                  main @ 2114b20077605a96a3cf3211f225e1e774bbe9ea
+Magi production               #174 + #177 MERGED
+Magi budget candidate          #178 / OPEN / DRAFT / NON MERGED
 Global discovery               marketplace-first
 Global scale                   50 listings/run
 Global cadence                 20 min (`1,21,41`)
@@ -19,33 +20,52 @@ V5                             PR #8 / OPEN / DRAFT / NON MERGED
 
 Toujours re-vérifier le HEAD GitHub live ; des commits docs-only peuvent suivre le SHA runtime.
 
-## Magi — phase #174 fermée en production
+## Magi — saturation recovery observée puis corrigée sur #178
 
-PR #174 est mergée :
+Baseline production prouvée après #174 : run `32893130902` SUCCESS, **31/96 EXACT**, `54 sold_listing`, budget recovery **36/36**.
+
+Après #177, les schedules sont restés techniquement SUCCESS mais un run nocturne est descendu à **28/96 EXACT** avec `TCGDEX_BUDGET_EXHAUSTED`. Le problème était l'allocation du plafond recovery, pas un motif pour augmenter le plafond ou relâcher l'identité.
+
+PR #178 : `V4 Global: protect Magi exact-card recovery budget`.
 
 ```text
-feature head                   593c417ec526aba39f7d388bb3a61d868650c15a
-merge                          3d1589e0086c264e9f910a15fb6b037e20938970
+branch                         fix/v4-global-magi-recovery-priority-20260826
+validated head                 8fd51c34dd2550b4748dc790e17b74af8612b975
+base main                      2114b20077605a96a3cf3211f225e1e774bbe9ea
+CI/live run                    32943536626 SUCCESS
+focused Global tests           409/409 PASS
+V4 multimarket tests           51/51 PASS
+compile/YAML/diff-check        PASS
 ```
 
-Premier schedule Global production post-merge : **run `32893130902` SUCCESS**.
+Correction : le plafond total reste **36**. Les requêtes larges `sets/*` disposent d'un cap indépendant de **28** requêtes ; les **8** appels restants peuvent servir aux paires strictes `card_search + card_detail`. Cela rend la réserve indépendante de l'ordre des listings et empêche les recherches larges de consommer la preuve finale exacte.
+
+Live read-only #178 :
 
 ```text
-mode                           GLOBAL_MARKETPLACE_NOTIFICATION_ACTIVE
-activation                     true
 Magi candidates                96
-Magi EXACT                     31
-sold_listing                   54
+Magi EXACT                     30
+sold_listing                   55
 japanese_set_name_unproven     5
 target_catalog_unproven        4
 target_japanese_card_name      2
-TCGdex recovery requests       36
+TCGdex recovery total          36
+nonpriority recovery           28
+card_search                    4
+card_detail                    4
+set_coordinate                 19
+set_detail                     1
+sets_catalog                   1
+sets_filtered                  7
+TCGDEX_BUDGET_EXHAUSTED        0
 notifications sent             0
 identity gate relaxed          false
 transactions                   false
 ```
 
-Le plafond recovery reste **36**. Les cinq `japanese_set_name_unproven` ne doivent pas être forcées par un fallback name-only ou des aliases carte-par-carte.
+Le `30/96` n'est pas une perte d'identité par rapport au baseline `31/96` : `sold_listing` est passé de **54 à 55** tandis que les classes de rejet non-SOLD restent exactement `4 + 5 + 2 = 11`. La couverture du sous-ensemble encore actif est donc conservée et la saturation recovery est supprimée.
+
+#178 reste **NON MERGED** jusqu'à autorisation explicite utilisateur.
 
 ## Global marketplace-first
 
@@ -60,7 +80,7 @@ inner timeout                  17 min
 job timeout                    25 min
 ```
 
-Le schedule `32893130902` a restauré l'état précédent, traité 50 listings, sauvegardé le nouvel état et enregistré le run dans issue #150.
+Le workflow Global production reste `.github/workflows/v4-global-notify.yml`. Le live #178 était explicitement read-only : notifications désactivées et aucun achat/bid/checkout/paiement.
 
 ## Robot KB
 
@@ -91,15 +111,11 @@ PR #8 reste **OPEN / DRAFT / NON MERGED** sur `agent/v5-poketrace-cardmarket-mar
 
 Ne jamais merger #8 sans autorisation explicite utilisateur.
 
-## PR séparée encore pertinente
-
-PR #159 reste ouverte pour Battle Partners TCGdex exact. Elle n'est pas incluse dans #174 et doit être revalidée sur le `main` courant avant décision.
-
 ## Prochaine phase recommandée
 
-1. Surveiller quelques schedules Global post-#174 pour confirmer la stabilité de `31/96` Magi sans dérive du budget recovery.
-2. Pour les cinq set-name restantes, n'accepter qu'une nouvelle classe déterministe prouvée ; sinon laisser bloqué.
-3. Traiter #159 séparément si utile.
+1. Merger #178 seulement après autorisation explicite utilisateur.
+2. Après merge, vérifier le premier schedule production : budget `<=36`, nonpriority `<=28`, aucun `TCGDEX_BUDGET_EXHAUSTED` évitable et aucune identité exacte perdue.
+3. Pour les cinq set-name restantes, n'accepter qu'une nouvelle classe déterministe prouvée ; sinon laisser bloqué.
 4. Laisser Robot KB accumuler les SOLD exacts et poursuivre le backfill local.
 5. Garder PR #8 V5 isolée et non mergée.
 

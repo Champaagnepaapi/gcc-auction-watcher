@@ -40,10 +40,77 @@ class MagiRecoveryPriorityTests(unittest.TestCase):
         self.assertEqual(search[0], 200)
         self.assertEqual(detail[0], 200)
         self.assertEqual(resolver.requests_used, 4)
+        self.assertEqual(resolver._nonpriority_requests_used, 2)
         self.assertEqual(resolver.reserved_breakdown, {"set_coordinate": 1})
         self.assertEqual(
             resolver.request_breakdown,
             {"sets_catalog": 1, "set_coordinate": 1, "card_search": 1, "card_detail": 1},
+        )
+        self.assertEqual(resolver.exhausted_breakdown, {})
+
+    def test_production_broad_cap_is_independent_of_early_exact_card_calls(self):
+        def fake_parent_get(resolver, path, *, params=None):
+            if resolver.requests_used >= resolver.max_requests:
+                return 0, {"error": "budget_exhausted"}
+            resolver.requests_used += 1
+            if path == "cards":
+                name = str((params or {}).get("name") or "eq:test")
+                suffix = name.rsplit(":", 1)[-1]
+                return 200, [{"id": f"CARD-{suffix}"}]
+            if path.startswith("cards/"):
+                return 200, {"id": path.split("/", 1)[1]}
+            return 200, []
+
+        with mock.patch.object(
+            budget.retrieval_v3.TCGdexJapaneseProofResolver,
+            "_get",
+            new=fake_parent_get,
+        ):
+            resolver = budget.CachedRecoveryResolver(max_requests=36)
+            try:
+                # Mirror the measured live ordering: three exact search/detail
+                # pairs happen before the remaining broad coordinate traffic.
+                for index in range(3):
+                    self.assertEqual(
+                        resolver._get(
+                            "cards",
+                            params={
+                                "name": f"eq:early-{index}",
+                                "rarity": "eq:Ultra Rare",
+                            },
+                        )[0],
+                        200,
+                    )
+                    self.assertEqual(resolver._get(f"cards/CARD-early-{index}")[0], 200)
+
+                # Early exact-card calls must not shrink the independent 28-call
+                # broad allowance. This is the regression that left live at
+                # 29/96 with only 32/36 total calls consumed.
+                for index in range(28):
+                    self.assertEqual(resolver._get(f"sets/SET/{index}")[0], 200)
+                reserved = resolver._get("sets/SET/28")
+
+                # The last exact search/detail pair still owns the final two
+                # calls and brings the total to exactly 36.
+                search = resolver._get(
+                    "cards",
+                    params={"name": "eq:late", "rarity": "eq:Ultra Rare"},
+                )
+                detail = resolver._get("cards/CARD-late")
+            finally:
+                resolver.close()
+
+        self.assertEqual(resolver._card_identity_reserve, 8)
+        self.assertEqual(resolver._nonpriority_request_cap, 28)
+        self.assertEqual(resolver._nonpriority_requests_used, 28)
+        self.assertEqual(reserved[0], 0)
+        self.assertEqual(search[0], 200)
+        self.assertEqual(detail[0], 200)
+        self.assertEqual(resolver.requests_used, 36)
+        self.assertEqual(resolver.reserved_breakdown, {"set_coordinate": 1})
+        self.assertEqual(
+            resolver.request_breakdown,
+            {"set_coordinate": 28, "card_search": 4, "card_detail": 4},
         )
         self.assertEqual(resolver.exhausted_breakdown, {})
 
@@ -67,6 +134,7 @@ class MagiRecoveryPriorityTests(unittest.TestCase):
                 resolver.close()
 
         self.assertEqual(resolver.requests_used, 1)
+        self.assertEqual(resolver._nonpriority_requests_used, 1)
         self.assertEqual(resolver.reserved_breakdown, {})
         self.assertEqual(resolver.exhausted_breakdown, {"card_detail": 1})
 

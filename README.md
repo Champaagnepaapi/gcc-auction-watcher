@@ -4,14 +4,16 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
 
-## État canonique — 25 août 2026
+## État canonique — 26 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main @ 3d1589e0086c264e9f910a15fb6b037e20938970
-Magi coverage production         : PR #174 MERGED
+V4 production canonique          : main @ 2114b20077605a96a3cf3211f225e1e774bbe9ea
+Magi coverage production         : PR #174 + #177 MERGED
 Magi production proof            : run 32893130902 SUCCESS / 31 EXACT sur 96
+Magi budget fix candidate        : PR #178 OPEN / DRAFT / NON MERGED
+Magi #178 read-only proof        : run 32943536626 SUCCESS / 30 EXACT + 55 SOLD / 0 budget-exhausted
 Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
 Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
 Cardova public read-only         : PR #168 / 48caf402e851e2d888999ba94f93a9355f14d7bb
@@ -164,6 +166,71 @@ sets_filtered                    7
 ```
 
 Le plafond n'a pas été augmenté pour gagner la couverture.
+
+## PR #177 — Battle Partners en production
+
+PR #177 a été mergée le 25 août 2026 :
+
+```text
+feature head                     def78bfefff01ddb6690e9a21616ae65d0eb14c8
+merge main                       2114b20077605a96a3cf3211f225e1e774bbe9ea
+preuve                           Battle Partners = SV9 / 100
+```
+
+La correction reste une revalidation TCGdex exacte ; aucune identité n'est créée par fuzzy ou traduction supposée.
+
+## PR #178 — correction de saturation du budget recovery, validée mais NON MERGÉE
+
+Après #177, les workflows nocturnes sont restés techniquement SUCCESS, mais Magi a parfois chuté jusqu'à **28/96 EXACT** avec `TCGDEX_BUDGET_EXHAUSTED`. Le problème venait de l'allocation des 36 appels recovery, pas du plafond lui-même.
+
+PR #178 garde donc **36 appels max/run** et sépare le budget par classe :
+
+```text
+recovery total max               36
+broad/nonpriority max            28
+exact card-search/detail reserve  8
+```
+
+Les requêtes larges `sets/*` ne peuvent plus consommer les appels nécessaires aux paires strictes `card_search -> card_detail`. La limite broad est comptée indépendamment de l'ordre des listings ; le plafond global de 36 reste inchangé.
+
+Validation #178 :
+
+```text
+branch                            fix/v4-global-magi-recovery-priority-20260826
+validated head                    8fd51c34dd2550b4748dc790e17b74af8612b975
+base main                         2114b20077605a96a3cf3211f225e1e774bbe9ea
+CI/live run                       32943536626 SUCCESS
+focused Global tests              409/409 PASS
+V4 multimarket tests              51/51 PASS
+compile/YAML/diff-check           PASS
+```
+
+Live read-only :
+
+```text
+Magi candidates                   96
+Magi EXACT                        30
+sold_listing                      55
+japanese_set_name_unproven        5
+target_catalog_unproven           4
+target_japanese_card_name         2
+TCGdex recovery requests          36
+nonpriority recovery              28
+card_search                       4
+card_detail                       4
+set_coordinate                   19
+set_detail                        1
+sets_catalog                      1
+sets_filtered                     7
+TCGDEX_BUDGET_EXHAUSTED           0
+notifications sent                0
+identity gate relaxed             false
+transactions                      false
+```
+
+Le `30/96` ne représente pas une perte d'identité par rapport au baseline `31/96` : `sold_listing` est passé de **54 à 55**, tandis que les rejets non-SOLD restent exactement `4 + 5 + 2 = 11`. La saturation évitable est donc supprimée sans augmenter 36 et sans relâcher l'identité.
+
+**PR #178 ne doit pas être mergée sans autorisation explicite utilisateur après cette validation.**
 
 ## Classes déterministes ajoutées
 
@@ -340,10 +407,12 @@ Documents de reprise :
 
 ```text
 Global / Magi
-  -> #174 est en production et prouvé à 31/96 EXACT
+  -> #177 est en production sur main@2114b20077605a96a3cf3211f225e1e774bbe9ea
+  -> #178 corrige la saturation recovery sans augmenter le plafond 36
+  -> #178 est validée read-only mais NON MERGÉE ; merge seulement sur autorisation explicite
+  -> après merge éventuel, vérifier le premier schedule prod et l'absence de BUDGET_EXHAUSTED évitable
   -> conserver les 5 set-name cases bloqués tant qu'aucune preuve exacte n'existe
   -> chercher seulement des classes déterministes répétées, pas des aliases carte-par-carte
-  -> surveiller les schedules post-merge et le budget recovery 36
 
 TCGdex
   -> traiter PR #159 séparément si souhaité, après revalidation sur main courant
