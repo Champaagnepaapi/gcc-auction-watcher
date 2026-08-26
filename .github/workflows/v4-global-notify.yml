@@ -7,13 +7,18 @@ on:
         description: "Max pending marketplace listings to evaluate economically"
         required: false
         default: "50"
-  # Full marketplace discovery plus provider confirmation is now measured above
-  # ten minutes on the 50-listing production scale. Keep one non-overlapping
-  # production lane instead of letting scheduled runs pile up behind concurrency.
+  # GitHub schedule remains the primary production trigger. The externally
+  # dispatched Main Scanner is also used as a cheap watchdog: its completion
+  # may recover this same lane only when the durable Global heartbeat is stale.
   schedule:
     - cron: "1,21,41 * * * *"
+  workflow_run:
+    workflows: ["GCC Auction Watcher"]
+    types: [completed]
+    branches: [main]
 
 permissions:
+  actions: read
   contents: read
   issues: write
 
@@ -22,12 +27,149 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      run_scan: ${{ steps.gate.outputs.run_scan }}
+      production: ${{ steps.gate.outputs.production }}
+      state_lane: ${{ steps.gate.outputs.state_lane }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Resolve Global production/watchdog gate
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const setGate = (runScan, production, stateLane, reason) => {
+              core.setOutput('run_scan', runScan ? 'true' : 'false');
+              core.setOutput('production', production ? 'true' : 'false');
+              core.setOutput('state_lane', stateLane);
+              core.setOutput('reason', reason);
+              core.info(`global_gate run_scan=${runScan} production=${production} state_lane=${stateLane} reason=${reason}`);
+            };
+
+            if (context.eventName === 'workflow_dispatch') {
+              setGate(true, false, 'workflow_dispatch', 'manual_dry_run');
+              return;
+            }
+
+            const readHeartbeat = async () => {
+              try {
+                const data = await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $number) {
+                        comments(last: 50) {
+                          nodes { body createdAt }
+                        }
+                      }
+                    }
+                  }
+                `, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  number: 150,
+                });
+                const comments = data.repository?.issue?.comments?.nodes || [];
+                const healthy = comments.filter((comment) => {
+                  const body = comment.body || '';
+                  const productionTrigger = body.includes('trigger=schedule') || body.includes('trigger=workflow_run');
+                  const scanSucceeded = body.includes('scan_job_result=success');
+                  const marketplaceSucceeded = body.includes('marketplace_status=success');
+                  const intentionallyDisabled = body.includes('notification_activation=false');
+                  return productionTrigger && scanSucceeded && (marketplaceSucceeded || intentionallyDisabled);
+                });
+                if (!healthy.length) {
+                  return {ok: true, ageMinutes: Number.POSITIVE_INFINITY};
+                }
+                healthy.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+                return {
+                  ok: true,
+                  ageMinutes: (Date.now() - Date.parse(healthy[0].createdAt)) / 60000,
+                };
+              } catch (error) {
+                core.warning(`Global heartbeat lookup failed: ${error.message}`);
+                return {ok: false, ageMinutes: Number.POSITIVE_INFINITY};
+              }
+            };
+
+            if (context.eventName === 'schedule') {
+              const heartbeat = await readHeartbeat();
+              // Never let a registry/API problem suppress the primary schedule.
+              if (!heartbeat.ok) {
+                setGate(true, true, 'schedule', 'schedule_registry_unavailable_fail_open');
+                return;
+              }
+              // A delayed/queued schedule immediately after a completed recovery
+              // is redundant. Debounce only very recent healthy production runs.
+              if (heartbeat.ageMinutes < 15) {
+                setGate(false, true, 'schedule', 'schedule_debounced_recent_heartbeat');
+                return;
+              }
+              setGate(true, true, 'schedule', 'scheduled_production');
+              return;
+            }
+
+            if (context.eventName !== 'workflow_run') {
+              setGate(false, false, 'workflow_dispatch', 'unsupported_trigger');
+              return;
+            }
+
+            const source = context.payload.workflow_run || {};
+            const trustedSource = source.name === 'GCC Auction Watcher'
+              && source.event === 'workflow_dispatch'
+              && source.head_branch === 'main'
+              && source.conclusion === 'success';
+            if (!trustedSource) {
+              setGate(false, false, 'schedule', 'watchdog_untrusted_source');
+              return;
+            }
+
+            const heartbeat = await readHeartbeat();
+            // Recovery is fail-closed: if we cannot prove staleness, do nothing.
+            if (!heartbeat.ok) {
+              setGate(false, true, 'schedule', 'watchdog_registry_unavailable');
+              return;
+            }
+            if (heartbeat.ageMinutes < 30) {
+              setGate(false, true, 'schedule', 'watchdog_heartbeat_fresh');
+              return;
+            }
+
+            try {
+              const response = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'v4-global-notify.yml',
+                per_page: 20,
+              });
+              const activeStatuses = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
+              const otherProductionRun = (response.data.workflow_runs || []).find((run) =>
+                run.id !== context.runId
+                && activeStatuses.has(run.status)
+                && (run.event === 'schedule' || run.event === 'workflow_run')
+              );
+              if (otherProductionRun) {
+                setGate(false, true, 'schedule', `watchdog_other_production_run_${otherProductionRun.id}`);
+                return;
+              }
+            } catch (error) {
+              core.warning(`Global active-run lookup failed: ${error.message}`);
+              setGate(false, true, 'schedule', 'watchdog_active_run_lookup_unavailable');
+              return;
+            }
+
+            // Reuse the legacy "schedule" cache namespace so watchdog recovery
+            // continues exactly the same production state instead of bootstrapping.
+            setGate(true, true, 'schedule', 'watchdog_stale_heartbeat_recovery');
+
   scan:
-    # Manual runs are always dry-run. Scheduled runs resolve an explicit
-    # activation gate after checkout: repository variable first, then the
-    # versioned activation marker. Literal repository variable false is an
-    # emergency override that disables the marker.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
+    needs: gate
+    # Manual runs stay dry-run. Production is either the primary schedule or a
+    # stale-heartbeat recovery admitted by the gate above.
+    if: ${{ needs.gate.outputs.run_scan == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     outputs:
@@ -68,7 +210,7 @@ jobs:
           REPO_NOTIFY_FLAG: ${{ vars.GLOBAL_NOTIFY_ENABLED }}
         run: |
           enabled=false
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "${{ needs.gate.outputs.production }}" = "true" ]; then
             marker=false
             if [ -f .github/global-notify-activation ]; then
               marker="$(tr -d '[:space:]' < .github/global-notify-activation)"
@@ -85,14 +227,14 @@ jobs:
           echo "notification_activation=$enabled"
 
       - name: Set up Python
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
+        if: ${{ needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
       - name: Restore Playwright browser cache
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
+        if: ${{ needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true' }}
         id: playwright-cache
         uses: actions/cache@v4
         with:
@@ -100,12 +242,12 @@ jobs:
           key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
 
       - name: Install Python dependencies
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
+        if: ${{ needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true' }}
         timeout-minutes: 3
         run: pip install -r requirements.txt
 
       - name: Ensure Chromium runtime is usable
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
+        if: ${{ needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true' }}
         timeout-minutes: 5
         shell: bash
         run: |
@@ -126,19 +268,19 @@ jobs:
           fi
 
       - name: Restore Global marketplace state
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
+        if: ${{ needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true' }}
         uses: actions/cache/restore@v4
         with:
           path: .global-marketplace-state
-          key: global-marketplace-state-${{ github.event_name }}-${{ github.run_id }}
+          key: global-marketplace-state-${{ needs.gate.outputs.state_lane }}-${{ github.run_id }}
           restore-keys: |
-            global-marketplace-state-${{ github.event_name }}-
+            global-marketplace-state-${{ needs.gate.outputs.state_lane }}-
 
       - name: Run marketplace-first Global notification lane
         id: marketplace
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true' }}
+        if: ${{ needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true' }}
         env:
-          GLOBAL_NOTIFY_ENABLED: ${{ github.event_name == 'schedule' && steps.activation.outputs.enabled == 'true' && 'true' || 'false' }}
+          GLOBAL_NOTIFY_ENABLED: ${{ needs.gate.outputs.production == 'true' && steps.activation.outputs.enabled == 'true' && 'true' || 'false' }}
         shell: bash
         run: |
           set +e
@@ -168,19 +310,19 @@ jobs:
           fi
 
       - name: Assert no tracked runtime mutation
-        if: ${{ always() && (github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true') }}
+        if: ${{ always() && (needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true') }}
         run: test -z "$(git status --porcelain --untracked-files=no)"
 
       - name: Save Global marketplace state
         # Never promote a partial/timed-out state snapshot.
-        if: ${{ always() && steps.marketplace.outcome == 'success' && (github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true') }}
+        if: ${{ always() && steps.marketplace.outcome == 'success' && (needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true') }}
         uses: actions/cache/save@v4
         with:
           path: .global-marketplace-state
-          key: global-marketplace-state-${{ github.event_name }}-${{ github.run_id }}
+          key: global-marketplace-state-${{ needs.gate.outputs.state_lane }}-${{ github.run_id }}
 
       - name: Upload Global marketplace report
-        if: ${{ always() && (github.event_name == 'workflow_dispatch' || steps.activation.outputs.enabled == 'true') }}
+        if: ${{ always() && (needs.gate.outputs.production != 'true' || steps.activation.outputs.enabled == 'true') }}
         uses: actions/upload-artifact@v4
         with:
           name: v4-global-marketplace-${{ github.run_id }}
@@ -191,8 +333,8 @@ jobs:
   register:
     # Keep the run registry outside the scan job. A job-level timeout/cancel can
     # otherwise prevent an in-job `always()` finalizer from ever running.
-    needs: scan
-    if: ${{ always() && github.event_name == 'schedule' }}
+    needs: [gate, scan]
+    if: ${{ always() && needs.gate.outputs.run_scan == 'true' && needs.gate.outputs.production == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -203,10 +345,11 @@ jobs:
           name: v4-global-marketplace-${{ github.run_id }}
           path: global_marketplace_out
 
-      - name: "Register Global schedule run in issue #150"
+      - name: "Register Global production run in issue #150"
         uses: actions/github-script@v7
         env:
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          TRIGGER_REASON: ${{ needs.gate.outputs.reason }}
           SCAN_JOB_RESULT: ${{ needs.scan.result }}
           NOTIFICATION_ACTIVATION: ${{ needs.scan.outputs.notification_activation }}
           MARKETPLACE_STATUS: ${{ needs.scan.outputs.marketplace_status }}
@@ -239,6 +382,7 @@ jobs:
               `run_id=${context.runId}`,
               `run_attempt=${process.env.RUN_ATTEMPT}`,
               `trigger=${context.eventName}`,
+              `trigger_reason=${process.env.TRIGGER_REASON || 'unavailable'}`,
               `commit_sha=${context.sha}`,
               `scan_job_result=${process.env.SCAN_JOB_RESULT || 'unavailable'}`,
               `notification_activation=${process.env.NOTIFICATION_ACTIVATION || 'unavailable'}`,
