@@ -1,12 +1,12 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **26 août 2026**. Le contrôle GitHub live reste l'autorité et il ne faut **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub**.
+Snapshot GitHub pertinent re-vérifié le **26 août 2026** après merge de #180. Le contrôle GitHub live reste l'autorité et il ne faut **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub**.
 
 ```text
-main HEAD                      ac5f7c734685422612a0f24690af22910eefa951
+main runtime                   9365f5cd9f8949580c4e48f00ba8c4e419c22145
 PR #178                        MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
 PR #179                        MERGED / ac5f7c734685422612a0f24690af22910eefa951
-PR #180                        OPEN / DRAFT / NON MERGED
+PR #180                        MERGED / 9365f5cd9f8949580c4e48f00ba8c4e419c22145
 PR #8                          OPEN / DRAFT / NON MERGED
 ```
 
@@ -14,7 +14,6 @@ PR #8                          OPEN / DRAFT / NON MERGED
 
 | PR | Classification / instruction |
 |---|---|
-| #180 | `ROBOT_KB / CANDIDATE`. Harvest local multi-vault + PokeTrace/PPT, sans changement économique V4. Merge uniquement après validation et autorisation utilisateur. |
 | #176 | `STALE_OPEN / DOCS`. Handoff eBay ancien ; revalider avant tout merge. |
 | #159 | `STALE_OPEN/SUPERSEDED` fonctionnellement par #177 Battle Partners déjà mergée. Ne pas rejouer telle quelle. |
 | #141 | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
@@ -43,7 +42,8 @@ PR #8                          OPEN / DRAFT / NON MERGED
 - #169 : Global cadence 20 min + timeout recovery ;
 - #174 + #177 : Magi deterministic exact identity ;
 - #178 : protection du budget recovery Magi, merge `545223613ce21e6c4cf886e07201bc3c105a5e69` ;
-- #179 : watchdog/rattrapage Global, merge `ac5f7c734685422612a0f24690af22910eefa951`.
+- #179 : watchdog/rattrapage Global, merge `ac5f7c734685422612a0f24690af22910eefa951` ;
+- #180 : Robot KB multisource local, merge `9365f5cd9f8949580c4e48f00ba8c4e419c22145` ; installation physique Mac encore à vérifier.
 
 ## Règles
 
