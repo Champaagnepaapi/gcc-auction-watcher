@@ -70,11 +70,13 @@ jobs:
         run: |
           bash -n "mac/robot-kb-local/robot_kb_local_runner.sh"
           bash -n "mac/robot-kb-local/Installer Robot KB Local.command"
+          bash -n "mac/robot-kb-local/Configurer APIs Robot KB.command"
           bash -n "mac/robot-kb-local/Migrer Robot KB Neon vers Mac.command"
           bash -n "mac/robot-kb-local/Etat Robot KB Local.command"
           bash -n "mac/robot-kb-local/Ouvrir Robot KB.command"
           python -m py_compile "mac/robot-kb-local/robot_kb_viewer.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_harvest.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_multisource_p3_compat.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_entrypoint.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
