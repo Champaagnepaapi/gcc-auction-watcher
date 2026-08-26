@@ -44,6 +44,21 @@ def provider_metric_fact(metric: Any) -> dict[str, Any]:
     }
 
 
+def provider_metric_upstream(metric: Any) -> tuple[None, None]:
+    """Do not create synthetic upstream source-system rows for provider metrics.
+
+    P3 treats ``source_system.code`` as a global immutable namespace. The migrated
+    Robot KB may already contain rows such as ``cardmarket`` or ``ebay`` with a
+    different canonical role/name, so asking P3 persistence to recreate those
+    codes as ``MARKET`` raises an IdempotencyConflict. Provider provenance is
+    still retained by the provider source row, immutable raw payload, and metric
+    name (which already carries EBAY/CARDMARKET/TCGPLAYER where applicable).
+    """
+
+    _ = metric
+    return None, None
+
+
 def install(harvest: Any) -> None:
     """Install the narrow compatibility layer required by runtime P3.
 
@@ -106,6 +121,7 @@ def install(harvest: Any) -> None:
                 ObservationType.PROVIDER_METRIC_OBSERVATION.value,
             ):
                 continue
+            upstream_code, upstream_name = provider_metric_upstream(metric)
             observations.append(
                 NormalizedObservation(
                     observation_type=ObservationType.PROVIDER_METRIC_OBSERVATION,
@@ -115,8 +131,8 @@ def install(harvest: Any) -> None:
                     event_at=metric.event_at,
                     event_time_precision=metric.precision,
                     fact=provider_metric_fact(metric),
-                    upstream_market_code=metric.market or None,
-                    upstream_market_name=metric.market or None,
+                    upstream_market_code=upstream_code,
+                    upstream_market_name=upstream_name,
                     identity_subject_type=f"{source.upper()}_MARKET_METRIC",
                     identity_subject_label=f"{source_name} {metric.card_id} {metric.name}",
                     identity_namespace=f"{source.upper()}_CARD_ID",
