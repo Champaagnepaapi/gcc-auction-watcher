@@ -11,10 +11,21 @@ LOCAL = ROOT / "mac" / "robot-kb-local"
 if str(LOCAL) not in sys.path:
     sys.path.insert(0, str(LOCAL))
 
-harvest = importlib.import_module("robot_kb_multisource_harvest")
-entrypoint = importlib.import_module("robot_kb_multisource_entrypoint")
+try:
+    harvest = importlib.import_module("robot_kb_multisource_harvest")
+    entrypoint = importlib.import_module("robot_kb_multisource_entrypoint")
+except ModuleNotFoundError as error:
+    # The broad V4 test workflow intentionally does not checkout the pinned P3
+    # Robot KB runtime. The dedicated Robot KB workflow adds .robot-kb-p3 to
+    # PYTHONPATH and must execute this suite fully.
+    if error.name == "robot_kb":
+        harvest = None
+        entrypoint = None
+    else:
+        raise
 
 
+@unittest.skipIf(harvest is None, "pinned Robot KB P3 runtime is not present in this V4-only test lane")
 class RobotKbMultisourceHarvestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
