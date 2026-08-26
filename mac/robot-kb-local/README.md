@@ -9,22 +9,33 @@ Cette lane remplace le stockage Neon par un PostgreSQL **local uniquement** sur 
 - aucune clé/API/password n'est écrite dans le dépôt ;
 - l'URL Neon n'est demandée qu'en saisie masquée pendant la migration et n'est pas persistée ;
 - collectors = GET/read-only côté marchés ; aucune transaction, achat, bid ou checkout ;
-- SOLD seulement si la source prouve explicitement la vente ; ask/live auction/disparition ne deviennent jamais SOLD.
+- Pokémon cartes individuelles uniquement pour les nouveaux providers ;
+- SOLD seulement si la source prouve explicitement la vente ; ask/live auction/disparition ne deviennent jamais SOLD ;
+- PokeTrace/PokemonPriceTracker agrégés restent `SOLD_AGGREGATED`, jamais item-level SOLD.
 
 ## Installation
 
-Après avoir récupéré la branche/main contenant cette phase, double-cliquer :
+Après avoir récupéré `main` contenant PR #180, double-cliquer :
 
 `Installer Robot KB Local.command`
 
 L'installateur :
 
-1. installe Homebrew si nécessaire, PostgreSQL 16 et Python 3.12 ;
+1. réutilise PostgreSQL local existant ou installe PostgreSQL 16 si nécessaire, puis Python 3.12 ;
 2. extrait le runtime P3 validé dans `~/Library/Application Support/RobotPokemonKB/runtime-p3` ;
-3. crée un venv local ;
-4. exige la migration Neon avant d'activer les collectors sur une installation neuve ;
-5. installe trois LaunchAgents : fixed/auction à `:32`, SOLD à `:17` et `:47`, backup à `03:10` ;
-6. lance un rattrapage initial puis un health-check.
+3. crée/réutilise le venv local et installe Chromium Playwright ;
+4. conserve le mot de passe PostgreSQL local et les clés optionnelles PokeTrace/PokemonPriceTracker **uniquement dans le Trousseau macOS** ;
+5. exige la migration Neon avant d'activer les collectors sur une installation neuve ;
+6. installe cinq LaunchAgents :
+   - fixed/auction à `:32` ;
+   - SOLD à `:17` et `:47` ;
+   - backup à `03:10` ;
+   - marchés publics Fanatics/COMC/Magi/Cardova toutes les 2 h à `:05` ;
+   - PokeTrace/PokemonPriceTracker à `01:08`, `07:08`, `13:08`, `19:08` ;
+7. lance les catch-ups fixed, SOLD, marchés publics puis provider paid borné à 15 min ;
+8. termine par un health-check.
+
+Les réserves provider installées sont : PPT remaining `15000`, PokeTrace remaining `5000`. La lane provider utilise un lock séparé des collectors GCC afin de ne pas bloquer fixed/SOLD.
 
 ## Migration Neon
 
@@ -66,3 +77,7 @@ Données : `~/Library/Application Support/RobotPokemonKB/`
 Logs : `~/Library/Logs/RobotPokemonKB/`
 
 Backups : 7 derniers dumps complets conservés localement.
+
+## État #180
+
+Le code/installateur est mergé dans `main` via `9365f5cd9f8949580c4e48f00ba8c4e419c22145`. Cela **ne prouve pas encore l'installation physique des deux nouveaux LaunchAgents sur le Mac** : relancer `Installer Robot KB Local.command`, puis contrôler `Etat Robot KB Local.command` et les logs.
