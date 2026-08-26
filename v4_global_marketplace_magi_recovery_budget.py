@@ -8,7 +8,7 @@ coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
-The final two requests of the fixed recovery budget are reserved for exact
+The final eight requests of the fixed recovery budget are reserved for exact
 card-search/card-detail proof. Broader set discovery/coordinate scans fail closed
 once that reserve is reached; the total ceiling remains unchanged.
 """
@@ -23,7 +23,7 @@ import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
 _MAX_RECOVERY_REQUESTS = 36
-_CARD_IDENTITY_RESERVE_REQUESTS = 2
+_CARD_IDENTITY_RESERVE_REQUESTS = 8
 _CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
 _ACTIVE_RECOVERY_RESOLVER: Optional[retrieval_v3.TCGdexJapaneseProofResolver] = None
 _ORIGINAL_SCAN = None
@@ -62,7 +62,9 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         self.reserved_breakdown: Counter[str] = Counter()
         self.exhausted_breakdown: Counter[str] = Counter()
         # Tiny unit-test budgets should keep their historical semantics. The
-        # production 36-request budget reserves exactly two requests.
+        # production 36-request budget reserves eight requests, matching four
+        # strict exact card-search + card-detail proof pairs already observed in
+        # the proven 31/96 Magi production baseline.
         self._card_identity_reserve = min(
             _CARD_IDENTITY_RESERVE_REQUESTS,
             max(0, int(max_requests) - 2),
@@ -93,10 +95,10 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
             self.cache_hits[request_class] += 1
             return self._card_detail_cache[coordinate_key]
 
-        # Preserve the last two production requests for the strongest bounded
-        # recovery class: exact parameterized card search followed by exact card
-        # detail revalidation. Broader set scans simply fail closed at the
-        # reserve boundary; they never borrow from or increase the 36-call cap.
+        # Preserve the production reserve for the strongest bounded recovery
+        # class: exact parameterized card search followed by exact card-detail
+        # revalidation. Broader set scans simply fail closed at the reserve
+        # boundary; they never borrow from or increase the 36-call cap.
         reserve_floor = max(0, self.max_requests - self._card_identity_reserve)
         if (
             self._card_identity_reserve
@@ -147,7 +149,10 @@ def _scan_with_recovery_budget(*args, **kwargs):
     try:
         rows, status = _ORIGINAL_SCAN(*args, **kwargs)
         detail = str(status.detail or "")
-        suffixes = [f"tcgdex_recovery_requests={recovery.requests_used}"]
+        suffixes = [
+            f"tcgdex_recovery_requests={recovery.requests_used}",
+            f"tcgdex_recovery_card_identity_reserve={recovery._card_identity_reserve}",
+        ]
         breakdown = getattr(recovery, "request_breakdown", {})
         cache_hits = getattr(recovery, "cache_hits", {})
         reserved = getattr(recovery, "reserved_breakdown", {})
