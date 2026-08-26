@@ -9,12 +9,15 @@
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main @ 2114b20077605a96a3cf3211f225e1e774bbe9ea
+V4 production canonique          : main @ 9365f5cd9f8949580c4e48f00ba8c4e419c22145 (runtime merge #180)
 Magi coverage production         : PR #174 + #177 MERGED
 Magi production proof            : run 32893130902 SUCCESS / 31 EXACT sur 96
-Magi budget fix candidate        : PR #178 OPEN / DRAFT / NON MERGED
+Magi budget fix                  : PR #178 MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
 Magi #178 read-only proof        : run 32943536626 SUCCESS / 30 EXACT + 55 SOLD / 0 budget-exhausted
+Global schedule watchdog         : PR #179 MERGED / ac5f7c734685422612a0f24690af22910eefa951
 Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
+Robot KB multisource runtime     : PR #180 MERGED / 9365f5cd9f8949580c4e48f00ba8c4e419c22145
+Robot KB multisource Mac install : PENDING — repo prêt, installateur à exécuter sur le Mac
 Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
 Cardova public read-only         : PR #168 / 48caf402e851e2d888999ba94f93a9355f14d7bb
 Global schedule recovery         : PR #169 / 81db5cf2ffc788a517c9cb63d36cfd1f88c347a6
@@ -26,7 +29,7 @@ Neon                             : writers automatiques RETIRÉS ; rollback manu
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-Toujours re-vérifier le HEAD `main`, les PR et les workflows live avant une action importante.
+Toujours re-vérifier le HEAD `main`, les PR et les workflows live avant une action importante. Un commit docs-only peut suivre le dernier SHA runtime ; distinguer les deux dans le handoff.
 
 ---
 
@@ -119,7 +122,7 @@ marketplace inner timeout        17 min
 job scan timeout                 25 min
 ```
 
-Le workflow Global production reste unique : `.github/workflows/v4-global-notify.yml`.
+Le workflow Global production reste unique : `.github/workflows/v4-global-notify.yml`. PR #179 ajoute un watchdog/rattrapage borné depuis le heartbeat Main Scanner pour les schedules GitHub manqués, sans seconde lane économique.
 
 ---
 
@@ -179,7 +182,7 @@ preuve                           Battle Partners = SV9 / 100
 
 La correction reste une revalidation TCGdex exacte ; aucune identité n'est créée par fuzzy ou traduction supposée.
 
-## PR #178 — correction de saturation du budget recovery, validée mais NON MERGÉE
+## PR #178 — correction de saturation du budget recovery — EN PRODUCTION
 
 Après #177, les workflows nocturnes sont restés techniquement SUCCESS, mais Magi a parfois chuté jusqu'à **28/96 EXACT** avec `TCGDEX_BUDGET_EXHAUSTED`. Le problème venait de l'allocation des 36 appels recovery, pas du plafond lui-même.
 
@@ -189,6 +192,7 @@ PR #178 garde donc **36 appels max/run** et sépare le budget par classe :
 recovery total max               36
 broad/nonpriority max            28
 exact card-search/detail reserve  8
+merge main                       545223613ce21e6c4cf886e07201bc3c105a5e69
 ```
 
 Les requêtes larges `sets/*` ne peuvent plus consommer les appels nécessaires aux paires strictes `card_search -> card_detail`. La limite broad est comptée indépendamment de l'ordre des listings ; le plafond global de 36 reste inchangé.
@@ -229,8 +233,6 @@ transactions                      false
 ```
 
 Le `30/96` ne représente pas une perte d'identité par rapport au baseline `31/96` : `sold_listing` est passé de **54 à 55**, tandis que les rejets non-SOLD restent exactement `4 + 5 + 2 = 11`. La saturation évitable est donc supprimée sans augmenter 36 et sans relâcher l'identité.
-
-**PR #178 ne doit pas être mergée sans autorisation explicite utilisateur après cette validation.**
 
 ## Classes déterministes ajoutées
 
@@ -276,7 +278,7 @@ La lignée #119→#135 reste l'autorité de récupération exacte : coordinate, 
 
 Une entrée affirmant deux valeurs incompatibles sur le même axe ne devient jamais un comparable exact. Le `pricing` / `thirdParty` de TCGdex n'est pas utilisé pour valoriser un slab.
 
-PR #159 reste une correction TCGdex séparée et **non mergée** ; la re-vérifier contre le `main` courant avant toute décision.
+PR #159 est superseded fonctionnellement par #177 déjà mergée ; elle reste historique/provenance et ne doit pas être rejouée telle quelle.
 
 ---
 
@@ -330,7 +332,7 @@ PostgreSQL                       health OK
 schema versions                  [1, 2]
 ```
 
-Collecte locale :
+Collecte locale historique déjà active :
 
 ```text
 database                         robot_pokemon_kb
@@ -343,6 +345,41 @@ backups conservés                7 dumps complets locaux
 ```
 
 PR #166 a retiré les writers automatiques Neon. Le projet Neon reste disponible uniquement comme rollback/recovery manuel borné.
+
+## PR #180 — harvest multisource local, code mergé
+
+PR #180 est mergée dans `main` :
+
+```text
+feature head                     4194730490efbf879188069de4cc4d17642aad46
+merge main                       9365f5cd9f8949580c4e48f00ba8c4e419c22145
+Robot KB CI                      run 32999776457 SUCCESS
+V4 validation                    run 32999776492 SUCCESS
+Mac physical install             PENDING
+```
+
+La nouvelle lane ajoute, sans modifier le gate économique V4/Global :
+
+- Fanatics, COMC, Magi et Cardova publics : baseline puis changements matériels ;
+- PokeTrace : marchés US/EU, Pokémon EN/JP, **single cards uniquement**, prix courants + historique `period=all`, priorité PSA 10/9/8/8.5 ;
+- PokemonPriceTracker : sets EN/JP, historique 180 jours, eBay gradé agrégé + métriques CardMarket/TCGplayer ;
+- provenance, payload brut et `observed_at` conservés dans Robot KB ;
+- `SOLD_AGGREGATED` reste agrégé et ne devient jamais un item-level SOLD ;
+- `cardmarket_unsold` reste `FIXED_ASK_AGGREGATED` ; ASK reste ASK.
+
+Après exécution de l'installateur #180 sur le Mac :
+
+```text
+public multi-vault               LaunchAgent toutes les 2 h à :05
+PokeTrace + PPT                  LaunchAgent 01:08 / 07:08 / 13:08 / 19:08
+PPT remaining reserve            15000
+PokeTrace remaining reserve      5000
+paid runtime max                 1800 s/run
+```
+
+Les clés PokeTrace/PPT doivent rester **uniquement dans le Trousseau macOS**. Elles ne doivent apparaître ni dans Git, ni dans les plist, ni dans les states/logs. Le harvest provider utilise un lock séparé du collector GCC pour ne pas bloquer fixed/SOLD.
+
+**Important : le merge #180 rend le code/installateur disponible sur `main`, mais ne prouve pas encore que les nouveaux LaunchAgents ont été installés et chargés sur le Mac.** Cette vérification doit être faite après exécution réelle de l'installateur sur la machine.
 
 ---
 
@@ -363,7 +400,7 @@ TCGdex reste le resolver normal V5 ; PokeTrace sert au marché/prix après ident
 # Workflows / séparation des responsabilités
 
 - Main Scanner et Fast Lane : cadence externe ;
-- Global : workflow schedule unique toutes les 20 min ;
+- Global : workflow schedule unique toutes les 20 min + watchdog #179 ;
 - Robot KB production : **LaunchAgents locaux Mac** ;
 - anciens workflows Neon Robot KB : **manual-only rollback/recovery** ;
 - `robot-kb-local-postgres-validation.yml` : validation CI/manual de la lane Mac ;
@@ -406,23 +443,23 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
+Robot KB #180
+  -> code multisource mergé sur main@9365f5cd9f8949580c4e48f00ba8c4e419c22145
+  -> prochaine étape : exécuter l'installateur #180 sur le Mac
+  -> vérifier LaunchAgents public :05 / paid 01:08,07:08,13:08,19:08
+  -> vérifier premier catch-up public puis paid borné, logs et nouvelles observations PostgreSQL
+  -> confirmer qu'aucun secret n'apparaît hors Trousseau
+  -> garder V4_USE=false pendant cette phase
+
 Global / Magi
-  -> #177 est en production sur main@2114b20077605a96a3cf3211f225e1e774bbe9ea
-  -> #178 corrige la saturation recovery sans augmenter le plafond 36
-  -> #178 est validée read-only mais NON MERGÉE ; merge seulement sur autorisation explicite
-  -> après merge éventuel, vérifier le premier schedule prod et l'absence de BUDGET_EXHAUSTED évitable
+  -> #177, #178 et #179 sont en production
+  -> conserver le plafond TCGdex recovery à 36 et la réserve broad 28
   -> conserver les 5 set-name cases bloqués tant qu'aucune preuve exacte n'existe
   -> chercher seulement des classes déterministes répétées, pas des aliases carte-par-carte
 
 TCGdex
-  -> traiter PR #159 séparément si souhaité, après revalidation sur main courant
+  -> #159 est superseded fonctionnellement par #177 ; ne pas la rejouer telle quelle
   -> ne jamais fabriquer une microvariante
-
-Robot KB
-  -> laisser le backfill local continuer
-  -> surveiller health/logs/backups locaux
-  -> accumuler davantage de SOLD exacts et de tiers exacts
-  -> ne pas activer KB-first économiquement sans profondeur/preuve suffisante
 
 V5
   -> PR #8 reste expérimentale/draft/non mergée
