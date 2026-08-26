@@ -20,6 +20,7 @@ class RobotKbMultisourceHarvestTests(unittest.TestCase):
     def setUpClass(cls):
         cls.runner = (LOCAL / "robot_kb_local_runner.sh").read_text(encoding="utf-8")
         cls.installer = (LOCAL / "Installer Robot KB Local.command").read_text(encoding="utf-8")
+        cls.harvester = (LOCAL / "robot_kb_multisource_harvest.py").read_text(encoding="utf-8")
 
     def test_catalog_scope_is_single_cards_across_us_eu_and_english_japanese(self):
         self.assertEqual(
@@ -31,7 +32,13 @@ class RobotKbMultisourceHarvestTests(unittest.TestCase):
                 ("EU", "pokemon-japanese"),
             ),
         )
-        self.assertIn('"product_type": "single"', (LOCAL / "robot_kb_multisource_harvest.py").read_text(encoding="utf-8"))
+        self.assertIn('"product_type": "single"', self.harvester)
+
+    def test_provider_auth_contracts_use_only_runtime_keys(self):
+        self.assertIn('{"X-API-Key": key, "Accept": "application/json"}', self.harvester)
+        self.assertIn('{"Authorization": f"Bearer {key}", "Accept": "application/json"}', self.harvester)
+        self.assertNotIn("RobotPokemonKB.poketrace-api", self.harvester)
+        self.assertNotIn("RobotPokemonKB.ppt-api", self.harvester)
 
     def test_provider_evidence_classes_never_promote_asks_to_sold(self):
         self.assertEqual(harvest.evidence_class("ebay"), "SOLD_AGGREGATED")
