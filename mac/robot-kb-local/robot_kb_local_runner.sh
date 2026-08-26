@@ -241,7 +241,7 @@ run_multisource() {
     export POKETRACE_API_KEY POKEMON_PRICE_TRACKER_API_KEY
   fi
 
-  "$PYTHON" "$REPO_ROOT/mac/robot-kb-local/robot_kb_multisource_harvest.py" \
+  "$PYTHON" "$REPO_ROOT/mac/robot-kb-local/robot_kb_multisource_entrypoint.py" \
     "$mode" --state "$MULTISOURCE_STATE"
 }
 
