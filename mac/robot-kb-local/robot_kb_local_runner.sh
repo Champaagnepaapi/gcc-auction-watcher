@@ -12,7 +12,11 @@ LOG_DIR="$HOME/Library/Logs/RobotPokemonKB"
 PYTHON="$VENV_DIR/bin/python"
 APP_DB_USER="robotpokemon_kb"
 KEYCHAIN_SERVICE="RobotPokemonKB.local-postgres"
+PROVIDER_KEYCHAIN_ACCOUNT="robotpokemon_kb"
+POKETRACE_KEYCHAIN_SERVICE="RobotPokemonKB.poketrace-api"
+PPT_KEYCHAIN_SERVICE="RobotPokemonKB.ppt-api"
 LOCAL_DATABASE_URL="${ROBOT_KB_DATABASE_URL:-postgresql://robotpokemon_kb@127.0.0.1/robot_pokemon_kb}"
+MULTISOURCE_STATE="$STATE_DIR/robot_kb_multisource_state.json"
 
 find_postgres_bin() {
   local candidate
@@ -64,19 +68,25 @@ if [ ! -x "$PYTHON" ] || [ ! -f "$RUNTIME_DIR/robot_kb/sidecar/__main__.py" ]; t
   exit 2
 fi
 
+load_optional_secret() {
+  local service="$1"
+  security find-generic-password -w -a "$PROVIDER_KEYCHAIN_ACCOUNT" -s "$service" 2>/dev/null || true
+}
+
 acquire_lock() {
-  LOCK_DIR="$DATA_ROOT/locks/collector.lock"
+  local lock_name="${1:-collector}"
+  LOCK_DIR="$DATA_ROOT/locks/${lock_name}.lock"
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     old_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-      echo "Robot KB local: un autre collector tourne déjà (pid=$old_pid), sortie propre."
+      echo "Robot KB local: lane $lock_name déjà active (pid=$old_pid), sortie propre."
       exit 0
     fi
     rm -rf "$LOCK_DIR"
     mkdir "$LOCK_DIR"
   fi
   echo $$ > "$LOCK_DIR/pid"
-  trap 'rm -rf "$LOCK_DIR"; unset PGPASSWORD' EXIT INT TERM
+  trap 'rm -rf "$LOCK_DIR"; unset PGPASSWORD POKETRACE_API_KEY POKEMON_PRICE_TRACKER_API_KEY' EXIT INT TERM
 }
 
 run_sidecar() {
@@ -121,7 +131,7 @@ retry_transient_gcc() {
 }
 
 run_fixed() {
-  acquire_lock
+  acquire_lock collector
   rotation_state="$STATE_DIR/v4_kb_fixed_rotation_state.json"
   target_state="$STATE_DIR/v4_kb_fixed_target_state.json"
   fixture="$WORK_DIR/v4_kb_fixed_batch.json"
@@ -157,7 +167,7 @@ run_fixed() {
 }
 
 run_sold() {
-  acquire_lock
+  acquire_lock collector
   sold_state="$STATE_DIR/v4_kb_sold_watermark_state.json"
   sold_fixture="$WORK_DIR/v4_kb_sold_batch.json"
   sold_manifest="$WORK_DIR/v4_kb_sold_manifest.json"
@@ -211,8 +221,32 @@ run_sold() {
   "$PYTHON" "$REPO_ROOT/robot_kb_roi_analytics.py" --output "$WORK_DIR/robot_kb_roi_snapshot.json" || true
 }
 
+run_multisource() {
+  local mode="$1"
+  acquire_lock multisource
+  export PYTHONPATH="$REPO_ROOT:$RUNTIME_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+  # Preserve enough daily quota for the production Global lane. These can be
+  # overridden manually, but the installed defaults never starve V4.
+  export ROBOT_KB_PPT_REMAINING_RESERVE="${ROBOT_KB_PPT_REMAINING_RESERVE:-15000}"
+  export ROBOT_KB_PPT_PREFLIGHT_MARGIN="${ROBOT_KB_PPT_PREFLIGHT_MARGIN:-0}"
+  export ROBOT_KB_POKETRACE_REMAINING_RESERVE="${ROBOT_KB_POKETRACE_REMAINING_RESERVE:-5000}"
+  export ROBOT_KB_PAID_MAX_RUNTIME_SECONDS="${ROBOT_KB_PAID_MAX_RUNTIME_SECONDS:-1800}"
+  export ROBOT_KB_POKETRACE_MAX_CALLS_PER_PAID_RUN="${ROBOT_KB_POKETRACE_MAX_CALLS_PER_PAID_RUN:-5000}"
+  export ROBOT_KB_PPT_MAX_SETS_PER_PAID_RUN="${ROBOT_KB_PPT_MAX_SETS_PER_PAID_RUN:-500}"
+
+  if [ "$mode" = "paid" ]; then
+    POKETRACE_API_KEY="$(load_optional_secret "$POKETRACE_KEYCHAIN_SERVICE")"
+    POKEMON_PRICE_TRACKER_API_KEY="$(load_optional_secret "$PPT_KEYCHAIN_SERVICE")"
+    export POKETRACE_API_KEY POKEMON_PRICE_TRACKER_API_KEY
+  fi
+
+  "$PYTHON" "$REPO_ROOT/mac/robot-kb-local/robot_kb_multisource_entrypoint.py" \
+    "$mode" --state "$MULTISOURCE_STATE"
+}
+
 run_backup() {
-  acquire_lock
+  acquire_lock collector
   (cd "$RUNTIME_DIR" && "$PYTHON" -m robot_kb.postgres_backup dump --directory "$BACKUP_DIR")
   "$PYTHON" - "$BACKUP_DIR" <<'PY'
 from pathlib import Path
@@ -244,10 +278,12 @@ PY
 case "${1:-}" in
   fixed) run_fixed ;;
   sold) run_sold ;;
+  markets) run_multisource markets ;;
+  paid) run_multisource paid ;;
   backup) run_backup ;;
   health) run_health ;;
   *)
-    echo "Usage: $0 {fixed|sold|backup|health}" >&2
+    echo "Usage: $0 {fixed|sold|markets|paid|backup|health}" >&2
     exit 2
     ;;
 esac

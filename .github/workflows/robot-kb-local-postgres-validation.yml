@@ -7,6 +7,7 @@ on:
       - "mac/robot-kb-local/**"
       - "tests/test_robot_kb_local_mac_migration.py"
       - "tests/test_robot_kb_local_viewer.py"
+      - "tests/test_robot_kb_multisource_harvest.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -46,6 +47,7 @@ jobs:
       - name: Install validation dependencies
         run: |
           python -m pip install -r .robot-kb-p3/requirements-postgres.txt
+          python -m pip install -r requirements.txt
           python -m pip install PyYAML
 
       - name: Run proven Robot KB regression suite
@@ -59,6 +61,11 @@ jobs:
       - name: Run local read-only viewer contract tests
         run: python -m unittest discover -s tests -p "test_robot_kb_local_viewer.py" -v
 
+      - name: Run local multisource harvest contract tests
+        env:
+          PYTHONPATH: .robot-kb-p3:.
+        run: python -m unittest discover -s tests -p "test_robot_kb_multisource_harvest.py" -v
+
       - name: Validate Mac scripts syntax
         run: |
           bash -n "mac/robot-kb-local/robot_kb_local_runner.sh"
@@ -67,6 +74,8 @@ jobs:
           bash -n "mac/robot-kb-local/Etat Robot KB Local.command"
           bash -n "mac/robot-kb-local/Ouvrir Robot KB.command"
           python -m py_compile "mac/robot-kb-local/robot_kb_viewer.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_multisource_harvest.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_multisource_entrypoint.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
