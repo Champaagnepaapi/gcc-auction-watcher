@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 
@@ -14,6 +15,7 @@ if str(LOCAL) not in sys.path:
 try:
     harvest = importlib.import_module("robot_kb_multisource_harvest")
     entrypoint = importlib.import_module("robot_kb_multisource_entrypoint")
+    p3_compat = importlib.import_module("robot_kb_multisource_p3_compat")
 except ModuleNotFoundError as error:
     # The broad V4 test workflow intentionally does not checkout the pinned P3
     # Robot KB runtime. The dedicated Robot KB workflow adds .robot-kb-p3 to
@@ -21,6 +23,7 @@ except ModuleNotFoundError as error:
     if error.name == "robot_kb":
         harvest = None
         entrypoint = None
+        p3_compat = None
     else:
         raise
 
@@ -32,6 +35,8 @@ class RobotKbMultisourceHarvestTests(unittest.TestCase):
         cls.runner = (LOCAL / "robot_kb_local_runner.sh").read_text(encoding="utf-8")
         cls.installer = (LOCAL / "Installer Robot KB Local.command").read_text(encoding="utf-8")
         cls.harvester = (LOCAL / "robot_kb_multisource_harvest.py").read_text(encoding="utf-8")
+        cls.entrypoint_source = (LOCAL / "robot_kb_multisource_entrypoint.py").read_text(encoding="utf-8")
+        cls.provider_config = (LOCAL / "Configurer APIs Robot KB.command").read_text(encoding="utf-8")
 
     def test_catalog_scope_is_single_cards_across_us_eu_and_english_japanese(self):
         self.assertEqual(
@@ -132,6 +137,41 @@ class RobotKbMultisourceHarvestTests(unittest.TestCase):
             entrypoint.semantic_marketplace_fingerprint(repriced),
         )
 
+    def test_p3_compat_uses_only_fields_supported_by_pinned_schema(self):
+        listing = SimpleNamespace(evidence_type="FIXED_ASK")
+        metric = SimpleNamespace(
+            name="PPT_EBAY_GRADED:PSA 10:MEDIAN",
+            amount_minor=25000,
+            currency="USD",
+            event_at="2026-08-25T10:00:00+00:00",
+            sample_size=7,
+        )
+        self.assertEqual(
+            set(p3_compat.listing_fact(listing)),
+            p3_compat.P3_LISTING_FACT_FIELDS,
+        )
+        self.assertEqual(
+            set(p3_compat.provider_metric_fact(metric)),
+            p3_compat.P3_PROVIDER_METRIC_FACT_FIELDS,
+        )
+        self.assertNotIn("provider_sale_evidence", p3_compat.listing_fact(listing))
+        self.assertNotIn("evidence_class", p3_compat.provider_metric_fact(metric))
+        self.assertNotIn("item_level_sold", p3_compat.provider_metric_fact(metric))
+        self.assertIn("p3_compat.install(harvest)", self.entrypoint_source)
+
+    def test_401_and_403_provider_auth_failures_are_fail_visible(self):
+        for status in (401, 403):
+            fake = SimpleNamespace(
+                request_json=lambda *_args, _status=status, **_kwargs: (_status, {}, {}),
+            )
+            p3_compat.install(fake)
+            diag = harvest.Diagnostics()
+            result_status, _payload, _headers = fake.request_json(
+                object(), "https://example.invalid", {}, {}, 1, diag, "provider"
+            )
+            self.assertEqual(result_status, status)
+            self.assertEqual(diag.source_failures, 1)
+
     def test_runner_reads_provider_keys_from_keychain_only_and_preserves_v4_quota(self):
         self.assertIn('POKETRACE_KEYCHAIN_SERVICE="RobotPokemonKB.poketrace-api"', self.runner)
         self.assertIn('PPT_KEYCHAIN_SERVICE="RobotPokemonKB.ppt-api"', self.runner)
@@ -153,6 +193,14 @@ class RobotKbMultisourceHarvestTests(unittest.TestCase):
         self.assertNotIn("POKETRACE_API_KEY", launchagent_block)
         self.assertNotIn("POKEMON_PRICE_TRACKER_API_KEY", launchagent_block)
         self.assertNotIn("PGPASSWORD", launchagent_block)
+
+    def test_provider_repair_helper_validates_before_keychain_overwrite(self):
+        self.assertIn("https://api.poketrace.com/v1/auth/info", self.provider_config)
+        self.assertIn("https://www.pokemonpricetracker.com/api/v2/sets?language=english", self.provider_config)
+        self.assertIn('security add-generic-password -U -a "$ACCOUNT"', self.provider_config)
+        self.assertIn('if [ "$status" != "200" ]', self.provider_config)
+        self.assertIn('"$RUNNER" paid', self.provider_config)
+        self.assertNotIn("echo $candidate", self.provider_config)
 
     def test_paid_access_window_and_safety_flags_are_explicit(self):
         self.assertEqual(harvest.DEFAULT_PAID_UNTIL, "2026-09-12T00:00:00Z")
