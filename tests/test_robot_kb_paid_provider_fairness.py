@@ -33,7 +33,7 @@ class RobotKbPaidProviderFairnessTests(unittest.TestCase):
         )
         return harvest, calls
 
-    def test_both_paid_providers_receive_separate_bounded_windows(self):
+    def test_both_providers_keep_window_even_if_first_overruns(self):
         harvest, calls = self.fake_harvest()
         fairness.install(harvest)
         diag = SimpleNamespace(notes=[])
@@ -46,18 +46,18 @@ class RobotKbPaidProviderFairnessTests(unittest.TestCase):
                 "POKEMON_PRICE_TRACKER_API_KEY": "ppt-test-key",
             },
             clear=False,
-        ), patch.object(fairness.time, "monotonic", side_effect=[100.0, 105.0]):
+        ), patch.object(fairness.time, "monotonic", side_effect=[100.0, 1000.0]):
             harvest.run_paid(object(), {}, diag)
 
         self.assertEqual(
             calls,
             [
                 ("poketrace", "pt-test-key", 160.0),
-                ("ppt", "ppt-test-key", 220.0),
+                ("ppt", "ppt-test-key", 1060.0),
             ],
         )
         self.assertIn(
-            "paid:provider-windows:poketrace=60s:ppt=60s",
+            "paid:provider-windows:poketrace=60s:ppt=60s:independent=true",
             diag.notes,
         )
 
@@ -74,7 +74,7 @@ class RobotKbPaidProviderFairnessTests(unittest.TestCase):
                 "POKEMON_PRICE_TRACKER_API_KEY": "ppt-test-key",
             },
             clear=False,
-        ), patch.object(fairness.time, "monotonic", side_effect=[50.0, 51.0]):
+        ), patch.object(fairness.time, "monotonic", return_value=50.0):
             harvest.run_paid(object(), {}, diag)
 
         self.assertEqual(calls, [("ppt", "ppt-test-key", 170.0)])

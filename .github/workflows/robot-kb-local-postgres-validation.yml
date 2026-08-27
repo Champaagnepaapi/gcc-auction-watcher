@@ -8,6 +8,8 @@ on:
       - "tests/test_robot_kb_local_mac_migration.py"
       - "tests/test_robot_kb_local_viewer.py"
       - "tests/test_robot_kb_multisource_harvest.py"
+      - "tests/test_robot_kb_paid_provider_fairness.py"
+      - "tests/test_robot_kb_provider_persistence_bounds.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -64,7 +66,10 @@ jobs:
       - name: Run local multisource harvest contract tests
         env:
           PYTHONPATH: .robot-kb-p3:.
-        run: python -m unittest discover -s tests -p "test_robot_kb_multisource_harvest.py" -v
+        run: |
+          python -m unittest discover -s tests -p "test_robot_kb_multisource_harvest.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_paid_provider_fairness.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_provider_persistence_bounds.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -77,6 +82,8 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_viewer.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_harvest.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_p3_compat.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_multisource_provider_bounds.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_multisource_paid_fairness.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_entrypoint.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
