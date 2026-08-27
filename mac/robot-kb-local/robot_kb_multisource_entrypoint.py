@@ -5,6 +5,7 @@ from typing import Any, Optional, Sequence
 
 import robot_kb_multisource_harvest as harvest
 import robot_kb_multisource_p3_compat as p3_compat
+import robot_kb_multisource_provider_bounds as provider_bounds
 import robot_kb_multisource_paid_fairness as paid_fairness
 
 
@@ -30,6 +31,7 @@ def semantic_marketplace_fingerprint(value: object) -> str:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     harvest.fingerprint = semantic_marketplace_fingerprint
     p3_compat.install(harvest)
+    provider_bounds.install(harvest)
     paid_fairness.install(harvest)
     return harvest.main(argv)
 
