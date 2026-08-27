@@ -13,6 +13,7 @@ from run_watcher_safe import (
 from v4_auction_item_discovery import install_v4_auction_item_discovery
 from v4_auction_last_chance import install_fast_lane_notification_guard
 from v4_auction_pagination_stability import install_v4_auction_pagination_stability
+from v4_auction_priority_budget import install_v4_auction_priority_budget
 from v4_canonical_multimarket import install_canonical_multimarket_pipeline
 from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
@@ -94,6 +95,11 @@ if __name__ == "__main__":
     install_v4_auction_pagination_stability()
     install_v4_private_auction_coverage()
     install_current_auction_discovery_diagnostics()
+    # Preserve the existing ending-soon semantics but remove the 120-card blind
+    # spot during large auction waves. <=5 min is always scheduled first, then
+    # <=12 min, then as much of the remaining <=60 min inventory as the bounded
+    # expanded cap allows. Identity/economics/provider budgets are unchanged.
+    install_v4_auction_priority_budget()
     install_canonical_multimarket_pipeline()
     # First preserve the bounded reviewed per-card bridges from PR #119.
     install_v4_tcgdex_exact_coordinate_recovery()
