@@ -301,6 +301,19 @@ Cron-job.org toutes les 3 min
   -> recheck ciblé des auctions déjà armées à ≤5 min
 ```
 
+## Garde des enchères GCC à venir — PR #186
+
+Une enchère qui n'a pas encore commencé n'est jamais une opportunité économique V4 :
+
+- timestamp de début GCC explicite `> observed_at` => `UPCOMING_AUCTION` et exclusion avant valorisation ;
+- page rendue contenant `Enchères à venir` / `Programmer une enchère` (ou équivalent anglais) => `UPCOMING_AUCTION` ;
+- le **prix de départ** n'est jamais utilisé comme prix courant ;
+- le **compte à rebours jusqu'au début** n'est jamais utilisé comme temps restant avant la fin ;
+- si le timestamp de début manque ou est illisible, le robot ne fabrique pas un état ; les garde-fous existants restent applicables ;
+- après le début réel, le chemin normal `endTime` / prix courant / contrôle final `≤5 min` reprend sans changement économique.
+
+Le garde protège la discovery API principale, le safety-net legacy/private/weekly et les rechecks Fast Lane. Aucun seuil, fair value ou `max_recommended` d'une enchère réellement commencée n'est modifié.
+
 Ne jamais ajouter de cron GitHub parallèle à ces lanes.
 
 PSA scope économique : `8`, `8.5`, `9`, `10`. PSA <8 hors scope ; jamais de PSA 9.5 synthétique.
