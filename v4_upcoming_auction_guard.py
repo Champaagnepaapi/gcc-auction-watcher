@@ -25,7 +25,14 @@ _UPCOMING_RENDERED_RE = re.compile(
     re.I,
 )
 
-_BASE_DISCOVER_AUCTION_API_LOTS = auction_discovery.discover_auction_api_lots
+# Pagination stability captures the unwrapped item-level collector when its
+# module is imported. The guard itself is imported from the stability installer,
+# after item_discovery.discover_auction_api_lots has already been replaced by
+# the stable wrapper, so capture the preserved inner collector here explicitly
+# to avoid stable -> guard -> stable recursion.
+_BASE_DISCOVER_AUCTION_API_LOTS = (
+    auction_stability._ORIGINAL_DISCOVER_AUCTION_API_LOTS
+)
 _BASE_INSPECT_ITEM = watcher.inspect_item
 _INSTALLED_V4 = False
 _INSTALLED_GLOBAL = False
