@@ -22,6 +22,7 @@ from v4_external_coverage_drain import install_v4_external_coverage_drain
 from v4_external_provider_navigation_resilience import (
     install_v4_external_provider_navigation_resilience,
 )
+from v4_external_provider_run_breaker import install_v4_external_provider_run_breakers
 from v4_focus_cert_router import install_v4_focus_cert_router
 from v4_kb_shadow_bridge import (
     flush_capture_if_configured,
@@ -86,6 +87,10 @@ if __name__ == "__main__":
     # when the expected provider host + structured controls/items are proven;
     # never retry the network request and never relax provider matching.
     install_v4_external_provider_navigation_resilience()
+    # The public routes can also fail runner-wide (PSA 403/429 or repeated eBay
+    # hard hangs). Stop wasting the rest of this run after those signals while
+    # preserving retryable provider-error semantics for the next scanner run.
+    install_v4_external_provider_run_breakers()
     install_grade_arbitrage_guard()
     install_technical_alert_guard()
     install_fixed_queue_backlog_diagnostics()
