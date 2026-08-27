@@ -160,7 +160,10 @@ class RobotKbMultisourceHarvestTests(unittest.TestCase):
         self.assertIn("p3_compat.install(harvest)", self.entrypoint_source)
 
     def test_p3_compat_provider_metric_does_not_redeclare_existing_market_source(self):
-        from robot_kb.repository import KnowledgeBase
+        try:
+            from robot_kb.repository import KnowledgeBase
+        except ModuleNotFoundError:
+            self.skipTest("pinned Robot KB P3 runtime is not present in this V4-only test lane")
 
         p3_compat.install(harvest)
         metric = harvest.Metric(
