@@ -104,10 +104,16 @@ def discover_auction_api_lots_stable(
 
 
 def install_v4_auction_pagination_stability() -> None:
-    """Install the stability wrapper without changing auction economics."""
+    """Install the stability wrapper plus the future-start auction safety gate."""
 
     global _INSTALLED
     if _INSTALLED:
         return
     item_discovery.discover_auction_api_lots = discover_auction_api_lots_stable
+    # Keep one canonical auction collector. The add-on only removes rows whose
+    # structured start timestamp explicitly proves that bidding has not begun,
+    # and also protects rendered legacy/final-page rechecks.
+    from v4_upcoming_auction_guard import install_v4_upcoming_auction_guard
+
+    install_v4_upcoming_auction_guard()
     _INSTALLED = True
