@@ -159,6 +159,50 @@ class RobotKbMultisourceHarvestTests(unittest.TestCase):
         self.assertNotIn("item_level_sold", p3_compat.provider_metric_fact(metric))
         self.assertIn("p3_compat.install(harvest)", self.entrypoint_source)
 
+    def test_p3_compat_provider_metric_does_not_redeclare_existing_market_source(self):
+        try:
+            from robot_kb.repository import KnowledgeBase
+        except ModuleNotFoundError:
+            self.skipTest("pinned Robot KB P3 runtime is not present in this V4-only test lane")
+
+        p3_compat.install(harvest)
+        metric = harvest.Metric(
+            provider="poketrace",
+            native_id="metric-cardmarket-1",
+            name="POKETRACE_CURRENT:CARDMARKET:PSA_10:AVG",
+            amount_minor=12345,
+            currency="EUR",
+            observed_at="2026-08-27T00:30:00+00:00",
+            event_at="2026-08-26T00:00:00+00:00",
+            precision="DAY",
+            sample_size=4,
+            evidence_class="MARKET_AGGREGATED",
+            card_id="card-1",
+            claims=(("card_name", "Pikachu"),),
+            market="cardmarket",
+        )
+        self.assertEqual(p3_compat.provider_metric_upstream(metric), (None, None))
+        with KnowledgeBase.open(":memory:") as kb:
+            # Reproduce the physical Mac failure: this global code already exists
+            # under metadata that is not the synthetic MARKET row P3 would create.
+            kb.create_source_system("cardmarket", "Cardmarket", "LISTING_PLATFORM")
+            stored = harvest.persist_metrics(
+                kb,
+                (metric,),
+                {"source": "cardmarket", "avg": 123.45},
+                "poketrace-card:EU:card-1",
+                "poketrace",
+                "2026-08-27T00:30:00+00:00",
+            )
+            self.assertEqual(stored, 1)
+            row = kb.connection.execute(
+                "SELECT upstream_market_system_id FROM market_observation "
+                "WHERE source_native_record_id = ?",
+                (metric.native_id,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNone(row["upstream_market_system_id"])
+
     def test_401_and_403_provider_auth_failures_are_fail_visible(self):
         for status in (401, 403):
             fake = SimpleNamespace(
