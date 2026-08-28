@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import unittest
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "mac" / "robot-kb-local" / "robot_kb_ebay_rapidapi_shadow.py"
+SPEC = importlib.util.spec_from_file_location("robot_kb_ebay_rapidapi_shadow", MODULE_PATH)
+assert SPEC and SPEC.loader
+shadow = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = shadow
+SPEC.loader.exec_module(shadow)
+
+
+def product(**overrides):
+    row = {
+        "item_id": "123456789012",
+        "title": "Pokemon Pikachu 025/165 English PSA 10",
+        "sale_price": 105.5,
+        "currency": "$",
+        "condition": "Graded",
+        "buying_format": "Auction",
+        "date_sold": "Aug 20, 2026",
+        "image_url": "https://i.ebayimg.com/example.jpg",
+        "shipping_price": 5.25,
+        "link": "https://www.ebay.com/itm/123456789012",
+    }
+    row.update(overrides)
+    return row
+
+
+def payload(products=None, **overrides):
+    value = {
+        "success": True,
+        "average_price": 9999,
+        "median_price": 8888,
+        "min_price": 1,
+        "max_price": 99999,
+        "results": len(products or []),
+        "total_results": len(products or []),
+        "products": products or [],
+    }
+    value.update(overrides)
+    return value
+
+
+class FakeResponse:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self._body = body
+        self.headers = {"x-ratelimit-remaining": "49"}
+
+    def json(self):
+        return self._body
+
+
+class FakeSession:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+        self.closed = False
+
+    def post(self, url, *, headers, json, timeout):
+        self.calls.append((url, headers, json, timeout))
+        return self.response
+
+    def close(self):
+        self.closed = True
+
+
+class FakeObservationType(Enum):
+    PROVIDER_METRIC_OBSERVATION = "PROVIDER_METRIC_OBSERVATION"
+
+
+class FakeSourceKind(Enum):
+    PROVIDER = "PROVIDER"
+
+
+@dataclass(frozen=True)
+class FakeClaim:
+    field_name: str
+    value: object
+    source_kind: object
+
+
+class FakeObservation:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class RapidApiShadowTests(unittest.TestCase):
+    def test_request_is_post_products_only_and_outlier_removal_disabled(self):
+        body = shadow.build_request_body("Pokemon Pikachu PSA 10")
+        self.assertEqual(body["keywords"], "Pokemon Pikachu PSA 10")
+        self.assertEqual(body["max_search_results"], 60)
+        self.assertEqual(body["site_id"], "0")
+        self.assertIs(body["remove_outliers"], False)
+
+    def test_valid_auction_becomes_item_level_shadow_candidate(self):
+        parsed = shadow.parse_response(payload([product()]))
+        self.assertFalse(parsed.provider_error)
+        self.assertEqual(len(parsed.candidates), 1)
+        row = parsed.candidates[0]
+        self.assertEqual(row.item_id, "123456789012")
+        self.assertEqual(row.sale_price_minor, 10550)
+        self.assertEqual(row.shipping_price_minor, 525)
+        self.assertEqual(row.currency, "USD")
+        self.assertEqual(row.date_sold, "2026-08-20")
+        self.assertFalse(row.accepted_offer_ambiguous)
+
+    def test_accepts_offers_is_explicitly_ambiguous_final_price(self):
+        parsed = shadow.parse_response(payload([product(buying_format="Accepts Offers")]))
+        self.assertEqual(len(parsed.candidates), 1)
+        self.assertTrue(parsed.candidates[0].accepted_offer_ambiguous)
+        self.assertEqual(parsed.accepted_offer_ambiguous, 1)
+
+    def test_aggregate_prices_are_ignored_and_never_become_candidates(self):
+        parsed = shadow.parse_response(payload([]))
+        self.assertEqual(parsed.candidates, ())
+        self.assertTrue(parsed.provider_clean_no_match)
+        self.assertEqual(
+            set(parsed.aggregate_fields_ignored),
+            {"average_price", "median_price", "min_price", "max_price"},
+        )
+
+    def test_duplicate_item_id_is_deduplicated_across_same_response(self):
+        parsed = shadow.parse_response(payload([product(), product(title="same item duplicate")]))
+        self.assertEqual(len(parsed.candidates), 1)
+        self.assertEqual(parsed.duplicates, 1)
+
+    def test_missing_sale_date_or_bad_item_identity_is_rejected(self):
+        rows = [
+            product(date_sold=None),
+            product(item_id="not-an-id"),
+            product(link="https://example.com/itm/123456789012"),
+            product(currency="CAD"),
+        ]
+        parsed = shadow.parse_response(payload(rows))
+        self.assertEqual(parsed.candidates, ())
+        self.assertEqual(parsed.rejected, 4)
+        self.assertFalse(parsed.provider_clean_no_match)
+
+    def test_provider_failure_is_not_clean_no_match(self):
+        session = FakeSession(FakeResponse(403, {"message": "Forbidden"}))
+        code, summary = shadow.run_probe("secret-value", "Pokemon Pikachu PSA 10", session=session)
+        self.assertEqual(code, 1)
+        self.assertEqual(summary["http_status"], 403)
+        self.assertEqual(summary["provider_error"], "http-403")
+        self.assertFalse(summary["provider_clean_no_match"])
+        self.assertFalse(summary["genuine_sale_evidence"])
+
+    def test_key_is_header_only_and_never_appears_in_sanitized_output(self):
+        secret = "rapid-secret-never-log"
+        session = FakeSession(FakeResponse(200, payload([product()])))
+        code, summary = shadow.run_probe(secret, "Pokemon Pikachu PSA 10", session=session)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(session.calls), 1)
+        url, headers, body, _timeout = session.calls[0]
+        self.assertEqual(url, shadow.RAPIDAPI_URL)
+        self.assertEqual(headers["x-rapidapi-key"], secret)
+        self.assertNotIn(secret, json.dumps(summary, sort_keys=True))
+        self.assertNotIn(secret, json.dumps(body, sort_keys=True))
+
+    def test_shadow_observation_cannot_be_genuine_sale_or_exact_identity(self):
+        fake_runtime = (
+            FakeObservationType,
+            FakeSourceKind,
+            FakeClaim,
+            FakeObservation,
+            object,
+            object,
+            object,
+        )
+        parsed = shadow.parse_response(payload([product()]))
+        with patch.object(shadow, "_runtime", return_value=fake_runtime):
+            observation = shadow.candidate_observation(
+                parsed.candidates[0],
+                query="Pokemon Pikachu PSA 10",
+                observed_at="2026-08-28T12:00:00+00:00",
+            )
+        self.assertEqual(observation.observation_type, FakeObservationType.PROVIDER_METRIC_OBSERVATION)
+        self.assertFalse(observation.genuine_sale_evidence)
+        self.assertFalse(observation.exact_identity_eligible)
+        self.assertFalse(observation.fact["final_price_semantics_proven"])
+        self.assertTrue(observation.fact["item_level_sold"])
+        self.assertIn("canonical_identity", observation.unresolved_dimensions)
+        self.assertIn("commercial_microvariant", observation.unresolved_dimensions)
+        self.assertIn("final_price_semantics", observation.unresolved_dimensions)
+
+    def test_unsupported_site_is_fail_closed(self):
+        with self.assertRaises(ValueError):
+            shadow.build_request_body("Pokemon", site_id="77")
+        parsed = shadow.parse_response(payload([product()]), site_id="77")
+        self.assertEqual(parsed.provider_error, "unsupported-site-id")
+        self.assertEqual(parsed.candidates, ())
+
+
+if __name__ == "__main__":
+    unittest.main()
