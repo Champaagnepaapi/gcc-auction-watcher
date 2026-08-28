@@ -7,11 +7,12 @@ import unittest
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "mac" / "robot-kb-local" / "robot_kb_ebay_rapidapi_shadow.py"
+ROOT = Path(__file__).resolve().parents[1]
+LOCAL = ROOT / "mac" / "robot-kb-local"
+MODULE_PATH = LOCAL / "robot_kb_ebay_rapidapi_shadow.py"
 SPEC = importlib.util.spec_from_file_location("robot_kb_ebay_rapidapi_shadow", MODULE_PATH)
 assert SPEC and SPEC.loader
 shadow = importlib.util.module_from_spec(SPEC)
@@ -96,6 +97,13 @@ class FakeObservation:
 
 
 class RapidApiShadowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = (LOCAL / "robot_kb_local_runner.sh").read_text(encoding="utf-8")
+        cls.configurer = (LOCAL / "Configurer APIs Robot KB.command").read_text(encoding="utf-8")
+        cls.installer = (LOCAL / "Installer Robot KB Local.command").read_text(encoding="utf-8")
+        cls.module_source = MODULE_PATH.read_text(encoding="utf-8")
+
     def test_request_is_post_products_only_and_outlier_removal_disabled(self):
         body = shadow.build_request_body("Pokemon Pikachu PSA 10")
         self.assertEqual(body["keywords"], "Pokemon Pikachu PSA 10")
@@ -200,6 +208,31 @@ class RapidApiShadowTests(unittest.TestCase):
         parsed = shadow.parse_response(payload([product()]), site_id="77")
         self.assertEqual(parsed.provider_error, "unsupported-site-id")
         self.assertEqual(parsed.candidates, ())
+
+    def test_mac_runner_reads_rapidapi_key_from_keychain_and_has_manual_modes_only(self):
+        self.assertIn('EBAY_RAPIDAPI_KEYCHAIN_SERVICE="RobotPokemonKB.ebay-rapidapi"', self.runner)
+        self.assertIn('ROBOT_KB_EBAY_RAPIDAPI_KEY="$(load_optional_secret "$EBAY_RAPIDAPI_KEYCHAIN_SERVICE")"', self.runner)
+        self.assertIn('ebay-probe) run_ebay_rapidapi_shadow probe', self.runner)
+        self.assertIn('ebay-shadow) run_ebay_rapidapi_shadow ingest', self.runner)
+        self.assertIn('unset PGPASSWORD POKETRACE_API_KEY POKEMON_PRICE_TRACKER_API_KEY ROBOT_KB_EBAY_RAPIDAPI_KEY', self.runner)
+        self.assertNotIn("ebay-rapidapi", self.installer)
+
+    def test_keychain_config_mode_validates_before_overwrite_and_runs_probe_not_ingest(self):
+        self.assertIn('EBAY_RAPIDAPI_SERVICE="RobotPokemonKB.ebay-rapidapi"', self.configurer)
+        self.assertIn("ebay-average-selling-price.p.rapidapi.com/findCompletedItems", self.configurer)
+        self.assertIn('-H "x-rapidapi-key: $key"', self.configurer)
+        self.assertIn('security add-generic-password -U -a "$ACCOUNT"', self.configurer)
+        self.assertIn('if [ "${1:-}" = "ebay" ]', self.configurer)
+        ebay_block = self.configurer.split('if [ "${1:-}" = "ebay" ]', 1)[1].split("exit 0", 1)[0]
+        self.assertIn('"$RUNNER" ebay-probe', ebay_block)
+        self.assertNotIn('"$RUNNER" ebay-shadow', ebay_block)
+        self.assertNotIn("echo $candidate", self.configurer)
+
+    def test_module_is_robot_kb_shadow_only_and_has_no_v4_runtime_dependency(self):
+        self.assertNotIn("import watcher", self.module_source)
+        self.assertNotIn("run_watcher", self.module_source)
+        self.assertIn('"v4_economic_use": False', self.module_source)
+        self.assertIn('genuine_sale_evidence=False', self.module_source)
 
 
 if __name__ == "__main__":
