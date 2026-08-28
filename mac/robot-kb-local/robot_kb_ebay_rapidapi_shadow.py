@@ -5,10 +5,9 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlparse
 
@@ -17,8 +16,8 @@ import requests
 
 RAPIDAPI_HOST = "ebay-average-selling-price.p.rapidapi.com"
 RAPIDAPI_URL = f"https://{RAPIDAPI_HOST}/findCompletedItems"
-SOURCE_CODE = "ebay_rapidapi_sold_shadow"
-SOURCE_NAME = "eBay Average Selling Price via RapidAPI"
+SOURCE_CODE = "ebay_rapidapi_completed_shadow"
+SOURCE_NAME = "eBay completed items via RapidAPI"
 ALLOWED_MAX_RESULTS = frozenset({60, 120, 240})
 SUPPORTED_SITE_IDS = frozenset({"0"})  # phase 1: ebay.com / USD only
 _ITEM_ID_RE = re.compile(r"^\d{8,20}$")
@@ -26,7 +25,7 @@ _ACCEPTED_OFFER_RE = re.compile(r"\b(?:accepts? offers?|best offer)\b", re.I)
 
 
 @dataclass(frozen=True)
-class SoldCandidate:
+class CompletedItemCandidate:
     item_id: str
     title: str
     sale_price_minor: int
@@ -42,7 +41,7 @@ class SoldCandidate:
 
 @dataclass(frozen=True)
 class ParseResult:
-    candidates: tuple[SoldCandidate, ...]
+    candidates: tuple[CompletedItemCandidate, ...]
     rejected: int
     duplicates: int
     accepted_offer_ambiguous: int
@@ -51,12 +50,8 @@ class ParseResult:
     provider_error: str = ""
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def iso_now() -> str:
-    return utc_now().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _minor(value: object) -> Optional[int]:
@@ -100,14 +95,8 @@ def _parse_date(value: object) -> Optional[str]:
 
 def _currency(value: object, site_id: str) -> Optional[str]:
     raw = _string(value).upper().replace(" ", "")
-    if raw in {"USD", "US$"}:
+    if site_id == "0" and raw in {"USD", "US$", "$"}:
         return "USD"
-    if raw == "$" and site_id == "0":
-        return "USD"
-    if raw in {"EUR", "€"}:
-        return "EUR"
-    if raw == "CHF":
-        return "CHF"
     return None
 
 
@@ -127,7 +116,9 @@ def _ebay_link(value: object, site_id: str) -> str:
     return link
 
 
-def parse_product(row: Mapping[str, Any], *, site_id: str = "0") -> Optional[SoldCandidate]:
+def parse_product(
+    row: Mapping[str, Any], *, site_id: str = "0"
+) -> Optional[CompletedItemCandidate]:
     if site_id not in SUPPORTED_SITE_IDS:
         return None
     item_id = _string(row.get("item_id"))
@@ -153,7 +144,7 @@ def parse_product(row: Mapping[str, Any], *, site_id: str = "0") -> Optional[Sol
     if shipping_raw is not None and shipping is None:
         return None
 
-    return SoldCandidate(
+    return CompletedItemCandidate(
         item_id=item_id,
         title=title,
         sale_price_minor=price,
@@ -183,9 +174,11 @@ def parse_response(payload: object, *, site_id: str = "0") -> ParseResult:
     )
     products = payload.get("products")
     if not isinstance(products, Sequence) or isinstance(products, (str, bytes)):
-        return ParseResult((), 0, 0, 0, aggregate_fields, False, "products-not-array")
+        return ParseResult(
+            (), 0, 0, 0, aggregate_fields, False, "products-not-array"
+        )
 
-    output: list[SoldCandidate] = []
+    output: list[CompletedItemCandidate] = []
     seen: set[str] = set()
     rejected = 0
     duplicates = 0
@@ -310,15 +303,25 @@ def _runtime():
 
 
 def _digest(*values: object) -> str:
-    return hashlib.sha256("|".join(str(value or "") for value in values).encode()).hexdigest()
+    return hashlib.sha256(
+        "|".join(str(value or "") for value in values).encode()
+    ).hexdigest()
 
 
 def _payload_fingerprint(payload: object) -> str:
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def candidate_observation(candidate: SoldCandidate, *, query: str, observed_at: str):
+def candidate_observation(
+    candidate: CompletedItemCandidate, *, query: str, observed_at: str
+):
     (
         ObservationType,
         SourceKind,
@@ -334,6 +337,7 @@ def candidate_observation(candidate: SoldCandidate, *, query: str, observed_at: 
         IdentityClaim("listing_url", candidate.link, SourceKind.PROVIDER),
         IdentityClaim("buying_format", candidate.buying_format, SourceKind.PROVIDER),
         IdentityClaim("condition", candidate.condition, SourceKind.PROVIDER),
+        IdentityClaim("provider_marketplace", "eBay", SourceKind.PROVIDER),
     )
     return NormalizedObservation(
         observation_type=ObservationType.PROVIDER_METRIC_OBSERVATION,
@@ -342,21 +346,20 @@ def candidate_observation(candidate: SoldCandidate, *, query: str, observed_at: 
         event_at=f"{candidate.date_sold}T00:00:00+00:00",
         event_time_precision="DAY",
         fact={
-            "metric_name": "EBAY_RAPIDAPI_ITEM_LEVEL_SOLD_CANDIDATE",
+            "metric_name": "EBAY_RAPIDAPI_COMPLETED_ITEM_CANDIDATE",
             "metric_value_minor": candidate.sale_price_minor,
             "currency": candidate.currency,
             "shipping_value_minor": candidate.shipping_price_minor,
-            "item_level_sold": True,
-            "provider_asserted_completed_sale": True,
+            "item_level_sold": False,
+            "provider_completed_item_candidate": True,
+            "provider_asserted_date_sold": candidate.date_sold,
             "final_price_semantics_proven": False,
             "accepted_offer_price_ambiguous": candidate.accepted_offer_ambiguous,
             "query_context": query,
-            "evidence_class": "SOLD_ITEM_LEVEL_PROVIDER_ASSERTED_SHADOW",
+            "evidence_class": "COMPLETED_ITEM_PROVIDER_ASSERTED_SHADOW",
         },
-        upstream_market_code="ebay",
-        upstream_market_name="eBay",
-        identity_subject_type="EBAY_SOLD_ITEM_SHADOW",
-        identity_subject_label=f"eBay sold item {candidate.item_id}",
+        identity_subject_type="EBAY_COMPLETED_ITEM_SHADOW",
+        identity_subject_label=f"eBay completed-item candidate {candidate.item_id}",
         identity_namespace="EBAY_ITEM_ID",
         identity_identifier_value=candidate.item_id,
         unresolved_dimensions=(
@@ -392,16 +395,26 @@ def persist_shadow_response(
     for candidate in parsed.candidates:
         native = f"ebay-item:{candidate.item_id}"
         existing = kb.connection.execute(
-            """SELECT 1 FROM market_observation o JOIN source_system s ON s.id=o.source_system_id WHERE s.code=? AND o.source_native_record_id=? AND o.observation_type=? LIMIT 1""",
-            (SOURCE_CODE, native, ObservationType.PROVIDER_METRIC_OBSERVATION.value),
+            """
+            SELECT 1
+            FROM market_observation o
+            JOIN source_system s ON s.id=o.source_system_id
+            WHERE s.code=? AND o.source_native_record_id=? AND o.observation_type=?
+            LIMIT 1
+            """,
+            (
+                SOURCE_CODE,
+                native,
+                ObservationType.PROVIDER_METRIC_OBSERVATION.value,
+            ),
         ).fetchone()
         if existing is None:
-            observations.append(candidate_observation(candidate, query=query, observed_at=observed_at))
+            observations.append(
+                candidate_observation(candidate, query=query, observed_at=observed_at)
+            )
 
     raw_id = "rapidapi-response:" + _digest(
-        query,
-        site_id,
-        _payload_fingerprint(payload),
+        query, site_id, _payload_fingerprint(payload)
     )[:32]
     record = RawSourceRecord(
         source_code=SOURCE_CODE,
@@ -413,7 +426,9 @@ def persist_shadow_response(
         object_type="PROVIDER_RESPONSE",
         external_native_id=raw_id,
     )
-    ShadowKnowledgePersistence(kb).ingest(record, tuple(observations), ShadowDiagnostics())
+    ShadowKnowledgePersistence(kb).ingest(
+        record, tuple(observations), ShadowDiagnostics()
+    )
     return len(observations)
 
 
@@ -427,6 +442,7 @@ def sanitized_summary(status: int, parsed: ParseResult) -> dict[str, Any]:
         "aggregate_fields_ignored": list(parsed.aggregate_fields_ignored),
         "provider_clean_no_match": parsed.provider_clean_no_match,
         "provider_error": parsed.provider_error,
+        "item_level_sold": False,
         "genuine_sale_evidence": False,
         "v4_economic_use": False,
         "automatic_purchase": False,
@@ -456,6 +472,7 @@ def run_probe(
         return 1, {
             "http_status": 0,
             "provider_error": type(error).__name__,
+            "item_level_sold": False,
             "genuine_sale_evidence": False,
             "v4_economic_use": False,
             "automatic_purchase": False,
@@ -463,7 +480,11 @@ def run_probe(
             "automatic_checkout": False,
             "automatic_payment": False,
         }
-    parsed = parse_response(payload, site_id=site_id) if status == 200 else ParseResult((), 0, 0, 0, (), False, f"http-{status}")
+    parsed = (
+        parse_response(payload, site_id=site_id)
+        if status == 200
+        else ParseResult((), 0, 0, 0, (), False, f"http-{status}")
+    )
     summary = sanitized_summary(status, parsed)
     if parsed.candidates:
         summary["examples"] = [
@@ -482,14 +503,24 @@ def run_probe(
     return (0 if status == 200 and not parsed.provider_error else 1), summary
 
 
-def run_ingest(key: str, query: str, *, max_search_results: int = 60, site_id: str = "0") -> tuple[int, dict[str, Any]]:
+def run_ingest(
+    key: str,
+    query: str,
+    *,
+    max_search_results: int = 60,
+    site_id: str = "0",
+) -> tuple[int, dict[str, Any]]:
     status, payload, _headers = fetch_completed_items(
         key,
         query,
         max_search_results=max_search_results,
         site_id=site_id,
     )
-    parsed = parse_response(payload, site_id=site_id) if status == 200 else ParseResult((), 0, 0, 0, (), False, f"http-{status}")
+    parsed = (
+        parse_response(payload, site_id=site_id)
+        if status == 200
+        else ParseResult((), 0, 0, 0, (), False, f"http-{status}")
+    )
     summary = sanitized_summary(status, parsed)
     if status != 200 or parsed.provider_error:
         return 1, summary
@@ -497,6 +528,7 @@ def run_ingest(key: str, query: str, *, max_search_results: int = 60, site_id: s
     if not database:
         summary["provider_error"] = "ROBOT_KB_DATABASE_URL-required"
         return 1, summary
+
     from robot_kb.repository import KnowledgeBase
 
     observed_at = iso_now()
@@ -514,20 +546,54 @@ def run_ingest(key: str, query: str, *, max_search_results: int = 60, site_id: s
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Shadow-only item-level eBay SOLD provider diagnostic")
+    parser = argparse.ArgumentParser(
+        description="Shadow-only eBay completed-item provider diagnostic"
+    )
     parser.add_argument("mode", choices=("probe", "ingest"))
-    parser.add_argument("--query", default=os.getenv("ROBOT_KB_EBAY_RAPIDAPI_QUERY", "Pokemon Pikachu PSA 10"))
-    parser.add_argument("--max-search-results", type=int, default=60, choices=sorted(ALLOWED_MAX_RESULTS))
-    parser.add_argument("--site-id", default="0", choices=sorted(SUPPORTED_SITE_IDS))
+    parser.add_argument(
+        "--query",
+        default=os.getenv(
+            "ROBOT_KB_EBAY_RAPIDAPI_QUERY", "Pokemon Pikachu PSA 10"
+        ),
+    )
+    parser.add_argument(
+        "--max-search-results",
+        type=int,
+        default=60,
+        choices=sorted(ALLOWED_MAX_RESULTS),
+    )
+    parser.add_argument(
+        "--site-id", default="0", choices=sorted(SUPPORTED_SITE_IDS)
+    )
     args = parser.parse_args(argv)
     key = os.getenv("ROBOT_KB_EBAY_RAPIDAPI_KEY", "").strip()
     if not key:
-        print(json.dumps({"provider_error": "rapidapi-key-not-configured", "genuine_sale_evidence": False, "v4_economic_use": False}, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "provider_error": "rapidapi-key-not-configured",
+                    "item_level_sold": False,
+                    "genuine_sale_evidence": False,
+                    "v4_economic_use": False,
+                },
+                sort_keys=True,
+            )
+        )
         return 2
     if args.mode == "probe":
-        code, result = run_probe(key, args.query, max_search_results=args.max_search_results, site_id=args.site_id)
+        code, result = run_probe(
+            key,
+            args.query,
+            max_search_results=args.max_search_results,
+            site_id=args.site_id,
+        )
     else:
-        code, result = run_ingest(key, args.query, max_search_results=args.max_search_results, site_id=args.site_id)
+        code, result = run_ingest(
+            key,
+            args.query,
+            max_search_results=args.max_search_results,
+            site_id=args.site_id,
+        )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return code
 
