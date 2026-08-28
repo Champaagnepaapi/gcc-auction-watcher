@@ -15,6 +15,7 @@ KEYCHAIN_SERVICE="RobotPokemonKB.local-postgres"
 PROVIDER_KEYCHAIN_ACCOUNT="robotpokemon_kb"
 POKETRACE_KEYCHAIN_SERVICE="RobotPokemonKB.poketrace-api"
 PPT_KEYCHAIN_SERVICE="RobotPokemonKB.ppt-api"
+EBAY_RAPIDAPI_KEYCHAIN_SERVICE="RobotPokemonKB.ebay-rapidapi"
 LOCAL_DATABASE_URL="${ROBOT_KB_DATABASE_URL:-postgresql://robotpokemon_kb@127.0.0.1/robot_pokemon_kb}"
 MULTISOURCE_STATE="$STATE_DIR/robot_kb_multisource_state.json"
 
@@ -86,7 +87,7 @@ acquire_lock() {
     mkdir "$LOCK_DIR"
   fi
   echo $$ > "$LOCK_DIR/pid"
-  trap 'rm -rf "$LOCK_DIR"; unset PGPASSWORD POKETRACE_API_KEY POKEMON_PRICE_TRACKER_API_KEY' EXIT INT TERM
+  trap 'rm -rf "$LOCK_DIR"; unset PGPASSWORD POKETRACE_API_KEY POKEMON_PRICE_TRACKER_API_KEY ROBOT_KB_EBAY_RAPIDAPI_KEY' EXIT INT TERM
 }
 
 run_sidecar() {
@@ -245,6 +246,24 @@ run_multisource() {
     "$mode" --state "$MULTISOURCE_STATE"
 }
 
+run_ebay_rapidapi_shadow() {
+  local mode="$1"
+  local query="${2:-Pokemon Pikachu PSA 10}"
+  acquire_lock ebay-rapidapi-shadow
+  export PYTHONPATH="$REPO_ROOT:$RUNTIME_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  ROBOT_KB_EBAY_RAPIDAPI_KEY="$(load_optional_secret "$EBAY_RAPIDAPI_KEYCHAIN_SERVICE")"
+  if [ -z "$ROBOT_KB_EBAY_RAPIDAPI_KEY" ]; then
+    echo "Clé eBay RapidAPI absente du Trousseau macOS ($EBAY_RAPIDAPI_KEYCHAIN_SERVICE)." >&2
+    exit 2
+  fi
+  export ROBOT_KB_EBAY_RAPIDAPI_KEY
+  "$PYTHON" "$REPO_ROOT/mac/robot-kb-local/robot_kb_ebay_rapidapi_shadow.py" \
+    "$mode" \
+    --query "$query" \
+    --max-search-results "${ROBOT_KB_EBAY_RAPIDAPI_MAX_RESULTS:-60}" \
+    --site-id 0
+}
+
 run_backup() {
   acquire_lock collector
   (cd "$RUNTIME_DIR" && "$PYTHON" -m robot_kb.postgres_backup dump --directory "$BACKUP_DIR")
@@ -280,10 +299,12 @@ case "${1:-}" in
   sold) run_sold ;;
   markets) run_multisource markets ;;
   paid) run_multisource paid ;;
+  ebay-probe) run_ebay_rapidapi_shadow probe "${2:-Pokemon Pikachu PSA 10}" ;;
+  ebay-shadow) run_ebay_rapidapi_shadow ingest "${2:-Pokemon Pikachu PSA 10}" ;;
   backup) run_backup ;;
   health) run_health ;;
   *)
-    echo "Usage: $0 {fixed|sold|markets|paid|backup|health}" >&2
+    echo "Usage: $0 {fixed|sold|markets|paid|ebay-probe|ebay-shadow|backup|health} [eBay query]" >&2
     exit 2
     ;;
 esac

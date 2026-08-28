@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ACCOUNT="robotpokemon_kb"
 POKETRACE_SERVICE="RobotPokemonKB.poketrace-api"
 PPT_SERVICE="RobotPokemonKB.ppt-api"
+EBAY_RAPIDAPI_SERVICE="RobotPokemonKB.ebay-rapidapi"
 RUNNER="$SCRIPT_DIR/robot_kb_local_runner.sh"
 
 trim_secret() {
@@ -29,6 +30,18 @@ ppt_status() {
     -H 'Accept: application/json' \
     --connect-timeout 10 --max-time 20 \
     'https://www.pokemonpricetracker.com/api/v2/sets?language=english' || true
+}
+
+ebay_rapidapi_status() {
+  local key="$1"
+  curl -sS -o /dev/null -w '%{http_code}' \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -H 'x-rapidapi-host: ebay-average-selling-price.p.rapidapi.com' \
+    -H "x-rapidapi-key: $key" \
+    --data '{"keywords":"Pokemon Pikachu PSA 10","max_search_results":60,"remove_outliers":false,"site_id":"0"}' \
+    --connect-timeout 10 --max-time 30 \
+    'https://ebay-average-selling-price.p.rapidapi.com/findCompletedItems' || true
 }
 
 configure_key() {
@@ -66,6 +79,11 @@ configure_key() {
       candidate="${candidate#Bearer }"
       candidate="$(trim_secret "$candidate")"
       ;;
+    eBayRapidAPI)
+      candidate="${candidate#x-rapidapi-key:}"
+      candidate="${candidate#X-RapidAPI-Key:}"
+      candidate="$(trim_secret "$candidate")"
+      ;;
   esac
 
   if [ -z "$candidate" ]; then
@@ -87,6 +105,25 @@ configure_key() {
   unset current status candidate
   return 0
 }
+
+if [ "${1:-}" = "ebay" ]; then
+  ebay_ok=false
+  configure_key "eBayRapidAPI" "$EBAY_RAPIDAPI_SERVICE" ebay_rapidapi_status && ebay_ok=true || true
+  echo
+  if [ "$ebay_ok" = true ]; then
+    echo "Lancement d'un probe eBay SOLD shadow en lecture seule..."
+    if /bin/bash "$RUNNER" ebay-probe; then
+      echo "Probe eBay SOLD shadow terminé. Aucune donnée n'a été promue en preuve SOLD V4."
+    else
+      echo "Le probe eBay a signalé une erreur fournisseur. Aucune clé n'est loggée." >&2
+      exit 2
+    fi
+  else
+    echo "Aucune clé eBay RapidAPI valide confirmée ; aucun probe lancé." >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 pt_ok=false
 ppt_ok=false
