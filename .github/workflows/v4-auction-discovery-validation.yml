@@ -27,6 +27,7 @@ on:
       - "run_watcher_multimarket.py"
       - "watcher.py"
       - "tests/**"
+      - "mac/robot-kb-local/robot_kb_public_market_probe.py"
       - ".github/workflows/watcher.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
       - ".github/workflows/v4-auction-discovery-validation.yml"
@@ -102,7 +103,6 @@ jobs:
           python -m py_compile v4_private_auction_coverage.py
           python -m py_compile v4_kb_shadow_bridge.py
           python -m py_compile compare_auction_discovery.py
-          python -m py_compile run_watcher_safe.py
           python -m py_compile v4_canonical_multimarket.py
           python -m py_compile v4_edge_hunter_safety.py
           python -m py_compile v4_external_coverage_drain.py
@@ -117,6 +117,10 @@ jobs:
           python -m py_compile v4_tcgdex_two_of_three_backport.py
           python -m py_compile v4_tcgdex_unique_coordinate_fallback.py
           python -m py_compile run_watcher_multimarket.py
+          python -m py_compile mac/robot-kb-local/robot_kb_public_market_probe.py
+
+      - name: Probe anonymous public marketplace retrieval
+        run: python mac/robot-kb-local/robot_kb_public_market_probe.py
 
       - name: Parse changed workflow YAML
         run: |

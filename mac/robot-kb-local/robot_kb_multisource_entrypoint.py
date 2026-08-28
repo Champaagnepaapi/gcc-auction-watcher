@@ -7,6 +7,7 @@ import robot_kb_multisource_harvest as harvest
 import robot_kb_multisource_p3_compat as p3_compat
 import robot_kb_multisource_provider_bounds as provider_bounds
 import robot_kb_multisource_paid_fairness as paid_fairness
+import robot_kb_public_market_resilience as public_resilience
 
 
 _ORIGINAL_FINGERPRINT = harvest.fingerprint
@@ -33,6 +34,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p3_compat.install(harvest)
     provider_bounds.install(harvest)
     paid_fairness.install(harvest)
+    public_resilience.install(harvest)
     return harvest.main(argv)
 
 
