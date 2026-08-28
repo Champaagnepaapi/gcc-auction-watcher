@@ -322,6 +322,7 @@ def _payload_fingerprint(payload: object) -> str:
 def candidate_observation(
     candidate: CompletedItemCandidate, *, query: str, observed_at: str
 ):
+    del query  # request context is retained in the immutable raw record, not as identity proof
     (
         ObservationType,
         SourceKind,
@@ -349,14 +350,7 @@ def candidate_observation(
             "metric_name": "EBAY_RAPIDAPI_COMPLETED_ITEM_CANDIDATE",
             "metric_value_minor": candidate.sale_price_minor,
             "currency": candidate.currency,
-            "shipping_value_minor": candidate.shipping_price_minor,
-            "item_level_sold": False,
-            "provider_completed_item_candidate": True,
-            "provider_asserted_date_sold": candidate.date_sold,
-            "final_price_semantics_proven": False,
-            "accepted_offer_price_ambiguous": candidate.accepted_offer_ambiguous,
-            "query_context": query,
-            "evidence_class": "COMPLETED_ITEM_PROVIDER_ASSERTED_SHADOW",
+            "sample_size": 1,
         },
         identity_subject_type="EBAY_COMPLETED_ITEM_SHADOW",
         identity_subject_label=f"eBay completed-item candidate {candidate.item_id}",
@@ -413,6 +407,10 @@ def persist_shadow_response(
                 candidate_observation(candidate, query=query, observed_at=observed_at)
             )
 
+    retained_payload = {
+        "request": {"keywords": query, "site_id": site_id},
+        "response": dict(payload),
+    }
     raw_id = "rapidapi-response:" + _digest(
         query, site_id, _payload_fingerprint(payload)
     )[:32]
@@ -421,7 +419,7 @@ def persist_shadow_response(
         source_name=SOURCE_NAME,
         source_role="PROVIDER",
         source_native_record_id=raw_id,
-        payload=dict(payload),
+        payload=retained_payload,
         retrieved_at=observed_at,
         object_type="PROVIDER_RESPONSE",
         external_native_id=raw_id,
