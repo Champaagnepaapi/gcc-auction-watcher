@@ -197,9 +197,15 @@ class RapidApiShadowTests(unittest.TestCase):
         self.assertEqual(observation.observation_type, FakeObservationType.PROVIDER_METRIC_OBSERVATION)
         self.assertFalse(observation.genuine_sale_evidence)
         self.assertFalse(observation.exact_identity_eligible)
-        self.assertFalse(observation.fact["item_level_sold"])
-        self.assertTrue(observation.fact["provider_completed_item_candidate"])
-        self.assertFalse(observation.fact["final_price_semantics_proven"])
+        self.assertEqual(
+            set(observation.fact),
+            {"metric_name", "metric_value_minor", "currency", "sample_size"},
+        )
+        self.assertEqual(
+            observation.fact["metric_name"],
+            "EBAY_RAPIDAPI_COMPLETED_ITEM_CANDIDATE",
+        )
+        self.assertEqual(observation.fact["sample_size"], 1)
         self.assertNotIn("upstream_market_code", observation.__dict__)
         self.assertIn("canonical_identity", observation.unresolved_dimensions)
         self.assertIn("commercial_microvariant", observation.unresolved_dimensions)
@@ -227,7 +233,8 @@ class RapidApiShadowTests(unittest.TestCase):
                 """
                 SELECT o.observation_type, o.canonical_card_id,
                        o.upstream_market_system_id,
-                       p.metric_name, p.metric_value_minor, p.currency
+                       p.metric_name, p.metric_value_minor, p.currency,
+                       p.sample_size
                 FROM market_observation o
                 JOIN provider_metric_observation p ON p.observation_id=o.id
                 JOIN source_system s ON s.id=o.source_system_id
@@ -242,6 +249,7 @@ class RapidApiShadowTests(unittest.TestCase):
             self.assertEqual(row["metric_name"], "EBAY_RAPIDAPI_COMPLETED_ITEM_CANDIDATE")
             self.assertEqual(row["metric_value_minor"], 10550)
             self.assertEqual(row["currency"], "USD")
+            self.assertEqual(row["sample_size"], 1)
             self.assertEqual(
                 kb.connection.execute("SELECT COUNT(*) AS n FROM sale_transaction").fetchone()["n"],
                 0,
