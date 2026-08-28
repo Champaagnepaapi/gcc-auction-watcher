@@ -111,7 +111,7 @@ class RapidApiShadowTests(unittest.TestCase):
         self.assertEqual(body["site_id"], "0")
         self.assertIs(body["remove_outliers"], False)
 
-    def test_valid_auction_becomes_item_level_shadow_candidate(self):
+    def test_valid_auction_becomes_completed_item_shadow_candidate(self):
         parsed = shadow.parse_response(payload([product()]))
         self.assertFalse(parsed.provider_error)
         self.assertEqual(len(parsed.candidates), 1)
@@ -162,6 +162,7 @@ class RapidApiShadowTests(unittest.TestCase):
         self.assertEqual(summary["http_status"], 403)
         self.assertEqual(summary["provider_error"], "http-403")
         self.assertFalse(summary["provider_clean_no_match"])
+        self.assertFalse(summary["item_level_sold"])
         self.assertFalse(summary["genuine_sale_evidence"])
 
     def test_key_is_header_only_and_never_appears_in_sanitized_output(self):
@@ -196,11 +197,70 @@ class RapidApiShadowTests(unittest.TestCase):
         self.assertEqual(observation.observation_type, FakeObservationType.PROVIDER_METRIC_OBSERVATION)
         self.assertFalse(observation.genuine_sale_evidence)
         self.assertFalse(observation.exact_identity_eligible)
+        self.assertFalse(observation.fact["item_level_sold"])
+        self.assertTrue(observation.fact["provider_completed_item_candidate"])
         self.assertFalse(observation.fact["final_price_semantics_proven"])
-        self.assertTrue(observation.fact["item_level_sold"])
+        self.assertNotIn("upstream_market_code", observation.__dict__)
         self.assertIn("canonical_identity", observation.unresolved_dimensions)
         self.assertIn("commercial_microvariant", observation.unresolved_dimensions)
         self.assertIn("final_price_semantics", observation.unresolved_dimensions)
+
+    def test_real_p3_persistence_keeps_candidate_as_unresolved_provider_metric(self):
+        try:
+            from robot_kb.repository import KnowledgeBase
+        except ModuleNotFoundError:
+            self.skipTest("pinned Robot KB P3 runtime is not present in this V4-only test lane")
+
+        raw_payload = payload([product()])
+        parsed = shadow.parse_response(raw_payload)
+        observed_at = "2026-08-28T12:00:00+00:00"
+        with KnowledgeBase.open(":memory:") as kb:
+            stored = shadow.persist_shadow_response(
+                kb,
+                raw_payload,
+                parsed,
+                query="Pokemon Pikachu PSA 10",
+                observed_at=observed_at,
+            )
+            self.assertEqual(stored, 1)
+            row = kb.connection.execute(
+                """
+                SELECT o.observation_type, o.canonical_card_id,
+                       o.upstream_market_system_id,
+                       p.metric_name, p.metric_value_minor, p.currency
+                FROM market_observation o
+                JOIN provider_metric_observation p ON p.observation_id=o.id
+                JOIN source_system s ON s.id=o.source_system_id
+                WHERE s.code=? AND o.source_native_record_id=?
+                """,
+                (shadow.SOURCE_CODE, "ebay-item:123456789012"),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["observation_type"], "PROVIDER_METRIC_OBSERVATION")
+            self.assertIsNone(row["canonical_card_id"])
+            self.assertIsNone(row["upstream_market_system_id"])
+            self.assertEqual(row["metric_name"], "EBAY_RAPIDAPI_COMPLETED_ITEM_CANDIDATE")
+            self.assertEqual(row["metric_value_minor"], 10550)
+            self.assertEqual(row["currency"], "USD")
+            self.assertEqual(
+                kb.connection.execute("SELECT COUNT(*) AS n FROM sale_transaction").fetchone()["n"],
+                0,
+            )
+
+            replay_stored = shadow.persist_shadow_response(
+                kb,
+                raw_payload,
+                parsed,
+                query="Pokemon Pikachu PSA 10",
+                observed_at="2026-08-28T12:05:00+00:00",
+            )
+            self.assertEqual(replay_stored, 0)
+            self.assertEqual(
+                kb.connection.execute(
+                    "SELECT COUNT(*) AS n FROM provider_metric_observation"
+                ).fetchone()["n"],
+                1,
+            )
 
     def test_unsupported_site_is_fail_closed(self):
         with self.assertRaises(ValueError):
@@ -231,6 +291,7 @@ class RapidApiShadowTests(unittest.TestCase):
     def test_module_is_robot_kb_shadow_only_and_has_no_v4_runtime_dependency(self):
         self.assertNotIn("import watcher", self.module_source)
         self.assertNotIn("run_watcher", self.module_source)
+        self.assertIn('"item_level_sold": False', self.module_source)
         self.assertIn('"v4_economic_use": False', self.module_source)
         self.assertIn('genuine_sale_evidence=False', self.module_source)
 
