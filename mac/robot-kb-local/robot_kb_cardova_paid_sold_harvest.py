@@ -20,9 +20,14 @@ Reviewed public Cardova evidence (2026-08-29) established the following:
 
 Accordingly this harvest may classify a row as provider-level PAID/COMPLETED
 sale evidence only when the exact reviewed status-5 state and all cancellation /
-relisting guards agree.  It still does NOT write ``SALE_TRANSACTION``: canonical
+relisting guards agree. It still does NOT write ``SALE_TRANSACTION``: canonical
 TCGdex identity is not resolved here and the API does not expose the exact
-payment-completion timestamp.  ``end_date`` is retained only as auction end time.
+payment-completion timestamp. ``end_date`` is retained only as auction end time.
+
+Identity-facing public Cardova surfaces are preserved losslessly enough for the
+next read-only canonicalization phase: verbose/short set labels, provider title,
+series and native card id. They remain retrieval/provenance only and cannot by
+themselves prove a TCGdex identity.
 
 No credentials, supplied cookies, request-header replay, POST, purchase, bid,
 checkout, payment, Robot KB write, V4 economic use or notification occurs.
@@ -99,7 +104,7 @@ def classify_paid_sold_row(row: Mapping[str, Any]) -> tuple[Optional[dict[str, A
 
     The payment gate is deliberately exact: status 5 is accepted; <=4 is
     explicit pending according to the reviewed public UI; every other value is
-    unproven.  Cancellation/relisting state must independently agree.
+    unproven. Cancellation/relisting state must independently agree.
     """
     if not isinstance(row, Mapping):
         return None, "ROW_NOT_OBJECT"
@@ -169,6 +174,13 @@ def classify_paid_sold_row(row: Mapping[str, Any]) -> tuple[Optional[dict[str, A
             "card_name": _norm(row.get("player")),
             "set_name": _norm(row.get("variety") or row.get("variety_short")),
             "collector_number": _norm(row.get("card_number")),
+            # Public provider-native identity surfaces. These are preserved for
+            # deterministic retrieval only; none is accepted as canonical proof.
+            "provider_set_name_short": _norm(row.get("variety_short")),
+            "provider_series": _norm(row.get("series")),
+            "provider_title": _norm(row.get("title")),
+            "provider_item_name": _norm(row.get("item_name")),
+            "provider_card_ulid": _norm(row.get("card_ulid")),
             "identity_status": "PENDING_TCGDEX",
             "microvariant_status": "PENDING_TCGDEX",
             "tcgdex_requests": 0,
@@ -196,6 +208,7 @@ def safe_summary() -> dict[str, Any]:
         "payment_semantics_proven": True,
         "currency_semantics_proven": True,
         "proven_currency": PROVEN_CURRENCY,
+        "identity_surfaces_preserved": True,
         "identity_resolution_attempted": False,
         "tcgdex_requests": 0,
         "sale_transaction_ready": False,
@@ -264,7 +277,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         payload = safe_summary()
         payload["error"] = f"{type(exc).__name__}: {exc}"
         code = 1
-    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return code
 
