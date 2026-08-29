@@ -26,8 +26,12 @@ def base_row():
         "grade": "10.0",
         "language": "Japanese",
         "player": "Pikachu",
-        "variety": "Pokemon TCG: Japanese Promo",
-        "variety_short": "Promo",
+        "variety": "Pokemon TCG: Japanese Scarlet & Violet Promo",
+        "variety_short": "SV-P Promo",
+        "series": "Pokemon TCG: Japanese Scarlet & Violet",
+        "title": "2023 Pokemon Japanese Pikachu Promo SV-P #001 PSA 10",
+        "item_name": "Pikachu Promo",
+        "card_ulid": "CARD01",
         "card_number": "#001/SV-P",
         "certificate_number": "123456789",
     }
@@ -47,6 +51,23 @@ class CardovaPaidSoldHarvestTests(unittest.TestCase):
         self.assertTrue(record["sale_evidence_ready"])
         self.assertFalse(record["payment_completed_at_proven"])
         self.assertEqual(record["identity_status"], "PENDING_TCGDEX")
+        self.assertFalse(record["sale_transaction_ready"])
+
+    def test_public_identity_surfaces_are_preserved_but_not_promoted(self):
+        record, reason = MOD.classify_paid_sold_row(base_row())
+        self.assertEqual(reason, "PAID_SOLD_EVIDENCE_READY")
+        assert record is not None
+        self.assertEqual(record["set_name"], "Pokemon TCG: Japanese Scarlet & Violet Promo")
+        self.assertEqual(record["provider_set_name_short"], "SV-P Promo")
+        self.assertEqual(record["provider_series"], "Pokemon TCG: Japanese Scarlet & Violet")
+        self.assertEqual(
+            record["provider_title"],
+            "2023 Pokemon Japanese Pikachu Promo SV-P #001 PSA 10",
+        )
+        self.assertEqual(record["provider_item_name"], "Pikachu Promo")
+        self.assertEqual(record["provider_card_ulid"], "CARD01")
+        self.assertEqual(record["identity_status"], "PENDING_TCGDEX")
+        self.assertEqual(record["microvariant_status"], "PENDING_TCGDEX")
         self.assertFalse(record["sale_transaction_ready"])
 
     def test_pending_status_is_never_sale_evidence(self):
@@ -127,6 +148,7 @@ class CardovaPaidSoldHarvestTests(unittest.TestCase):
         self.assertEqual(summary["payment_pending_max_status"], 4)
         self.assertTrue(summary["currency_semantics_proven"])
         self.assertEqual(summary["proven_currency"], "JPY")
+        self.assertTrue(summary["identity_surfaces_preserved"])
         self.assertFalse(summary["identity_resolution_attempted"])
         self.assertEqual(summary["tcgdex_requests"], 0)
         self.assertFalse(summary["sale_transaction_ready"])
