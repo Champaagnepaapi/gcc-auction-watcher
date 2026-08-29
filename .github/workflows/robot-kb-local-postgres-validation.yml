@@ -15,6 +15,7 @@ on:
       - "tests/test_robot_kb_ebay_corroborated_import.py"
       - "tests/test_robot_kb_tcgdex_canonicalize.py"
       - "tests/test_robot_kb_ebay_corroborated_batch.py"
+      - "tests/test_robot_kb_psa_corroboration_harvest.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -80,6 +81,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_ebay_corroborated_import.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_tcgdex_canonicalize.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_ebay_corroborated_batch.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_psa_corroboration_harvest.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -100,6 +102,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_ebay_corroborated_import.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_tcgdex_canonicalize.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_ebay_corroborated_batch.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_psa_corroboration_harvest.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
