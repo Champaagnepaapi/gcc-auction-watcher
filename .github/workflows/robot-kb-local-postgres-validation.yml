@@ -18,6 +18,7 @@ on:
       - "tests/test_robot_kb_psa_corroboration_harvest.py"
       - "tests/test_robot_kb_fanatics_sales_history_probe.py"
       - "tests/test_robot_kb_fanatics_paid_sold_harvest.py"
+      - "tests/test_robot_kb_fanatics_paid_pending_capture.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -86,6 +87,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_psa_corroboration_harvest.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_fanatics_sales_history_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_fanatics_paid_sold_harvest.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_fanatics_paid_pending_capture.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -109,6 +111,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_psa_corroboration_harvest.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_fanatics_sales_history_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_fanatics_paid_sold_harvest.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_fanatics_paid_pending_capture.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
