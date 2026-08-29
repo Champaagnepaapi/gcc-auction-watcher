@@ -20,8 +20,16 @@ importer = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = importer
 SPEC.loader.exec_module(importer)
 
-from robot_kb.domain import ResolutionState  # noqa: E402
-from robot_kb.repository import IdempotencyConflict, KnowledgeBase  # noqa: E402
+try:
+    from robot_kb.domain import ResolutionState  # type: ignore
+    from robot_kb.repository import IdempotencyConflict, KnowledgeBase  # type: ignore
+
+    HAS_P3 = True
+except ModuleNotFoundError:
+    ResolutionState = None
+    IdempotencyConflict = RuntimeError
+    KnowledgeBase = None
+    HAS_P3 = False
 
 
 GCC_ID = "3edd662b-258c-4d73-bd76-5078a48bd02c"
@@ -121,7 +129,7 @@ def report(candidate_row=None, **overrides):
     return payload
 
 
-def create_card(kb: KnowledgeBase) -> str:
+def create_card(kb) -> str:
     set_id = kb.create_canonical_set("mega-dream-ex", "Mega Dream Ex")
     family_id = kb.create_card_family(set_id, "242/193", "N's Zoroark ex")
     localized_id = kb.create_localized_card(
@@ -140,7 +148,7 @@ def create_card(kb: KnowledgeBase) -> str:
     return kb.create_canonical_card(localized_id, profile_id)
 
 
-def link_gcc(kb: KnowledgeBase, card_id: str) -> None:
+def link_gcc(kb, card_id: str) -> None:
     source_id = kb.create_source_system("gcc", "GCC Marketplace", "LISTING_PLATFORM")
     object_id = kb.create_external_object(source_id, "LISTING", GCC_ID)
     identifier_id = kb.add_external_identifier(
@@ -205,6 +213,7 @@ class CorroboratedSelectionTests(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(HAS_P3, "pinned Robot KB P3 runtime is not present in this V4-only test lane")
 class CorroboratedPersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.kb = KnowledgeBase.open()
@@ -292,7 +301,7 @@ class CorroboratedPersistenceTests(unittest.TestCase):
         self.assertEqual(replay["sale_transactions_stored"], 0)
         self.assertEqual(replay["duplicate_sale_replays"], 1)
 
-    def test_same_item_with_new_corrobated_date_conflicts_in_p3(self):
+    def test_same_item_with_new_corroborated_date_conflicts_in_p3(self):
         link_gcc(self.kb, self.card_id)
         importer.persist_corroborated_sale(
             self.kb,
