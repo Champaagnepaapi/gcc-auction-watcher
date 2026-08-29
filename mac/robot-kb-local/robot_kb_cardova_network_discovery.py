@@ -3,9 +3,10 @@
 
 Diagnostic only. It records public GET resource URLs loaded by Cardova's Past
 Auctions page and scans public JavaScript bundles for Cardova auction API route
-strings plus bounded context around payment-status literals. It supplies no
-credentials/cookies/auth state, performs no POSTs and never classifies or stores
-a sale.
+strings plus bounded context around payment-status literals. It also extracts
+the public WEEKLY.TEXT_103 label referenced by the bid-payment-status UI gate.
+It supplies no credentials/cookies/auth state, performs no POSTs and never
+classifies or stores a sale.
 """
 
 from __future__ import annotations
@@ -25,8 +26,12 @@ MAX_SCRIPTS = 40
 MAX_SCRIPT_BYTES = 2_000_000
 MAX_ROUTE_HITS = 120
 MAX_PAYMENT_CONTEXT_HITS = 40
+MAX_WEEKLY_LABEL_HITS = 20
 PAYMENT_CONTEXT_RADIUS = 320
+WEEKLY_LABEL_SCAN_BYTES = 30_000
 ROUTE_RE = re.compile(r"(?:https://bg\.cardova\.co\.jp)?/api/v1/(?:auction|trade)/[A-Za-z0-9_?=&%./{}:$-]+")
+WEEKLY_OBJECT_RE = re.compile(r"WEEKLY\s*:\s*[A-Za-z0-9_$]+\(\{\},\{")
+TEXT_103_VALUE_RE = re.compile(r'TEXT_103\s*:\s*"((?:\\.|[^"\\])*)"')
 PAYMENT_TERMS = (
     "bid_payment_status",
     "seller_payment_status",
@@ -34,6 +39,7 @@ PAYMENT_TERMS = (
     "Payment Status",
     "Closed Bids",
     "Items Sold",
+    "Sold / Payment pending",
 )
 
 
@@ -68,6 +74,23 @@ def _payment_semantic_hits(text: str, source_url: str) -> list[dict]:
     return hits
 
 
+def _weekly_text_103_hits(text: str, source_url: str) -> list[dict]:
+    """Extract bounded WEEKLY.TEXT_103 values from public minified locale JS."""
+    hits: list[dict] = []
+    for marker in WEEKLY_OBJECT_RE.finditer(text):
+        segment = text[marker.start(): marker.start() + WEEKLY_LABEL_SCAN_BYTES]
+        value_match = TEXT_103_VALUE_RE.search(segment)
+        if value_match is None:
+            continue
+        value = value_match.group(1)[:500]
+        item = {"source_url": source_url[:700], "raw_value": value}
+        if item not in hits:
+            hits.append(item)
+        if len(hits) >= MAX_WEEKLY_LABEL_HITS:
+            break
+    return hits
+
+
 def safe_summary() -> dict:
     return {
         "mode": "READ_ONLY_CARDOVA_NETWORK_DISCOVERY",
@@ -96,6 +119,7 @@ def run(url: str, *, wait_ms: int) -> dict:
     resources: list[dict] = []
     route_hits: set[str] = set()
     payment_context_hits: list[dict] = []
+    weekly_text_103_hits: list[dict] = []
     scripts_scanned = 0
 
     with sync_playwright() as pw:
@@ -145,6 +169,11 @@ def run(url: str, *, wait_ms: int) -> dict:
             if len(payment_context_hits) < MAX_PAYMENT_CONTEXT_HITS:
                 remaining = MAX_PAYMENT_CONTEXT_HITS - len(payment_context_hits)
                 payment_context_hits.extend(_payment_semantic_hits(text, response_url)[:remaining])
+            if len(weekly_text_103_hits) < MAX_WEEKLY_LABEL_HITS:
+                remaining = MAX_WEEKLY_LABEL_HITS - len(weekly_text_103_hits)
+                for item in _weekly_text_103_hits(text, response_url)[:remaining]:
+                    if item not in weekly_text_103_hits:
+                        weekly_text_103_hits.append(item)
 
         page.on("response", on_response)
         response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
@@ -177,6 +206,8 @@ def run(url: str, *, wait_ms: int) -> dict:
         "auction_trade_route_hits": sorted(route_hits),
         "payment_context_hit_count": len(payment_context_hits),
         "payment_context_hits": payment_context_hits,
+        "weekly_text_103_hit_count": len(weekly_text_103_hits),
+        "weekly_text_103_hits": weekly_text_103_hits,
         "resources": resources,
     })
     return out
