@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
@@ -37,21 +38,30 @@ PUBLIC_FIELDS = frozenset(
         "finished", "end_date", "scheduled_end_date", "status",
         "auction_status", "payment_status", "transaction_status",
         "paymentStatus", "transactionStatus", "paid", "paid_at",
-        "payment_at", "completed_at", "sold_at", "currency", "currency_code",
-        "currencyCode", "authentication_company_code", "grade", "language",
-        "player", "variety", "variety_short", "card_number", "category",
+        "payment_at", "completed_at", "sold_at", "bid_payment_status",
+        "seller_payment_status", "canceled_at", "re_listed",
+        "re_listing_count", "currency", "currency_code", "currencyCode",
+        "authentication_company_code", "grade", "language", "player",
+        "variety", "variety_short", "card_number", "category",
         "category_name", "series", "title", "item_name", "card_ulid",
         "certification_number", "certificate_number", "cert_number",
         "certification_no", "psa_cert_number",
     }
 )
-STATUS_FIELDS = frozenset(
+PAYMENT_FIELDS = frozenset(
     {
-        "status", "auction_status", "payment_status", "transaction_status",
-        "paymentStatus", "transactionStatus", "paid", "paid_at", "payment_at",
-        "completed_at", "sold_at",
+        "payment_status", "paymentStatus", "paid", "paid_at", "payment_at",
+        "bid_payment_status", "seller_payment_status",
     }
 )
+TRANSACTION_STATE_FIELDS = frozenset(
+    {
+        "status", "auction_status", "transaction_status", "transactionStatus",
+        "completed_at", "sold_at", "canceled_at", "re_listed",
+        "re_listing_count", "finished",
+    }
+)
+STATUS_FIELDS = PAYMENT_FIELDS | TRANSACTION_STATE_FIELDS
 CURRENCY_FIELDS = frozenset({"currency", "currency_code", "currencyCode"})
 
 
@@ -85,7 +95,7 @@ def _safe(value: Any, *, depth: int = 0) -> Any:
                 break
             name = _norm(key)[:120]
             low = name.casefold()
-            if any(
+            if low != "seller_payment_status" and any(
                 token in low
                 for token in (
                     "token", "cookie", "authorization", "password", "secret",
@@ -126,9 +136,26 @@ def _looks_like_closed_row(obj: Mapping[str, Any]) -> bool:
 
 def _project(obj: Mapping[str, Any]) -> Mapping[str, Any]:
     row = {key: obj.get(key) for key in PUBLIC_FIELDS if key in obj}
+    row["payment_fields_present"] = {key: row.get(key) for key in PAYMENT_FIELDS if key in row}
+    row["transaction_state_fields_present"] = {
+        key: row.get(key) for key in TRANSACTION_STATE_FIELDS if key in row
+    }
     row["status_fields_present"] = {key: row.get(key) for key in STATUS_FIELDS if key in row}
     row["currency_fields_present"] = {key: row.get(key) for key in CURRENCY_FIELDS if key in row}
     return _safe(row)
+
+
+def _value_counts(rows: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> Mapping[str, Mapping[str, int]]:
+    out: dict[str, Mapping[str, int]] = {}
+    for field in fields:
+        values = Counter()
+        for row in rows:
+            if field in row:
+                value = row.get(field)
+                values[json.dumps(value, ensure_ascii=False, sort_keys=True)] += 1
+        if values:
+            out[field] = dict(sorted(values.items()))
+    return out
 
 
 def safe_summary() -> dict[str, Any]:
@@ -162,6 +189,8 @@ def _summarize_payload(payload: Any) -> Mapping[str, Any]:
     rows: dict[str, Mapping[str, Any]] = {}
     all_keys: set[str] = set()
     status_names: set[str] = set()
+    payment_names: set[str] = set()
+    transaction_state_names: set[str] = set()
     currency_names: set[str] = set()
     for obj in _walk(payload):
         for key in obj.keys():
@@ -176,16 +205,23 @@ def _summarize_payload(payload: Any) -> Mapping[str, Any]:
             continue
         rows[ulid] = row
         status_names.update(key for key in STATUS_FIELDS if key in obj)
+        payment_names.update(key for key in PAYMENT_FIELDS if key in obj)
+        transaction_state_names.update(key for key in TRANSACTION_STATE_FIELDS if key in obj)
         currency_names.update(key for key in CURRENCY_FIELDS if key in obj)
         if len(rows) >= MAX_ROWS:
             break
+    projected_rows = list(rows.values())
     return {
-        "closed_row_count": len(rows),
+        "closed_row_count": len(projected_rows),
         "status_field_names": sorted(status_names),
+        "payment_field_names": sorted(payment_names),
+        "transaction_state_field_names": sorted(transaction_state_names),
         "currency_field_names": sorted(currency_names),
+        "payment_value_counts": _value_counts(projected_rows, sorted(payment_names)),
+        "transaction_state_value_counts": _value_counts(projected_rows, sorted(transaction_state_names)),
         "top_level_type": type(payload).__name__,
         "observed_key_names": sorted(all_keys)[:300],
-        "rows": list(rows.values()),
+        "rows": projected_rows,
     }
 
 
