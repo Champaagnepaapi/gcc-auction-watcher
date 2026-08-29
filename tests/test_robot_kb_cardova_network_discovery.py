@@ -42,6 +42,22 @@ class CardovaNetworkDiscoveryTests(unittest.TestCase):
             [],
         )
 
+    def test_weekly_text_103_extracts_only_weekly_label(self):
+        text = (
+            'OTHER:x({},{TEXT_103:"wrong"}),'
+            'WEEKLY:s({},{TEXT_1:"Bid",TEXT_103:"Sold / Payment pending",TEXT_104:"Next"}),'
+        )
+        hits = mod._weekly_text_103_hits(text, "https://www.cardova.co.jp/_next/static/locale.js")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["raw_value"], "Sold / Payment pending")
+        self.assertTrue(hits[0]["source_url"].startswith("https://www.cardova.co.jp/"))
+
+    def test_weekly_text_103_requires_weekly_object(self):
+        self.assertEqual(
+            mod._weekly_text_103_hits('OTHER:x({},{TEXT_103:"wrong"})', "https://www.cardova.co.jp/test.js"),
+            [],
+        )
+
     def test_safety_summary(self):
         s = mod.safe_summary()
         self.assertTrue(s["public_anonymous_only"])
