@@ -15,6 +15,7 @@ on:
       - "tests/test_robot_kb_cardova_network_discovery.py"
       - "tests/test_robot_kb_cardova_closed_api_probe.py"
       - "tests/test_robot_kb_cardova_paid_sold_harvest.py"
+      - "tests/test_robot_kb_cardova_paid_sold_identity.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -80,6 +81,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_network_discovery.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_closed_api_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_harvest.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_identity.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -100,6 +102,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_network_discovery.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_closed_api_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_harvest.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_identity.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
