@@ -333,6 +333,108 @@ class EbayExactBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "schema_version"):
                 benchmark.load_corroboration_file(path)
 
+    def test_reviewed_psa_sample_287464263284_corroborates(self):
+        # Reviewed 2026-08-29 against PSA Sales History cert page 145414399.
+        # PSA records this exact eBay lot as FixedPrice, $130.00, 08/01/26.
+        zoroark_target = target(
+            gcc_url="https://gradedcardcenter.com/item/3edd662b-258c-4d73-bd76-5078a48bd02c",
+            title="PSA 10 N's Zoroark Ex",
+            card_set="Mega Dream Ex",
+            collector_number="#242/193",
+            language="JA",
+            grader="PSA",
+            grade="10",
+            year=2025,
+        )
+        c = candidate(
+            "PSA 10 N's Zoroark ex SAR 242/193 MEGA Dream ex M2a Japanese Pokemon Card 2025",
+            item_id="287464263284",
+            date_sold="2026-08-01",
+            sale_price_minor=13000,
+            currency="USD",
+            buying_format="Buy It Now",
+            accepted_offer_ambiguous=False,
+        )
+        record = corroboration(
+            item_id="287464263284",
+            source="PSA Sales History",
+            source_url="https://www.psacard.com/cert/145414399/psa",
+            verified_at="2026-08-29T07:35:00Z",
+            gcc_url=zoroark_target.gcc_url,
+            title=zoroark_target.title,
+            card_set=zoroark_target.card_set,
+            collector_number=zoroark_target.collector_number,
+            language=zoroark_target.language,
+            grader=zoroark_target.grader,
+            grade=zoroark_target.grade,
+            year=zoroark_target.year,
+            date_sold="2026-08-01",
+            sale_price_minor=13000,
+            currency="USD",
+            exact_identity_proven=True,
+            microvariant_compatible_proven=True,
+            sale_status_proven=True,
+            final_price_semantics_proven=True,
+            best_offer=False,
+        )
+        result, reasons, used = benchmark.classify_with_corroboration(
+            zoroark_target, c, {record.item_id: record}
+        )
+        self.assertEqual(result, "CORROBORATED_SOLD")
+        self.assertIs(used, record)
+        self.assertTrue(any("final sale status" in reason for reason in reasons))
+
+    def test_reviewed_psa_sample_317720237907_date_conflict_fails_closed(self):
+        # The live RapidAPI benchmark reported 2026-01-10 for this item, while
+        # PSA Sales History cert page 145414399 records $224.00 on 08/01/26.
+        zoroark_target = target(
+            gcc_url="https://gradedcardcenter.com/item/3edd662b-258c-4d73-bd76-5078a48bd02c",
+            title="PSA 10 N's Zoroark Ex",
+            card_set="Mega Dream Ex",
+            collector_number="#242/193",
+            language="JA",
+            grader="PSA",
+            grade="10",
+            year=2025,
+        )
+        c = candidate(
+            "PSA 10 N's Zoroark ex SAR 242/193 MEGA Dream ex M2a Pokemon Card Japanese 2025",
+            item_id="317720237907",
+            date_sold="2026-01-10",
+            sale_price_minor=22400,
+            currency="USD",
+            buying_format="Buy It Now",
+            accepted_offer_ambiguous=False,
+        )
+        record = corroboration(
+            item_id="317720237907",
+            source="PSA Sales History",
+            source_url="https://www.psacard.com/cert/145414399/psa",
+            verified_at="2026-08-29T07:35:00Z",
+            gcc_url=zoroark_target.gcc_url,
+            title=zoroark_target.title,
+            card_set=zoroark_target.card_set,
+            collector_number=zoroark_target.collector_number,
+            language=zoroark_target.language,
+            grader=zoroark_target.grader,
+            grade=zoroark_target.grade,
+            year=zoroark_target.year,
+            date_sold="2026-08-01",
+            sale_price_minor=22400,
+            currency="USD",
+            exact_identity_proven=True,
+            microvariant_compatible_proven=True,
+            sale_status_proven=True,
+            final_price_semantics_proven=True,
+            best_offer=False,
+        )
+        result, reasons, used = benchmark.classify_with_corroboration(
+            zoroark_target, c, {record.item_id: record}
+        )
+        self.assertEqual(result, "TITLE_COMPATIBLE_NON_OFFER")
+        self.assertIs(used, record)
+        self.assertTrue(any("sale date" in reason for reason in reasons))
+
 
 if __name__ == "__main__":
     unittest.main()
