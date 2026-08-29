@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Bounded anonymous probe for Cardova's public closed-auction API.
+"""Capture Cardova closed-auction JSON from the public Past Auctions page.
 
-The endpoint was observed live from Cardova's public Past Auctions page. This
-probe performs one public HTTPS GET and emits only a strict whitelist of
-market/card/status fields. It does not classify any row as a completed paid sale
-and never writes Robot KB.
+A naked HTTP request to ``bg.cardova.co.jp/api/v1/auction/list`` returns 403,
+while Cardova's public anonymous Past Auctions page itself issues the same GET
+and receives HTTP 200. This diagnostic therefore observes that page-generated
+GET response in a fresh Playwright context. It does not replay request headers,
+import cookies/session state, classify a sale, or write Robot KB.
 """
 
 from __future__ import annotations
@@ -13,16 +14,18 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, urlparse
+
+from playwright.sync_api import sync_playwright
 
 
-DEFAULT_URL = (
-    "https://bg.cardova.co.jp/api/v1/auction/list"
-    "?page=1&limit=24&sort=price_desc&status=close&lang_code=en"
+DEFAULT_PAGE_URL = (
+    "https://www.cardova.co.jp/en/auction/close"
+    "?limit=24&page=1&sort=price_desc&status=close"
 )
-ALLOWED_HOST = "bg.cardova.co.jp"
-MAX_BYTES = 2_000_000
+ALLOWED_PAGE_HOST = "www.cardova.co.jp"
+ALLOWED_API_HOST = "bg.cardova.co.jp"
+TARGET_API_PATH = "/api/v1/auction/list"
 MAX_DEPTH = 8
 MAX_LIST = 100
 MAX_ROWS = 80
@@ -56,9 +59,19 @@ def _norm(value: object) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
-def _allowed_url(url: str) -> bool:
+def _allowed_page_url(url: str) -> bool:
     parsed = urlparse(str(url or ""))
-    return parsed.scheme.casefold() == "https" and (parsed.hostname or "").casefold() == ALLOWED_HOST
+    return parsed.scheme.casefold() == "https" and (parsed.hostname or "").casefold() == ALLOWED_PAGE_HOST
+
+
+def _target_closed_api_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme.casefold() != "https" or (parsed.hostname or "").casefold() != ALLOWED_API_HOST:
+        return False
+    if parsed.path != TARGET_API_PATH:
+        return False
+    query = parse_qs(parsed.query)
+    return query.get("status") == ["close"]
 
 
 def _safe(value: Any, *, depth: int = 0) -> Any:
@@ -105,8 +118,7 @@ def _walk(value: Any):
 def _looks_like_closed_row(obj: Mapping[str, Any]) -> bool:
     if not _norm(obj.get("ulid")):
         return False
-    price = obj.get("bid_price")
-    has_price = price not in (None, "")
+    has_price = obj.get("bid_price") not in (None, "")
     has_end = obj.get("end_date") not in (None, "") or obj.get("scheduled_end_date") not in (None, "")
     has_identity = any(obj.get(key) not in (None, "") for key in ("card_number", "player", "title", "item_name"))
     return bool(has_price and has_end and has_identity)
@@ -121,12 +133,16 @@ def _project(obj: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def safe_summary() -> dict[str, Any]:
     return {
-        "mode": "READ_ONLY_CARDOVA_CLOSED_API_PROBE",
+        "mode": "READ_ONLY_CARDOVA_CLOSED_BROWSER_CAPTURE",
         "public_anonymous_only": True,
+        "fresh_browser_context": True,
         "credentials_used": False,
         "cookies_supplied": False,
+        "storage_state_supplied": False,
         "authentication_headers_supplied": False,
+        "request_headers_captured": False,
         "posts_issued": False,
+        "direct_api_replay_used": False,
         "closed_rows_promoted_to_sale": False,
         "payment_semantics_proven": False,
         "currency_semantics_proven": False,
@@ -142,17 +158,7 @@ def safe_summary() -> dict[str, Any]:
     }
 
 
-def run_probe(url: str, *, timeout_seconds: float) -> Mapping[str, Any]:
-    if not _allowed_url(url):
-        raise ValueError(f"unsupported Cardova URL: {url}")
-    req = Request(url, method="GET", headers={"Accept": "application/json"})
-    with urlopen(req, timeout=timeout_seconds) as response:
-        status = int(getattr(response, "status", 0) or 0)
-        raw = response.read(MAX_BYTES + 1)
-    if len(raw) > MAX_BYTES:
-        raise ValueError("Cardova response exceeded byte cap")
-    payload = json.loads(raw.decode("utf-8"))
-
+def _summarize_payload(payload: Any) -> Mapping[str, Any]:
     rows: dict[str, Mapping[str, Any]] = {}
     all_keys: set[str] = set()
     status_names: set[str] = set()
@@ -173,34 +179,90 @@ def run_probe(url: str, *, timeout_seconds: float) -> Mapping[str, Any]:
         currency_names.update(key for key in CURRENCY_FIELDS if key in obj)
         if len(rows) >= MAX_ROWS:
             break
+    return {
+        "closed_row_count": len(rows),
+        "status_field_names": sorted(status_names),
+        "currency_field_names": sorted(currency_names),
+        "top_level_type": type(payload).__name__,
+        "observed_key_names": sorted(all_keys)[:300],
+        "rows": list(rows.values()),
+    }
+
+
+def run_probe(page_url: str, *, wait_ms: int) -> Mapping[str, Any]:
+    if not _allowed_page_url(page_url):
+        raise ValueError(f"unsupported Cardova page URL: {page_url}")
+
+    captured: list[tuple[str, int, Any]] = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+
+        def on_response(response):
+            response_url = str(response.url or "")
+            if not _target_closed_api_url(response_url):
+                return
+            try:
+                method = str(response.request.method or "").upper()
+            except Exception:
+                method = ""
+            if method != "GET":
+                return
+            try:
+                payload = response.json()
+            except Exception:
+                return
+            captured.append((response_url[:700], int(response.status), payload))
+
+        page.on("response", on_response)
+        page_response = page.goto(page_url, wait_until="domcontentloaded", timeout=25000)
+        page.wait_for_timeout(wait_ms)
+        try:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(min(wait_ms, 1500))
+        except Exception:
+            pass
+        page_http_status = int(page_response.status) if page_response is not None else 0
+        final_url = str(page.url)[:700]
+        context.close()
+        browser.close()
 
     summary = safe_summary()
     summary.update(
         {
-            "url": url,
-            "http_status": status,
-            "closed_row_count": len(rows),
-            "status_field_names": sorted(status_names),
-            "currency_field_names": sorted(currency_names),
-            "top_level_type": type(payload).__name__,
-            "observed_key_names": sorted(all_keys)[:300],
-            "rows": list(rows.values()),
+            "page_url": page_url,
+            "final_url": final_url,
+            "page_http_status": page_http_status,
+            "target_api_responses_captured": len(captured),
+        }
+    )
+    if not captured:
+        summary["error"] = "TARGET_CLOSED_API_RESPONSE_NOT_OBSERVED"
+        return summary
+
+    response_url, status, payload = captured[-1]
+    summary.update(
+        {
+            "captured_api_url": response_url,
+            "captured_api_http_status": status,
+            **_summarize_payload(payload),
         }
     )
     return summary
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Read-only Cardova closed-auction API schema probe")
-    parser.add_argument("--url", default=DEFAULT_URL)
-    parser.add_argument("--timeout-seconds", type=float, default=15.0)
+    parser = argparse.ArgumentParser(description="Read-only Cardova closed-auction browser response probe")
+    parser.add_argument("--page-url", default=DEFAULT_PAGE_URL)
+    parser.add_argument("--wait-ms", type=int, default=5000)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    if not 1.0 <= args.timeout_seconds <= 30.0:
-        parser.error("--timeout-seconds must be between 1 and 30")
+    if not 500 <= args.wait_ms <= 8000:
+        parser.error("--wait-ms must be between 500 and 8000")
     try:
-        payload = run_probe(args.url, timeout_seconds=args.timeout_seconds)
-        code = 0
+        payload = run_probe(args.page_url, wait_ms=args.wait_ms)
+        code = 0 if "error" not in payload else 1
     except Exception as exc:
         payload = safe_summary()
         payload["error"] = f"{type(exc).__name__}: {exc}"
