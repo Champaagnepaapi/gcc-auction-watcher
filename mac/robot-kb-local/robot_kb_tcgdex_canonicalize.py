@@ -7,7 +7,7 @@ canonical cards while ingesting observations.  It is deliberately narrow:
 - one explicit GCC listing per invocation;
 - GCC identity comes from retained Robot KB raw payloads, not free-form input;
 - all retained GCC identities for that listing must agree;
-- TCGdex resolution reuses the already-proven V4 exact resolver;
+- TCGdex resolution reuses the already-proven V4 exact resolver stack;
 - phase 1 accepts only EN/JA single Pokemon cards with one unambiguous
   normal/holo/reverse finish in TCGdex;
 - premium/sensitive microvariant markers and unsupported structured variant
@@ -297,15 +297,46 @@ def _lot_for_v4_resolver(identity: GccIdentity) -> Any:
     )
 
 
+def _install_v4_tcgdex_identity_stack() -> None:
+    """Install only the deterministic TCGdex identity layers used by V4 prod."""
+
+    from v4_tcgdex_exact_coordinate_recovery import (
+        install_v4_tcgdex_exact_coordinate_recovery,
+    )
+    from v4_tcgdex_generalized_coordinate_recovery import (
+        install_v4_tcgdex_generalized_coordinate_recovery,
+    )
+    from v4_tcgdex_japanese_set_aliases import install_v4_tcgdex_japanese_set_aliases
+    from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
+    from v4_tcgdex_source_pinned_finish import install_v4_tcgdex_source_pinned_finish
+    from v4_tcgdex_two_of_three_backport import install_v4_tcgdex_two_of_three_backport
+    from v4_tcgdex_unique_coordinate_fallback import (
+        install_v4_tcgdex_unique_coordinate_fallback,
+    )
+
+    # Match the production identity order from run_watcher_multimarket.py.
+    install_v4_tcgdex_exact_coordinate_recovery()
+    install_v4_tcgdex_run1054_set_aliases()
+    install_v4_tcgdex_japanese_set_aliases()
+    install_v4_tcgdex_generalized_coordinate_recovery()
+    install_v4_tcgdex_two_of_three_backport()
+    install_v4_tcgdex_unique_coordinate_fallback()
+    install_v4_tcgdex_source_pinned_finish()
+
+
 def resolve_tcgdex_exact(identity: GccIdentity) -> Any:
-    # Reuse the proven V4 resolver instead of implementing a second matcher.
+    # Reuse the full proven V4 identity resolver stack, not its bare base layer.
+    _install_v4_tcgdex_identity_stack()
     import v4_canonical_multimarket as canonical_multimarket
 
     result = canonical_multimarket.resolve_tcgdex_card(_lot_for_v4_resolver(identity))
     if getattr(result, "status", "") != "EXACT":
-        raise CanonicalizationError(
-            f"TCGdex exact resolution failed: {getattr(result, 'status', '') or 'UNKNOWN'}"
-        )
+        status = getattr(result, "status", "") or "UNKNOWN"
+        reason = _text(getattr(result, "reason", ""))
+        detail = f"TCGdex exact resolution failed: {status}"
+        if reason:
+            detail += f" ({reason})"
+        raise CanonicalizationError(detail)
     return result
 
 
@@ -345,11 +376,13 @@ def canonical_plan(identity: GccIdentity, resolved: Any) -> CanonicalPlan:
     for label, value in (
         ("variant", identity.structured_variant),
         ("stamp", identity.structured_stamp),
-        ("edition", identity.structured_edition),
         ("shadow treatment", identity.structured_shadow_treatment),
     ):
         if value:
             raise CanonicalizationError(f"structured GCC {label} is not supported by phase-1 bootstrap")
+    structured_edition = _norm(identity.structured_edition)
+    if structured_edition and structured_edition != "unlimited":
+        raise CanonicalizationError("structured GCC edition is not supported by phase-1 bootstrap")
 
     variants = getattr(resolved, "variants", None)
     if not isinstance(variants, Mapping):
@@ -383,10 +416,17 @@ def canonical_plan(identity: GccIdentity, resolved: Any) -> CanonicalPlan:
     first_edition = normalized_variants.get("firstedition")
     if first_edition is not None and not isinstance(first_edition, bool):
         raise CanonicalizationError("TCGdex firstEdition flag must be boolean when present")
-    if first_edition is True:
+    if structured_edition == "unlimited":
+        # This is not inferred from firstEdition=false. GCC must explicitly say
+        # Unlimited, and TCGdex must independently exclude First Edition.
+        if first_edition is not False:
+            raise CanonicalizationError(
+                "GCC Unlimited requires explicit TCGdex firstEdition=false"
+            )
+        edition_stamp = "NO_FIRST_EDITION_STAMP"
+    elif first_edition is True:
         edition_stamp = "FIRST_EDITION"
-    # False never becomes NO_FIRST_EDITION_STAMP: absence of First Edition is
-    # explicitly not a proof of Unlimited/no-stamp in this project.
+    # With no explicit GCC edition, false never becomes NO_FIRST_EDITION_STAMP.
 
     return CanonicalPlan(
         tcgdex_card_id=card_id,
