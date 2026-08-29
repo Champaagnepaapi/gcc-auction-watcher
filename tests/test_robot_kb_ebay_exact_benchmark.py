@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,16 +38,45 @@ def target(**overrides):
     return benchmark.BenchmarkTarget(**values)
 
 
-def candidate(title: str, *, best_offer: bool = False):
-    return SimpleNamespace(
-        item_id="123456789012",
-        title=title,
-        date_sold="2026-08-18",
-        sale_price_minor=25000,
-        currency="USD",
-        buying_format="Best Offer" if best_offer else "Buy It Now",
-        accepted_offer_ambiguous=best_offer,
-    )
+def candidate(title: str, *, best_offer: bool = False, **overrides):
+    values = {
+        "item_id": "123456789012",
+        "title": title,
+        "date_sold": "2026-08-18",
+        "sale_price_minor": 25000,
+        "currency": "USD",
+        "buying_format": "Best Offer" if best_offer else "Buy It Now",
+        "accepted_offer_ambiguous": best_offer,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def corroboration(**overrides):
+    values = {
+        "item_id": "123456789012",
+        "source": "PSA Sales History",
+        "source_url": "https://www.psacard.com/example",
+        "verified_at": "2026-08-29T07:00:00Z",
+        "gcc_url": "https://gradedcardcenter.com/item/example",
+        "title": "Pikachu",
+        "card_set": "Terastal Festival ex",
+        "collector_number": "195/187",
+        "language": "JA",
+        "grader": "PSA",
+        "grade": "10",
+        "year": 2024,
+        "date_sold": "2026-08-18",
+        "sale_price_minor": 25000,
+        "currency": "USD",
+        "exact_identity_proven": True,
+        "microvariant_compatible_proven": True,
+        "sale_status_proven": True,
+        "final_price_semantics_proven": True,
+        "best_offer": False,
+    }
+    values.update(overrides)
+    return benchmark.CorroborationRecord(**values)
 
 
 class EbayExactBenchmarkTests(unittest.TestCase):
@@ -152,6 +183,7 @@ class EbayExactBenchmarkTests(unittest.TestCase):
             "http_status": 429,
             "provider_error": "http-429",
             "classification_counts": {},
+            "corroborated_sold_count": 0,
         }
         with (
             patch.object(benchmark, "fetch_gcc_targets", return_value=targets),
@@ -181,6 +213,125 @@ class EbayExactBenchmarkTests(unittest.TestCase):
             "2024",
         ):
             self.assertIn(expected, query)
+
+    def test_corroborated_sold_requires_all_independent_proofs(self):
+        c = candidate(
+            "2024 Pokemon Japanese Terastal Festival ex Pikachu "
+            "195/187 PSA 10 Gem Mint"
+        )
+        record = corroboration()
+        result, reasons, used = benchmark.classify_with_corroboration(
+            target(), c, {record.item_id: record}
+        )
+        self.assertEqual(result, "CORROBORATED_SOLD")
+        self.assertIs(used, record)
+        self.assertTrue(any("exact identity" in reason for reason in reasons))
+
+    def test_best_offer_never_becomes_corroborated_sold(self):
+        c = candidate(
+            "2024 Pokemon Japanese Terastal Festival ex Pikachu "
+            "195/187 PSA 10",
+            best_offer=True,
+        )
+        record = corroboration()
+        result, _reasons, used = benchmark.classify_with_corroboration(
+            target(), c, {record.item_id: record}
+        )
+        self.assertEqual(result, "BEST_OFFER_AMBIGUOUS")
+        self.assertIsNone(used)
+
+    def test_price_mismatch_blocks_corroborated_sold(self):
+        c = candidate(
+            "2024 Pokemon Japanese Terastal Festival ex Pikachu "
+            "195/187 PSA 10"
+        )
+        record = corroboration(sale_price_minor=24000)
+        result, reasons, used = benchmark.classify_with_corroboration(
+            target(), c, {record.item_id: record}
+        )
+        self.assertEqual(result, "TITLE_COMPATIBLE_NON_OFFER")
+        self.assertIs(used, record)
+        self.assertTrue(any("sale price" in reason for reason in reasons))
+
+    def test_date_mismatch_blocks_corroborated_sold(self):
+        c = candidate(
+            "2024 Pokemon Japanese Terastal Festival ex Pikachu "
+            "195/187 PSA 10"
+        )
+        record = corroboration(date_sold="2026-08-17")
+        result, reasons, _used = benchmark.classify_with_corroboration(
+            target(), c, {record.item_id: record}
+        )
+        self.assertEqual(result, "TITLE_COMPATIBLE_NON_OFFER")
+        self.assertTrue(any("sale date" in reason for reason in reasons))
+
+    def test_same_provider_family_cannot_corroborate_itself(self):
+        c = candidate(
+            "2024 Pokemon Japanese Terastal Festival ex Pikachu "
+            "195/187 PSA 10"
+        )
+        record = corroboration(source="RapidAPI eBay Average Selling Price")
+        result, reasons, _used = benchmark.classify_with_corroboration(
+            target(), c, {record.item_id: record}
+        )
+        self.assertEqual(result, "TITLE_COMPATIBLE_NON_OFFER")
+        self.assertTrue(any("not independent" in reason for reason in reasons))
+
+    def test_microvariant_proof_is_mandatory(self):
+        c = candidate(
+            "2024 Pokemon Japanese Terastal Festival ex Pikachu "
+            "195/187 PSA 10"
+        )
+        record = corroboration(microvariant_compatible_proven=False)
+        result, reasons, _used = benchmark.classify_with_corroboration(
+            target(), c, {record.item_id: record}
+        )
+        self.assertEqual(result, "TITLE_COMPATIBLE_NON_OFFER")
+        self.assertTrue(any("microvariant" in reason for reason in reasons))
+
+    def test_exact_identity_fields_must_match_target(self):
+        c = candidate(
+            "2024 Pokemon Japanese Terastal Festival ex Pikachu "
+            "195/187 PSA 10"
+        )
+        record = corroboration(collector_number="196/187")
+        result, reasons, _used = benchmark.classify_with_corroboration(
+            target(), c, {record.item_id: record}
+        )
+        self.assertEqual(result, "TITLE_COMPATIBLE_NON_OFFER")
+        self.assertTrue(any("exact commercial identity" in reason for reason in reasons))
+
+    def test_grade_10_and_10_point_0_are_equivalent_in_review_record(self):
+        record = corroboration(grade="10.0")
+        self.assertTrue(benchmark._same_identity(target(), record))
+
+    def test_corroboration_file_duplicate_item_ids_fail_closed(self):
+        raw = {
+            "schema_version": 1,
+            "records": [
+                {
+                    **corroboration().__dict__,
+                },
+                {
+                    **corroboration().__dict__,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "corroboration.json"
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate corroboration item_id"):
+                benchmark.load_corroboration_file(path)
+
+    def test_invalid_schema_version_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "corroboration.json"
+            path.write_text(
+                json.dumps({"schema_version": 999, "records": []}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "schema_version"):
+                benchmark.load_corroboration_file(path)
 
 
 if __name__ == "__main__":
