@@ -64,6 +64,7 @@ _FINISH_MAP = {
     "reverse": "REVERSE_HOLO",
 }
 _KNOWN_VARIANT_KEYS = frozenset({"normal", "holo", "reverse", "firstedition"})
+_V4_TCGDEX_STACK_INSTALLED = False
 
 
 class CanonicalizationError(RuntimeError):
@@ -300,6 +301,10 @@ def _lot_for_v4_resolver(identity: GccIdentity) -> Any:
 def _install_v4_tcgdex_identity_stack() -> None:
     """Install only the deterministic TCGdex identity layers used by V4 prod."""
 
+    global _V4_TCGDEX_STACK_INSTALLED
+    if _V4_TCGDEX_STACK_INSTALLED:
+        return
+
     from v4_tcgdex_exact_coordinate_recovery import (
         install_v4_tcgdex_exact_coordinate_recovery,
     )
@@ -322,6 +327,7 @@ def _install_v4_tcgdex_identity_stack() -> None:
     install_v4_tcgdex_two_of_three_backport()
     install_v4_tcgdex_unique_coordinate_fallback()
     install_v4_tcgdex_source_pinned_finish()
+    _V4_TCGDEX_STACK_INSTALLED = True
 
 
 def resolve_tcgdex_exact(identity: GccIdentity) -> Any:
