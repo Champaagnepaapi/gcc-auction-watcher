@@ -155,10 +155,16 @@ class ResolverStackTests(unittest.TestCase):
         canonical.resolve_tcgdex_card = lambda lot: exact
         fake_modules["v4_canonical_multimarket"] = canonical
 
-        with mock.patch.dict(sys.modules, fake_modules):
-            observed = canonicalize.resolve_tcgdex_exact(identity())
+        canonicalize._V4_TCGDEX_STACK_INSTALLED = False
+        try:
+            with mock.patch.dict(sys.modules, fake_modules):
+                first = canonicalize.resolve_tcgdex_exact(identity())
+                second = canonicalize.resolve_tcgdex_exact(identity())
+        finally:
+            canonicalize._V4_TCGDEX_STACK_INSTALLED = False
 
-        self.assertIs(observed, exact)
+        self.assertIs(first, exact)
+        self.assertIs(second, exact)
         self.assertEqual(calls, [definition[2] for definition in definitions])
 
 
