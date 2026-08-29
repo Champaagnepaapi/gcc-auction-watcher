@@ -11,10 +11,17 @@ SPEC.loader.exec_module(MOD)
 
 
 class CardovaClosedApiProbeTests(unittest.TestCase):
-    def test_only_public_bg_cardova_https_is_allowed(self):
-        self.assertTrue(MOD._allowed_url(MOD.DEFAULT_URL))
-        self.assertFalse(MOD._allowed_url("http://bg.cardova.co.jp/api/v1/auction/list"))
-        self.assertFalse(MOD._allowed_url("https://evil.example/api/v1/auction/list"))
+    def test_only_public_cardova_page_is_allowed(self):
+        self.assertTrue(MOD._allowed_page_url(MOD.DEFAULT_PAGE_URL))
+        self.assertFalse(MOD._allowed_page_url("http://www.cardova.co.jp/en/auction/close"))
+        self.assertFalse(MOD._allowed_page_url("https://evil.example/en/auction/close"))
+
+    def test_only_closed_list_api_response_is_targeted(self):
+        good = "https://bg.cardova.co.jp/api/v1/auction/list?page=1&status=close&lang_code=en"
+        self.assertTrue(MOD._target_closed_api_url(good))
+        self.assertFalse(MOD._target_closed_api_url(good.replace("status=close", "status=live")))
+        self.assertFalse(MOD._target_closed_api_url("https://bg.cardova.co.jp/api/v1/auction/select-list?status=close"))
+        self.assertFalse(MOD._target_closed_api_url("https://evil.example/api/v1/auction/list?status=close"))
 
     def test_closed_row_requires_ulid_price_end_and_identity(self):
         row = {
@@ -50,8 +57,27 @@ class CardovaClosedApiProbeTests(unittest.TestCase):
         self.assertNotIn("seller_email", projected)
         self.assertNotIn("buyer_id", projected)
 
-    def test_summary_never_promotes_closed_row_to_sale(self):
+    def test_payload_summary_reports_fields_without_promoting_sale(self):
+        payload = {"data": [{
+            "ulid": "01ABC",
+            "bid_price": 100,
+            "end_date": "2026-08-01",
+            "player": "Pikachu",
+            "payment_status": "paid",
+            "currency_code": "JPY",
+        }]}
+        summary = MOD._summarize_payload(payload)
+        self.assertEqual(summary["closed_row_count"], 1)
+        self.assertEqual(summary["status_field_names"], ["payment_status"])
+        self.assertEqual(summary["currency_field_names"], ["currency_code"])
+
+    def test_summary_is_browser_observation_only_and_never_promotes_sale(self):
         summary = MOD.safe_summary()
+        self.assertTrue(summary["fresh_browser_context"])
+        self.assertFalse(summary["cookies_supplied"])
+        self.assertFalse(summary["storage_state_supplied"])
+        self.assertFalse(summary["request_headers_captured"])
+        self.assertFalse(summary["direct_api_replay_used"])
         self.assertFalse(summary["closed_rows_promoted_to_sale"])
         self.assertFalse(summary["payment_semantics_proven"])
         self.assertFalse(summary["currency_semantics_proven"])
