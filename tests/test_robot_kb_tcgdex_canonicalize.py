@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +100,68 @@ def identity(**overrides):
     return canonicalize.GccIdentity(**values)
 
 
+class ResolverStackTests(unittest.TestCase):
+    def test_resolver_installs_production_identity_stack_in_order(self):
+        calls = []
+        definitions = (
+            (
+                "v4_tcgdex_exact_coordinate_recovery",
+                "install_v4_tcgdex_exact_coordinate_recovery",
+                "exact_coordinate",
+            ),
+            (
+                "v4_tcgdex_run1054_set_aliases",
+                "install_v4_tcgdex_run1054_set_aliases",
+                "run1054_aliases",
+            ),
+            (
+                "v4_tcgdex_japanese_set_aliases",
+                "install_v4_tcgdex_japanese_set_aliases",
+                "japanese_aliases",
+            ),
+            (
+                "v4_tcgdex_generalized_coordinate_recovery",
+                "install_v4_tcgdex_generalized_coordinate_recovery",
+                "generalized_coordinate",
+            ),
+            (
+                "v4_tcgdex_two_of_three_backport",
+                "install_v4_tcgdex_two_of_three_backport",
+                "two_of_three",
+            ),
+            (
+                "v4_tcgdex_unique_coordinate_fallback",
+                "install_v4_tcgdex_unique_coordinate_fallback",
+                "unique_coordinate",
+            ),
+            (
+                "v4_tcgdex_source_pinned_finish",
+                "install_v4_tcgdex_source_pinned_finish",
+                "source_pinned_finish",
+            ),
+        )
+        fake_modules = {}
+        for module_name, function_name, label in definitions:
+            module = types.ModuleType(module_name)
+
+            def installer(label=label):
+                calls.append(label)
+
+            setattr(module, function_name, installer)
+            fake_modules[module_name] = module
+
+        exact = resolved()
+        canonical = types.ModuleType("v4_canonical_multimarket")
+        canonical.resolve_tcgdex_card = lambda lot: exact
+        fake_modules["v4_canonical_multimarket"] = canonical
+
+        with mock.patch.dict(sys.modules, fake_modules):
+            observed = canonicalize.resolve_tcgdex_exact(identity())
+
+        self.assertIs(observed, exact)
+        self.assertEqual(calls, [definition[2] for definition in definitions])
+
+
 class CanonicalPlanTests(unittest.TestCase):
     def test_exact_single_holo_builds_phase1_plan(self):
         plan = canonicalize.canonical_plan(identity(), resolved())
@@ -154,6 +218,42 @@ class CanonicalPlanTests(unittest.TestCase):
         ordinary = canonicalize.canonical_plan(identity(), resolved())
         self.assertEqual(ordinary.edition_stamp, "")
         self.assertNotIn("edition_stamp", ordinary.profile_assignments)
+
+    def test_explicit_gcc_unlimited_plus_tcgdex_false_proves_no_first_stamp(self):
+        plan = canonicalize.canonical_plan(
+            identity(structured_edition="Unlimited"),
+            resolved(),
+        )
+        self.assertEqual(plan.edition_stamp, "NO_FIRST_EDITION_STAMP")
+        self.assertEqual(
+            plan.profile_assignments,
+            {"finish": "HOLO", "edition_stamp": "NO_FIRST_EDITION_STAMP"},
+        )
+
+    def test_gcc_unlimited_requires_explicit_tcgdex_false(self):
+        variants = {
+            "normal": False,
+            "holo": True,
+            "reverse": False,
+        }
+        with self.assertRaisesRegex(
+            canonicalize.CanonicalizationError,
+            "Unlimited requires explicit TCGdex firstEdition=false",
+        ):
+            canonicalize.canonical_plan(
+                identity(structured_edition="Unlimited"),
+                resolved(variants=variants),
+            )
+
+    def test_unknown_structured_edition_remains_blocking(self):
+        with self.assertRaisesRegex(
+            canonicalize.CanonicalizationError,
+            "structured GCC edition is not supported",
+        ):
+            canonicalize.canonical_plan(
+                identity(structured_edition="Special Edition"),
+                resolved(),
+            )
 
 
 @unittest.skipUnless(HAS_P3, "pinned Robot KB P3 runtime is required")
