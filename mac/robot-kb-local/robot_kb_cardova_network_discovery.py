@@ -3,8 +3,9 @@
 
 Diagnostic only. It records public GET resource URLs loaded by Cardova's Past
 Auctions page and scans public JavaScript bundles for Cardova auction API route
-strings. It supplies no credentials/cookies/auth state, performs no POSTs and
-never classifies or stores a sale.
+strings plus bounded context around payment-status literals. It supplies no
+credentials/cookies/auth state, performs no POSTs and never classifies or stores
+a sale.
 """
 
 from __future__ import annotations
@@ -23,13 +24,48 @@ MAX_RESOURCES = 200
 MAX_SCRIPTS = 40
 MAX_SCRIPT_BYTES = 2_000_000
 MAX_ROUTE_HITS = 120
+MAX_PAYMENT_CONTEXT_HITS = 40
+PAYMENT_CONTEXT_RADIUS = 320
 ROUTE_RE = re.compile(r"(?:https://bg\.cardova\.co\.jp)?/api/v1/(?:auction|trade)/[A-Za-z0-9_?=&%./{}:$-]+")
+PAYMENT_TERMS = (
+    "bid_payment_status",
+    "seller_payment_status",
+    "Awaiting Payment",
+    "Payment Status",
+    "Closed Bids",
+    "Items Sold",
+)
 
 
 def _allowed(url: str) -> bool:
     p = urlparse(str(url or ""))
     host = (p.hostname or "").casefold()
     return p.scheme.casefold() == "https" and (host == "cardova.co.jp" or host.endswith(".cardova.co.jp"))
+
+
+def _payment_semantic_hits(text: str, source_url: str) -> list[dict]:
+    """Return bounded public-JS context around known payment semantic literals."""
+    hits: list[dict] = []
+    lowered = text.casefold()
+    for term in PAYMENT_TERMS:
+        needle = term.casefold()
+        start_at = 0
+        while len(hits) < MAX_PAYMENT_CONTEXT_HITS:
+            index = lowered.find(needle, start_at)
+            if index < 0:
+                break
+            left = max(0, index - PAYMENT_CONTEXT_RADIUS)
+            right = min(len(text), index + len(term) + PAYMENT_CONTEXT_RADIUS)
+            context = " ".join(text[left:right].split())[:900]
+            hits.append({
+                "term": term,
+                "source_url": source_url[:700],
+                "context": context,
+            })
+            start_at = index + len(term)
+        if len(hits) >= MAX_PAYMENT_CONTEXT_HITS:
+            break
+    return hits
 
 
 def safe_summary() -> dict:
@@ -39,7 +75,9 @@ def safe_summary() -> dict:
         "credentials_used": False,
         "cookies_supplied": False,
         "authentication_headers_supplied": False,
+        "request_headers_captured": False,
         "posts_issued": False,
+        "payment_semantics_proven": False,
         "robot_kb_write": False,
         "sale_transaction_stored": False,
         "v4_economic_use": False,
@@ -57,6 +95,7 @@ def run(url: str, *, wait_ms: int) -> dict:
 
     resources: list[dict] = []
     route_hits: set[str] = set()
+    payment_context_hits: list[dict] = []
     scripts_scanned = 0
 
     with sync_playwright() as pw:
@@ -103,6 +142,9 @@ def run(url: str, *, wait_ms: int) -> dict:
                 route_hits.add(hit[:700])
                 if len(route_hits) >= MAX_ROUTE_HITS:
                     break
+            if len(payment_context_hits) < MAX_PAYMENT_CONTEXT_HITS:
+                remaining = MAX_PAYMENT_CONTEXT_HITS - len(payment_context_hits)
+                payment_context_hits.extend(_payment_semantic_hits(text, response_url)[:remaining])
 
         page.on("response", on_response)
         response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
@@ -133,6 +175,8 @@ def run(url: str, *, wait_ms: int) -> dict:
         "resources_seen": len(resources),
         "scripts_scanned": scripts_scanned,
         "auction_trade_route_hits": sorted(route_hits),
+        "payment_context_hit_count": len(payment_context_hits),
+        "payment_context_hits": payment_context_hits,
         "resources": resources,
     })
     return out
