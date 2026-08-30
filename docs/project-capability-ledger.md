@@ -67,6 +67,8 @@ PR #126 = `SUPERSEDED` par #127→#135.
 
 Surface canonique : **GCC/Cardova/magi/Fanatics/COMC**.
 
+## #139 — réintégration
+
 #139 réintègre le stack historique #108→#115 ; #145/#146 ajoutent notification + activation ; #147/#148 basculent en marketplace-first ; #151 ajoute le registre issue #150 ; #156 fournit le batch 50 ; #169 protège cadence/timeout ; #179 ajoute le watchdog schedule.
 
 Gate : identité exacte + listing actionnable + externe gradé suffisamment fort + conflit matériel bloquant. ASK/current auction/disappearance != SOLD. Aucune transaction.
