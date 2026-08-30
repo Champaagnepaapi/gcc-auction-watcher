@@ -223,16 +223,6 @@ def run_memory_dry_run(
         canonical_links = kb.connection.execute(
             "SELECT COUNT(*) AS n FROM market_observation WHERE observation_type = 'SALE_TRANSACTION' AND canonical_card_id IS NOT NULL"
         ).fetchone()["n"]
-        unresolved_sales = kb.connection.execute(
-            """
-            SELECT COUNT(*) AS n
-            FROM market_observation AS observation
-            JOIN observation_identity_link AS link ON link.observation_id = observation.id
-            JOIN identity_resolution AS resolution ON resolution.id = link.identity_resolution_id
-            WHERE observation.observation_type = 'SALE_TRANSACTION'
-              AND resolution.resolution_state = 'UNKNOWN'
-            """
-        ).fetchone()["n"]
         hammer_rows = kb.connection.execute(
             """
             SELECT COUNT(*) AS n FROM price_component AS price
@@ -255,7 +245,7 @@ def run_memory_dry_run(
         "prepared_sale_transactions": len(prepared),
         "blocked": dict(sorted(blocked.items())),
         "sale_transactions_stored_in_memory": int(stored_sales),
-        "unresolved_identity_sales": int(unresolved_sales),
+        "unresolved_identity_sales": int(first.unresolved_identities_retained),
         "canonical_card_links": int(canonical_links),
         "hammer_price_jpy_rows": int(hammer_rows),
         "replay_executed": bool(replay),
