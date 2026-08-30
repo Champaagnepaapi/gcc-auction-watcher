@@ -48,7 +48,7 @@ def prove_title(
     name = _norm(row.get("card_name_provider_claim") or row.get("card_name"))
     grade = _norm(row.get("grade"))
     finish = _norm(row.get("finish"))
-    if not name or not grade or finish not in {"holo", "non_holo"}:
+    if not name or not grade or finish not in {"holo", "normal"}:
         return None, "ROW_IDENTITY_FIELDS_MISSING"
     prefix = f"1996 {name} PSA {grade}" + (" Holo" if finish == "holo" else "")
     if body != prefix and not body.startswith(prefix + " "):
