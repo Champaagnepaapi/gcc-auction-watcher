@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **26 août 2026** sur GitHub live. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **30 août 2026** sur GitHub live + validation physique Robot KB locale. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Ce fichier sert d'index anti-réimplémentation et de registre de supersession. Toujours re-vérifier `main`, les PRs et les workflows live avant une action.
 
@@ -8,8 +8,10 @@ Ce fichier sert d'index anti-réimplémentation et de registre de supersession. 
 
 ```text
 V4 production branch             : main
-main runtime #180                : 9365f5cd9f8949580c4e48f00ba8c4e419c22145
-main docs closeout               : 6fcda6b5dda576f2648c1f6a05a98f7d8638d385
+main runtime                     : 1a4b18e98937769bb6924a79aca7dcd36729d25a (#191)
+V4 auction priority/cap          : #188 MERGED / 52deb7f50e194b04552800bfe328df5be9e1d3a2
+PSA/eBay runtime breakers        : #189 MERGED / a4db237cfea1bc916cc6ebbd2b137f754f93afc5
+eBay completed shadow            : #191 MERGED / main actuel
 Magi native identity             : #173 + #174 + #177 / PROD_V4
 Magi recovery budget             : #178 MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
 Global schedule watchdog         : #179 MERGED / ac5f7c734685422612a0f24690af22910eefa951
@@ -19,9 +21,10 @@ Global cadence                   : 20 min (`1,21,41`)
 Global schedule run registry     : issue #150 + #151 / PROUVÉ LIVE
 Global activation                : #145 + #146
 Cardova public read-only         : #168
+Cardova paid SOLD local          : #199 OPEN/DRAFT / live Mac PROUVÉ / NON MERGED
 Global timeout recovery          : #169
 Robot KB local cutover           : #166 / PostgreSQL Mac ACTIF
-Robot KB multisource             : #180 MERGED / code prêt / Mac install PENDING
+Robot KB multisource             : #180 MERGED / LaunchAgents installés
 Neon writers                     : automatiques OFF / rollback manuel
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
 V5 head                          : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
@@ -39,9 +42,11 @@ Statuts utilisés : `PROD_V4`, `MAIN_SUPPORT`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB
 - fixed : `/on-sale-items`, discovery complète avant caps économiques ;
 - auctions : `/on-sale-items`, `AUCTION`, `ENDING_SOON`, `ON_SALE`, `endTime` individuel ;
 - horizon principal ≤60 min + safety-net legacy ;
+- priorité des analyses #188 : `≤5 min` puis `≤12 min` puis reste `≤60 min` ;
+- cap d'analyse #188 : 360 au lieu de 120 ;
 - Main Scanner cadencé extérieurement, pas de cron GitHub parallèle.
 
-Capacités structurantes : #9, #50, #52, #104. Ne pas reconstruire un second collector GCC parallèle.
+Capacités structurantes : #9, #50, #52, #104, #188. Ne pas reconstruire un second collector GCC parallèle.
 
 ## Fast Lane — `PROD_V4`
 
@@ -66,6 +71,10 @@ listing exact
 Chemins historiques conservés : `GCC_ONLY`, `GCC_EXTERNAL_CONFIRMED`, `EXTERNAL_RESCUE`, `EXTERNAL_PENDING`, `MARKET_CONFLICT_BLOCKED`.
 
 RAW Cardmarket/TCGplayer reste secondaire/manual-review ; jamais fair value automatique d'un slab.
+
+#189 ajoute des breakers bornés : PSA APR ouvre le circuit sur 403/429 explicite ; eBay ouvre le circuit après deux hard timeouts sans résultat utile. Les erreurs transitoires ne deviennent jamais des clean no-match.
+
+#191 ajoute un provider eBay completed-item **shadow uniquement** : ses résultats sont des observations provider/completed candidates, pas des item-level SOLD prouvés, pas de comparable exact automatique.
 
 ## TCGdex / PokeTrace #119→#135 — `PROD_V4`
 
@@ -181,7 +190,7 @@ V4_USE                           false
 
 ## #180 — multisource local — `ROBOT_KB / MERGED`
 
-PR #180 est **MERGED** sur `main@9365f5cd9f8949580c4e48f00ba8c4e419c22145`. Le code et l'installateur sont disponibles sur `main`, mais la nouvelle lane n'est **pas encore prouvée installée/chargée sur le Mac**.
+PR #180 est **MERGED** sur l'historique `main@9365f5cd9f8949580c4e48f00ba8c4e419c22145`; `main` a avancé depuis. Les LaunchAgents multisource ont été installés sur le Mac.
 
 Elle ajoute, sans toucher au gate économique V4 :
 
@@ -189,7 +198,7 @@ Elle ajoute, sans toucher au gate économique V4 :
 - PokeTrace : US/EU, Pokémon EN/JP, `product_type=single`, prix courants + historique `period=all`, priorité PSA10/PSA9/PSA8-8.5 ;
 - PokemonPriceTracker : sets EN/JP, historique 180 jours, eBay gradé agrégé + métriques CardMarket/TCGplayer ;
 - clés PokeTrace/PPT uniquement dans le Trousseau macOS ;
-- lane `markets` toutes les 2 h à `:05` et lane `paid` à 01:08/07:08/13:08/19:08 après installation ;
+- lane `markets` toutes les 2 h à `:05` et lane `paid` à 01:08/07:08/13:08/19:08 ;
 - locks séparés des collectors GCC et réserves de quota pour ne pas affamer V4.
 
 Sémantique obligatoire : `SOLD_AGGREGATED` n'est jamais item-level SOLD ; `cardmarket_unsold` reste `FIXED_ASK_AGGREGATED` ; une annonce courante reste ASK. Le stockage conserve provenance/payload/date sans fabriquer une vente.
@@ -204,7 +213,53 @@ live discovery comparison              PASS
 whitespace check                       PASS
 ```
 
-Prochaine preuve nécessaire : exécuter l'installateur #180 sur le Mac, vérifier les LaunchAgents, les premiers catch-ups et les nouvelles observations PostgreSQL sans fuite de secret.
+## #199 — Cardova paid/completed SOLD local — `ROBOT_KB / DRAFT`
+
+PR #199 reste **OPEN / DRAFT / NON MERGED**. Elle a établi une voie fail-closed pour conserver de vraies ventes finales Cardova sans fabriquer une identité exacte.
+
+Gate provider-level payé/terminé :
+
+```text
+bid_payment_status = 5
+finished = 1
+canceled_at = null
+re_listed = 0
+re_listing_count = 0
+currency JPY prouvée
+final winning bid positif
+```
+
+Live Mac : **20/24** lignes satisfaisaient ce gate. Le prix final est stocké comme `HAMMER_PRICE` en JPY, avec `sale_occurred_at = auction_end_at_utc`. Aucun timestamp de paiement ni all-in n'est fabriqué.
+
+Identité :
+
+- anciennes promos JP `XY-P/BW-P/L-P` non récupérées proprement par TCGdex ;
+- aucun alias carte-par-carte ;
+- fallback exact via le site officiel Pokémon Japon : **7/7** identités macro exactes sur les promos structurées testées ;
+- microvariante totalement exacte : **0/7** ;
+- les attributs provider `Holo`, `Holo Shiny`, `FA`, `SR` ne sont pas automatiquement promus ;
+- PSA HTML et API officielle restent bloqués par 403 ; l'API officielle répond que l'accès est limité aux clients approuvés.
+
+P3 :
+
+```text
+dry-run memory                 20/20 SALE_TRANSACTION
+replay                         20/20 idempotent
+local PostgreSQL commit        true
+stored                         20
+unresolved identities          20
+canonical links                0
+HAMMER_PRICE JPY               20
+source_system reused           true
+source_system mutated          false
+V4_USE                         false
+```
+
+Le premier essai durable a échoué sur des métadonnées `source_system cardova` déjà existantes et a rollback intégralement. Le correctif réutilise ces métadonnées sans mutation. Validation du head `42a2941a51d1674a2c49feab9b35ecf4ee380e67` : Robot KB run `33302300695` SUCCESS ; V4 complete tests PASS.
+
+Le stockage d'une `SALE_TRANSACTION` unresolved est volontaire : l'identité peut être résolue plus tard, mais la vente finale datée n'est pas perdue. Aucune de ces ventes unresolved n'est autorisée dans le gate économique V4.
+
+Prochaine capacité : transformer le one-shot en collecteur Cardova SOLD local récurrent, append-only/idempotent, sans changer les règles d'identité.
 
 ---
 
@@ -238,7 +293,7 @@ Les branches/PRs **historiques/superseded** restent provenance uniquement ; ne p
 - #108/#109/#110/#113/#114/#115/#138 : absorbées par #139 ;
 - #141 : diagnostic superseded par #142/#140 ;
 - #159 : superseded fonctionnellement par #177 mergée ; reste ouverte comme provenance, ne pas merger telle quelle ;
-- #174/#177/#178/#179/#180 : **MERGED**, ne plus traiter comme PR pending ;
+- #174/#177/#178/#179/#180/#188/#189/#191 : **MERGED**, ne plus traiter comme PR pending ;
 - ancien moteur seed-rotation Global : benchmark/historique après #147/#148 ;
 - one-shots/temp : provenance uniquement, suppression seulement avec autorisation destructive explicite.
 
@@ -248,9 +303,11 @@ Les branches/PRs **historiques/superseded** restent provenance uniquement ; ne p
 
 - V4/main canonique ;
 - PR #8 jamais mergée sans autorisation explicite ;
+- #199 reste draft/non mergée jusqu'à décision explicite ;
 - PokeTrace marché/prix après identité ;
 - ASK/live auction/disparition != SOLD ;
 - RAW != valeur slab ;
+- une vente finale prouvée peut être conservée unresolved, mais ne devient jamais un comparable exact tant que l'identité commerciale n'est pas prouvée ;
 - aucune identité/langue/grader/grade/microvariante incompatible mélangée ;
 - aucun achat, bid, checkout ou paiement automatique ;
 - aucun secret dans repo/logs ;
