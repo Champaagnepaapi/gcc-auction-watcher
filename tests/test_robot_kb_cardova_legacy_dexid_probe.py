@@ -148,6 +148,11 @@ class CardovaLegacyDexIdProbeTests(unittest.TestCase):
         self.assertEqual(result["source_pinned_unique_dexid_candidate_count"], 0)
         self.assertEqual(result["blocked"], {"TCGDEX_DEX_SEARCH_HTTP_503": 1})
 
+    def test_default_source_budget_covers_bounded_neo_probe(self):
+        fetcher = probe.PinnedSourceFetcher()
+        self.assertEqual(fetcher.max_requests, 32)
+        self.assertLessEqual(fetcher.max_requests, 32)
+
     def test_summary_never_promotes_candidate_or_writes(self):
         summary = probe.safe_summary()
         self.assertTrue(summary["database_read_only_transaction"])
