@@ -8,8 +8,14 @@ This diagnostic composes two already-separated evidence surfaces:
 
 The exact immutable TCGdex source file already selected by the macro proof is
 then re-fetched from the pinned catalogue commit and used only to prove the
-normal/holo/reverse finish axis.  Provider attributes never choose the TCGdex
+normal/holo/reverse finish axis. Provider attributes never choose the TCGdex
 coordinate and never prove a premium material variant by themselves.
+
+The preferred local mode reads the canonical loopback Robot KB PostgreSQL in a
+READ ONLY transaction, recomputes the bounded macro proof from the same stored
+raw records, and reuses provider_attribute* only when those surfaces were
+actually preserved in the immutable raw payload. Older rows without those fields
+remain usable when the pinned TCGdex coordinate itself has one unique finish.
 
 Even a proven finish is only a partial commercial identity. Edition, special
 finish, stamp and other material axes remain unproven here, so this probe never
@@ -24,15 +30,28 @@ from collections import Counter
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 import requests
+
+
+ROOT = Path(__file__).resolve().parents[2]
+LOCAL_DIR = Path(__file__).resolve().parent
+for candidate in (ROOT, LOCAL_DIR):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+
+import robot_kb_cardova_bounded_macro_identity_probe as bounded_macro  # noqa: E402
+import robot_kb_cardova_identity_recovery_batch as recovery  # noqa: E402
 
 
 SOURCE_COMMIT = "af33c9ac882e2acfadffaf19e8083aa976d12983"
 SOURCE_RAW_BASE = f"https://raw.githubusercontent.com/tcgdex/cards-database/{SOURCE_COMMIT}"
 DEFAULT_MAX_RECORDS = 50
 HARD_MAX_RECORDS = 100
+DEFAULT_MAX_GROUPS = 20
+DEFAULT_MIN_DISTINCT_DEXIDS = 2
 DEFAULT_TIMEOUT_SECONDS = 4.0
 _ALLOWED_FINISHES = ("normal", "holo", "reverse")
 _SAFE_SOURCE_PATH = re.compile(
@@ -126,7 +145,7 @@ def source_finish_choices(text: str, *, set_id: str) -> tuple[str, ...]:
 def provider_finish_state(row: Mapping[str, Any]) -> tuple[str, str, tuple[str, ...]]:
     """Recognize only an exact, standalone Cardova Holo claim.
 
-    Other non-empty material tokens are deliberately opaque.  This mirrors the
+    Other non-empty material tokens are deliberately opaque. This mirrors the
     earlier JP-promo probe's conservative semantics and avoids interpreting
     abbreviations such as FA/SR or compounds such as Holo Shiny.
     """
@@ -164,6 +183,17 @@ def _default_source_fetcher(path: str, *, timeout_seconds: float) -> str:
     if response.status_code != 200:
         return ""
     return response.text
+
+
+def _cached_network_fetcher(timeout_seconds: float) -> Callable[[str], str]:
+    cache: dict[str, str] = {}
+
+    def fetch(path: str) -> str:
+        if path not in cache:
+            cache[path] = _default_source_fetcher(path, timeout_seconds=timeout_seconds)
+        return cache[path]
+
+    return fetch
 
 
 def reconcile_record(
@@ -300,9 +330,86 @@ def run_records(
     }
 
 
+def _stored_variant_rows(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Project only immutable stored surfaces needed for strict row joining."""
+
+    projected: list[Mapping[str, Any]] = []
+    for row in records:
+        projected.append(
+            {
+                "source_native_record_id": _norm(row.get("source_native_record_id")),
+                "card_name": _norm(row.get("card_name")),
+                "collector_number": _norm(row.get("collector_number")),
+                "grader": _norm(row.get("grader")),
+                "grade": _norm(row.get("grade")),
+                "provider_attribute": _norm(
+                    row.get("provider_attribute") or row.get("attribute")
+                ),
+                "provider_attribute2": _norm(
+                    row.get("provider_attribute2") or row.get("attribute2")
+                ),
+                "provider_attribute3": _norm(
+                    row.get("provider_attribute3") or row.get("attribute3")
+                ),
+            }
+        )
+    return projected
+
+
+def run_database(
+    database_url: str,
+    *,
+    max_records: int,
+    max_groups: int,
+    min_distinct_dexids: int,
+    source_fetcher: Callable[[str], str],
+) -> Mapping[str, Any]:
+    """Recompute bounded macro proof and finish proof from one read-only DB snapshot."""
+
+    target = recovery.validate_local_database_url(database_url)
+    selected = recovery._read_unresolved_from_kb(database_url, max_records=max_records)
+    stored_records = selected.get("records", [])
+    if not isinstance(stored_records, list):
+        raise RuntimeError("Robot KB unresolved records payload is malformed")
+    clean_records = [row for row in stored_records if isinstance(row, Mapping)]
+
+    registry_payload = bounded_macro.registry.run_records(
+        clean_records,
+        max_groups=max_groups,
+        min_distinct_dexids=min_distinct_dexids,
+    )
+    macro_payload = bounded_macro.compose_registry_result(registry_payload)
+    macro_records = macro_payload.get("records", [])
+    if not isinstance(macro_records, list):
+        raise RuntimeError("bounded macro records payload is malformed")
+
+    finish = run_records(
+        [row for row in macro_records if isinstance(row, Mapping)],
+        _stored_variant_rows(clean_records),
+        max_records=max_records,
+        source_fetcher=source_fetcher,
+    )
+    out: dict[str, Any] = {}
+    out.update(target)
+    out.update(
+        {
+            "unresolved_sale_transactions_available": selected.get(
+                "unresolved_sale_transactions_available", 0
+            ),
+            "selected_records": selected.get("selected_records", len(clean_records)),
+            "db_read_blocked": selected.get("db_read_blocked", {}),
+            "macro_identity_exact_count": macro_payload.get("macro_identity_exact_count", 0),
+            "macro_blocked": macro_payload.get("blocked", {}),
+        }
+    )
+    out.update(finish)
+    return out
+
+
 def safe_summary() -> dict[str, Any]:
     return {
         "mode": "READ_ONLY_CARDOVA_LEGACY_MACRO_FINISH_PROOF",
+        "database_read_only_transaction": True,
         "source_commit": SOURCE_COMMIT,
         "provider_attribute_is_identity_proof_alone": False,
         "source_coordinate_selected_by_provider_attribute": False,
@@ -331,34 +438,60 @@ def _records(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Prove Cardova legacy finish axes read-only")
-    parser.add_argument("--macro-input", type=Path, required=True)
-    parser.add_argument("--variant-input", type=Path, required=True)
+    parser.add_argument("--database-url")
+    parser.add_argument("--macro-input", type=Path)
+    parser.add_argument("--variant-input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS)
+    parser.add_argument("--max-groups", type=int, default=DEFAULT_MAX_GROUPS)
+    parser.add_argument("--min-distinct-dexids", type=int, default=DEFAULT_MIN_DISTINCT_DEXIDS)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     if not 1 <= args.max_records <= HARD_MAX_RECORDS:
         parser.error(f"--max-records must be between 1 and {HARD_MAX_RECORDS}")
+    if not 1 <= args.max_groups <= 50:
+        parser.error("--max-groups must be between 1 and 50")
+    if not 2 <= args.min_distinct_dexids <= 20:
+        parser.error("--min-distinct-dexids must be between 2 and 20")
     if not 0.5 <= args.timeout_seconds <= 10.0:
         parser.error("--timeout-seconds must be between 0.5 and 10")
 
+    database_mode = bool(_norm(args.database_url))
+    file_mode = args.macro_input is not None or args.variant_input is not None
+    if database_mode and file_mode:
+        parser.error("use --database-url OR --macro-input + --variant-input, not both")
+    if not database_mode and not (
+        args.macro_input is not None and args.variant_input is not None
+    ):
+        parser.error("provide --database-url or both --macro-input and --variant-input")
+
     try:
-        macro_payload = json.loads(args.macro_input.read_text())
-        variant_payload = json.loads(args.variant_input.read_text())
-        if not isinstance(macro_payload, Mapping) or not isinstance(variant_payload, Mapping):
-            raise ValueError("input JSON root must be an object")
-        fetcher = lambda path: _default_source_fetcher(  # noqa: E731
-            path, timeout_seconds=args.timeout_seconds
-        )
+        fetcher = _cached_network_fetcher(args.timeout_seconds)
         payload = dict(safe_summary())
-        payload.update(
-            run_records(
-                _records(macro_payload),
-                _records(variant_payload),
-                max_records=args.max_records,
-                source_fetcher=fetcher,
+        if database_mode:
+            payload.update(
+                run_database(
+                    _norm(args.database_url),
+                    max_records=args.max_records,
+                    max_groups=args.max_groups,
+                    min_distinct_dexids=args.min_distinct_dexids,
+                    source_fetcher=fetcher,
+                )
             )
-        )
+        else:
+            assert args.macro_input is not None and args.variant_input is not None
+            macro_payload = json.loads(args.macro_input.read_text())
+            variant_payload = json.loads(args.variant_input.read_text())
+            if not isinstance(macro_payload, Mapping) or not isinstance(variant_payload, Mapping):
+                raise ValueError("input JSON root must be an object")
+            payload.update(
+                run_records(
+                    _records(macro_payload),
+                    _records(variant_payload),
+                    max_records=args.max_records,
+                    source_fetcher=fetcher,
+                )
+            )
         payload["error"] = None
         code = 0
     except Exception as error:
