@@ -19,6 +19,7 @@ on:
       - "tests/test_robot_kb_cardova_short_set_probe.py"
       - "tests/test_robot_kb_cardova_psa_identity_probe.py"
       - "tests/test_robot_kb_cardova_psa_api_identity_probe.py"
+      - "tests/test_robot_kb_cardova_number_namespace_probe.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -88,6 +89,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_short_set_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_identity_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_api_identity_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_number_namespace_probe.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -112,6 +114,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_short_set_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_identity_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_api_identity_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_number_namespace_probe.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
