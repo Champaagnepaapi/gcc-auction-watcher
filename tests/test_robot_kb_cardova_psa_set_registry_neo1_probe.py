@@ -10,6 +10,7 @@ for candidate in (ROOT, LOCAL):
         sys.path.insert(0, str(candidate))
 
 import robot_kb_cardova_legacy_set_cohort_probe as cohort_probe
+import robot_kb_cardova_psa_checklist_numeric_semantics_probe as numeric_probe
 import robot_kb_cardova_psa_set_registry_corroboration_probe as registry_probe
 
 
@@ -89,6 +90,19 @@ def en_searcher():
     })
 
 
+def checklist_html(*entries):
+    body = "".join(
+        f"<tr><td><a>{name}</a></td><td>{number}</td><td>1.00</td></tr>"
+        for name, number in entries
+    )
+    return (
+        "<html><body>"
+        "<h1>1999 Pokemon Japanese Neo Genesis Set Checklist</h1>"
+        f"<table>{body}</table>"
+        "</body></html>"
+    )
+
+
 class CardovaPsaNeo1SemanticsTests(unittest.TestCase):
     def test_neo1_keeps_psa_issue_year_separate_from_release_year(self):
         result = registry_probe.run_records(
@@ -141,6 +155,67 @@ class CardovaPsaNeo1SemanticsTests(unittest.TestCase):
         )
         self.assertFalse(summary["canonical_link_written"])
         self.assertFalse(summary["robot_kb_write"])
+
+    def test_live_checklist_gate_proves_number_semantics_row_by_row_only(self):
+        result = numeric_probe.run_records(
+            rows(),
+            max_groups=10,
+            min_distinct_dexids=2,
+            dex_searcher=ja_searcher(),
+            english_dex_searcher=en_searcher(),
+            source_fetcher=Fetcher("2000-02-04"),
+            psa_fetcher=lambda _url: checklist_html(
+                ("PICHU-HOLO", "172"),
+                ("LUGIA-HOLO", "249"),
+            ),
+            pacing_seconds=0,
+        )
+        self.assertEqual(result["set_corroboration_records"], 2)
+        self.assertEqual(result["provider_numeric_semantics_proven_records"], 2)
+        self.assertEqual(result["macro_identity_exact_candidate_count"], 2)
+        self.assertEqual(result["macro_identity_exact_count"], 0)
+        self.assertEqual(result["microvariant_exact_count"], 0)
+        self.assertEqual(result["exact_identity_link_candidate_count"], 0)
+        self.assertEqual(result["blocked"], {})
+        self.assertTrue(result["groups"][0]["numeric_semantics_proven_for_all_rows"])
+        for record in result["records"]:
+            self.assertTrue(record["provider_numeric_semantics_proven_for_row"])
+            self.assertTrue(record["provider_number_equals_tcgdex_dexid"])
+            self.assertTrue(record["psa_name_number_exact_match"])
+            self.assertTrue(record["macro_identity_exact_candidate"])
+            self.assertFalse(record["macro_identity_exact"])
+
+    def test_live_checklist_number_mismatch_fails_closed(self):
+        result = numeric_probe.run_records(
+            rows(),
+            max_groups=10,
+            min_distinct_dexids=2,
+            dex_searcher=ja_searcher(),
+            english_dex_searcher=en_searcher(),
+            source_fetcher=Fetcher("2000-02-04"),
+            psa_fetcher=lambda _url: checklist_html(
+                ("PICHU-HOLO", "172"),
+                ("LUGIA-HOLO", "250"),
+            ),
+            pacing_seconds=0,
+        )
+        self.assertEqual(result["provider_numeric_semantics_proven_records"], 1)
+        self.assertEqual(
+            result["blocked"],
+            {"PSA_CHECKLIST_NAME_NUMBER_NOT_FOUND": 1},
+        )
+        self.assertFalse(result["groups"][0]["numeric_semantics_proven_for_all_rows"])
+
+    def test_numeric_semantics_summary_never_claims_global_semantics_or_write(self):
+        summary = numeric_probe.safe_summary()
+        self.assertTrue(summary["provider_numeric_semantics_row_scoped_only"])
+        self.assertFalse(summary["provider_numeric_semantics_global_claim"])
+        self.assertFalse(summary["card_alias_table_used"])
+        self.assertFalse(summary["macro_identity_exact"])
+        self.assertFalse(summary["microvariant_exact"])
+        self.assertFalse(summary["canonical_link_written"])
+        self.assertFalse(summary["robot_kb_write"])
+        self.assertFalse(summary["v4_economic_use"])
 
 
 if __name__ == "__main__":
