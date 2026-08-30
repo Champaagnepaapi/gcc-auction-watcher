@@ -10,6 +10,7 @@ for candidate in (ROOT, LOCAL):
         sys.path.insert(0, str(candidate))
 
 import robot_kb_cardova_legacy_set_cohort_probe as probe
+import robot_kb_cardova_psa_set_registry_corroboration_probe as registry_probe
 
 
 def paid_record(*, ulid, set_name, number, name="Pokemon"):
@@ -35,6 +36,10 @@ def paid_record(*, ulid, set_name, number, name="Pokemon"):
 
 def source(set_id, dex_id):
     return f'''import {{ Card }} from "../../../interfaces"\nimport Set from "../{set_id}"\nconst card: Card = {{\n  set: Set,\n  category: "Pokemon",\n  dexId: [{dex_id}],\n}}\nexport default card\n'''
+
+
+def set_source(set_id, official, release_date):
+    return f'''import {{ Set }} from "../../interfaces"\nconst set: Set = {{\n  id: "{set_id}",\n  cardCount: {{ official: {official} }},\n  releaseDate: "{release_date}",\n}}\nexport default set\n'''
 
 
 class Fetcher:
@@ -255,6 +260,161 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
         self.assertFalse(summary["card_alias_table_used"])
         for key in (
             "provider_numeric_semantics_proven",
+            "fuzzy_matching",
+            "macro_identity_exact",
+            "microvariant_exact",
+            "canonical_link_written",
+            "robot_kb_write",
+            "v4_economic_use",
+            "notification_sent",
+            "automatic_purchase",
+            "automatic_bid",
+            "automatic_offer",
+            "automatic_checkout",
+            "automatic_payment",
+        ):
+            self.assertIs(summary[key], False, key)
+
+
+class CardovaPsaSetRegistryCorroborationTests(unittest.TestCase):
+    def _basic_rows(self):
+        rows = [
+            paid_record(
+                ulid="A",
+                set_name="Pokemon TCG: Japanese Basic",
+                number="#013",
+                name="Weedle",
+            ),
+            paid_record(
+                ulid="B",
+                set_name="Pokemon TCG: Japanese Basic",
+                number="#025",
+                name="Pikachu",
+            ),
+        ]
+        rows[0]["provider_title"] = "1996 Pokemon Japanese Weedle Common Basic #013 PSA 10"
+        rows[1]["provider_title"] = "1996 Pokemon Japanese Pikachu Common Basic #025 PSA 10"
+        return rows
+
+    def _basic_searcher(self):
+        return Searcher({
+            13: [{"id": "PMCG1-001"}],
+            25: [{"id": "PMCG1-002"}],
+        })
+
+    def _basic_fetcher(self, *, official=102):
+        return Fetcher({
+            "data-asia/PMCG/PMCG1/001.ts": source("PMCG1", 13),
+            "data-asia/PMCG/PMCG1/002.ts": source("PMCG1", 25),
+            "data-asia/PMCG/PMCG1.ts": set_source(
+                "PMCG1", official, "1996-10-20"
+            ),
+        })
+
+    def test_basic_psa_registry_and_pinned_set_corroborate_candidate_only(self):
+        rows = self._basic_rows()
+        result = registry_probe.run_records(
+            rows,
+            max_groups=10,
+            min_distinct_dexids=2,
+            dex_searcher=self._basic_searcher(),
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=self._basic_fetcher(),
+        )
+        self.assertEqual(result["cohort_groups_source_pinned_unique"], 1)
+        self.assertEqual(result["cohort_candidate_records"], 2)
+        self.assertEqual(result["psa_registry_corroborated_groups"], 1)
+        self.assertEqual(result["psa_registry_corroborated_records"], 2)
+        group = result["corroborated_groups"][0]
+        self.assertEqual(group["provider_set_label"], "Pokemon TCG: Japanese Basic")
+        self.assertEqual(group["tcgdex_set_id_candidate"], "PMCG1")
+        self.assertEqual(group["pinned_set_official_count"], 102)
+        self.assertEqual(group["pinned_set_release_date"], "1996-10-20")
+        self.assertFalse(group["macro_identity_exact"])
+        self.assertFalse(group["microvariant_exact"])
+        self.assertFalse(group["exact_identity_link_candidate"])
+        self.assertEqual(result["macro_identity_exact_count"], 0)
+        self.assertEqual(result["exact_identity_link_candidate_count"], 0)
+
+    def test_registry_count_conflict_fails_closed(self):
+        rows = self._basic_rows()
+        result = registry_probe.run_records(
+            rows,
+            max_groups=10,
+            min_distinct_dexids=2,
+            dex_searcher=self._basic_searcher(),
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=self._basic_fetcher(official=101),
+        )
+        self.assertEqual(result["psa_registry_corroborated_groups"], 0)
+        self.assertEqual(
+            result["corroboration_blocked"],
+            {"PSA_REGISTRY_PINNED_COUNT_CONFLICT": 1},
+        )
+
+    def test_provider_title_set_token_conflict_fails_closed(self):
+        rows = self._basic_rows()
+        rows[1]["provider_title"] = "1996 Pokemon Japanese Pikachu Common Jungle #025 PSA 10"
+        result = registry_probe.run_records(
+            rows,
+            max_groups=10,
+            min_distinct_dexids=2,
+            dex_searcher=self._basic_searcher(),
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=self._basic_fetcher(),
+        )
+        self.assertEqual(result["psa_registry_corroborated_groups"], 0)
+        self.assertEqual(
+            result["corroboration_blocked"],
+            {"PROVIDER_TITLE_PSA_SET_TOKEN_MISMATCH": 1},
+        )
+
+    def test_unreviewed_set_registry_label_remains_blocked(self):
+        rows = [
+            paid_record(
+                ulid="A",
+                set_name="Pokemon TCG: Japanese Fossil",
+                number="#093",
+                name="Haunter",
+            ),
+            paid_record(
+                ulid="B",
+                set_name="Pokemon TCG: Japanese Fossil",
+                number="#094",
+                name="Gengar",
+            ),
+        ]
+        searcher = Searcher({
+            93: [{"id": "PMCG3-001"}],
+            94: [{"id": "PMCG3-002"}],
+        })
+        fetcher = Fetcher({
+            "data-asia/PMCG/PMCG3/001.ts": source("PMCG3", 93),
+            "data-asia/PMCG/PMCG3/002.ts": source("PMCG3", 94),
+        })
+        result = registry_probe.run_records(
+            rows,
+            max_groups=10,
+            min_distinct_dexids=2,
+            dex_searcher=searcher,
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=fetcher,
+        )
+        self.assertEqual(result["psa_registry_corroborated_groups"], 0)
+        self.assertEqual(
+            result["corroboration_blocked"],
+            {"PSA_SET_REGISTRY_EVIDENCE_UNAVAILABLE": 1},
+        )
+
+    def test_registry_summary_forbids_promotions_writes_and_transactions(self):
+        summary = registry_probe.safe_summary()
+        self.assertTrue(summary["database_read_only_transaction"])
+        self.assertTrue(summary["reviewed_psa_set_registry_evidence_used"])
+        self.assertFalse(summary["psa_registry_live_fetch_used"])
+        self.assertTrue(summary["set_level_evidence_only"])
+        self.assertFalse(summary["card_alias_table_used"])
+        self.assertFalse(summary["translation_assumed"])
+        for key in (
             "fuzzy_matching",
             "macro_identity_exact",
             "microvariant_exact",
