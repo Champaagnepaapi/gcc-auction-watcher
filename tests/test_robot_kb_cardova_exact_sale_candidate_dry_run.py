@@ -1,6 +1,15 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
 import unittest
 
-from mac.robot_kb_local import robot_kb_cardova_exact_sale_candidate_dry_run as dry
+
+MODULE_PATH = Path("mac/robot-kb-local/robot_kb_cardova_exact_sale_candidate_dry_run.py")
+MODULE_SPEC = importlib.util.spec_from_file_location("cardova_exact_sale_candidate_dry_run", MODULE_PATH)
+dry = importlib.util.module_from_spec(MODULE_SPEC)
+assert MODULE_SPEC.loader is not None
+MODULE_SPEC.loader.exec_module(dry)
 
 
 def identity_row(**overrides):
