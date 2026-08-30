@@ -8,17 +8,22 @@
 
 ```text
 Repo                              Champaagnepaapi/gcc-auction-watcher
-V4 production                     main @ 1a4b18e98937769bb6924a79aca7dcd36729d25a
-V4 auction priority/cap           #188 MERGED / 52deb7f50e194b04552800bfe328df5be9e1d3a2
-PSA/eBay breakers                 #189 MERGED / a4db237cfea1bc916cc6ebbd2b137f754f93afc5
-eBay completed shadow             #191 MERGED / main actuel
+V4 production                     main @ b98756c449718845fc1944560fcf61c02586079f
+Dernier merge V4                  PR #203 / weekly stability budget
+V4 auction priority/cap           #188 MERGED
+PSA/eBay breakers                 #189 MERGED
+eBay completed shadow             #191 MERGED
+Auction safety-net ledger         #201 MERGED
 Robot KB                          PostgreSQL local Mac ACTIF
 Robot KB runtime P3               1d06fe33b6fc640657255e15a8d17251aa02b6ce
 Cardova paid SOLD                 #199 OPEN / DRAFT / NON MERGED
-Cardova recurring activation      head 31378bd04e44c60fa1259605b67d2aabc4a89129
-Cardova recurring runtime pin     a2f1878186a8850d5a4c4763518a10ecfd16f2fc
-Cardova proven SOLD stored        162 au total
-Cardova rotation cursor           page 13
+Cardova research head validé      59d006fc7259198f13d957b412bc48e4911c067f
+Cardova SALE_TRANSACTION          244 unresolved disponibles
+Cardova macro exact read-only     38
+Cardova finish exact              38
+Cardova printing exact            5 No Rarity Symbol
+Cardova microvariant exact        0
+Cardova canonical links           0
 V4_USE Robot KB                   false
 Neon                              automatic writers OFF / rollback manuel
 V5                                PR #8 OPEN / DRAFT / NON MERGED
@@ -69,6 +74,10 @@ cap analyse                        360/run
 #189 protège le budget provider : PSA APR circuit-breaker sur 403/429 ; eBay breaker après deux hard timeouts sans résultat utile. Les erreurs transitoires ne deviennent jamais des clean no-match.
 
 #191 ajoute eBay completed-item en shadow uniquement : completed candidate ≠ item-level SOLD prouvé.
+
+#201 corrige le ledger safety-net des enchères afin qu'un même item ne reçoive pas des statuts terminaux contradictoires/dupliqués.
+
+#203 porte le budget de stabilisation hebdomadaire borné de 3 à 5 passes, sans relâcher le fail-closed.
 
 ---
 
@@ -151,43 +160,106 @@ final winning bid > 0
 
 Stockage : `SALE_TRANSACTION`, `sale_occurred_at = auction_end_at_utc`, prix `HAMMER_PRICE` JPY. Aucun timestamp de paiement, buyer premium ou all-in n'est fabriqué.
 
-## Identité
+## Identité macro déterministe — live validée
 
-TCGdex ne résout pas proprement certaines anciennes promos JP `XY-P/BW-P/L-P`. Aucun alias manuel n'a été ajouté.
+Le snapshot local read-only du 30 août contient **244 `SALE_TRANSACTION` Cardova unresolved disponibles**. Le compose déterministe prouve **38 macro-identités** sans prétendre que la numérotation Cardova a une sémantique globale.
 
-Fallback officiel Pokémon Japon : 7/7 macro-identités exactes sur le sous-ensemble promo structuré testé, 0/7 microvariantes totalement exactes, 1/7 holo corroboré. Les claims Cardova `Holo`, `Holo Shiny`, `FA`, `SR` restent provider-level tant qu'ils ne sont pas corroborés.
-
-PSA HTML et API officielle restent bloqués par 403 ; aucun bypass anti-bot/WAF.
-
-## Preuves live locales
+Chaîne de preuve obligatoire par ligne :
 
 ```text
-one-shot initial                   20 SOLD stockés
-recurring pages 1-4               +15 SOLD
-recurring pages 5-8               +55 SOLD
-recurring pages 9-12              +72 SOLD
-TOTAL Cardova SOLD                162
+set Cardova exact corroboré
++ nom anglais Cardova == nom anglais TCGdex exact
++ valeur numérique cohérente pour cette ligne
++ une seule carte TCGdex pour ce dexId dans le set corroboré
++ source TCGdex Asian immuable @ af33c9ac882e2acfadffaf19e8083aa976d12983
+```
+
+Couverture live :
+
+```text
+Japanese Basic / PMCG1             17 lignes
+neo Gold, Silver... / neo1         10 lignes
+Japanese Jungle / PMCG2             6 lignes
+Japanese Rocket / PMCG4             5 lignes
+TOTAL macro exact                  38
+provider numeric semantics global  false
+```
+
+Cette preuve est **row-scoped**. Aucun alias global de numérotation Cardova n'est créé.
+
+## Finish — 38/38 exact sur ce sous-ensemble
+
+Le probe de finish compose les macro-identités avec la source TCGdex pinnée :
+
+- finish source unique `normal` ou `holo` => exact ;
+- claim Cardova `Holo` compatible + source => corroboré ;
+- token opaque/non corroboré => ne devient pas finish par lui-même.
+
+Live : **38/38 finish exact** sur les 38 macros. Cela ne ferme pas les axes edition/special-finish/variant.
+
+## No Rarity Symbol — fallback revu et strictement borné
+
+PSA direct HTML/API/cert reste bloqué par **HTTP 403** depuis le Mac. Aucun bypass, proxy, cookie import ou anti-bot workaround n'est utilisé.
+
+Pour cinq lignes Basic seulement, Cardova expose le token exact `no rarity original print`. Un manifest de preuves PSA publiques déjà revues est borné à ces cinq coordonnées exactes :
+
+```text
+Sandshrew  #027
+Nidorino   #033
+Arcanine   #059
+Machop     #066
+Gastly     #092
+```
+
+Live read-only :
+
+```text
+no-rarity candidates               5
+reviewed coordinates proven        5
+printing exact                     5 = no_rarity_symbol
+finish exact                       normal pour les 5
+PSA live direct                    5 x HTTP 403
+Cardova cert effectivement lu      false
+edition exact                      false
+No Rarity => First Edition         false
+microvariant exact                 0
+canonical link candidates          0
+blocked                            {}
+error                              null
+```
+
+La preuve revue ne remplace jamais le cert Cardova et ne généralise jamais à une 6e coordonnée non revue.
+
+## Stockage / activation locale
+
+Le collecteur récurrent reste indépendant de cette recherche d'identité : front pages + rotation historique, state après commit seulement, lock séparé, PostgreSQL loopback, credential Trousseau, aucun secret en plist.
+
+```text
+LaunchAgent                        com.robotpokemon.kb.cardova-sold
+cadence                            02:23 / 08:23 / 14:23 / 20:23
+runtime collector pin              a2f1878186a8850d5a4c4763518a10ecfd16f2fc
+research/CI head validé            59d006fc7259198f13d957b412bc48e4911c067f
+SALE_TRANSACTION unresolved        244 disponibles au dernier snapshot
 canonical links                    0
-identités unresolved              162
 V4_USE                             false
 ```
 
-Le collecteur récurrent utilise une stratégie **front pages + rotation historique**, sans supposer l'ordre de tri Cardova. Cursor après le dernier live : page 13.
+Le cursor de rotation n'a pas été ré-audité dans la phase identity du 30 août ; le dernier handoff collector documentait page 13. Ne pas déduire un cursor courant du nouveau total 244.
 
-Activation locale :
+## Validation head 59d006f
 
 ```text
-code/CI head                       31378bd04e44c60fa1259605b67d2aabc4a89129
-runtime pin                        a2f1878186a8850d5a4c4763518a10ecfd16f2fc
-LaunchAgent                        com.robotpokemon.kb.cardova-sold
-cadence                            02:23 / 08:23 / 14:23 / 20:23
-readiness retry                    5000 -> 6500 -> 8000 ms
-DB                                 loopback robot_pokemon_kb uniquement
+Robot KB local PostgreSQL          run 33333404769 SUCCESS
+V4 Auction Discovery               run 33333404817 SUCCESS
+V4 Global Market Offline           run 33333404767 en cours lors du handoff
+reviewed No Rarity tests            7/7 PASS
+bounded macro tests                 5/5 PASS
+legacy macro/finish tests          18/18 PASS
+compile/YAML/diff-check            PASS dans Robot KB CI
+live Mac read-only                 SUCCESS
 ```
 
-Les deux runners post-install ont terminé avec succès : +55 puis +72 ventes, 0 lien canonique, cursor 5→9→13, `successful_cycles=3`, `error=null`. `launchctl` confirme `LAUNCHAGENT=LOADED`. Un déclenchement précisément à une heure planifiée n'a pas encore été observé séparément.
-
-Validation du head 31378bd : Robot KB CI SUCCESS ; tests V4 complets PASS ; compile/YAML/diff-check PASS. Les comparaisons live V4 restent indépendantes de cette lane Robot KB.
+Le live Mac prouve : `unresolved=244`, `selected=244`, `macro_exact=38`, `finish_exact=38`, `printing_exact=5`, `micro_exact=0`, `links=0`, `blocked={}`, `error=null`.
 
 ---
 
@@ -227,20 +299,24 @@ Documents : `docs/project-current-phase.md`, `docs/project-capability-ledger.md`
 # Prochaine direction canonique
 
 ```text
-Cardova / Robot KB
-  -> laisser le LaunchAgent récurrent accumuler l'historique
-  -> vérifier un premier déclenchement réellement planifié
-  -> continuer la rotation historique depuis page 13 jusqu'à boundary puis recommencer
-  -> résoudre ultérieurement les identités/microvariantes de façon déterministe
-  -> V4_USE=false tant que l'identité exacte n'est pas suffisante
+Cardova / identité
+  -> garder les 38 macros + 38 finishes comme preuves read-only bornées
+  -> fermer seulement les axes commerciaux réellement applicables : edition, special_finish, variant
+  -> conserver les 5 No Rarity avec printing exact mais edition inconnue
+  -> ne créer aucun canonical link tant qu'une microvariante complète n'est pas prouvée
+  -> ne plus retry PSA direct tant que le 403 persiste ; aucun bypass
+
+Cardova / collecte
+  -> laisser le LaunchAgent accumuler les SALES finales prouvées
+  -> poursuivre la rotation historique ; re-auditer le cursor séparément
 
 Robot KB
   -> privilégier diversité de cartes + ventes finales prouvées
-  -> préparer ensuite courbes 30j/90j/1an/multi-années, liquidité et tendance
+  -> préparer ensuite courbes 30j/90j/1an/multi-années, liquidité et tendance sur identités exactes
 
 V4
-  -> #188/#189/#191 restent production
-  -> traiter séparément toute anomalie GCC ENDING_SOON
+  -> reste séparée ; V4_USE=false
+  -> ne jamais utiliser les 38 macros comme comparables exacts tant que microvariant=0
 
 V5
   -> PR #8 reste isolée/draft/non mergée
