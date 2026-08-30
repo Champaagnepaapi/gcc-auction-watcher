@@ -101,6 +101,25 @@ class CardovaSaleTransactionIngestTests(unittest.TestCase):
         self.assertEqual(second["sale_transactions_stored"], 0)
         self.assertEqual(second["duplicate_sale_replays"], 1)
 
+    def test_existing_cardova_source_metadata_is_reused_without_mutation(self):
+        built, reason = DRY.build_p3_sale(
+            paid_record(), observed_at="2026-08-30T08:00:00+00:00"
+        )
+        self.assertEqual(reason, "P3_SALE_READY_UNRESOLVED_IDENTITY")
+        assert built is not None
+        with KnowledgeBase.open(":memory:") as kb:
+            kb.create_source_system("cardova", "CARDOVA Historical", "MARKET")
+            result = MOD.ingest_prepared_batch(kb, [built])
+            row = kb.connection.execute(
+                "SELECT name, system_role FROM source_system WHERE code='cardova'"
+            ).fetchone()
+        self.assertTrue(result["source_system_reused"])
+        self.assertFalse(result["source_system_mutated"])
+        self.assertEqual(row["name"], "CARDOVA Historical")
+        self.assertEqual(row["system_role"], "MARKET")
+        self.assertEqual(result["sale_transactions_stored"], 1)
+        self.assertEqual(result["selected_after"]["canonical_card_links"], 0)
+
     def test_batch_rolls_back_if_second_sale_fails_persistence(self):
         first, _ = DRY.build_p3_sale(
             paid_record(native="01TESTCARDOVAONE", bid=123456),
@@ -137,6 +156,7 @@ class CardovaSaleTransactionIngestTests(unittest.TestCase):
         self.assertFalse(summary["remote_cloud_write_allowed"])
         self.assertFalse(summary["canonical_identity_claimed"])
         self.assertFalse(summary["commercial_microvariant_claimed"])
+        self.assertFalse(summary["source_system_mutated"])
         for key in (
             "v4_economic_use",
             "notification_sent",
