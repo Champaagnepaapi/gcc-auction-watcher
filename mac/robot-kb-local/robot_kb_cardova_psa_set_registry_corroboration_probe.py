@@ -8,9 +8,11 @@ source proof for every selected card.
 
 A second, independent set-level gate is then applied for a small reviewed set of
 PSA Set Registry pages. The reviewed evidence records only public PSA facts
-observed on 2026-08-30 (set title and required-item count). Cardova's preserved
-provider title must carry the same PSA year/set token for every row, while the
-immutable TCGdex set file must independently match the PSA item count and year.
+observed on 2026-08-30 (set title and required-item count). Cardova's exact
+provider set label must match the reviewed label for every row. Legacy rows may
+lack a preserved provider title; when a title is present it must carry the same
+PSA year/set token. The immutable TCGdex set file must independently match the
+PSA item count and year.
 
 The result remains candidate-only. No macro identity, microvariant or canonical
 link is promoted here. The reviewed PSA evidence is deliberately set-level, not
@@ -101,11 +103,14 @@ def _provider_title_supports_registry(
     record: Mapping[str, Any], evidence: ReviewedPsaSetEvidence
 ) -> tuple[bool, str]:
     title = _norm(record.get("provider_title"))
+    if not title:
+        # Legacy Cardova SOLD payloads can legitimately lack this optional
+        # surface. Exact provider set-label equality remains mandatory below.
+        return True, "PROVIDER_TITLE_ABSENT_NO_CONFLICT"
+
     card_name = _norm(record.get("card_name"))
     number = _norm(record.get("collector_number"))
     grade = _norm(record.get("grade"))
-    if not title:
-        return False, "PROVIDER_TITLE_MISSING"
     if not (card_name and number and grade):
         return False, "PROVIDER_TITLE_IDENTITY_FIELDS_MISSING"
 
@@ -173,6 +178,8 @@ def corroborate_group(
         original = original_records.get(native_id)
         if original is None:
             return None, "ORIGINAL_RECORD_NOT_FOUND"
+        if _norm(original.get("set_name")) != evidence.provider_set_label:
+            return None, "PROVIDER_SET_LABEL_CONFLICT"
         ok, reason = _provider_title_supports_registry(original, evidence)
         if not ok:
             return None, reason
@@ -206,7 +213,8 @@ def corroborate_group(
         "reviewed_psa_set_registry_required_items": evidence.required_items,
         "reviewed_psa_set_registry_url": evidence.source_url,
         "reviewed_psa_set_registry_observed_at": evidence.observed_at,
-        "provider_titles_support_registry_set_for_all_rows": True,
+        "provider_set_label_exact_for_all_rows": True,
+        "provider_titles_if_present_support_registry_set": True,
         "pinned_set_source_path": path,
         "pinned_set_source_commit": source_finish._SOURCE_COMMIT,
         "pinned_set_official_count": metadata["official_count"],
@@ -285,6 +293,8 @@ def safe_summary() -> dict[str, Any]:
         "psa_registry_live_fetch_used": False,
         "psa_registry_evidence_observed_at": "2026-08-30",
         "set_level_evidence_only": True,
+        "provider_title_required": False,
+        "provider_title_conflict_blocks": True,
         "card_alias_table_used": False,
         "translation_assumed": False,
         "fuzzy_matching": False,
