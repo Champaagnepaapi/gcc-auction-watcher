@@ -2,22 +2,29 @@
 """Read-only cohort probe for legacy Japanese Cardova set labels.
 
 Legacy Cardova PSA rows often expose a numeric ``card_number`` that behaves like
-Pokédex ``dexId`` rather than TCGdex set-local id.  The existing legacy probe
+Pokédex ``dexId`` rather than TCGdex set-local id. The existing legacy probe
 proves that pattern only for structurally named ``neo 1..4`` labels and keeps it
 candidate-only.
 
 This probe addresses the remaining labels without adding a translation table or
-card-by-card aliases.  Rows are grouped by the exact Cardova verbose set label.
-For every group with at least two distinct numeric candidates, TCGdex is queried
-by dexId.  A set candidate exists only when exactly one TCGdex set contains
-exactly one card for every distinct dexId in that Cardova cohort.  Every selected
-card is then re-proven against the immutable TCGdex cards-database commit already
-pinned by V4.
+card-by-card aliases. Before any cohort inference, each numeric Cardova claim is
+gated against TCGdex English cards at that exact dexId: the provider English
+card name must occur as an exact whitespace-normalized/case-insensitive name.
+This rejects localId-style rows such as ``Pachirisu #017`` instead of pretending
+017 is Pachirisu's Pokédex number.
 
-This is deliberately retrieval/candidate evidence only.  It does not prove that
-Cardova's numeric field universally means dexId, does not translate provider
-names, does not claim macro/microvariant identity, does not write Robot KB and
-has no V4 economic/notification/transaction capability.
+Rows that pass that per-row semantic gate are grouped by the exact Cardova
+verbose set label. For every group with at least two distinct proven numeric
+candidates, TCGdex Japanese cards are queried by dexId. A set candidate exists
+only when exactly one TCGdex set contains exactly one card for every distinct
+dexId in that Cardova cohort. Every selected card is then re-proven against the
+immutable TCGdex cards-database commit already pinned by V4.
+
+This is deliberately retrieval/candidate evidence only. The exact-name gate is
+not treated as universal provider-number semantics and does not promote the set
+or card to exact identity. No provider name is translated. No canonical
+identity/link is written and there is no V4 economic/notification/transaction
+capability.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ for candidate in (ROOT, LOCAL_DIR):
 import robot_kb_cardova_identity_recovery_batch as recovery  # noqa: E402
 import robot_kb_cardova_legacy_dexid_probe as legacy  # noqa: E402
 import robot_kb_cardova_paid_sold_identity as paid_identity  # noqa: E402
+import v4_canonical_multimarket as canonical  # noqa: E402
 import v4_tcgdex_source_pinned_finish as source_finish  # noqa: E402
 
 
@@ -50,6 +58,7 @@ DEFAULT_MAX_GROUPS = 20
 HARD_MAX_GROUPS = 40
 DEFAULT_MIN_DISTINCT_DEXIDS = 2
 DEFAULT_MAX_DEX_REQUESTS = 96
+DEFAULT_MAX_ENGLISH_DEX_REQUESTS = 96
 DEFAULT_MAX_SOURCE_REQUESTS = 96
 _SAFE_COORDINATE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -77,6 +86,22 @@ def _split_card_id(card_id: object) -> tuple[str, str]:
     return set_id, local_id
 
 
+def _default_english_dex_search(dex_id: int) -> Sequence[Mapping[str, Any]]:
+    try:
+        status, payload, _headers = canonical._json_get(
+            f"{canonical.TCGDEX_BASE_URL}/en/cards",
+            params={"dexId": f"eq:{dex_id}"},
+            timeout=canonical.TCGDEX_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        raise CohortProviderError(
+            f"TCGDEX_EN_DEX_SEARCH_{type(error).__name__}"
+        ) from error
+    if status != 200:
+        raise CohortProviderError(f"TCGDEX_EN_DEX_SEARCH_HTTP_{status}")
+    return canonical._extract_list_payload(payload)
+
+
 class BoundedDexSearcher:
     def __init__(
         self,
@@ -99,9 +124,41 @@ class BoundedDexSearcher:
             rows = list(self.delegate(dex_id))
         except legacy.LegacyDexProviderError as error:
             raise CohortProviderError(str(error)) from error
+        except CohortProviderError:
+            raise
         except Exception as error:
             raise CohortProviderError(
                 f"TCGDEX_DEX_SEARCH_{type(error).__name__}"
+            ) from error
+        self.cache[dex_id] = rows
+        return rows
+
+
+class BoundedEnglishDexSearcher:
+    def __init__(
+        self,
+        *,
+        max_requests: int = DEFAULT_MAX_ENGLISH_DEX_REQUESTS,
+        delegate: Callable[[int], Sequence[Mapping[str, Any]]] = _default_english_dex_search,
+    ):
+        self.max_requests = max(0, int(max_requests))
+        self.delegate = delegate
+        self.requests = 0
+        self.cache: dict[int, list[Mapping[str, Any]]] = {}
+
+    def __call__(self, dex_id: int) -> Sequence[Mapping[str, Any]]:
+        if dex_id in self.cache:
+            return self.cache[dex_id]
+        if self.requests >= self.max_requests:
+            raise CohortProviderError("TCGDEX_EN_DEX_SEARCH_BUDGET_EXHAUSTED")
+        self.requests += 1
+        try:
+            rows = list(self.delegate(dex_id))
+        except CohortProviderError:
+            raise
+        except Exception as error:
+            raise CohortProviderError(
+                f"TCGDEX_EN_DEX_SEARCH_{type(error).__name__}"
             ) from error
         self.cache[dex_id] = rows
         return rows
@@ -142,12 +199,42 @@ def _eligible_numeric_row(record: Mapping[str, Any]) -> tuple[Optional[int], str
     return dex_id, reason
 
 
+def _provider_name_matches_dex(
+    record: Mapping[str, Any],
+    *,
+    dex_id: int,
+    english_dex_searcher: Callable[[int], Sequence[Mapping[str, Any]]],
+) -> tuple[bool, str]:
+    provider_name = _norm(record.get("card_name"))
+    if not provider_name:
+        return False, "PROVIDER_CARD_NAME_MISSING"
+    try:
+        briefs = list(english_dex_searcher(dex_id))
+    except CohortProviderError:
+        raise
+    except Exception as error:
+        raise CohortProviderError(
+            f"TCGDEX_EN_DEX_SEARCH_{type(error).__name__}"
+        ) from error
+
+    expected = provider_name.casefold()
+    exact_names = {
+        _norm(brief.get("name")).casefold()
+        for brief in briefs
+        if isinstance(brief, Mapping) and _norm(brief.get("name"))
+    }
+    if expected not in exact_names:
+        return False, "PROVIDER_NAME_DEXID_EXACT_MISMATCH"
+    return True, "PROVIDER_NAME_DEXID_EXACT_MATCH"
+
+
 def probe_group(
     label: str,
     records: Sequence[Mapping[str, Any]],
     *,
     min_distinct_dexids: int,
     dex_searcher: Callable[[int], Sequence[Mapping[str, Any]]],
+    english_dex_searcher: Callable[[int], Sequence[Mapping[str, Any]]],
     source_fetcher: Callable[[str], str],
 ) -> tuple[Optional[dict[str, Any]], str]:
     by_dex: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
@@ -157,6 +244,13 @@ def probe_group(
             if reason == "STRUCTURAL_NEO_ALREADY_HANDLED":
                 continue
             return None, reason
+        name_matches, name_reason = _provider_name_matches_dex(
+            record,
+            dex_id=dex_id,
+            english_dex_searcher=english_dex_searcher,
+        )
+        if not name_matches:
+            return None, name_reason
         by_dex[dex_id].append(record)
 
     if len(by_dex) < min_distinct_dexids:
@@ -224,8 +318,9 @@ def probe_group(
                     "grade": _norm(record.get("grade")),
                     "dex_id_candidate": dex_id,
                     **proof,
+                    "provider_name_dexid_exact_match": True,
                     "provider_numeric_semantics_proven": False,
-                    "candidate_status": "SOURCE_PINNED_COHORT_SET_DEXID_CANDIDATE_ONLY",
+                    "candidate_status": "SOURCE_PINNED_COHORT_SET_DEXID_NAME_GATED_CANDIDATE_ONLY",
                     "macro_identity_exact": False,
                     "microvariant_exact": False,
                     "exact_identity_link_candidate": False,
@@ -239,12 +334,13 @@ def probe_group(
         "tcgdex_set_id_candidate": set_id,
         "pinned_source_commit": source_finish._SOURCE_COMMIT,
         "pinned_source_files_proven": len(source_paths),
+        "provider_name_dexid_exact_match_for_all_rows": True,
         "provider_numeric_semantics_proven": False,
-        "candidate_status": "SOURCE_PINNED_COHORT_SET_DEXID_CANDIDATE_ONLY",
+        "candidate_status": "SOURCE_PINNED_COHORT_SET_DEXID_NAME_GATED_CANDIDATE_ONLY",
         "macro_identity_exact": False,
         "exact_identity_link_candidate": False,
         "records": row_candidates,
-    }, "SOURCE_PINNED_COHORT_SET_DEXID_CANDIDATE_ONLY"
+    }, "SOURCE_PINNED_COHORT_SET_DEXID_NAME_GATED_CANDIDATE_ONLY"
 
 
 def run_records(
@@ -253,9 +349,11 @@ def run_records(
     max_groups: int,
     min_distinct_dexids: int,
     dex_searcher: Optional[Callable[[int], Sequence[Mapping[str, Any]]]] = None,
+    english_dex_searcher: Optional[Callable[[int], Sequence[Mapping[str, Any]]]] = None,
     source_fetcher: Optional[Callable[[str], str]] = None,
 ) -> Mapping[str, Any]:
     searcher = dex_searcher or BoundedDexSearcher()
+    english_searcher = english_dex_searcher or BoundedEnglishDexSearcher()
     fetcher = source_fetcher or legacy.PinnedSourceFetcher(
         max_requests=DEFAULT_MAX_SOURCE_REQUESTS
     )
@@ -284,6 +382,7 @@ def run_records(
                 group_records,
                 min_distinct_dexids=min_distinct_dexids,
                 dex_searcher=searcher,
+                english_dex_searcher=english_searcher,
                 source_fetcher=fetcher,
             )
         except CohortProviderError as error:
@@ -309,6 +408,7 @@ def run_records(
         "blocked": dict(sorted(blocked.items())),
         "groups": results,
         "dex_search_requests": int(getattr(searcher, "requests", 0)),
+        "english_dex_name_gate_requests": int(getattr(english_searcher, "requests", 0)),
         "pinned_source_requests": int(getattr(fetcher, "requests", 0)),
     }
 
@@ -318,9 +418,10 @@ def safe_summary() -> dict[str, Any]:
         "mode": "READ_ONLY_CARDOVA_LEGACY_JP_SET_COHORT_CANDIDATE_PROBE",
         "database_read_only_transaction": True,
         "tcgdex_source_commit": source_finish._SOURCE_COMMIT,
-        "set_mapping_rule": "EXACT_PROVIDER_LABEL_COHORT_INTERSECTION_ONLY",
+        "set_mapping_rule": "EXACT_PROVIDER_LABEL_COHORT_INTERSECTION_AFTER_EXACT_EN_NAME_DEXID_GATE",
         "translation_table_used": False,
         "card_alias_table_used": False,
+        "provider_name_dexid_exact_gate": True,
         "provider_numeric_semantics_proven": False,
         "dexid_used_as_retrieval_candidate_only": True,
         "fuzzy_matching": False,
