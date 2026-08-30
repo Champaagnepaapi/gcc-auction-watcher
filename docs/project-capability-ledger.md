@@ -5,18 +5,25 @@ Snapshot re-vérifié le **30 août 2026**. Le code/Git/GitHub live reste priori
 ## Autorité courante
 
 ```text
-V4 production                    main @ 1a4b18e98937769bb6924a79aca7dcd36729d25a
+V4 production                    main @ b98756c449718845fc1944560fcf61c02586079f
 V4 auction priority/cap          #188 MERGED
 PSA/eBay breakers                #189 MERGED
 eBay completed shadow            #191 MERGED
+Auction safety-net ledger        #201 MERGED
+Weekly stability budget          #203 MERGED
 Global marketplace-first         #139/#145/#146/#147/#148
 Global scale/cadence             #156/#169/#179
 Robot KB local cutover           #166 / PostgreSQL Mac ACTIF
 Robot KB multisource             #180 MERGED / LaunchAgents installés
 Cardova paid SOLD                #199 OPEN/DRAFT / local ACTIF / NON MERGED
-Cardova activation head          31378bd04e44c60fa1259605b67d2aabc4a89129
-Cardova durable SOLD             162
-Cardova rotation cursor          page 13
+Cardova collector runtime pin    a2f1878186a8850d5a4c4763518a10ecfd16f2fc
+Cardova identity research head   59d006fc7259198f13d957b412bc48e4911c067f
+Cardova SALES unresolved         244 disponibles
+Cardova macro exact              38 read-only
+Cardova finish exact             38
+Cardova printing exact           5 No Rarity Symbol
+Cardova microvariant exact       0
+Cardova canonical links          0
 Neon automatic writers           OFF / rollback manuel
 V5                               PR #8 OPEN / DRAFT / NON MERGED
 ```
@@ -32,6 +39,8 @@ Statuts : `PROD_V4`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB`, `SHADOW`, `V5_ONLY`, `D
 - fixed `/on-sale-items` ; auctions `AUCTION/ENDING_SOON/ON_SALE` ;
 - horizon principal ≤60 min + safety-net legacy ;
 - #188 : priorité ≤5, puis ≤12, puis reste ≤60 ; cap 360 ;
+- #201 : safety-net ledger sans statuts terminaux contradictoires/dupliqués ;
+- #203 : budget de stabilisation hebdomadaire borné 5 passes, fail-closed inchangé ;
 - Main Scanner et Fast Lane gardent leurs cadences externes ; pas de cron GitHub parallèle.
 
 Capacités structurantes : #9, #50, #52, #104. Elles restent la fondation historique de discovery/couverture et ne doivent pas être réimplémentées parallèlement.
@@ -48,7 +57,7 @@ Capacités structurantes : #9, #50, #52, #104. Elles restent la fondation histor
 
 ## TCGdex / PokeTrace #119→#135
 
-Lignée #119→#135 : coordinate, padding, set/localId, unicité catalogue, bridges provider exacts, source-pin et **fallback générique catalogue immuable**. PokeTrace reste marché/prix après identité TCGdex exacte. #154 ajoute `variants_detailed` après identité exacte. Aucun fuzzy comme preuve exacte.
+Lignée #119→#135 : coordinate, padding, set/localId, unicité catalogue, bridges provider exacts, source-pin et fallback générique catalogue immuable. PokeTrace reste marché/prix après identité TCGdex exacte. #154 ajoute `variants_detailed` après identité exacte. Aucun fuzzy comme preuve exacte.
 
 PR #126 = `SUPERSEDED` par #127→#135.
 
@@ -57,8 +66,6 @@ PR #126 = `SUPERSEDED` par #127→#135.
 # Global Multi-Vault — `GLOBAL_NOTIFY_ACTIVE`
 
 Surface canonique : **GCC/Cardova/magi/Fanatics/COMC**.
-
-## #139 — réintégration
 
 #139 réintègre le stack historique #108→#115 ; #145/#146 ajoutent notification + activation ; #147/#148 basculent en marketplace-first ; #151 ajoute le registre issue #150 ; #156 fournit le batch 50 ; #169 protège cadence/timeout ; #179 ajoute le watchdog schedule.
 
@@ -106,25 +113,76 @@ P3 semantics :
 - `HAMMER_PRICE` JPY ;
 - payment completion timestamp/all-in non fabriqués ;
 - unresolved identity conservée ;
-- exact identity/V4 eligibility = false tant que non prouvée.
+- exact identity/V4 eligibility = false tant que la microvariante commerciale complète n'est pas prouvée.
 
-Identity research : TCGdex gap pratique sur promos JP `XY-P/BW-P/L-P`. Fallback exact Pokémon Japon : 7/7 macro exactes, 0/7 microvariantes exactes, 1/7 holo corroboré. PSA HTML/API = 403 ; aucun bypass.
+Live DB read-only au 30 août : **244 `SALE_TRANSACTION` Cardova unresolved disponibles**.
 
-Live storage :
+### Macro identity compose — `ROBOT_KB / READ_ONLY`
+
+`robot_kb_cardova_bounded_macro_identity_probe.py` compose les capacités existantes au lieu de créer un nouveau resolver :
+
+1. cohorte Cardova name↔dexId exact-gated ;
+2. set Cardova indépendamment corroboré ;
+3. une seule carte TCGdex pour le dexId dans ce set ;
+4. source TCGdex Asian immuable pinnée `af33c9ac882e2acfadffaf19e8083aa976d12983`.
+
+Live :
 
 ```text
-initial one-shot                   20
-recurring pages 1-4               15
-recurring pages 5-8               55
-recurring pages 9-12              72
-TOTAL                             162 SOLD
-canonical links                     0
-V4_USE                              false
+Basic / PMCG1                    17
+neo1                             10
+Jungle / PMCG2                    6
+Rocket / PMCG4                    5
+TOTAL macro exact                38
+provider numeric global claim    false
 ```
 
-Recurring architecture : front pages + rotation historique, idempotence P3, state only after commit, DB loopback only, readiness retry 5000→6500→8000 ms, lock séparé.
+La preuve est row-scoped. **Ne jamais réimplémenter cela comme une règle globale `Cardova number = dexId`.**
 
-Activation : head `31378bd04e44c60fa1259605b67d2aabc4a89129`, runtime pin `a2f1878186a8850d5a4c4763518a10ecfd16f2fc`, LaunchAgent `com.robotpokemon.kb.cardova-sold`, cadence 4×/jour. Deux runners post-install live : +55 puis +72 ventes, cursor page 5→9→13, `successful_cycles=3`, error null. `launchctl` confirme `LOADED`. Premier fire exactement à une heure planifiée à observer encore.
+### Finish compose — `ROBOT_KB / READ_ONLY`
+
+`robot_kb_cardova_legacy_macro_finish_probe.py` est la capacité canonique réutilisée pour ce sous-ensemble : source finish unique et/ou claim Holo corroboré. Live : **38/38 finish exact**.
+
+`FA`, `SR`, `Holo Shiny` et tokens opaques ne deviennent jamais finish ou microvariante exacts par eux-mêmes.
+
+### No Rarity reviewed fallback — `ROBOT_KB / BOUNDED_READ_ONLY`
+
+PSA direct HTML/API/cert = 403 ; aucun bypass.
+
+`robot_kb_cardova_no_rarity_reviewed_fallback.py` est strictement borné à cinq coordonnées Basic dont Cardova porte le token exact `no rarity original print` et dont une preuve publique PSA a été revue :
+
+```text
+Sandshrew #027
+Nidorino  #033
+Arcanine  #059
+Machop    #066
+Gastly    #092
+```
+
+Live : 5/5 `printing=no_rarity_symbol`, finish `normal`, mais `edition_exact=false`, `no_rarity_is_first_edition=false`, `microvariant_exact=0`, links=0. Le cert Cardova n'a pas été lu : `reviewed_no_rarity_cardova_cert_read=false`.
+
+**Ne jamais étendre automatiquement ce manifest à une autre coordonnée.** Une nouvelle coordonnée exige une nouvelle preuve revue.
+
+### Validation #199 identity phase
+
+Head fonctionnel/research : `59d006fc7259198f13d957b412bc48e4911c067f`.
+
+```text
+Robot KB CI                      33333404769 SUCCESS
+V4 Auction Discovery             33333404817 SUCCESS
+V4 Global Market Offline         33333404767 encore en cours au handoff
+bounded macro tests              5/5 PASS
+legacy macro/finish tests        18/18 PASS
+No Rarity fallback tests         7/7 PASS
+compile/YAML/diff-check          PASS dans Robot KB CI
+live Mac read-only               SUCCESS
+```
+
+Live Mac : `unresolved=244`, `selected=244`, `macro_exact=38`, `finish_exact=38`, `printing_exact=5`, `micro_exact=0`, `links=0`, `blocked={}`, `error=null`.
+
+Recurring collector architecture reste séparée : front pages + rotation historique, idempotence P3, state only after commit, DB loopback, readiness retry 5000→6500→8000 ms, lock séparé. Runtime collector pin `a2f1878186a8850d5a4c4763518a10ecfd16f2fc`.
+
+Le dernier cursor collector documenté était page 13 mais n'a pas été re-audité pendant la phase identity ; ne pas l'inférer à partir du total 244.
 
 #199 reste OPEN/DRAFT/NON MERGED. Ne pas merger sans décision explicite.
 
@@ -148,7 +206,7 @@ Les branches/PRs **historiques/superseded** restent de la provenance ; elles ne 
 - #126 superseded par #127→#135 ;
 - #141 diagnostic superseded par #142/#140 ;
 - #159 superseded fonctionnellement par #177 ;
-- #174/#177/#178/#179/#180/#188/#189/#191 déjà mergées ;
+- #174/#177/#178/#179/#180/#188/#189/#191/#201/#203 déjà mergées ;
 - #87 décision produit V4 séparée, ne pas mélanger à un autre changement ;
 - #199 actif/draft Robot KB, non mergé ;
 - #8 protégé V5, non mergé.
@@ -162,5 +220,7 @@ Issues particulières : #1 registre V4 vivant ; #150 registre Global vivant ; #2
 # Règles de reprise
 
 Avant implémentation non triviale : lire README + gouvernance + ce ledger + inventaires, rechercher une capacité antérieure, suivre les supersessions, isoler V4/V5/Robot KB, utiliser SHA précis, tests ciblés + suite pertinente, compile/YAML/diff-check, live read-only lorsque pertinent, puis documenter la phase.
+
+Prochaine capacité à travailler sur #199 : **fermeture déterministe des axes `edition`, `special_finish`, `variant` réellement applicables aux 38 macros**, en réutilisant `variant_surface_probe` et `variant_corroboration_probe`. Pas de canonical link tant que la fermeture microvariante n'est pas complète.
 
 Aucun achat, bid, offer, checkout ou paiement automatique.
