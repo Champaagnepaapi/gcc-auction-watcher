@@ -45,7 +45,7 @@ import v4_tcgdex_source_pinned_finish as source_finish  # noqa: E402
 
 DEFAULT_MAX_RECORDS = 200
 HARD_MAX_RECORDS = 500
-_MAX_SOURCE_REQUESTS = 16
+_MAX_SOURCE_REQUESTS = 32
 _SAFE_LOCAL = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 _NEO_LABEL = re.compile(
     r"^Pokemon\s+TCG:\s*Japanese\s+neo\s+([1-4])(?:\s|$)",
