@@ -17,7 +17,8 @@ Robot KB runtime P3               1d06fe33b6fc640657255e15a8d17251aa02b6ce
 Cardova paid SOLD                 #199 OPEN / DRAFT / NON MERGED
 Cardova recurring activation      head 31378bd04e44c60fa1259605b67d2aabc4a89129
 Cardova recurring runtime pin     a2f1878186a8850d5a4c4763518a10ecfd16f2fc
-Cardova proven SOLD stored        90 au total
+Cardova proven SOLD stored        162 au total
+Cardova rotation cursor           page 13
 V4_USE Robot KB                   false
 Neon                              automatic writers OFF / rollback manuel
 V5                                PR #8 OPEN / DRAFT / NON MERGED
@@ -164,13 +165,14 @@ PSA HTML et API officielle restent bloqués par 403 ; aucun bypass anti-bot/WAF.
 one-shot initial                   20 SOLD stockés
 recurring pages 1-4               +15 SOLD
 recurring pages 5-8               +55 SOLD
-TOTAL Cardova SOLD                 90
+recurring pages 9-12              +72 SOLD
+TOTAL Cardova SOLD                162
 canonical links                    0
-identités unresolved               90
+identités unresolved              162
 V4_USE                             false
 ```
 
-Le collecteur récurrent utilise une stratégie **front pages + rotation historique**, sans supposer l'ordre de tri Cardova. Cursor après le dernier live : page 9.
+Le collecteur récurrent utilise une stratégie **front pages + rotation historique**, sans supposer l'ordre de tri Cardova. Cursor après le dernier live : page 13.
 
 Activation locale :
 
@@ -183,7 +185,7 @@ readiness retry                    5000 -> 6500 -> 8000 ms
 DB                                 loopback robot_pokemon_kb uniquement
 ```
 
-Le premier runner post-install a terminé `committed=true`, 55 ventes nouvelles, 0 lien canonique, cursor 5→9, `successful_cycles=2`, `error=null`. Le LaunchAgent est installé/configuré ; un déclenchement à son heure planifiée n'a pas encore été observé séparément.
+Les deux runners post-install ont terminé avec succès : +55 puis +72 ventes, 0 lien canonique, cursor 5→9→13, `successful_cycles=3`, `error=null`. `launchctl` confirme `LAUNCHAGENT=LOADED`. Un déclenchement précisément à une heure planifiée n'a pas encore été observé séparément.
 
 Validation du head 31378bd : Robot KB CI SUCCESS ; tests V4 complets PASS ; compile/YAML/diff-check PASS. Les comparaisons live V4 restent indépendantes de cette lane Robot KB.
 
@@ -228,7 +230,7 @@ Documents : `docs/project-current-phase.md`, `docs/project-capability-ledger.md`
 Cardova / Robot KB
   -> laisser le LaunchAgent récurrent accumuler l'historique
   -> vérifier un premier déclenchement réellement planifié
-  -> continuer la rotation historique jusqu'à boundary puis recommencer
+  -> continuer la rotation historique depuis page 13 jusqu'à boundary puis recommencer
   -> résoudre ultérieurement les identités/microvariantes de façon déterministe
   -> V4_USE=false tant que l'identité exacte n'est pas suffisante
 
