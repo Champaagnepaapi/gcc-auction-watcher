@@ -78,6 +78,14 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             [self.lot("a")],
             [self.lot("a"), self.lot("b")],
             [self.lot("a"), self.lot("b"), self.lot("c")],
+            [self.lot("a"), self.lot("b"), self.lot("c"), self.lot("d")],
+            [
+                self.lot("a"),
+                self.lot("b"),
+                self.lot("c"),
+                self.lot("d"),
+                self.lot("e"),
+            ],
         ]
         calls = 0
 
@@ -100,7 +108,7 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
 
         self.assertFalse(stable)
         self.assertEqual(calls, private_coverage.WEEKLY_STABILITY_MAX_PASSES)
-        self.assertEqual(len(lots), 3)
+        self.assertEqual(len(lots), 5)
 
     def test_private_and_weekly_sale_pages_are_opened_but_event_is_not(self):
         opened = []
@@ -187,6 +195,14 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
             [self.lot("a")],
             [self.lot("a"), self.lot("b")],
             [self.lot("a"), self.lot("b"), self.lot("c")],
+            [self.lot("a"), self.lot("b"), self.lot("c"), self.lot("d")],
+            [
+                self.lot("a"),
+                self.lot("b"),
+                self.lot("c"),
+                self.lot("d"),
+                self.lot("e"),
+            ],
         ]
         calls = 0
 
@@ -210,6 +226,7 @@ class PrivateAuctionCoverageTests(unittest.TestCase):
                 object(), run_diagnostics=primary
             )
 
+        self.assertEqual(calls, private_coverage.WEEKLY_STABILITY_MAX_PASSES)
         self.assertEqual(result.failures, 1)
         self.assertGreaterEqual(primary.auction_coverage.pages_failed, 1)
         self.assertTrue(any(
