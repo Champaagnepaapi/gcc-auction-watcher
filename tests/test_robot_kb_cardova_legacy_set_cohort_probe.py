@@ -61,6 +61,19 @@ class Searcher:
         return list(self.mapping.get(dex_id, []))
 
 
+def exact_name_searcher(rows):
+    mapping = {}
+    for row in rows:
+        raw = str(row["collector_number"]).lstrip("#")
+        if not raw.isdigit():
+            continue
+        dex_id = int(raw)
+        mapping.setdefault(dex_id, []).append(
+            {"id": f"en-{dex_id}-{len(mapping.get(dex_id, []))}", "name": row["card_name"]}
+        )
+    return Searcher(mapping)
+
+
 class CardovaLegacySetCohortProbeTests(unittest.TestCase):
     def test_split_card_id_uses_last_hyphen(self):
         self.assertEqual(probe._split_card_id("S-P-214"), ("S-P", "214"))
@@ -69,9 +82,9 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
 
     def test_unique_cohort_set_is_source_pinned_but_never_exact(self):
         rows = [
-            paid_record(ulid="A", set_name="Pokemon TCG: Japanese Jungle", number="#013"),
-            paid_record(ulid="B", set_name="Pokemon TCG: Japanese Jungle", number="#025"),
-            paid_record(ulid="C", set_name="Pokemon TCG: Japanese Jungle", number="#133"),
+            paid_record(ulid="A", set_name="Pokemon TCG: Japanese Jungle", number="#013", name="Weedle"),
+            paid_record(ulid="B", set_name="Pokemon TCG: Japanese Jungle", number="#025", name="Pikachu"),
+            paid_record(ulid="C", set_name="Pokemon TCG: Japanese Jungle", number="#133", name="Eevee"),
         ]
         searcher = Searcher({
             13: [{"id": "PMCG1-009"}, {"id": "PMCG2-001"}],
@@ -88,21 +101,51 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
             rows,
             min_distinct_dexids=2,
             dex_searcher=searcher,
+            english_dex_searcher=exact_name_searcher(rows),
             source_fetcher=fetcher,
         )
-        self.assertEqual(reason, "SOURCE_PINNED_COHORT_SET_DEXID_CANDIDATE_ONLY")
+        self.assertEqual(
+            reason, "SOURCE_PINNED_COHORT_SET_DEXID_NAME_GATED_CANDIDATE_ONLY"
+        )
         self.assertIsNotNone(result)
         self.assertEqual(result["tcgdex_set_id_candidate"], "PMCG2")
         self.assertEqual(result["distinct_dexids"], 3)
         self.assertEqual(len(result["records"]), 3)
+        self.assertTrue(result["provider_name_dexid_exact_match_for_all_rows"])
         self.assertFalse(result["provider_numeric_semantics_proven"])
         self.assertFalse(result["macro_identity_exact"])
         self.assertFalse(result["exact_identity_link_candidate"])
 
+    def test_exact_name_gate_rejects_false_local_id_cohort_before_set_inference(self):
+        rows = [
+            paid_record(ulid="A", set_name="Pokemon TCG: Japanese DPt Melee! Pokemon Scramble", number="#017", name="Pachirisu"),
+            paid_record(ulid="B", set_name="Pokemon TCG: Japanese DPt Melee! Pokemon Scramble", number="#018", name="Croagunk"),
+        ]
+        ja_searcher = Searcher({
+            17: [{"id": "SV2a-017"}],
+            18: [{"id": "SV2a-018"}],
+        })
+        en_searcher = Searcher({
+            17: [{"id": "base-x", "name": "Pidgeotto"}],
+            18: [{"id": "base-y", "name": "Pidgeot"}],
+        })
+        result, reason = probe.probe_group(
+            rows[0]["set_name"],
+            rows,
+            min_distinct_dexids=2,
+            dex_searcher=ja_searcher,
+            english_dex_searcher=en_searcher,
+            source_fetcher=Fetcher({}),
+        )
+        self.assertIsNone(result)
+        self.assertEqual(reason, "PROVIDER_NAME_DEXID_EXACT_MISMATCH")
+        self.assertEqual(ja_searcher.requests, 0)
+        self.assertEqual(en_searcher.requests, 1)
+
     def test_multiple_complete_sets_fail_closed(self):
         rows = [
-            paid_record(ulid="A", set_name="Legacy", number="#013"),
-            paid_record(ulid="B", set_name="Legacy", number="#025"),
+            paid_record(ulid="A", set_name="Legacy", number="#013", name="Weedle"),
+            paid_record(ulid="B", set_name="Legacy", number="#025", name="Pikachu"),
         ]
         searcher = Searcher({
             13: [{"id": "PMCG1-001"}, {"id": "PMCG2-001"}],
@@ -110,28 +153,32 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
         })
         result, reason = probe.probe_group(
             "Legacy", rows, min_distinct_dexids=2,
-            dex_searcher=searcher, source_fetcher=Fetcher({}),
+            dex_searcher=searcher,
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=Fetcher({}),
         )
         self.assertIsNone(result)
         self.assertEqual(reason, "COHORT_SET_AMBIGUOUS")
 
     def test_no_common_set_fails_closed(self):
         rows = [
-            paid_record(ulid="A", set_name="Legacy", number="#013"),
-            paid_record(ulid="B", set_name="Legacy", number="#025"),
+            paid_record(ulid="A", set_name="Legacy", number="#013", name="Weedle"),
+            paid_record(ulid="B", set_name="Legacy", number="#025", name="Pikachu"),
         ]
         searcher = Searcher({13: [{"id": "PMCG1-001"}], 25: [{"id": "PMCG2-002"}]})
         result, reason = probe.probe_group(
             "Legacy", rows, min_distinct_dexids=2,
-            dex_searcher=searcher, source_fetcher=Fetcher({}),
+            dex_searcher=searcher,
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=Fetcher({}),
         )
         self.assertIsNone(result)
         self.assertEqual(reason, "COHORT_SET_NOT_FOUND")
 
     def test_source_conflict_blocks_candidate(self):
         rows = [
-            paid_record(ulid="A", set_name="Legacy", number="#013"),
-            paid_record(ulid="B", set_name="Legacy", number="#025"),
+            paid_record(ulid="A", set_name="Legacy", number="#013", name="Weedle"),
+            paid_record(ulid="B", set_name="Legacy", number="#025", name="Pikachu"),
         ]
         searcher = Searcher({13: [{"id": "PMCG2-001"}], 25: [{"id": "PMCG2-002"}]})
         fetcher = Fetcher({
@@ -140,19 +187,23 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
         })
         result, reason = probe.probe_group(
             "Legacy", rows, min_distinct_dexids=2,
-            dex_searcher=searcher, source_fetcher=fetcher,
+            dex_searcher=searcher,
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=fetcher,
         )
         self.assertIsNone(result)
         self.assertEqual(reason, "PINNED_SOURCE_SET_DEXID_CONFLICT")
 
     def test_single_distinct_dexid_is_insufficient(self):
         rows = [
-            paid_record(ulid="A", set_name="Legacy", number="#013"),
-            paid_record(ulid="B", set_name="Legacy", number="#013"),
+            paid_record(ulid="A", set_name="Legacy", number="#013", name="Weedle"),
+            paid_record(ulid="B", set_name="Legacy", number="#013", name="Weedle"),
         ]
         result, reason = probe.probe_group(
             "Legacy", rows, min_distinct_dexids=2,
-            dex_searcher=Searcher({}), source_fetcher=Fetcher({}),
+            dex_searcher=Searcher({}),
+            english_dex_searcher=exact_name_searcher(rows),
+            source_fetcher=Fetcher({}),
         )
         self.assertIsNone(result)
         self.assertEqual(reason, "COHORT_DISTINCT_DEXIDS_INSUFFICIENT")
@@ -169,9 +220,9 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
 
     def test_run_records_groups_exact_labels_and_remains_candidate_only(self):
         rows = [
-            paid_record(ulid="A", set_name="Jungle", number="#013"),
-            paid_record(ulid="B", set_name="Jungle", number="#025"),
-            paid_record(ulid="C", set_name="Fossil", number="#093"),
+            paid_record(ulid="A", set_name="Jungle", number="#013", name="Weedle"),
+            paid_record(ulid="B", set_name="Jungle", number="#025", name="Pikachu"),
+            paid_record(ulid="C", set_name="Fossil", number="#093", name="Haunter"),
         ]
         searcher = Searcher({13: [{"id": "PMCG2-001"}], 25: [{"id": "PMCG2-002"}]})
         fetcher = Fetcher({
@@ -183,6 +234,7 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
             max_groups=10,
             min_distinct_dexids=2,
             dex_searcher=searcher,
+            english_dex_searcher=exact_name_searcher(rows),
             source_fetcher=fetcher,
         )
         self.assertEqual(result["eligible_set_labels"], 2)
@@ -193,10 +245,12 @@ class CardovaLegacySetCohortProbeTests(unittest.TestCase):
         )
         self.assertEqual(result["macro_identity_exact_count"], 0)
         self.assertEqual(result["exact_identity_link_candidate_count"], 0)
+        self.assertGreaterEqual(result["english_dex_name_gate_requests"], 2)
 
     def test_safe_summary_forbids_writes_and_promotions(self):
         summary = probe.safe_summary()
         self.assertTrue(summary["database_read_only_transaction"])
+        self.assertTrue(summary["provider_name_dexid_exact_gate"])
         self.assertFalse(summary["translation_table_used"])
         self.assertFalse(summary["card_alias_table_used"])
         for key in (
