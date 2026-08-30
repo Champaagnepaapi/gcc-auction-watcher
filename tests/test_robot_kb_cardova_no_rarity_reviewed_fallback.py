@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 import unittest
 
-from mac.robot_kb_local import robot_kb_cardova_no_rarity_reviewed_fallback as fallback
+
+PATH = Path("mac/robot-kb-local/robot_kb_cardova_no_rarity_reviewed_fallback.py")
+SPEC = importlib.util.spec_from_file_location("cardova_no_rarity_reviewed_fallback", PATH)
+fallback = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(fallback)
 
 
 class ReviewedNoRarityFallbackTests(unittest.TestCase):
