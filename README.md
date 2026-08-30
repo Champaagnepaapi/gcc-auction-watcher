@@ -2,34 +2,28 @@
 
 > **Source de reprise technique canonique — lire ce fichier en premier dans toute nouvelle conversation.**
 >
-> Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
+> Le code/Git/GitHub live reste l'autorité. Les détails historiques, supersessions et inventaires exhaustifs sont dans `docs/`.
 
-## État canonique — 26 août 2026
+## État canonique — 30 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main @ 9365f5cd9f8949580c4e48f00ba8c4e419c22145 (runtime merge #180)
-Magi coverage production         : PR #174 + #177 MERGED
-Magi production proof            : run 32893130902 SUCCESS / 31 EXACT sur 96
-Magi budget fix                  : PR #178 MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
-Magi #178 read-only proof        : run 32943536626 SUCCESS / 30 EXACT + 55 SOLD / 0 budget-exhausted
-Global schedule watchdog         : PR #179 MERGED / ac5f7c734685422612a0f24690af22910eefa951
-Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
-Robot KB multisource runtime     : PR #180 MERGED / 9365f5cd9f8949580c4e48f00ba8c4e419c22145
-Robot KB multisource Mac install : PENDING — repo prêt, installateur à exécuter sur le Mac
-Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
-Cardova public read-only         : PR #168 / 48caf402e851e2d888999ba94f93a9355f14d7bb
-Global schedule recovery         : PR #169 / 81db5cf2ffc788a517c9cb63d36cfd1f88c347a6
-Global cadence                   : toutes les 20 min / workflow unique
-Global schedule run registry     : issue #150 / finalizer séparé fail-visible
-V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
+V4 production canonique          : main @ 1a4b18e98937769bb6924a79aca7dcd36729d25a
+V4 auction priority/cap          : #188 MERGED / 52deb7f50e194b04552800bfe328df5be9e1d3a2
+PSA/eBay runtime breakers        : #189 MERGED / a4db237cfea1bc916cc6ebbd2b137f754f93afc5
+eBay completed-item shadow       : #191 MERGED / main actuel
 Robot KB durable                 : PostgreSQL local Mac ACTIF
-Neon                             : writers automatiques RETIRÉS ; rollback manuel conservé
+Robot KB runtime P3              : 1d06fe33b6fc640657255e15a8d17251aa02b6ce
+Cardova paid SOLD local          : #199 OPEN / DRAFT / live Mac PROUVÉ / NON MERGED
+V4_USE Robot KB                  : false
+Neon                             : writers automatiques OFF / rollback manuel seulement
+V5 expérimentale                 : PR #8 OPEN / DRAFT / NON MERGED
+V5 head                          : bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-Toujours re-vérifier le HEAD `main`, les PR et les workflows live avant une action importante. Un commit docs-only peut suivre le dernier SHA runtime ; distinguer les deux dans le handoff.
+Toujours re-vérifier le HEAD `main`, les PRs et les workflows live avant une action importante. Un commit docs-only peut suivre le dernier SHA runtime ; distinguer les deux dans le handoff.
 
 ---
 
@@ -38,11 +32,12 @@ Toujours re-vérifier le HEAD `main`, les PR et les workflows live avant une act
 - **V4 sur `main` = production canonique.**
 - **PR #8 / V5 ne doit jamais être mergée dans `main` sans autorisation explicite utilisateur.**
 - Pokémon **cartes individuelles uniquement** ; sealed/lots hors scope.
-- Aucun achat, bid, checkout, paiement ou grading payant automatique.
-- Aucun secret, token, cookie, session ou mot de passe dans le repo/logs.
+- Aucun achat, bid, offer, checkout, paiement ou grading payant automatique.
+- Aucun secret, token, cookie, session ou mot de passe dans repo/logs/chat.
 - Identité incertaine, contradictoire ou microvariante non prouvée = fail-closed / revue manuelle.
 - Aucun fuzzy, substring, token overlap, traduction supposée ou Levenshtein comme preuve exacte.
 - ASK, enchère live et disparition d'annonce ne deviennent jamais des ventes.
+- Une vraie vente finale peut être conservée dans Robot KB avec identité `unresolved`, mais **ne devient jamais un comparable exact ni une preuve V4** tant que l'identité commerciale n'est pas prouvée.
 
 ## Hiérarchie des preuves prix
 
@@ -51,234 +46,6 @@ Toujours re-vérifier le HEAD `main`, les PR et les workflows live avant une act
 3. asks fixes compatibles, explicitement étiquetés **ASK** ;
 4. snapshot d'enchère observé à `≤5 min` si aucun SOLD n'est disponible ;
 5. enchère en cours = signal faible.
-
----
-
-# Global Multi-Vault — production marketplace-first
-
-```text
-GCC / Fanatics / COMC / magi / Cardova
-        ↓
-scan inventaire courant
-        ↓
-identité commerciale exacte
-        ↓
-TCGdex exact + microvariante déterministe
-        ↓
-GCC SOLD exact si disponible
-        ↓
-PPT + PokeTrace graded aggregate
-        ↓
-décision économique
-        ↓
-notification seulement si gate complet
-```
-
-Bootstrap : tout l'inventaire découvert entre dans la file. Ensuite : nouvelles annonces, changements économiques utiles et retryables. Une disparition reste `missing`, **jamais SOLD**.
-
-Providers validés :
-
-```text
-GCC       public /on-sale-items                  OK
-Fanatics  direct marketplace browse              OK
-COMC      direct PSA10 Pokemon inventory sweep   OK
-magi      broad Pokemon PSA10 inventory query    OK
-Cardova   public anonymous read-only inventory   OK
-```
-
-Cardova n'utilise **aucun login/cookie/session** dans GitHub Actions : seules les réponses JSON publiques GET utiles sont capturées et sanitizées. Aucun token ou donnée de compte n'est conservé.
-
-## Gate économique
-
-Actionnable seulement si :
-
-```text
-identité exacte
-+ FIXED_ASK ou AUCTION_SNAPSHOT_LE5
-+ all_in_eur prouvé
-+ TCGdex exact
-+ externe gradé exact suffisamment fort
-+ décote >= 30 %
-+ aucun conflit matériel
-```
-
-- `ACTIVE_AUCTION` non actionnable ;
-- externe gradé : minimum 3 ventes agrégées ;
-- PPT/PokeTrace/eBay = même famille corrélée `EBAY_GRADED_AGGREGATE` ;
-- conflit GCC/externe matériel => `MARKET_CONFLICT_BLOCKED` ;
-- avec GCC fair : fair confirmé = `min(GCC fair, external fair)` ;
-- sans GCC fair exact : `EXTERNAL_ONLY` possible si externe exact/fort.
-
-## Scale production
-
-```text
-batch Global scheduled           50 listings/run
-PPT max HTTP                     35/run
-PPT max credits                  180/run
-PPT daily remaining floor        15000
-PokeTrace max requests           60/run
-cadence                          20 min (`1,21,41`)
-marketplace inner timeout        17 min
-job scan timeout                 25 min
-```
-
-Le workflow Global production reste unique : `.github/workflows/v4-global-notify.yml`. PR #179 ajoute un watchdog/rattrapage borné depuis le heartbeat Main Scanner pour les schedules GitHub manqués, sans seconde lane économique.
-
----
-
-# Magi — identité native japonaise en production
-
-## PR #173 + #174
-
-PR #174 a été mergée dans `main` le 25 août 2026 :
-
-```text
-feature head                     593c417ec526aba39f7d388bb3a61d868650c15a
-merge main                       3d1589e0086c264e9f910a15fb6b037e20938970
-premier schedule production      32893130902
-résultat                         SUCCESS
-Magi candidates                  96
-Magi EXACT                       31
-TCGdex recovery budget           36 max/run
-notifications envoyées           0
-transactions                     false
-```
-
-Le premier vrai schedule post-merge a chargé exactement `main@3d1589e...`, activation Global `true`, puis terminé avec les jobs `scan` et `register` en succès.
-
-Couverture Magi observée dans ce run :
-
-```text
-31 EXACT / 96
-54 sold_listing filtrés
-5 japanese_set_name_unproven
-4 target_catalog_unproven:TCGDEX_NO_CARD_FOR_FULL_NUMBER
-2 target_japanese_card_name_unproven
-```
-
-Recovery TCGdex :
-
-```text
-requests total                   36
-card_detail                      4
-card_search                      4
-set_coordinate                  19
-set_detail                       1
-sets_catalog                     1
-sets_filtered                    7
-```
-
-Le plafond n'a pas été augmenté pour gagner la couverture.
-
-## PR #177 — Battle Partners en production
-
-PR #177 a été mergée le 25 août 2026 :
-
-```text
-feature head                     def78bfefff01ddb6690e9a21616ae65d0eb14c8
-merge main                       2114b20077605a96a3cf3211f225e1e774bbe9ea
-preuve                           Battle Partners = SV9 / 100
-```
-
-La correction reste une revalidation TCGdex exacte ; aucune identité n'est créée par fuzzy ou traduction supposée.
-
-## PR #178 — correction de saturation du budget recovery — EN PRODUCTION
-
-Après #177, les workflows nocturnes sont restés techniquement SUCCESS, mais Magi a parfois chuté jusqu'à **28/96 EXACT** avec `TCGDEX_BUDGET_EXHAUSTED`. Le problème venait de l'allocation des 36 appels recovery, pas du plafond lui-même.
-
-PR #178 garde donc **36 appels max/run** et sépare le budget par classe :
-
-```text
-recovery total max               36
-broad/nonpriority max            28
-exact card-search/detail reserve  8
-merge main                       545223613ce21e6c4cf886e07201bc3c105a5e69
-```
-
-Les requêtes larges `sets/*` ne peuvent plus consommer les appels nécessaires aux paires strictes `card_search -> card_detail`. La limite broad est comptée indépendamment de l'ordre des listings ; le plafond global de 36 reste inchangé.
-
-Validation #178 :
-
-```text
-branch                            fix/v4-global-magi-recovery-priority-20260826
-validated head                    8fd51c34dd2550b4748dc790e17b74af8612b975
-base main                         2114b20077605a96a3cf3211f225e1e774bbe9ea
-CI/live run                       32943536626 SUCCESS
-focused Global tests              409/409 PASS
-V4 multimarket tests              51/51 PASS
-compile/YAML/diff-check           PASS
-```
-
-Live read-only :
-
-```text
-Magi candidates                   96
-Magi EXACT                        30
-sold_listing                      55
-japanese_set_name_unproven        5
-target_catalog_unproven           4
-target_japanese_card_name         2
-TCGdex recovery requests          36
-nonpriority recovery              28
-card_search                       4
-card_detail                       4
-set_coordinate                   19
-set_detail                        1
-sets_catalog                      1
-sets_filtered                     7
-TCGDEX_BUDGET_EXHAUSTED           0
-notifications sent                0
-identity gate relaxed             false
-transactions                      false
-```
-
-Le `30/96` ne représente pas une perte d'identité par rapport au baseline `31/96` : `sold_listing` est passé de **54 à 55**, tandis que les rejets non-SOLD restent exactement `4 + 5 + 2 = 11`. La saturation évitable est donc supprimée sans augmenter 36 et sans relâcher l'identité.
-
-## Classes déterministes ajoutées
-
-#174 n'ajoute pas un resolver fuzzy. Les chemins récupérés restent bornés et revalidés :
-
-- full collector number globalement unique ;
-- détail Magi retry borné ;
-- coordinate/set exact avec cache recovery ;
-- exact Japanese name + reviewed rarity + unicité puis revalidation card-detail ;
-- preuves source-pinnées pour certaines classes standard/sensibles lorsque l'identité commerciale est déterministe ;
-- priorité du budget recovery pour éviter qu'un travail redondant consomme la preuve finale d'une identité utile.
-
-Exemples validés pendant la phase :
-
-- `かんこうきゃく TR` : `TR` est traité comme le token commercial revu correspondant au `Rare Holo` TCGdex uniquement dans la lane exact-name + rarity + unicité + detail revalidation ;
-- Solgaleo & Lunala GX SR : récupéré sans augmenter le plafond recovery.
-
-## Ce qui reste volontairement bloqué
-
-Les cinq classes `japanese_set_name_unproven` restent bloquées tant qu'une preuve déterministe suffisante n'existe pas :
-
-- Lugia `GR団参上！` old-back promo ;
-- Misty's Horsea / `カスミのタッツー` old-back No.116 ;
-- Pokémon Pal City Battle Road Summer 2007 ;
-- Rayquaza VMAX Dragon Pokémon Get Challenge promo ;
-- Scizor Championship Series 2025 promo.
-
-Ne pas ajouter un fallback name-only ou un treadmill d'alias carte-par-carte pour forcer ces cinq cas.
-
----
-
-# TCGdex — identité et microvariantes
-
-La lignée #119→#135 reste l'autorité de récupération exacte : coordinate, aliases de set prouvés, unicité catalogue et fallback source-pinné immuable.
-
-`variants_detailed` est exploité après identité TCGdex exacte comme preuve commerciale déterministe :
-
-- normal / holo / reverse ;
-- First Edition / Unlimited / Shadowless quand explicitement prouvés ;
-- Poké Ball / Master Ball / Cosmos / Galaxy / Cracked Ice ;
-- langue exacte ;
-- axes inconnus, multiples, malformés ou contradictoires => blocage fail-closed.
-
-Une entrée affirmant deux valeurs incompatibles sur le même axe ne devient jamais un comparable exact. Le `pricing` / `thirdParty` de TCGdex n'est pas utilisé pour valoriser un slab.
-
-PR #159 est superseded fonctionnellement par #177 déjà mergée ; elle reste historique/provenance et ne doit pas être rejouée telle quelle.
 
 ---
 
@@ -303,15 +70,124 @@ Cron-job.org toutes les 3 min
 
 Ne jamais ajouter de cron GitHub parallèle à ces lanes.
 
-PSA scope économique : `8`, `8.5`, `9`, `10`. PSA <8 hors scope ; jamais de PSA 9.5 synthétique.
+## #188 — priorité enchères + cap
+
+Le cap historique de 120 analyses/run pouvait différer une grande partie des enchères lors des vagues denses. #188 est en production :
+
+```text
+priorité 1                       enchères ≤5 min
+priorité 2                       enchères ≤12 min
+priorité 3                       reste des enchères ≤60 min
+cap analyse                      360/run
+```
+
+Aucune règle d'identité ou d'économie n'a été relâchée.
+
+## #189 — breakers PSA/eBay
+
+- PSA APR : circuit ouvert pour le run sur HTTP 403/429 explicite ;
+- eBay : circuit ouvert après 2 hard timeouts sans résultat utile ;
+- un échec transitoire/provider ne devient jamais un clean no-match.
+
+## #191 — eBay completed-item shadow
+
+Provider eBay/RapidAPI ajouté en **shadow uniquement**. Les completed candidates restent :
+
+```text
+item_level_sold                 false
+genuine_sale_evidence           false
+exact_identity_eligible         false
+final_price_semantics_proven    false
+V4 economic use                 false
+```
+
+Ne jamais traiter ce provider comme un vrai item-level SOLD sans preuve supplémentaire.
+
+---
+
+# Global Multi-Vault — production marketplace-first
+
+Surface marketplace canonique :
+
+```text
+GCC / Fanatics / COMC / magi / Cardova
+        ↓
+inventaire courant
+        ↓
+identité commerciale exacte
+        ↓
+TCGdex exact + microvariante déterministe
+        ↓
+GCC SOLD exact si disponible
+        ↓
+PPT + PokeTrace graded aggregate
+        ↓
+décision économique
+        ↓
+notification seulement si gate complet
+```
+
+- disparition != SOLD ;
+- `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5` seulement pour l'actionnable ;
+- `ACTIVE_AUCTION` non actionnable ;
+- PPT/PokeTrace/eBay = même famille corrélée `EBAY_GRADED_AGGREGATE` ;
+- aucun achat/bid/checkout.
+
+Scale/cadence :
+
+```text
+batch Global                     50 listings/run
+PPT HTTP                         35 max/run
+PPT credits                      180 max/run
+PPT daily floor                  15000
+PokeTrace                        60 requests max/run
+Global cadence                   20 min (`1,21,41`)
+marketplace inner timeout        17 min
+scan job timeout                 25 min
+```
+
+PRs structurantes : #139, #145/#146, #147/#148, #151, #156, #169, #179.
+
+---
+
+# TCGdex / identité
+
+La lignée #119→#135 reste l'autorité de récupération exacte : coordinate, padding collector, set/localId, unicité catalogue et fallback source-pinné immuable.
+
+`variants_detailed` (#154) peut prouver après identité exacte :
+
+- normal / holo / reverse ;
+- First Edition / Unlimited / Shadowless ;
+- Poké Ball / Master Ball / Cosmos / Galaxy / Cracked Ice ;
+- langue exacte.
+
+Axes inconnus, multiples, malformés ou contradictoires restent bloquants.
+
+**Pas de treadmill d'aliases carte-par-carte.** Toute récupération nouvelle doit être une classe déterministe répétée et prouvée.
+
+---
+
+# Magi — identité native japonaise
+
+#174 + #177 + #178 sont en production.
+
+```text
+baseline #174                    31/96 EXACT
+recovery total                   36 max/run
+broad/nonpriority #178           28 max/run
+strict reserve                   8
+TCGDEX_BUDGET_EXHAUSTED          supprimé dans validation #178
+```
+
+Les classes sans preuve déterministe suffisante restent volontairement bloquées. Ne pas ajouter de fallback name-only.
 
 ---
 
 # Robot KB — PostgreSQL local Mac ACTIF
 
-Robot KB reste séparé de la décision commerciale V4/Global. `V4_USE=false` tant que l'activation économique KB-first n'est pas explicitement décidée et suffisamment prouvée.
+Robot KB reste séparé de la décision commerciale V4/Global. **`V4_USE=false`** tant qu'une activation économique KB-first n'est pas explicitement décidée et suffisamment prouvée.
 
-## Contrat historique
+## Contrat
 
 - observations append-only, datées, immuables ;
 - payload brut + provenance ;
@@ -319,94 +195,145 @@ Robot KB reste séparé de la décision commerciale V4/Global. `V4_USE=false` ta
 - fixed : baseline puis changements utiles ;
 - auctions : SOLD final prioritaire ; snapshot `≤5 min` seulement fallback identifié ;
 - disparition/ask/live auction ne devient jamais vente ;
-- `WAITING_FOR_PAYMENT` n'est **jamais** un SOLD ;
+- `WAITING_FOR_PAYMENT` n'est jamais un SOLD ;
 - objectif : courbes 30j/90j/1an/multi-années, liquidité, tendance, calibration.
 
-Migration Neon → Mac vérifiée :
-
-```text
-lignes source/local identiques   1,087,015
-nombre de tables                 35
-marker                           MIGRATION_VERIFIED
-PostgreSQL                       health OK
-schema versions                  [1, 2]
-```
-
-Collecte locale historique déjà active :
+## Stockage local
 
 ```text
 database                         robot_pokemon_kb
 host                             127.0.0.1
-runtime P3 validé                1d06fe33b6fc640657255e15a8d17251aa02b6ce
-fixed + auctions                 LaunchAgent à :32
-SOLD fresh + backfill            LaunchAgent à :17 et :47
-backup                           LaunchAgent quotidien 03:10
-backups conservés                7 dumps complets locaux
+runtime P3                       1d06fe33b6fc640657255e15a8d17251aa02b6ce
+schema                           [1,2]
+fixed + auctions                 LaunchAgent :32
+SOLD fresh/backfill              LaunchAgent :17/:47
+backup                           quotidien 03:10
+Neon writers                     OFF
 ```
 
-PR #166 a retiré les writers automatiques Neon. Le projet Neon reste disponible uniquement comme rollback/recovery manuel borné.
+La migration Neon → Mac a été vérifiée à 1,087,015 lignes et 35 tables avec marker `MIGRATION_VERIFIED`.
 
-## PR #180 — harvest multisource local, code mergé
+## #180 — multisource local
 
-PR #180 est mergée dans `main` :
+#180 est mergée et les LaunchAgents ont été installés sur le Mac.
+
+- Fanatics / COMC / Magi / Cardova publics : baseline puis changements matériels ;
+- PokeTrace : US/EU, Pokémon EN/JP, single cards, courant + historique ;
+- PokemonPriceTracker : EN/JP, historique 180 jours, eBay gradé agrégé + CardMarket/TCGplayer ;
+- clés uniquement dans Trousseau macOS ;
+- `SOLD_AGGREGATED` reste agrégé, jamais item-level SOLD ;
+- `cardmarket_unsold` reste ASK agrégé.
+
+---
+
+# Cardova paid/completed SOLD — #199 DRAFT
+
+PR #199 est **OPEN / DRAFT / NON MERGED**. Elle ne doit pas être mergée sans décision explicite.
+
+## Preuve provider-level
+
+Le public Past Auctions permet de qualifier une vente finale paid/completed uniquement avec :
 
 ```text
-feature head                     4194730490efbf879188069de4cc4d17642aad46
-merge main                       9365f5cd9f8949580c4e48f00ba8c4e419c22145
-Robot KB CI                      run 32999776457 SUCCESS
-V4 validation                    run 32999776492 SUCCESS
-Mac physical install             PENDING
+bid_payment_status = 5
+finished = 1
+canceled_at = null
+re_listed = 0
+re_listing_count = 0
+currency = JPY prouvée
+final winning bid positif
 ```
 
-La nouvelle lane ajoute, sans modifier le gate économique V4/Global :
+Premier harvest physique : **20/24** lignes satisfaisaient ce gate.
 
-- Fanatics, COMC, Magi et Cardova publics : baseline puis changements matériels ;
-- PokeTrace : marchés US/EU, Pokémon EN/JP, **single cards uniquement**, prix courants + historique `period=all`, priorité PSA 10/9/8/8.5 ;
-- PokemonPriceTracker : sets EN/JP, historique 180 jours, eBay gradé agrégé + métriques CardMarket/TCGplayer ;
-- provenance, payload brut et `observed_at` conservés dans Robot KB ;
-- `SOLD_AGGREGATED` reste agrégé et ne devient jamais un item-level SOLD ;
-- `cardmarket_unsold` reste `FIXED_ASK_AGGREGATED` ; ASK reste ASK.
+Pour ces ventes :
 
-Après exécution de l'installateur #180 sur le Mac :
+- `sale_occurred_at = auction_end_at_utc` ;
+- final winning bid stocké comme `HAMMER_PRICE` JPY ;
+- aucun payment-completion timestamp fabriqué ;
+- aucun all-in / buyer premium fabriqué.
+
+## Identité
+
+TCGdex présente un trou pratique sur certaines anciennes promos JP (`XY-P`, `BW-P`, `L-P`). Aucun alias manuel n'a été ajouté.
+
+Fallback déterministe testé via **le site officiel Pokémon Japon** :
 
 ```text
-public multi-vault               LaunchAgent toutes les 2 h à :05
-PokeTrace + PPT                  LaunchAgent 01:08 / 07:08 / 13:08 / 19:08
-PPT remaining reserve            15000
-PokeTrace remaining reserve      5000
-paid runtime max                 1800 s/run
+promos JP structurées            7
+macro identité exacte            7/7
+microvariante exacte             0/7
+holo corroboré                   1/7
 ```
 
-Les clés PokeTrace/PPT doivent rester **uniquement dans le Trousseau macOS**. Elles ne doivent apparaître ni dans Git, ni dans les plist, ni dans les states/logs. Le harvest provider utilise un lock séparé du collector GCC pour ne pas bloquer fixed/SOLD.
+Les attributs Cardova `Holo`, `Holo Shiny`, `FA`, `SR` restent des claims provider tant que leur axe matériel n'est pas indépendamment prouvé.
 
-**Important : le merge #180 rend le code/installateur disponible sur `main`, mais ne prouve pas encore que les nouveaux LaunchAgents ont été installés et chargés sur le Mac.** Cette vérification doit être faite après exécution réelle de l'installateur sur la machine.
+PSA ne fournit pas de fallback utilisable actuellement :
+
+- cert HTML : 403 ;
+- API officielle `GetByCertNumber` : 403 `Access to this API is limited to approved customers.` ;
+- aucun bypass anti-bot/WAF.
+
+## P3 dry-run + vrai commit local
+
+Dry-run mémoire :
+
+```text
+prepared                         20/20
+stored                           20/20
+unresolved                       20/20
+canonical links                  0
+HAMMER_PRICE JPY                 20
+replay duplicates                20
+```
+
+Le premier essai durable a échoué car `source_system code=cardova` existait déjà avec d'autres métadonnées. Le batch atomique a rollback intégralement.
+
+Correctif : réutiliser les métadonnées `source_system cardova` existantes **sans mutation**.
+
+Vrai commit local validé :
+
+```text
+code head                        42a2941a51d1674a2c49feab9b35ecf4ee380e67
+committed                        true
+SALE_TRANSACTION stored          20
+unresolved identities            20
+exact identities linked          0
+canonical links                  0
+HAMMER_PRICE JPY                 20
+source_system reused             true
+source_system mutated            false
+error                            null
+```
+
+Le writer durable est fail-closed :
+
+- `--commit` explicite obligatoire ;
+- PostgreSQL uniquement ;
+- host uniquement `localhost`, `127.0.0.1` ou `::1` ;
+- DB exactement `robot_pokemon_kb` ;
+- remote/cloud/Neon refusé ;
+- batch entier dans une transaction externe avec postconditions avant commit ;
+- aucune identité canonique fabriquée ;
+- `V4_USE=false`.
+
+Validation : Robot KB run `33302300695` SUCCESS ; suite P3, tests Cardova, compile/YAML/diff-check PASS. Les tests V4 complets passent également sur ce head.
+
+**Important : la capacité prouvée est pour l'instant un one-shot manuel. La collecte récurrente Cardova SOLD n'est pas encore activée.**
 
 ---
 
 # V5 — EXPÉRIMENTALE
 
 ```text
-PR #8        OPEN / DRAFT / NON MERGED
-branch       agent/v5-poketrace-cardmarket-market-data
-head         bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
+PR      #8 OPEN / DRAFT / NON MERGED
+branch  agent/v5-poketrace-cardmarket-market-data
+head    bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f
 ```
 
 TCGdex reste le resolver normal V5 ; PokeTrace sert au marché/prix après identité.
 
 **Ne jamais merger PR #8 dans `main` sans autorisation explicite.**
-
----
-
-# Workflows / séparation des responsabilités
-
-- Main Scanner et Fast Lane : cadence externe ;
-- Global : workflow schedule unique toutes les 20 min + watchdog #179 ;
-- Robot KB production : **LaunchAgents locaux Mac** ;
-- anciens workflows Neon Robot KB : **manual-only rollback/recovery** ;
-- `robot-kb-local-postgres-validation.yml` : validation CI/manual de la lane Mac ;
-- V5 lives : manuels/expérimentaux uniquement.
-
-Voir `docs/project-workflow-inventory.md` et toujours comparer avec le tree Git courant si l'inventaire documentaire est plus ancien.
 
 ---
 
@@ -416,16 +343,16 @@ Voir `docs/project-workflow-inventory.md` et toujours comparer avec le tree Git 
 2. lire `.agents/rules/gcc-project-governance.md` ;
 3. lire `AGENTS.md` s'il existe ;
 4. lire capability ledger + inventaires pertinents ;
-5. vérifier `main`, SHA, PRs, branches et workflows live ;
+5. vérifier worktree/branch/HEAD/status/remotes/PRs/workflows live ;
 6. chercher une capacité existante avant de réimplémenter ;
-7. branche/PR dédiée pour les changements runtime ;
+7. branche/PR dédiée pour changement non trivial ;
 8. SHA précis ;
 9. tests ciblés + suite pertinente ;
 10. compile/YAML/`git diff --check` ;
 11. live read-only lorsque pertinent ;
-12. aucune transaction/secret ;
-13. merge seulement avec l'autorisation requise ;
-14. mettre à jour le handoff documentaire après une phase importante.
+12. aucune transaction commerciale/secret ;
+13. merge seulement avec autorisation requise ;
+14. mettre à jour README + capability ledger après une phase importante.
 
 Documents de reprise :
 
@@ -436,37 +363,34 @@ Documents de reprise :
 - `docs/project-workflow-inventory.md`
 - `docs/project-issue-inventory.md`
 - `docs/project-repository-snapshot.md`
-- `docs/robot-kb-local-cutover-close-20260821.md`
+- `.agents/rules/gcc-project-governance.md`
 
 ---
 
 # Prochaine direction canonique
 
 ```text
-Robot KB #180
-  -> code multisource mergé sur main@9365f5cd9f8949580c4e48f00ba8c4e419c22145
-  -> prochaine étape : exécuter l'installateur #180 sur le Mac
-  -> vérifier LaunchAgents public :05 / paid 01:08,07:08,13:08,19:08
-  -> vérifier premier catch-up public puis paid borné, logs et nouvelles observations PostgreSQL
-  -> confirmer qu'aucun secret n'apparaît hors Trousseau
-  -> garder V4_USE=false pendant cette phase
+Cardova SOLD / Robot KB
+  -> one-shot paid/completed SOLD prouvé et 20 ventes stockées durablement
+  -> prochaine étape : collecteur Cardova SOLD local récurrent
+  -> même gate paid/completed strict
+  -> append-only + idempotent
+  -> identité unresolved autorisée au stockage
+  -> lien canonique seulement après preuve exacte ultérieure
+  -> conserver fallback Pokémon Japon officiel pour promos JP
+  -> V4_USE=false
 
-Global / Magi
-  -> #177, #178 et #179 sont en production
-  -> conserver le plafond TCGdex recovery à 36 et la réserve broad 28
-  -> conserver les 5 set-name cases bloqués tant qu'aucune preuve exacte n'existe
-  -> chercher seulement des classes déterministes répétées, pas des aliases carte-par-carte
-
-TCGdex
-  -> #159 est superseded fonctionnellement par #177 ; ne pas la rejouer telle quelle
-  -> ne jamais fabriquer une microvariante
+V4
+  -> #188/#189/#191 sont en production
+  -> surveiller séparément la cohérence discovery GCC ENDING_SOON
+  -> ne pas toucher aux règles d'identité pendant les enchères actives
 
 V5
   -> PR #8 reste expérimentale/draft/non mergée
   -> aucun merge sans autorisation explicite
 
 Neon
-  -> conserver comme rollback manuel
+  -> rollback manuel uniquement
 ```
 
-Aucun achat, bid, checkout ou paiement automatique.
+Aucun achat, bid, offer, checkout ou paiement automatique.
