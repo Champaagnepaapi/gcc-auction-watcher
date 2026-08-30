@@ -25,6 +25,7 @@ on:
       - "tests/test_robot_kb_cardova_variant_corroboration_probe.py"
       - "tests/test_robot_kb_cardova_sale_transaction_dry_run.py"
       - "tests/test_robot_kb_cardova_sale_transaction_ingest.py"
+      - "tests/test_robot_kb_cardova_paid_sold_recurring.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -100,6 +101,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_variant_corroboration_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_dry_run.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_ingest.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_recurring.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -130,6 +132,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_variant_corroboration_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_dry_run.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_ingest.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_recurring.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
