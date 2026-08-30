@@ -17,12 +17,13 @@ Auction safety-net ledger         #201 MERGED
 Robot KB                          PostgreSQL local Mac ACTIF
 Robot KB runtime P3               1d06fe33b6fc640657255e15a8d17251aa02b6ce
 Cardova paid SOLD                 #199 OPEN / DRAFT / NON MERGED
-Cardova research head validé      59d006fc7259198f13d957b412bc48e4911c067f
+Cardova identity proof            #204 OPEN / DRAFT / NON MERGED
+Cardova proof code head validé    dcd64575e0fee27f0e9c9b99cdf49c9703c0394e
 Cardova SALE_TRANSACTION          244 unresolved disponibles
 Cardova macro exact read-only     38
 Cardova finish exact              38
-Cardova printing exact            5 No Rarity Symbol
-Cardova microvariant exact        0
+Cardova printing exact            6 No Rarity Symbol
+Cardova microvariant exact        37 / 38
 Cardova canonical links           0
 V4_USE Robot KB                   false
 Neon                              automatic writers OFF / rollback manuel
@@ -140,9 +141,9 @@ Migration Neon → Mac vérifiée : 1,087,015 lignes, 35 tables, marker `MIGRATI
 
 ---
 
-# Cardova paid/completed SOLD — PR #199 DRAFT
+# Cardova paid/completed SOLD — PR #199 DRAFT + identité #204 DRAFT
 
-PR #199 reste **OPEN / DRAFT / NON MERGED**.
+PR #199 et PR #204 restent **OPEN / DRAFT / NON MERGED**.
 
 ## Gate provider-level
 
@@ -195,13 +196,13 @@ Le probe de finish compose les macro-identités avec la source TCGdex pinnée :
 - claim Cardova `Holo` compatible + source => corroboré ;
 - token opaque/non corroboré => ne devient pas finish par lui-même.
 
-Live : **38/38 finish exact** sur les 38 macros. Cela ne ferme pas les axes edition/special-finish/variant.
+Live : **38/38 finish exact** sur les 38 macros.
 
-## No Rarity Symbol — fallback revu et strictement borné
+## No Rarity Symbol — preuves positives uniquement
 
 PSA direct HTML/API/cert reste bloqué par **HTTP 403** depuis le Mac. Aucun bypass, proxy, cookie import ou anti-bot workaround n'est utilisé.
 
-Pour cinq lignes Basic seulement, Cardova expose le token exact `no rarity original print`. Un manifest de preuves PSA publiques déjà revues est borné à ces cinq coordonnées exactes :
+Cinq lignes Basic sont prouvées `printing=no_rarity_symbol` par le fallback revu et borné :
 
 ```text
 Sandshrew  #027
@@ -211,24 +212,70 @@ Machop     #066
 Gastly     #092
 ```
 
-Live read-only :
+Une sixième ligne est prouvée par le titre public Cardova exact :
 
 ```text
-no-rarity candidates               5
-reviewed coordinates proven        5
-printing exact                     5 = no_rarity_symbol
-finish exact                       normal pour les 5
-PSA live direct                    5 x HTTP 403
-Cardova cert effectivement lu      false
-edition exact                      false
-No Rarity => First Edition         false
-microvariant exact                 0
-canonical link candidates          0
-blocked                            {}
-error                              null
+Ninetales / PSA 10 / cert 141683514
+source 01KFFRJ8B4X9FG8YK90K4BNS1T
+claim exact : No Rarity Original Print
 ```
 
-La preuve revue ne remplace jamais le cert Cardova et ne généralise jamais à une 6e coordonnée non revue.
+Le titre public du Charizard PSA 8 cert `156405344` contient `No Rarity Original Print Error(Strength)` : le token matériel `Error(Strength)` empêche de le rabattre sur la microvariante No Rarity ordinaire.
+
+Aucune absence de texte `No Rarity` n'est utilisée pour prouver une impression ordinaire.
+
+## Symbole de rareté visible — 10 preuves bornées
+
+Pour les 10 lignes Basic qui restaient ambiguës entre variante ordinaire et `no_rarity_symbol`, la page Cardova expose `image_a` et le frontend construit l'URL publique exacte `https://card-image.cardova.co.jp/<image_a>`.
+
+Les 10 scans front exacts ont été téléchargés puis revus manuellement :
+
+- holo/rare : symbole `★` visible en bas à droite ;
+- common/non-holo : symbole `●` visible en bas à droite ;
+- contrôle Ninetales No Rarity : aucun symbole à cet emplacement.
+
+Le manifest borné lie chaque preuve à :
+
+```text
+source_native_record_id
++ cert PSA
++ carte / set PMCG1 / localId / grade / finish
++ image_a exact
++ SHA-256 exact du scan Cardova revu
++ classe de symbole visible
+```
+
+Les images ne sont pas stockées dans le repo. Un symbole visible **exclut positivement** `printing=no_rarity_symbol`; aucun champ synthétique `printing=standard` n'est inventé.
+
+La closure n'active ce chemin que si la source TCGdex pinnée présente exactement deux variantes compatibles, identiques sauf `printing=no_rarity_symbol` sur l'une. Toute autre différence, token opaque ou troisième printing reste fail-closed.
+
+## Closure microvariante — live 37/38
+
+Validation Mac read-only sur le head code `dcd64575e0fee27f0e9c9b99cdf49c9703c0394e` :
+
+```text
+initial microvariant exact         26
+titre No Rarity ajouté              1
+symbole rareté visible ajouté      10
+TOTAL microvariant exact           37 / 38
+remaining unresolved                1
+expected_37_of_38                  true
+```
+
+Unique bloqueur :
+
+```text
+Charizard
+PSA 8
+cert 156405344
+source 01KQHACBX20NBMGD9VZAPA6Z64
+material_tail Error(Strength)
+reason CARDOVA_PUBLIC_TITLE_MATERIAL_TAIL_UNRESOLVED
+```
+
+Les 37 lignes sont des **exact identity link candidates** seulement. `canonical_link_written=0`, aucun `SALE_TRANSACTION` exact n'a été écrit par cette phase, `V4_USE=false`.
+
+Tests ciblés sur ce head : **25/25 PASS** (`7 + 7 + 11`).
 
 ## Stockage / activation locale
 
@@ -238,28 +285,14 @@ Le collecteur récurrent reste indépendant de cette recherche d'identité : fro
 LaunchAgent                        com.robotpokemon.kb.cardova-sold
 cadence                            02:23 / 08:23 / 14:23 / 20:23
 runtime collector pin              a2f1878186a8850d5a4c4763518a10ecfd16f2fc
-research/CI head validé            59d006fc7259198f13d957b412bc48e4911c067f
+#199 collector/research head        59d006fc7259198f13d957b412bc48e4911c067f
+#204 identity proof code head       dcd64575e0fee27f0e9c9b99cdf49c9703c0394e
 SALE_TRANSACTION unresolved        244 disponibles au dernier snapshot
 canonical links                    0
 V4_USE                             false
 ```
 
 Le cursor de rotation n'a pas été ré-audité dans la phase identity du 30 août ; le dernier handoff collector documentait page 13. Ne pas déduire un cursor courant du nouveau total 244.
-
-## Validation head 59d006f
-
-```text
-Robot KB local PostgreSQL          run 33333404769 SUCCESS
-V4 Auction Discovery               run 33333404817 SUCCESS
-V4 Global Market Offline           run 33333404767 en cours lors du handoff
-reviewed No Rarity tests            7/7 PASS
-bounded macro tests                 5/5 PASS
-legacy macro/finish tests          18/18 PASS
-compile/YAML/diff-check            PASS dans Robot KB CI
-live Mac read-only                 SUCCESS
-```
-
-Le live Mac prouve : `unresolved=244`, `selected=244`, `macro_exact=38`, `finish_exact=38`, `printing_exact=5`, `micro_exact=0`, `links=0`, `blocked={}`, `error=null`.
 
 ---
 
@@ -300,11 +333,15 @@ Documents : `docs/project-current-phase.md`, `docs/project-capability-ledger.md`
 
 ```text
 Cardova / identité
-  -> garder les 38 macros + 38 finishes comme preuves read-only bornées
-  -> fermer seulement les axes commerciaux réellement applicables : edition, special_finish, variant
-  -> conserver les 5 No Rarity avec printing exact mais edition inconnue
-  -> ne créer aucun canonical link tant qu'une microvariante complète n'est pas prouvée
-  -> ne plus retry PSA direct tant que le 403 persiste ; aucun bypass
+  -> conserver 37/38 microvariantes exactes comme candidates bornées
+  -> laisser le Charizard Error(Strength) unresolved jusqu'à preuve canonique de cette microvariante
+  -> ne jamais supprimer/ignorer Error(Strength)
+
+Cardova / intégration #199
+  -> composer ces 37 exact identities dans un dry-run de canonical-link / exact-sale evidence
+  -> vérifier ligne par ligne avant toute écriture
+  -> conserver la 38e vente provider-level mais identité unresolved
+  -> aucun V4_USE tant qu'une activation séparée n'est pas explicitement validée
 
 Cardova / collecte
   -> laisser le LaunchAgent accumuler les SALES finales prouvées
@@ -316,7 +353,6 @@ Robot KB
 
 V4
   -> reste séparée ; V4_USE=false
-  -> ne jamais utiliser les 38 macros comme comparables exacts tant que microvariant=0
 
 V5
   -> PR #8 reste isolée/draft/non mergée
