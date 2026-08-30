@@ -11,6 +11,29 @@ on:
       - "tests/test_robot_kb_paid_provider_fairness.py"
       - "tests/test_robot_kb_provider_persistence_bounds.py"
       - "tests/test_robot_kb_ebay_rapidapi_shadow.py"
+      - "tests/test_robot_kb_cardova_past_auction_probe.py"
+      - "tests/test_robot_kb_cardova_network_discovery.py"
+      - "tests/test_robot_kb_cardova_closed_api_probe.py"
+      - "tests/test_robot_kb_cardova_paid_sold_harvest.py"
+      - "tests/test_robot_kb_cardova_paid_sold_identity.py"
+      - "tests/test_robot_kb_cardova_identity_recovery_batch.py"
+      - "tests/test_robot_kb_cardova_legacy_dexid_probe.py"
+      - "tests/test_robot_kb_cardova_legacy_set_cohort_probe.py"
+      - "tests/test_robot_kb_cardova_psa_set_registry_neo1_probe.py"
+      - "tests/test_robot_kb_cardova_bounded_macro_identity_probe.py"
+      - "tests/test_robot_kb_cardova_legacy_macro_finish_probe.py"
+      - "tests/test_robot_kb_cardova_legacy_microvariant_closure_probe.py"
+      - "tests/test_robot_kb_cardova_no_rarity_reviewed_fallback.py"
+      - "tests/test_robot_kb_cardova_short_set_probe.py"
+      - "tests/test_robot_kb_cardova_psa_identity_probe.py"
+      - "tests/test_robot_kb_cardova_psa_api_identity_probe.py"
+      - "tests/test_robot_kb_cardova_number_namespace_probe.py"
+      - "tests/test_robot_kb_cardova_pokemon_jp_official_probe.py"
+      - "tests/test_robot_kb_cardova_variant_surface_probe.py"
+      - "tests/test_robot_kb_cardova_variant_corroboration_probe.py"
+      - "tests/test_robot_kb_cardova_sale_transaction_dry_run.py"
+      - "tests/test_robot_kb_cardova_sale_transaction_ingest.py"
+      - "tests/test_robot_kb_cardova_paid_sold_recurring.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -72,6 +95,29 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_paid_provider_fairness.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_provider_persistence_bounds.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_ebay_rapidapi_shadow.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_past_auction_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_network_discovery.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_closed_api_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_harvest.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_identity.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_identity_recovery_batch.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_legacy_dexid_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_legacy_set_cohort_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_set_registry_neo1_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_bounded_macro_identity_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_legacy_macro_finish_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_legacy_microvariant_closure_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_no_rarity_reviewed_fallback.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_short_set_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_identity_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_api_identity_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_number_namespace_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_pokemon_jp_official_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_variant_surface_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_variant_corroboration_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_dry_run.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_ingest.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_recurring.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -88,6 +134,30 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_paid_fairness.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_entrypoint.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_ebay_rapidapi_shadow.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_past_auction_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_network_discovery.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_closed_api_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_harvest.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_identity.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_identity_recovery_batch.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_legacy_dexid_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_legacy_set_cohort_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_set_registry_corroboration_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_bounded_macro_identity_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_legacy_macro_finish_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_legacy_microvariant_closure_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_no_rarity_printing_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_no_rarity_reviewed_fallback.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_short_set_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_identity_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_api_identity_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_number_namespace_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_pokemon_jp_official_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_variant_surface_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_variant_corroboration_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_dry_run.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_ingest.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_recurring.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
