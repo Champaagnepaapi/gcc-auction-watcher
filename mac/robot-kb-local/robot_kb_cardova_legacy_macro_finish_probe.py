@@ -48,8 +48,8 @@ import robot_kb_cardova_identity_recovery_batch as recovery  # noqa: E402
 
 SOURCE_COMMIT = "af33c9ac882e2acfadffaf19e8083aa976d12983"
 SOURCE_RAW_BASE = f"https://raw.githubusercontent.com/tcgdex/cards-database/{SOURCE_COMMIT}"
-DEFAULT_MAX_RECORDS = 50
-HARD_MAX_RECORDS = 100
+DEFAULT_MAX_RECORDS = 500
+HARD_MAX_RECORDS = 500
 DEFAULT_MAX_GROUPS = 20
 DEFAULT_MIN_DISTINCT_DEXIDS = 2
 DEFAULT_TIMEOUT_SECONDS = 4.0
