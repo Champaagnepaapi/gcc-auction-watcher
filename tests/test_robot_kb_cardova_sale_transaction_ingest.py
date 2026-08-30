@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib.util
 from pathlib import Path
 import unittest
@@ -10,7 +11,7 @@ PATH = Path("mac/robot-kb-local/robot_kb_cardova_sale_transaction_ingest.py")
 DRY_PATH = Path("mac/robot-kb-local/robot_kb_cardova_sale_transaction_dry_run.py")
 
 if P3_AVAILABLE:
-    from robot_kb.repository import IdempotencyConflict, KnowledgeBase
+    from robot_kb.repository import KnowledgeBase, KnowledgeBaseError
 
     DRY_SPEC = importlib.util.spec_from_file_location("cardova_sale_transaction_dry_run", DRY_PATH)
     DRY = importlib.util.module_from_spec(DRY_SPEC)
@@ -22,8 +23,8 @@ if P3_AVAILABLE:
     assert SPEC.loader is not None
     SPEC.loader.exec_module(MOD)
 else:
-    IdempotencyConflict = None
     KnowledgeBase = None
+    KnowledgeBaseError = None
     DRY = None
     MOD = None
 
@@ -100,14 +101,33 @@ class CardovaSaleTransactionIngestTests(unittest.TestCase):
         self.assertEqual(second["sale_transactions_stored"], 0)
         self.assertEqual(second["duplicate_sale_replays"], 1)
 
-    def test_batch_rolls_back_if_second_sale_contradicts_first(self):
-        first, _ = DRY.build_p3_sale(paid_record(bid=123456), observed_at="2026-08-30T08:00:00+00:00")
-        second, _ = DRY.build_p3_sale(paid_record(bid=654321), observed_at="2026-08-30T08:00:00+00:00")
+    def test_batch_rolls_back_if_second_sale_fails_persistence(self):
+        first, _ = DRY.build_p3_sale(
+            paid_record(native="01TESTCARDOVAONE", bid=123456),
+            observed_at="2026-08-30T08:00:00+00:00",
+        )
+        second, _ = DRY.build_p3_sale(
+            paid_record(native="01TESTCARDOVATWO", bid=654321),
+            observed_at="2026-08-30T08:00:00+00:00",
+        )
         assert first is not None and second is not None
+        second_raw, second_observation = second
+        bad_second = (
+            second_raw,
+            replace(
+                second_observation,
+                fact={
+                    **second_observation.fact,
+                    "sale_occurred_at": "2026-08-29T11:59:00+00:00",
+                },
+            ),
+        )
         with KnowledgeBase.open(":memory:") as kb:
-            with self.assertRaises(IdempotencyConflict):
-                MOD.ingest_prepared_batch(kb, [first, second])
-            count = kb.connection.execute("SELECT COUNT(*) AS n FROM market_observation WHERE observation_type='SALE_TRANSACTION'").fetchone()["n"]
+            with self.assertRaises(KnowledgeBaseError):
+                MOD.ingest_prepared_batch(kb, [first, bad_second])
+            count = kb.connection.execute(
+                "SELECT COUNT(*) AS n FROM market_observation WHERE observation_type='SALE_TRANSACTION'"
+            ).fetchone()["n"]
         self.assertEqual(count, 0)
 
     def test_summary_never_claims_identity_v4_or_commerce(self):
