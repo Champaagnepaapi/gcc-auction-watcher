@@ -169,6 +169,33 @@ def _merge_by_url(
     return list(merged.values()), len(merged) - before
 
 
+def _suppress_primary_api_observed(
+    supplemental: list[watcher.Lot],
+    observed_ids: set[str],
+) -> tuple[list[watcher.Lot], int]:
+    """Keep the legacy safety net additive to, never overriding, primary API rows.
+
+    ``discover_auction_api_lots`` records every stable API row in the primary
+    coverage ledger, including rows terminally excluded because their exact API
+    ``endTime`` is outside the <=60 minute horizon.  A later weekly/private DOM
+    snapshot can expose the same URL with a different rendered countdown.  That
+    does not make it an API gap and must not reintroduce the row for a second,
+    conflicting terminal outcome.  Genuine safety-net gaps are URLs absent from
+    the primary API ledger and remain eligible for augmentation.
+    """
+
+    if not observed_ids:
+        return list(supplemental), 0
+    kept: list[watcher.Lot] = []
+    suppressed = 0
+    for lot in supplemental:
+        if lot.url and lot.url in observed_ids:
+            suppressed += 1
+            continue
+        kept.append(lot)
+    return kept, suppressed
+
+
 def _augmented_mode(base_mode: str) -> Optional[str]:
     if base_mode == item_discovery.PRIMARY_MODE:
         return AUGMENTED_MODE
@@ -224,12 +251,21 @@ def install_v4_private_auction_coverage() -> None:
                 setattr(run_diagnostics, "auction_private_augment_failed", True)
             return primary
 
-        merged, added = _merge_by_url(primary, supplemental_result.lots)
+        supplemental_lots = supplemental_result.lots
+        already_observed_suppressed = 0
+        if run_diagnostics is not None and base_mode == item_discovery.PRIMARY_MODE:
+            supplemental_lots, already_observed_suppressed = _suppress_primary_api_observed(
+                supplemental_lots,
+                set(run_diagnostics.auction_coverage.listing_ids),
+            )
+        merged, added = _merge_by_url(primary, supplemental_lots)
         watcher.log(
             "Auction legacy safety-net: "
             f"{supplemental_result.private_sales_seen} private + "
             f"{supplemental_result.weekly_sales_seen} weekly sale(s) checked, "
-            f"{added} candidate(s) added, {supplemental_result.failures} failure(s)"
+            f"{added} candidate(s) added, "
+            f"{already_observed_suppressed} API-observed duplicate(s) suppressed, "
+            f"{supplemental_result.failures} failure(s)"
         )
         if run_diagnostics is not None:
             setattr(run_diagnostics, "auction_discovery_mode", effective_mode)
@@ -244,6 +280,11 @@ def install_v4_private_auction_coverage() -> None:
                 supplemental_result.weekly_sales_seen,
             )
             setattr(run_diagnostics, "auction_private_candidates_added", added)
+            setattr(
+                run_diagnostics,
+                "auction_private_already_observed_suppressed",
+                already_observed_suppressed,
+            )
             setattr(
                 run_diagnostics,
                 "auction_private_augment_failed",
