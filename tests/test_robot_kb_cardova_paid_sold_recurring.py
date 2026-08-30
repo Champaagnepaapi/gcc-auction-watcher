@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from urllib.parse import parse_qs, urlparse
@@ -10,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 P3_AVAILABLE = importlib.util.find_spec("robot_kb") is not None
 PATH = Path("mac/robot-kb-local/robot_kb_cardova_paid_sold_recurring.py")
+RUNNER_PATH = Path("mac/robot-kb-local/robot_kb_cardova_paid_sold_runner.sh")
+INSTALLER_PATH = Path("mac/robot-kb-local/Installer Cardova SOLD Local.command")
 
 if P3_AVAILABLE:
     SPEC = importlib.util.spec_from_file_location("cardova_paid_sold_recurring", PATH)
@@ -246,6 +249,31 @@ class CardovaPaidSoldRecurringTests(unittest.TestCase):
             "automatic_payment",
         ):
             self.assertFalse(commit[key], key)
+
+    def test_local_runner_has_bounded_cardova_readiness_retry_and_local_db_only(self):
+        text = RUNNER_PATH.read_text(encoding="utf-8")
+        self.assertIn('waits=(5000 6500 8000)', text)
+        self.assertIn("TARGET_CLOSED_API_RESPONSE_NOT_OBSERVED", text)
+        self.assertIn('--commit', text)
+        self.assertIn('RobotPokemonKB.local-postgres', text)
+        self.assertIn('postgresql://robotpokemon_kb@127.0.0.1/robot_pokemon_kb', text)
+        self.assertIn('cardova-sold.lock', text)
+        self.assertNotIn('https://api.psacard.com', text)
+        subprocess.run(["bash", "-n", str(RUNNER_PATH)], check=True)
+
+    def test_launchagent_installer_is_pinned_separate_and_secret_free(self):
+        text = INSTALLER_PATH.read_text(encoding="utf-8")
+        self.assertIn('CODE_SHA="a2f1878186a8850d5a4c4763518a10ecfd16f2fc"', text)
+        self.assertIn('com.robotpokemon.kb.cardova-sold', text)
+        self.assertIn('{"Hour": 2, "Minute": 23}', text)
+        self.assertIn('{"Hour": 8, "Minute": 23}', text)
+        self.assertIn('{"Hour": 14, "Minute": 23}', text)
+        self.assertIn('{"Hour": 20, "Minute": 23}', text)
+        self.assertIn('"RunAtLoad": False', text)
+        self.assertNotIn('PGPASSWORD', text)
+        self.assertNotIn('security find-generic-password', text)
+        self.assertIn('git -C "$REPO_ROOT" archive "$CODE_SHA"', text)
+        subprocess.run(["bash", "-n", str(INSTALLER_PATH)], check=True)
 
 
 if __name__ == "__main__":
