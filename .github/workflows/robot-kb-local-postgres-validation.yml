@@ -21,6 +21,7 @@ on:
       - "tests/test_robot_kb_cardova_legacy_set_cohort_probe.py"
       - "tests/test_robot_kb_cardova_psa_set_registry_neo1_probe.py"
       - "tests/test_robot_kb_cardova_bounded_macro_identity_probe.py"
+      - "tests/test_robot_kb_cardova_legacy_macro_finish_probe.py"
       - "tests/test_robot_kb_cardova_short_set_probe.py"
       - "tests/test_robot_kb_cardova_psa_identity_probe.py"
       - "tests/test_robot_kb_cardova_psa_api_identity_probe.py"
@@ -102,6 +103,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_legacy_set_cohort_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_set_registry_neo1_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_bounded_macro_identity_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_legacy_macro_finish_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_short_set_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_identity_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_api_identity_probe.py" -v
@@ -138,6 +140,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_legacy_set_cohort_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_set_registry_corroboration_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_bounded_macro_identity_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_legacy_macro_finish_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_short_set_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_identity_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_api_identity_probe.py"
