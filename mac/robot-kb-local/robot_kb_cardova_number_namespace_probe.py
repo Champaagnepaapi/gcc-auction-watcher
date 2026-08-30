@@ -71,12 +71,16 @@ def printed_number_namespace(value: object) -> tuple[str, str, str]:
     """Return (local_id, literal_set_id_candidate, status).
 
     Only one slash is accepted.  The suffix must contain at least one letter so
-    ordinary numeric denominators cannot be promoted to set namespaces.
+    ordinary numeric denominators cannot be promoted to set namespaces.  Any
+    internal whitespace is rejected rather than normalized away: a provider
+    value like ``XY P`` must never be fabricated into ``XYP``.
     """
 
-    raw = re.sub(r"\s+", "", str(value or "").strip().lstrip("#"))
+    raw = str(value or "").strip().lstrip("#")
     if not raw:
         return "", "", "NUMBER_MISSING"
+    if any(ch.isspace() for ch in raw):
+        return "", "", "NUMBER_NAMESPACE_MALFORMED"
     if raw.count("/") != 1:
         return "", "", "NUMBER_NAMESPACE_MALFORMED"
     local_id, namespace = raw.split("/", 1)
