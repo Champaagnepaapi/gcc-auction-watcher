@@ -16,13 +16,14 @@ Global scale/cadence             #156/#169/#179
 Robot KB local cutover           #166 / PostgreSQL Mac ACTIF
 Robot KB multisource             #180 MERGED / LaunchAgents installés
 Cardova paid SOLD                #199 OPEN/DRAFT / local ACTIF / NON MERGED
+Cardova identity proof           #204 OPEN/DRAFT / NON MERGED
 Cardova collector runtime pin    a2f1878186a8850d5a4c4763518a10ecfd16f2fc
-Cardova identity research head   59d006fc7259198f13d957b412bc48e4911c067f
+Cardova proof code head          dcd64575e0fee27f0e9c9b99cdf49c9703c0394e
 Cardova SALES unresolved         244 disponibles
 Cardova macro exact              38 read-only
 Cardova finish exact             38
-Cardova printing exact           5 No Rarity Symbol
-Cardova microvariant exact       0
+Cardova printing exact           6 No Rarity Symbol
+Cardova microvariant exact       37 / 38
 Cardova canonical links          0
 Neon automatic writers           OFF / rollback manuel
 V5                               PR #8 OPEN / DRAFT / NON MERGED
@@ -143,50 +144,66 @@ La preuve est row-scoped. **Ne jamais réimplémenter cela comme une règle glob
 
 ### Finish compose — `ROBOT_KB / READ_ONLY`
 
-`robot_kb_cardova_legacy_macro_finish_probe.py` est la capacité canonique réutilisée pour ce sous-ensemble : source finish unique et/ou claim Holo corroboré. Live : **38/38 finish exact**.
+`robot_kb_cardova_legacy_macro_finish_probe.py` reste la capacité canonique pour le finish. Live : **38/38 finish exact**.
 
 `FA`, `SR`, `Holo Shiny` et tokens opaques ne deviennent jamais finish ou microvariante exacts par eux-mêmes.
 
-### No Rarity reviewed fallback — `ROBOT_KB / BOUNDED_READ_ONLY`
+### No Rarity reviewed + exact public title — `ROBOT_KB / BOUNDED_READ_ONLY`
 
 PSA direct HTML/API/cert = 403 ; aucun bypass.
 
-`robot_kb_cardova_no_rarity_reviewed_fallback.py` est strictement borné à cinq coordonnées Basic dont Cardova porte le token exact `no rarity original print` et dont une preuve publique PSA a été revue :
+`robot_kb_cardova_no_rarity_reviewed_fallback.py` reste strictement borné aux cinq coordonnées Basic revues : Sandshrew #027, Nidorino #033, Arcanine #059, Machop #066, Gastly #092.
+
+`robot_kb_cardova_public_title_printing_proof.py` ajoute une preuve positive exacte pour le Ninetales PSA 10 cert `141683514`, source `01KFFRJ8B4X9FG8YK90K4BNS1T`, dont le titre public porte exactement `No Rarity Original Print` sans suffixe matériel.
+
+Le Charizard PSA 8 cert `156405344`, source `01KQHACBX20NBMGD9VZAPA6Z64`, porte `No Rarity Original Print Error(Strength)` et reste bloqué : `Error(Strength)` est une microvariante matérielle non résolue.
+
+Total `printing_exact=no_rarity_symbol` : **6**. No Rarity n'implique jamais First Edition.
+
+### Reviewed visible rarity symbol — #204 `ROBOT_KB / BOUNDED_READ_ONLY`
+
+`robot_kb_cardova_reviewed_rarity_symbol_proof.py` contient un manifest de **10 lignes exactes**. Chaque entrée lie : source ULID + cert PSA + PMCG1/localId + carte/grade/finish + `image_a` + SHA-256 + symbole visible.
+
+Source des images : la page Cardova expose `image_a`; son frontend construit `https://card-image.cardova.co.jp/<image_a>`. Les scans eux-mêmes ne sont pas stockés dans le repo.
+
+Revue manuelle :
+
+- rare/holo : `★` visible ;
+- common/non-holo : `●` visible ;
+- contrôle Ninetales No Rarity : aucun symbole à cet emplacement.
+
+Cette preuve **exclut positivement** `printing=no_rarity_symbol`. Elle ne transforme jamais l'absence de texte Cardova en preuve et ne crée pas un champ synthétique `printing=standard`.
+
+`robot_kb_cardova_rarity_symbol_microvariant_closure.py` ne promeut une ligne que lorsque la source TCGdex pinnée présente exactement deux variantes compatibles et identiques sauf l'axe No Rarity. Toute troisième variante, printing différent, token opaque ou divergence au-delà de printing reste fail-closed.
+
+### Closure microvariant #204 — `ROBOT_KB / READ_ONLY`
+
+Head code validé : `dcd64575e0fee27f0e9c9b99cdf49c9703c0394e`.
+
+Tests ciblés : **25/25 PASS** (`7 + 7 + 11`).
+
+Live Mac read-only final :
 
 ```text
-Sandshrew #027
-Nidorino  #033
-Arcanine  #059
-Machop    #066
-Gastly    #092
+initial microvariant exact        26
+title No Rarity added              1
+visible rarity symbol added       10
+final microvariant exact          37 / 38
+remaining unresolved               1
+expected_37_of_38                 true
 ```
 
-Live : 5/5 `printing=no_rarity_symbol`, finish `normal`, mais `edition_exact=false`, `no_rarity_is_first_edition=false`, `microvariant_exact=0`, links=0. Le cert Cardova n'a pas été lu : `reviewed_no_rarity_cardova_cert_read=false`.
+Unique blocker : Charizard PSA 8 cert `156405344`, `Error(Strength)`, reason `CARDOVA_PUBLIC_TITLE_MATERIAL_TAIL_UNRESOLVED`.
 
-**Ne jamais étendre automatiquement ce manifest à une autre coordonnée.** Une nouvelle coordonnée exige une nouvelle preuve revue.
+Les 37 sont des **exact identity link candidates**, pas des writes : `canonical_links_written=0`, `robot_kb_write=false`, `sale_transaction_ready=false` dans cette phase, `V4_USE=false`.
 
-### Validation #199 identity phase
+### Collecteur #199
 
-Head fonctionnel/research : `59d006fc7259198f13d957b412bc48e4911c067f`.
-
-```text
-Robot KB CI                      33333404769 SUCCESS
-V4 Auction Discovery             33333404817 SUCCESS
-V4 Global Market Offline         33333404767 encore en cours au handoff
-bounded macro tests              5/5 PASS
-legacy macro/finish tests        18/18 PASS
-No Rarity fallback tests         7/7 PASS
-compile/YAML/diff-check          PASS dans Robot KB CI
-live Mac read-only               SUCCESS
-```
-
-Live Mac : `unresolved=244`, `selected=244`, `macro_exact=38`, `finish_exact=38`, `printing_exact=5`, `micro_exact=0`, `links=0`, `blocked={}`, `error=null`.
-
-Recurring collector architecture reste séparée : front pages + rotation historique, idempotence P3, state only after commit, DB loopback, readiness retry 5000→6500→8000 ms, lock séparé. Runtime collector pin `a2f1878186a8850d5a4c4763518a10ecfd16f2fc`.
+Architecture récurrente inchangée : front pages + rotation historique, idempotence P3, state only after commit, DB loopback, readiness retry 5000→6500→8000 ms, lock séparé. Runtime collector pin `a2f1878186a8850d5a4c4763518a10ecfd16f2fc`.
 
 Le dernier cursor collector documenté était page 13 mais n'a pas été re-audité pendant la phase identity ; ne pas l'inférer à partir du total 244.
 
-#199 reste OPEN/DRAFT/NON MERGED. Ne pas merger sans décision explicite.
+#199 et #204 restent OPEN/DRAFT/NON MERGED. Ne pas merger sans décision explicite.
 
 ---
 
@@ -211,6 +228,7 @@ Les branches/PRs **historiques/superseded** restent de la provenance ; elles ne 
 - #174/#177/#178/#179/#180/#188/#189/#191/#201/#203 déjà mergées ;
 - #87 décision produit V4 séparée, ne pas mélanger à un autre changement ;
 - #199 actif/draft Robot KB, non mergé ;
+- #204 actif/draft identity proof, non mergé ;
 - #8 protégé V5, non mergé.
 
 `SHADOW`, `DEFERRED`, `DISABLED`, `V5_ONLY` et `SUPERSEDED` ne signifient jamais production active par eux-mêmes.
@@ -223,6 +241,6 @@ Issues particulières : #1 registre V4 vivant ; #150 registre Global vivant ; #2
 
 Avant implémentation non triviale : lire README + gouvernance + ce ledger + inventaires, rechercher une capacité antérieure, suivre les supersessions, isoler V4/V5/Robot KB, utiliser SHA précis, tests ciblés + suite pertinente, compile/YAML/diff-check, live read-only lorsque pertinent, puis documenter la phase.
 
-Prochaine capacité à travailler sur #199 : **fermeture déterministe des axes `edition`, `special_finish`, `variant` réellement applicables aux 38 macros**, en réutilisant `variant_surface_probe` et `variant_corroboration_probe`. Pas de canonical link tant que la fermeture microvariante n'est pas complète.
+Prochaine capacité sur Cardova : **composer les 37 exact identity candidates dans un dry-run de canonical-link / exact-sale evidence sur #199**, sans write. Le Charizard `Error(Strength)` reste unresolved jusqu'à preuve canonique spécifique. Aucun V4_USE pendant cette phase.
 
 Aucun achat, bid, offer, checkout ou paiement automatique.
