@@ -16,6 +16,7 @@ on:
       - "tests/test_robot_kb_cardova_closed_api_probe.py"
       - "tests/test_robot_kb_cardova_paid_sold_harvest.py"
       - "tests/test_robot_kb_cardova_paid_sold_identity.py"
+      - "tests/test_robot_kb_cardova_identity_recovery_batch.py"
       - "tests/test_robot_kb_cardova_short_set_probe.py"
       - "tests/test_robot_kb_cardova_psa_identity_probe.py"
       - "tests/test_robot_kb_cardova_psa_api_identity_probe.py"
@@ -92,6 +93,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_closed_api_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_harvest.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_identity.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_identity_recovery_batch.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_short_set_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_identity_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_api_identity_probe.py" -v
@@ -123,6 +125,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_closed_api_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_harvest.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_identity.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_identity_recovery_batch.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_short_set_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_identity_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_api_identity_probe.py"
