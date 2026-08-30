@@ -21,6 +21,7 @@ on:
       - "tests/test_robot_kb_cardova_psa_api_identity_probe.py"
       - "tests/test_robot_kb_cardova_number_namespace_probe.py"
       - "tests/test_robot_kb_cardova_pokemon_jp_official_probe.py"
+      - "tests/test_robot_kb_cardova_variant_surface_probe.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
       - ".github/workflows/robot-kb-sold-shadow.yml"
       - ".github/workflows/v4-kb-shadow-ingest.yml"
@@ -92,6 +93,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_psa_api_identity_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_number_namespace_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_pokemon_jp_official_probe.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_variant_surface_probe.py" -v
 
       - name: Validate Mac scripts syntax
         run: |
@@ -118,6 +120,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_psa_api_identity_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_number_namespace_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_pokemon_jp_official_probe.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_variant_surface_probe.py"
 
       - name: Assert automatic Neon writers are retired after verified cutover
         run: |
