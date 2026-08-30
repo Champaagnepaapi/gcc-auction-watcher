@@ -9,6 +9,8 @@ Safety contract:
 - only a local PostgreSQL target named ``robot_pokemon_kb`` is accepted;
 - remote/Neon/cloud database URLs are rejected before opening a connection;
 - every selected row must pass the already-proven P3 Cardova sale builder;
+- an existing immutable ``source_system.code='cardova'`` is reused exactly as-is;
+  this writer never renames or changes the role of that provenance row;
 - the whole batch runs inside one outer P3 transaction; postconditions are checked
   before commit, so any contradiction rolls the entire batch back;
 - canonical identity and commercial microvariant remain unresolved;
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import os
@@ -91,6 +94,49 @@ def _prepared_rows(
     return prepared, dict(sorted(blocked.items())), len(selected)
 
 
+def _reuse_existing_cardova_source_metadata(
+    kb: KnowledgeBase,
+    prepared: Sequence[tuple[Any, Any]],
+) -> tuple[list[tuple[Any, Any]], dict[str, Any]]:
+    """Reuse the immutable Cardova source row already present in Robot KB.
+
+    P3 intentionally treats ``source_system.code`` as a global immutable namespace.
+    Historical/multisource Cardova observations may therefore already have fixed
+    the canonical display name and role.  Reusing those exact values avoids an
+    IdempotencyConflict without mutating provenance or inventing a second source.
+    """
+
+    row = kb.connection.execute(
+        "SELECT name, system_role FROM source_system WHERE code = ?",
+        (dry_run.SOURCE_CODE,),
+    ).fetchone()
+    if row is None:
+        return list(prepared), {
+            "source_system_reused": False,
+            "source_system_mutated": False,
+        }
+
+    existing_name = str(row["name"] or "").strip()
+    existing_role = str(row["system_role"] or "").strip()
+    if not existing_name or not existing_role:
+        raise RuntimeError("existing Cardova source_system metadata is malformed")
+
+    aligned: list[tuple[Any, Any]] = []
+    for raw, observation in prepared:
+        if str(raw.source_code) != dry_run.SOURCE_CODE:
+            raise RuntimeError("prepared batch contains a non-Cardova source code")
+        aligned.append(
+            (
+                replace(raw, source_name=existing_name, source_role=existing_role),
+                observation,
+            )
+        )
+    return aligned, {
+        "source_system_reused": True,
+        "source_system_mutated": False,
+    }
+
+
 def _selected_snapshot(kb: KnowledgeBase, native_ids: Sequence[str]) -> dict[str, int]:
     unique_ids = tuple(dict.fromkeys(str(value) for value in native_ids if str(value)))
     if not unique_ids:
@@ -154,16 +200,20 @@ def ingest_prepared_batch(
 
     if not prepared:
         raise ValueError("no Cardova SALE_TRANSACTION rows are prepared")
-    native_ids = [str(observation.source_native_record_id) for _raw, observation in prepared]
+    prepared_aligned, source_meta = _reuse_existing_cardova_source_metadata(kb, prepared)
+    native_ids = [
+        str(observation.source_native_record_id)
+        for _raw, observation in prepared_aligned
+    ]
     unique_native_ids = tuple(dict.fromkeys(native_ids))
-    if len(unique_native_ids) != len(prepared):
+    if len(unique_native_ids) != len(prepared_aligned):
         raise ValueError("duplicate Cardova native IDs in the selected input batch")
 
     diagnostics = ShadowDiagnostics()
     persistence = ShadowKnowledgePersistence(kb)
     with kb._transaction():
         before = _selected_snapshot(kb, unique_native_ids)
-        for raw, observation in prepared:
+        for raw, observation in prepared_aligned:
             persistence.ingest(raw, (observation,), diagnostics)
         after = _selected_snapshot(kb, unique_native_ids)
 
@@ -193,6 +243,7 @@ def ingest_prepared_batch(
     if committed != after:
         raise RuntimeError("post-commit verification differs from transactional verification")
     return {
+        **source_meta,
         "selected_before": before,
         "selected_after": committed,
         "sale_transactions_stored": int(diagnostics.sale_transactions_stored),
@@ -219,6 +270,7 @@ def safe_summary() -> dict[str, Any]:
         "canonical_identity_claimed": False,
         "commercial_microvariant_claimed": False,
         "exact_identity_eligible": False,
+        "source_system_mutated": False,
         "v4_economic_use": False,
         "notification_sent": False,
         "automatic_purchase": False,
