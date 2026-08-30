@@ -91,6 +91,23 @@ class CardovaPublicTitlePrintingProofTests(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(reason, "CARDOVA_PUBLIC_TITLE_NO_PRINTING_PROOF")
 
+    def test_plain_normal_title_is_valid_identity_but_not_printing_proof(self):
+        row = self.row(
+            source_id="01KZAGTV1REJ84RN4NBP09NH93",
+            name="Weedle",
+            grade="9",
+            finish="normal",
+        )
+        out, reason = probe.prove_title(
+            row,
+            page_url=(
+                "https://www.cardova.co.jp/en/auction/card/01KZAGTV1REJ84RN4NBP09NH93"
+            ),
+            page_title="1996 Weedle PSA 9 - Cardova Japan",
+        )
+        self.assertIsNone(out)
+        self.assertEqual(reason, "CARDOVA_PUBLIC_TITLE_NO_PRINTING_PROOF")
+
     def test_card_identity_conflict_blocks(self):
         row = self.row()
         out, reason = probe.prove_title(
