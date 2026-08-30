@@ -165,6 +165,8 @@ class CardovaIdentityRecoveryBatchTests(unittest.TestCase):
         text = (LOCAL / "robot_kb_cardova_identity_recovery_batch.py").read_text(encoding="utf-8")
         self.assertIn('connection.execute("BEGIN READ ONLY")', text)
         self.assertIn('SHOW transaction_read_only', text)
+        self.assertIn('read_only["transaction_read_only"]', text)
+        self.assertNotIn('read_only[0]', text)
         self.assertIn('connection.execute("ROLLBACK")', text)
         self.assertNotIn('connection.execute("COMMIT")', text)
 
