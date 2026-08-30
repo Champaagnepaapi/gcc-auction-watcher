@@ -15,7 +15,8 @@ Robot KB local cutover           #166 / PostgreSQL Mac ACTIF
 Robot KB multisource             #180 MERGED / LaunchAgents installés
 Cardova paid SOLD                #199 OPEN/DRAFT / local ACTIF / NON MERGED
 Cardova activation head          31378bd04e44c60fa1259605b67d2aabc4a89129
-Cardova durable SOLD             90
+Cardova durable SOLD             162
+Cardova rotation cursor          page 13
 Neon automatic writers           OFF / rollback manuel
 V5                               PR #8 OPEN / DRAFT / NON MERGED
 ```
@@ -115,14 +116,15 @@ Live storage :
 initial one-shot                   20
 recurring pages 1-4               15
 recurring pages 5-8               55
-TOTAL                              90 SOLD
+recurring pages 9-12              72
+TOTAL                             162 SOLD
 canonical links                     0
 V4_USE                              false
 ```
 
 Recurring architecture : front pages + rotation historique, idempotence P3, state only after commit, DB loopback only, readiness retry 5000→6500→8000 ms, lock séparé.
 
-Activation : head `31378bd04e44c60fa1259605b67d2aabc4a89129`, runtime pin `a2f1878186a8850d5a4c4763518a10ecfd16f2fc`, LaunchAgent `com.robotpokemon.kb.cardova-sold`, cadence 4×/jour. Runner post-install live : +55 ventes, cursor page 9, error null. Premier fire réellement planifié à observer encore.
+Activation : head `31378bd04e44c60fa1259605b67d2aabc4a89129`, runtime pin `a2f1878186a8850d5a4c4763518a10ecfd16f2fc`, LaunchAgent `com.robotpokemon.kb.cardova-sold`, cadence 4×/jour. Deux runners post-install live : +55 puis +72 ventes, cursor page 5→9→13, `successful_cycles=3`, error null. `launchctl` confirme `LOADED`. Premier fire exactement à une heure planifiée à observer encore.
 
 #199 reste OPEN/DRAFT/NON MERGED. Ne pas merger sans décision explicite.
 
