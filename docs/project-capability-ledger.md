@@ -20,7 +20,7 @@ Neon automatic writers           OFF / rollback manuel
 V5                               PR #8 OPEN / DRAFT / NON MERGED
 ```
 
-Statuts : `PROD_V4`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB`, `SHADOW`, `V5_ONLY`, `DEFERRED`, `SUPERSEDED`, `STALE_OPEN`.
+Statuts : `PROD_V4`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB`, `SHADOW`, `V5_ONLY`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`.
 
 ---
 
@@ -33,6 +33,8 @@ Statuts : `PROD_V4`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB`, `SHADOW`, `V5_ONLY`, `D
 - #188 : priorité ≤5, puis ≤12, puis reste ≤60 ; cap 360 ;
 - Main Scanner et Fast Lane gardent leurs cadences externes ; pas de cron GitHub parallèle.
 
+Capacités structurantes : #9, #50, #52, #104. Elles restent la fondation historique de discovery/couverture et ne doivent pas être réimplémentées parallèlement.
+
 ## Arbitrage multi-marché
 
 - identité exacte avant valorisation ;
@@ -43,25 +45,21 @@ Statuts : `PROD_V4`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB`, `SHADOW`, `V5_ONLY`, `D
 - #189 : breakers PSA 403/429 et eBay hard-timeout ;
 - #191 : eBay completed-item shadow = candidate, jamais item-level SOLD prouvé automatiquement.
 
-## TCGdex
+## TCGdex / PokeTrace #119→#135
 
-Lignée #119→#135 : coordinate, padding, set/localId, unicité catalogue, bridges provider exacts, source-pin. #154 ajoute `variants_detailed` après identité exacte. Aucun fuzzy comme preuve exacte.
+Lignée #119→#135 : coordinate, padding, set/localId, unicité catalogue, bridges provider exacts, source-pin et **fallback générique catalogue immuable**. PokeTrace reste marché/prix après identité TCGdex exacte. #154 ajoute `variants_detailed` après identité exacte. Aucun fuzzy comme preuve exacte.
 
-PR #126 = superseded par #127→#135.
+PR #126 = `SUPERSEDED` par #127→#135.
 
 ---
 
 # Global Multi-Vault — `GLOBAL_NOTIFY_ACTIVE`
 
-Surface : GCC / Fanatics / COMC / magi / Cardova.
+Surface canonique : **GCC/Cardova/magi/Fanatics/COMC**.
 
-- #139 réintègre le stack historique #108→#115 ;
-- #145/#146 notification + activation ;
-- #147/#148 marketplace-first ;
-- #151 registre issue #150 ;
-- #156 batch 50 ;
-- #169 cadence/timeout ;
-- #179 watchdog schedule.
+## #139 — réintégration
+
+#139 réintègre le stack historique #108→#115 ; #145/#146 ajoutent notification + activation ; #147/#148 basculent en marketplace-first ; #151 ajoute le registre issue #150 ; #156 fournit le batch 50 ; #169 protège cadence/timeout ; #179 ajoute le watchdog schedule.
 
 Gate : identité exacte + listing actionnable + externe gradé suffisamment fort + conflit matériel bloquant. ASK/current auction/disappearance != SOLD. Aucune transaction.
 
@@ -81,6 +79,8 @@ Contrat : append-only, provenance + payload brut, observations datées, final SO
 
 Cutover #166 : PostgreSQL local Mac actif ; migration Neon vérifiée 1,087,015 lignes / 35 tables / `MIGRATION_VERIFIED`. Neon automatic writers retirés ; rollback manuel seulement.
 
+**Robot KB mirror/collectors séparés** : les collectors historiques GCC, multisource et Cardova restent des lanes de stockage distinctes de la décision économique V4/Global. `V4_USE=false` tant qu'une activation explicite et suffisamment prouvée n'a pas été décidée.
+
 Collectors locaux :
 
 ```text
@@ -92,7 +92,7 @@ PokeTrace/PPT #180                01:08 / 07:08 / 13:08 / 19:08
 Cardova paid SOLD #199            02:23 / 08:23 / 14:23 / 20:23
 ```
 
-#180 : Fanatics/COMC/Magi/Cardova public baseline+changes ; PokeTrace/PPT historiques agrégés. `SOLD_AGGREGATED` reste agrégé ; `cardmarket_unsold` reste ASK.
+#180 : Fanatics/COMC/Magi/Cardova public baseline+changes ; PokeTrace/PPT historiques agrégés. **PPT = `SOLD_AGGREGATED`**, jamais item-level SOLD ; `cardmarket_unsold` reste ASK.
 
 ## Cardova paid/completed SOLD — #199 `ROBOT_KB / DRAFT`
 
@@ -136,7 +136,9 @@ PR #8 `agent/v5-poketrace-cardmarket-market-data`, head `bc641dfe64c1cacc912b585
 
 ---
 
-# Supersessions / PRs à ne pas rejouer automatiquement
+# Supersessions / historique
+
+Les branches/PRs **historiques/superseded** restent de la provenance ; elles ne doivent pas être rejouées automatiquement.
 
 - #54 stale/superseded ;
 - #108/#109/#110/#113/#114/#115/#138 absorbées par #139 ;
@@ -148,6 +150,8 @@ PR #8 `agent/v5-poketrace-cardmarket-market-data`, head `bc641dfe64c1cacc912b585
 - #87 décision produit V4 séparée, ne pas mélanger à un autre changement ;
 - #199 actif/draft Robot KB, non mergé ;
 - #8 protégé V5, non mergé.
+
+`SHADOW`, `DEFERRED`, `DISABLED`, `V5_ONLY` et `SUPERSEDED` ne signifient jamais production active par eux-mêmes.
 
 Issues particulières : #1 registre V4 vivant ; #150 registre Global vivant ; #28 spec historique livrée ; #58 planning Robot KB historique largement livré, ne pas traiter comme backlog neuf.
 
