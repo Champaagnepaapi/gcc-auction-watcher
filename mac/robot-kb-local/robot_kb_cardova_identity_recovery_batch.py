@@ -87,7 +87,7 @@ def _read_unresolved_from_kb(database_url: str, *, max_records: int) -> Mapping[
     try:
         connection.execute("BEGIN READ ONLY")
         read_only = connection.execute("SHOW transaction_read_only").fetchone()
-        if read_only is None or str(read_only[0]).casefold() not in {"on", "true"}:
+        if read_only is None or str(read_only["transaction_read_only"]).casefold() not in {"on", "true"}:
             raise RuntimeError("PostgreSQL transaction is not read-only")
         kb = KnowledgeBase(connection)
         available = int(
