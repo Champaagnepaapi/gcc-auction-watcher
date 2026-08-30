@@ -18,10 +18,15 @@ from collections import Counter
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 
-SaleBuilder = Callable[[Mapping[str, Any]], tuple[Optional[tuple[Any, Any]], str]]
+ROOT = Path(__file__).resolve().parents[2]
+LOCAL_DIR = Path(__file__).resolve().parent
+for candidate in (ROOT, LOCAL_DIR):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
 
 
 def _norm(value: object) -> str:
