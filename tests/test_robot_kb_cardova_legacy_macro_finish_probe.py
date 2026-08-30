@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest import mock
 
 
 PATH = Path("mac/robot-kb-local/robot_kb_cardova_legacy_macro_finish_probe.py")
@@ -181,8 +182,67 @@ class CardovaLegacyMacroFinishProbeTests(unittest.TestCase):
         self.assertEqual(summary["microvariant_exact_count"], 0)
         self.assertEqual(summary["exact_identity_link_candidate_count"], 0)
 
+    def test_stored_variant_projection_preserves_only_needed_surfaces(self):
+        stored = variant_row("Holo")
+        stored["attribute2"] = "FA"
+        stored["provider_attribute2"] = ""
+        stored["secret"] = "never project me"
+        projected = MOD._stored_variant_rows([stored])
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]["provider_attribute"], "Holo")
+        self.assertEqual(projected[0]["provider_attribute2"], "FA")
+        self.assertNotIn("secret", projected[0])
+
+    def test_database_mode_reuses_one_read_only_snapshot_and_keeps_microvariant_unproven(self):
+        stored = variant_row()
+        selected = {
+            "unresolved_sale_transactions_available": 237,
+            "selected_records": 1,
+            "db_read_blocked": {},
+            "records": [stored],
+        }
+        registry_payload = {"sentinel": True}
+        composed = {
+            "macro_identity_exact_count": 1,
+            "blocked": {},
+            "records": [macro_row()],
+        }
+        with (
+            mock.patch.object(
+                MOD.recovery,
+                "validate_local_database_url",
+                return_value={"database_host": "127.0.0.1", "database_name": "robot_pokemon_kb"},
+            ),
+            mock.patch.object(
+                MOD.recovery, "_read_unresolved_from_kb", return_value=selected
+            ) as read_db,
+            mock.patch.object(
+                MOD.bounded_macro.registry, "run_records", return_value=registry_payload
+            ) as run_registry,
+            mock.patch.object(
+                MOD.bounded_macro, "compose_registry_result", return_value=composed
+            ),
+        ):
+            summary = MOD.run_database(
+                "postgresql://robotpokemon_kb@127.0.0.1/robot_pokemon_kb",
+                max_records=50,
+                max_groups=20,
+                min_distinct_dexids=2,
+                source_fetcher=lambda _path: source_file("holo"),
+            )
+        read_db.assert_called_once()
+        run_registry.assert_called_once_with(
+            [stored], max_groups=20, min_distinct_dexids=2
+        )
+        self.assertEqual(summary["unresolved_sale_transactions_available"], 237)
+        self.assertEqual(summary["macro_identity_exact_count"], 1)
+        self.assertEqual(summary["finish_exact_count"], 1)
+        self.assertEqual(summary["microvariant_exact_count"], 0)
+        self.assertEqual(summary["exact_identity_link_candidate_count"], 0)
+
     def test_safety_summary_remains_read_only(self):
         summary = MOD.safe_summary()
+        self.assertTrue(summary["database_read_only_transaction"])
         self.assertFalse(summary["provider_attribute_is_identity_proof_alone"])
         self.assertFalse(summary["source_coordinate_selected_by_provider_attribute"])
         self.assertFalse(summary["microvariant_exact"])
