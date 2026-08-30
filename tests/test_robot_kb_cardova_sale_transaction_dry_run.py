@@ -4,14 +4,20 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-from robot_kb.domain import ObservationType
 
-
+P3_AVAILABLE = importlib.util.find_spec("robot_kb") is not None
 PATH = Path("mac/robot-kb-local/robot_kb_cardova_sale_transaction_dry_run.py")
-SPEC = importlib.util.spec_from_file_location("cardova_sale_transaction_dry_run", PATH)
-MOD = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
-SPEC.loader.exec_module(MOD)
+
+if P3_AVAILABLE:
+    from robot_kb.domain import ObservationType
+
+    SPEC = importlib.util.spec_from_file_location("cardova_sale_transaction_dry_run", PATH)
+    MOD = importlib.util.module_from_spec(SPEC)
+    assert SPEC.loader is not None
+    SPEC.loader.exec_module(MOD)
+else:
+    ObservationType = None
+    MOD = None
 
 
 def paid_record() -> dict:
@@ -52,6 +58,10 @@ def paid_record() -> dict:
     }
 
 
+@unittest.skipUnless(
+    P3_AVAILABLE,
+    "pinned Robot KB P3 runtime is not present in this V4-only test lane",
+)
 class CardovaSaleTransactionDryRunTests(unittest.TestCase):
     def test_valid_paid_row_builds_unresolved_p3_sale(self):
         built, reason = MOD.build_p3_sale(
