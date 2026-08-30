@@ -7,16 +7,17 @@ agreement, one unique Japanese TCGdex set across the cohort, and immutable
 source proof for every selected card.
 
 A second, independent set-level gate is then applied for a small reviewed set of
-PSA Set Registry pages. The reviewed evidence records only public PSA facts
-observed on 2026-08-30 (set title and required-item count). Cardova's exact
-provider set label must match the reviewed label for every row. Legacy rows may
-lack a preserved provider title; when a title is present it must carry the same
-PSA year/set token. The immutable TCGdex set file must independently match the
-PSA item count and year.
+PSA Set Registry pages. PSA issue-year semantics are kept separate from the
+actual Japanese set release year. Cardova's exact provider set label must match
+the reviewed label for every row. Legacy rows may lack a preserved provider
+title; when a title is present it must carry the reviewed PSA issue-year/set
+token. The immutable TCGdex set file must independently match the reviewed item
+count and release year. If PSA's issue year differs from the release year, an
+independent reviewed release-year source is mandatory.
 
 The result remains candidate-only. No macro identity, microvariant or canonical
-link is promoted here. The reviewed PSA evidence is deliberately set-level, not
-a card-by-card alias table, and unsupported labels fail closed.
+link is promoted here. The reviewed evidence is deliberately set-level, not a
+card-by-card alias table, and unsupported labels fail closed.
 """
 
 from __future__ import annotations
@@ -58,39 +59,61 @@ class ReviewedPsaSetEvidence:
     provider_set_label: str
     psa_set_title: str
     provider_set_token: str
-    year: int
+    psa_issue_year: int
     required_items: int
     source_url: str
+    pinned_release_year: int
+    release_year_source_url: str = ""
+    release_year_source_note: str = ""
     observed_at: str = "2026-08-30"
 
 
-# Public PSA Set Registry evidence reviewed independently on 2026-08-30.
-# These entries locate/corroborate a set only; they do not map any individual
-# Cardova card to a TCGdex coordinate and are never sufficient by themselves.
+# Public set-level evidence reviewed independently on 2026-08-30. PSA provides
+# the issue title/year and checklist size. `pinned_release_year` is a distinct
+# semantic field: it is never inferred from PSA's issue year. Where those years
+# differ (Neo Genesis), an independent official Pokémon release-history source
+# is recorded explicitly.
 _REVIEWED_PSA_SET_EVIDENCE: Mapping[str, ReviewedPsaSetEvidence] = {
     "Pokemon TCG: Japanese Basic": ReviewedPsaSetEvidence(
         provider_set_label="Pokemon TCG: Japanese Basic",
         psa_set_title="1996 Pokemon Japanese Basic",
         provider_set_token="Basic",
-        year=1996,
+        psa_issue_year=1996,
         required_items=102,
         source_url="https://www.psacard.com/psasetregistry/tcg/company-sets/1996-pokemon-japanese-basic/16381",
+        pinned_release_year=1996,
     ),
     "Pokemon TCG: Japanese Jungle": ReviewedPsaSetEvidence(
         provider_set_label="Pokemon TCG: Japanese Jungle",
         psa_set_title="1997 Pokemon Japanese Jungle",
         provider_set_token="Jungle",
-        year=1997,
+        psa_issue_year=1997,
         required_items=48,
         source_url="https://www.psacard.com/psasetregistry/tcg/company-sets/1997-pokemon-japanese-jungle/17078",
+        pinned_release_year=1997,
     ),
     "Pokemon TCG: Japanese Rocket": ReviewedPsaSetEvidence(
         provider_set_label="Pokemon TCG: Japanese Rocket",
         psa_set_title="1997 Pokemon Japanese Rocket",
         provider_set_token="Rocket",
-        year=1997,
+        psa_issue_year=1997,
         required_items=65,
         source_url="https://www.psacard.com/psasetregistry/tcg/company-sets/1997-pokemon-japanese-rocket/17747",
+        pinned_release_year=1997,
+    ),
+    "Pokemon TCG: Japanese neo Gold, Silver, to a New World...": ReviewedPsaSetEvidence(
+        provider_set_label="Pokemon TCG: Japanese neo Gold, Silver, to a New World...",
+        psa_set_title="1999 Pokemon Japanese Neo Genesis",
+        provider_set_token="Neo",
+        psa_issue_year=1999,
+        required_items=96,
+        source_url="https://www.psacard.com/psasetregistry/tcg/company-sets/1999-pokemon-japanese-neo-genesis/17089",
+        pinned_release_year=2000,
+        release_year_source_url="https://www.pokemon-card.com/ex/25th/chronicle/",
+        release_year_source_note=(
+            "Official Pokemon Card Game 25th Chronicle places expansion pack "
+            "第1弾『金、銀、新世界へ...』 in 2000"
+        ),
     ),
 }
 
@@ -114,7 +137,7 @@ def _provider_title_supports_registry(
     if not (card_name and number and grade):
         return False, "PROVIDER_TITLE_IDENTITY_FIELDS_MISSING"
 
-    prefix = f"{evidence.year} Pokemon Japanese "
+    prefix = f"{evidence.psa_issue_year} Pokemon Japanese "
     if not title.casefold().startswith(prefix.casefold()):
         return False, "PROVIDER_TITLE_PSA_YEAR_PREFIX_MISMATCH"
     if f" {card_name} ".casefold() not in f" {title} ".casefold():
@@ -152,6 +175,12 @@ def _parse_pinned_set_metadata(text: str, *, set_id: str) -> tuple[Optional[dict
     }, "PINNED_SET_METADATA_EXACT"
 
 
+def _release_year_evidence_complete(evidence: ReviewedPsaSetEvidence) -> bool:
+    if evidence.psa_issue_year == evidence.pinned_release_year:
+        return True
+    return bool(_norm(evidence.release_year_source_url))
+
+
 def corroborate_group(
     group: Mapping[str, Any],
     original_records: Mapping[str, Mapping[str, Any]],
@@ -162,6 +191,8 @@ def corroborate_group(
     evidence = _REVIEWED_PSA_SET_EVIDENCE.get(label)
     if evidence is None:
         return None, "PSA_SET_REGISTRY_EVIDENCE_UNAVAILABLE"
+    if not _release_year_evidence_complete(evidence):
+        return None, "RELEASE_YEAR_SEMANTICS_EVIDENCE_MISSING"
     if group.get("provider_name_dexid_exact_match_for_all_rows") is not True:
         return None, "COHORT_NAME_DEX_GATE_NOT_PROVEN"
     if group.get("macro_identity_exact") is not False:
@@ -202,7 +233,7 @@ def corroborate_group(
         return None, reason
     if metadata["official_count"] != evidence.required_items:
         return None, "PSA_REGISTRY_PINNED_COUNT_CONFLICT"
-    if metadata["release_year"] != evidence.year:
+    if metadata["release_year"] != evidence.pinned_release_year:
         return None, "PSA_REGISTRY_PINNED_YEAR_CONFLICT"
 
     return {
@@ -210,9 +241,14 @@ def corroborate_group(
         "tcgdex_set_id_candidate": set_id,
         "records_corroborated": len(candidate_rows),
         "reviewed_psa_set_registry_title": evidence.psa_set_title,
+        "reviewed_psa_issue_year": evidence.psa_issue_year,
         "reviewed_psa_set_registry_required_items": evidence.required_items,
         "reviewed_psa_set_registry_url": evidence.source_url,
         "reviewed_psa_set_registry_observed_at": evidence.observed_at,
+        "reviewed_release_year": evidence.pinned_release_year,
+        "reviewed_release_year_source_url": evidence.release_year_source_url,
+        "reviewed_release_year_source_note": evidence.release_year_source_note,
+        "psa_issue_year_used_as_release_year": False,
         "provider_set_label_exact_for_all_rows": True,
         "provider_titles_if_present_support_registry_set": True,
         "pinned_set_source_path": path,
@@ -295,6 +331,8 @@ def safe_summary() -> dict[str, Any]:
         "set_level_evidence_only": True,
         "provider_title_required": False,
         "provider_title_conflict_blocks": True,
+        "psa_issue_year_used_as_release_year": False,
+        "independent_release_year_source_required_when_years_differ": True,
         "card_alias_table_used": False,
         "translation_assumed": False,
         "fuzzy_matching": False,
