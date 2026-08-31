@@ -33,6 +33,7 @@ on:
       - "tests/test_robot_kb_cardova_variant_corroboration_probe.py"
       - "tests/test_robot_kb_cardova_sale_transaction_dry_run.py"
       - "tests/test_robot_kb_cardova_canonical_sale_persistence_dry_run.py"
+      - "tests/test_robot_kb_cardova_print_run_exact_sale_dry_run.py"
       - "tests/test_robot_kb_cardova_sale_transaction_ingest.py"
       - "tests/test_robot_kb_cardova_paid_sold_recurring.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
@@ -67,7 +68,7 @@ jobs:
       - name: Checkout validated Robot KB P3 implementation
         uses: actions/checkout@v4
         with:
-          ref: 1d06fe33b6fc640657255e15a8d17251aa02b6ce
+          ref: 38288a950db8285bcbf279d91354f8a1ad3a8c2f
           path: .robot-kb-p3
           fetch-depth: 1
 
@@ -118,6 +119,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_variant_corroboration_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_dry_run.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_canonical_sale_persistence_dry_run.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_print_run_exact_sale_dry_run.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_ingest.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_recurring.py" -v
 
@@ -160,6 +162,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_dry_run.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_exact_sale_candidate_dry_run.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_canonical_sale_persistence_dry_run.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_print_run_exact_sale_dry_run.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_ingest.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_recurring.py"
 
