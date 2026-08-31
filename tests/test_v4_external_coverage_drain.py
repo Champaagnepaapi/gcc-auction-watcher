@@ -102,6 +102,127 @@ class ExternalCoverageDrainTests(unittest.TestCase):
             8,
         )
 
+    def test_sixteen_card_budget_reserves_twelve_and_keeps_auction_cap_four(self):
+        auction = watcher.ValuationCandidate(
+            gcc=watcher.GccMarketEvidence(
+                lot=make_lot("auction-16", source_type="auction"),
+                sales=[],
+                estimate=None,
+                opportunity=None,
+                branch=watcher.GCC_BRANCH_UNAVAILABLE,
+                strength=watcher.EVIDENCE_UNAVAILABLE,
+            )
+        )
+        fixed = watcher.ValuationCandidate(
+            gcc=watcher.GccMarketEvidence(
+                lot=make_lot("fixed-16", source_type="fixed"),
+                sales=[],
+                estimate=None,
+                opportunity=None,
+                branch=watcher.GCC_BRANCH_UNAVAILABLE,
+                strength=watcher.EVIDENCE_UNAVAILABLE,
+            )
+        )
+
+        self.assertEqual(
+            drain._effective_ebay_cap_for_candidate(
+                auction, total_cap=16, fixed_reserve=12
+            ),
+            4,
+        )
+        self.assertEqual(
+            drain._effective_ebay_cap_for_candidate(
+                fixed, total_cap=16, fixed_reserve=12
+            ),
+            16,
+        )
+
+    def test_external_pending_cap_is_configurable_but_absolutely_bounded(self):
+        with patch.dict(
+            os.environ, {"V4_EXTERNAL_PENDING_MAX_PER_RUN": "16"}, clear=False
+        ):
+            self.assertEqual(drain._configured_external_pending_cap(), 16)
+
+        with patch.dict(
+            os.environ, {"V4_EXTERNAL_PENDING_MAX_PER_RUN": "999"}, clear=False
+        ):
+            self.assertEqual(
+                drain._configured_external_pending_cap(),
+                drain.MAX_CONFIGURED_EXTERNAL_PENDING_PER_RUN,
+            )
+
+        with patch.dict(
+            os.environ,
+            {"V4_EXTERNAL_PENDING_MAX_PER_RUN": "not-an-int"},
+            clear=False,
+        ):
+            self.assertEqual(
+                drain._configured_external_pending_cap(),
+                drain.DEFAULT_EXTERNAL_PENDING_MAX_PER_RUN,
+            )
+
+    def test_configured_p4_cap_drives_selection_and_backlog_eta(self):
+        candidates = []
+        records = {}
+        for index in range(30):
+            lot = make_lot(f"p4-throughput-{index}")
+            candidates.append(lot)
+            item_id = watcher.fixed_listing_id(lot)
+            fingerprint = watcher.fixed_metadata_fingerprint(lot)
+            records[item_id] = {
+                "item_id": item_id,
+                "first_seen_at": (NOW - timedelta(days=2)).isoformat(),
+                "last_seen_at": NOW.isoformat(),
+                "last_evaluated_at": (NOW - timedelta(hours=1)).isoformat(),
+                "last_price": lot.current_price,
+                "metadata_fingerprint": fingerprint,
+                "evaluated_fingerprint": fingerprint,
+                "evaluation_version": watcher.ECONOMIC_EVALUATION_VERSION,
+                "last_evaluation_status": watcher.REJECTION_EXTERNAL_PENDING,
+                "retry_count": 0,
+                "retry_after": (NOW - timedelta(minutes=1)).isoformat(),
+                "active": True,
+            }
+        state = {
+            watcher.FIXED_QUEUE_STATE_KEY: {
+                "schema_version": watcher.FIXED_QUEUE_SCHEMA_VERSION,
+                "items": records,
+            }
+        }
+        diagnostics = watcher.RunDiagnostics()
+        previous_prepare = drain._ORIGINAL_PREPARE_FIXED_QUEUE
+        previous_cap = watcher.MAX_EXTERNAL_PENDING_PER_RUN
+        drain._ORIGINAL_PREPARE_FIXED_QUEUE = watcher._prepare_fixed_economic_queue
+        try:
+            with patch.dict(
+                os.environ,
+                {"V4_EXTERNAL_PENDING_MAX_PER_RUN": "16"},
+                clear=False,
+            ):
+                selected, category_map, _ = (
+                    drain._prepare_fixed_queue_with_pending_migration(
+                        candidates,
+                        state,
+                        NOW,
+                        diagnostics,
+                        valuation_cap=120,
+                    )
+                )
+
+            selected_categories = [
+                category_map[watcher.fixed_listing_id(lot)] for lot in selected
+            ]
+            self.assertEqual(len(selected), 16)
+            self.assertEqual(
+                selected_categories.count(watcher.QUEUE_P4_EXTERNAL_PENDING), 16
+            )
+            self.assertEqual(diagnostics.fixed_queue.p4_processing_budget, 16)
+            self.assertEqual(diagnostics.fixed_queue.external_pending_backlog, 30)
+            self.assertEqual(diagnostics.fixed_queue.estimated_external_backlog_runs, 2)
+        finally:
+            drain._ORIGINAL_PREPARE_FIXED_QUEUE = previous_prepare
+            watcher.MAX_EXTERNAL_PENDING_PER_RUN = previous_cap
+
     def test_budget_pending_never_gets_exponential_backoff(self):
         lot = make_lot("budget-pending")
         state, record = make_queue_state(lot)
