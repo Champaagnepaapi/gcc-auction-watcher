@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 import watcher
 import v4_auction_item_discovery as item_discovery
+from v4_auction_coverage_hardening import install_v4_auction_coverage_hardening
 
 
 STABLE_AUCTION_API_PAGE_SIZE = 100
@@ -104,10 +105,17 @@ def discover_auction_api_lots_stable(
 
 
 def install_v4_auction_pagination_stability() -> None:
-    """Install the stability wrapper without changing auction economics."""
+    """Install exhaustive proof, then the live-pagination stability wrapper."""
 
+    global _ORIGINAL_DISCOVER_AUCTION_API_LOTS
     global _INSTALLED
     if _INSTALLED:
         return
+
+    # The public ENDING_SOON sort is empirically not globally monotonic. First
+    # install the proof that exhausts the filtered query and applies <=H locally;
+    # then let the existing multi-pass guard protect against live page shifts.
+    install_v4_auction_coverage_hardening()
+    _ORIGINAL_DISCOVER_AUCTION_API_LOTS = item_discovery.discover_auction_api_lots
     item_discovery.discover_auction_api_lots = discover_auction_api_lots_stable
     _INSTALLED = True
