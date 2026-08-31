@@ -226,8 +226,8 @@ card_search                       4
 card_detail                       4
 set_coordinate                   19
 set_detail                        1
-sets_catalog                      1
-sets_filtered                     7
+sets_catalog                     1
+sets_filtered                    7
 TCGDEX_BUDGET_EXHAUSTED           0
 notifications sent                0
 identity gate relaxed             false
@@ -262,7 +262,7 @@ Les cinq classes `japanese_set_name_unproven` restent bloquées tant qu'une preu
 - Rayquaza VMAX Dragon Pokémon Get Challenge promo ;
 - Scizor Championship Series 2025 promo.
 
-Ne pas ajouter un fallback name-only ou un treadmill d'alias carte-par-carte pour forcer ces cas.
+Ne pas ajouter un fallback name-only ou un treadmill d'alias carte-par-carte pour forcer ces cinq cas.
 
 ---
 
@@ -464,13 +464,21 @@ V4 external-market backlog
 
 Robot KB #180
   -> code multisource mergé sur main@9365f5cd9f8949580c4e48f00ba8c4e419c22145
-  -> prochaine étape physique séparée : exécuter l'installateur #180 sur le Mac
+  -> prochaine étape : exécuter l'installateur #180 sur le Mac
+  -> vérifier LaunchAgents public :05 / paid 01:08,07:08,13:08,19:08
+  -> vérifier premier catch-up public puis paid borné, logs et nouvelles observations PostgreSQL
+  -> confirmer qu'aucun secret n'apparaît hors Trousseau
   -> garder V4_USE=false pendant cette phase
 
 Global / Magi
   -> #177, #178 et #179 sont en production
   -> conserver le plafond TCGdex recovery à 36 et la réserve broad 28
   -> conserver les 5 set-name cases bloqués tant qu'aucune preuve exacte n'existe
+  -> chercher seulement des classes déterministes répétées, pas des aliases carte-par-carte
+
+TCGdex
+  -> #159 est superseded fonctionnellement par #177 ; ne pas la rejouer telle quelle
+  -> ne jamais fabriquer une microvariante
 
 V5
   -> PR #8 reste expérimentale/draft/non mergée
