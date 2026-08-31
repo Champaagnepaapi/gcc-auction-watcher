@@ -2,12 +2,13 @@
 
 État pertinent vérifié le **21 août 2026** après merge #154 et préparation Robot KB #157.
 
-> Addendum **31 août 2026** : le runtime V4 canonique est désormais `main@20bd6aca88b37a07d8a0c28295c2fe4734f30d5e` après #211/#212. Aucun nouvel audit exhaustif du nombre total de branches n'a été effectué pendant cet addendum.
+> Addendum **31 août 2026** : le runtime V4 canonique est désormais `main@c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09` après #214, qui augmente de façon bornée le débit `EXTERNAL_PENDING`. Aucun nouvel audit exhaustif du nombre total de branches n'a été effectué pendant cet addendum.
 
 ## Autorités
 
 ```text
-production canonique              main @ 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
+production canonique              main @ c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
+External pending throughput       fix/v4-external-pending-throughput-20260831 / PR #214 mergée
 Auction order hardening           fix/v4-auction-order-exhaustive-coverage-20260831 / PR #211 mergée
 Auction merge mirror              merge/v4-auction-order-hardening-20260831 / PR #212 mergée
 Global marketplace-first          feat/v4-global-marketplace-discovery-20260820 / PR #147 mergée
@@ -32,6 +33,7 @@ Toute suppression de branche exige un audit + autorisation explicite.
 
 ## Branches Global / V4 récentes
 
+- `fix/v4-external-pending-throughput-20260831` — PR #214, head validé `5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595`, merge runtime `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09` ; porte P4/eBay à 16/run avec auctions eBay toujours max 4 et breakers/provider backoff inchangés ; provenance à conserver ;
 - `fix/v4-auction-order-exhaustive-coverage-20260831` — PR #211, head validé `461e0ec57271901033426f3566f6ab1f6b38e86a`, capacité mergée dans `main` au merge runtime `20bd6aca88b37a07d8a0c28295c2fe4734f30d5e` ; provenance à conserver ;
 - `merge/v4-auction-order-hardening-20260831` — PR #212, miroir non-draft du même head, créé uniquement parce que la mutation GraphQL ready-for-review du connecteur a échoué ; même capacité/runtime que #211 ;
 - `shadow/v4-global-current-main-reintegration-20260819` — PR #138, superseded par #139 ;
