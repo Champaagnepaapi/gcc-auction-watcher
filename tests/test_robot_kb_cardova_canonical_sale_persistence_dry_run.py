@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 import unittest
 
 
@@ -12,6 +13,7 @@ if P3_AVAILABLE:
     SPEC = importlib.util.spec_from_file_location("cardova_canonical_sale_memory_dry_run", PATH)
     MOD = importlib.util.module_from_spec(SPEC)
     assert SPEC.loader is not None
+    sys.modules[SPEC.name] = MOD
     SPEC.loader.exec_module(MOD)
 else:
     MOD = None
