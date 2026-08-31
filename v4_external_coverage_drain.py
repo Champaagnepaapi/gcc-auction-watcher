@@ -11,11 +11,31 @@ import watcher
 # max_recommended, discount thresholds, or notification economics.
 DEFAULT_FIXED_EBAY_RESERVE = 4
 DEFAULT_BUDGET_PENDING_COOLDOWN_MINUTES = 5
+DEFAULT_EXTERNAL_PENDING_MAX_PER_RUN = watcher.MAX_EXTERNAL_PENDING_PER_RUN
+MAX_CONFIGURED_EXTERNAL_PENDING_PER_RUN = 20
 
 _ORIGINAL_FETCH_EXTERNAL = None
 _ORIGINAL_RECORD_FIXED_EXTERNAL_STATUS = None
 _ORIGINAL_PREPARE_FIXED_QUEUE = None
 _INSTALLED = False
+
+
+def _configured_external_pending_cap() -> int:
+    """Return a bounded P4 scheduling cap.
+
+    The canonical watcher default stays authoritative unless production explicitly
+    opts into a larger drain budget.  Keep an absolute ceiling so an environment
+    typo cannot turn provider backlog work into an unbounded scan.
+    """
+    raw = os.getenv(
+        "V4_EXTERNAL_PENDING_MAX_PER_RUN",
+        str(DEFAULT_EXTERNAL_PENDING_MAX_PER_RUN),
+    ).strip()
+    try:
+        requested = int(raw)
+    except ValueError:
+        requested = DEFAULT_EXTERNAL_PENDING_MAX_PER_RUN
+    return max(1, min(MAX_CONFIGURED_EXTERNAL_PENDING_PER_RUN, requested))
 
 
 def _configured_fixed_ebay_reserve(total_cap: int) -> int:
@@ -104,6 +124,16 @@ def _prepare_fixed_queue_with_pending_migration(
             "External coverage drain: normalized "
             f"{migrated} legacy budget-pending P4 backoff row(s)"
         )
+
+    # watcher._prepare_fixed_economic_queue reads the module-global cap, while
+    # the diagnostic dataclass captured its original default at import time.
+    # Keep both views synchronized so selection and backlog ETA describe the same
+    # bounded capacity.
+    pending_cap = _configured_external_pending_cap()
+    watcher.MAX_EXTERNAL_PENDING_PER_RUN = pending_cap
+    if getattr(run_diagnostics, "fixed_queue", None) is not None:
+        run_diagnostics.fixed_queue.p4_processing_budget = pending_cap
+
     return _ORIGINAL_PREPARE_FIXED_QUEUE(
         candidates,
         state,
@@ -201,13 +231,16 @@ def install_v4_external_coverage_drain() -> None:
     )
     watcher._prepare_fixed_economic_queue = _prepare_fixed_queue_with_pending_migration
 
+    pending_cap = _configured_external_pending_cap()
+    watcher.MAX_EXTERNAL_PENDING_PER_RUN = pending_cap
     total = max(0, int(watcher.EBAY_MAX_CARDS_PER_RUN))
     reserve = _configured_fixed_ebay_reserve(total)
     auction_cap = max(0, total - reserve)
     watcher.log(
         "External coverage drain enabled: "
-        f"eBay SOLD total {total}/run | auctions max {auction_cap} | "
-        f"fixed reserve {reserve} | budget-pending cooldown "
-        f"{_budget_pending_cooldown_minutes()}m | provider-error backoff unchanged"
+        f"P4 max {pending_cap}/run | eBay SOLD total {total}/run | "
+        f"auctions max {auction_cap} | fixed reserve {reserve} | "
+        f"budget-pending cooldown {_budget_pending_cooldown_minutes()}m | "
+        "provider-error backoff unchanged"
     )
     _INSTALLED = True
