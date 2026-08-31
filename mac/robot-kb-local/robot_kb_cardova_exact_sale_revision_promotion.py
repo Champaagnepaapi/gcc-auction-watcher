@@ -2,10 +2,10 @@
 """Promote an existing unresolved Cardova sale through an append-only revision.
 
 The durable Cardova collector already stored the economic SALE_TRANSACTION while
-canonical identity was unresolved.  This module never edits that sealed fact.
-Instead it creates a new sealed ``REVISION_OF`` observation with the same source,
-event, fact and prices, but with a proven canonical card, then supersedes the
-old UNKNOWN identity resolution with a PROVEN resolution.
+canonical identity was unresolved. This module never edits that sealed fact.
+Instead it creates a new sealed ``REVISION_OF`` observation with identical sale
+economics and a proven canonical card, then supersedes the old UNKNOWN identity
+resolution with a PROVEN resolution.
 
 The helpers are backend-neutral so the behavior can be validated on the pinned
 P3 SQLite runtime before any PostgreSQL rollback rehearsal.
@@ -99,7 +99,35 @@ def _sale_fact(kb: KnowledgeBase, observation_id: str) -> Mapping[str, Any]:
     }
 
 
-def _leaf_unresolved_sale(
+def _validate_economics(
+    kb: KnowledgeBase,
+    observation: Mapping[str, Any],
+    *,
+    expected_event_at: str,
+    expected_hammer_jpy: int,
+) -> None:
+    if _norm(observation["event_at"]) != _norm(expected_event_at):
+        raise RevisionPromotionError("stored sale event_at conflicts with proven sale")
+    fact = _sale_fact(kb, observation["id"])
+    if fact["transaction_status"] != "COMPLETED":
+        raise RevisionPromotionError("stored sale is not COMPLETED")
+    if _norm(fact["sale_occurred_at"]) != _norm(expected_event_at):
+        raise RevisionPromotionError("stored sale_occurred_at conflicts with proven sale")
+    prices = _price_components(kb, observation["id"])
+    economic = [component for component in prices if component.component_type != "SHIPPING"]
+    if len(economic) != 1:
+        raise RevisionPromotionError("stored sale does not have one final economic price")
+    price = economic[0]
+    if (
+        price.component_type != "HAMMER_PRICE"
+        or price.amount_minor != int(expected_hammer_jpy)
+        or price.currency != "JPY"
+        or price.knowledge_state != PriceKnowledge.KNOWN
+    ):
+        raise RevisionPromotionError("stored sale HAMMER_PRICE JPY conflicts with proven sale")
+
+
+def _unresolved_original_sale(
     kb: KnowledgeBase,
     source_id: str,
     *,
@@ -118,46 +146,25 @@ def _leaf_unresolved_sale(
           AND observation.lifecycle_state = 'SEALED'
           AND observation.canonical_card_id IS NULL
           AND sale.transaction_status = 'COMPLETED'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM observation_relationship AS relationship
-              JOIN market_observation AS revision
-                ON revision.id = relationship.from_observation_id
-              WHERE relationship.to_observation_id = observation.id
-                AND relationship.relationship_type = 'REVISION_OF'
-                AND revision.lifecycle_state = 'SEALED'
-          )
         ORDER BY observation.created_at, observation.id
         """,
         (source_id,),
     ).fetchall()
     if len(rows) != 1:
         raise RevisionPromotionError(
-            f"expected one leaf unresolved Cardova sale for {source_id}; got {len(rows)}"
+            f"expected one unresolved Cardova original for {source_id}; got {len(rows)}"
         )
     row = rows[0]
-    if _norm(row["event_at"]) != _norm(expected_event_at):
-        raise RevisionPromotionError("existing sale event_at conflicts with proven sale")
-    prices = _price_components(kb, row["id"])
-    economic = [
-        component
-        for component in prices
-        if component.component_type != "SHIPPING"
-    ]
-    if len(economic) != 1:
-        raise RevisionPromotionError("existing sale does not have one final economic price")
-    price = economic[0]
-    if (
-        price.component_type != "HAMMER_PRICE"
-        or price.amount_minor != int(expected_hammer_jpy)
-        or price.currency != "JPY"
-        or price.knowledge_state != PriceKnowledge.KNOWN
-    ):
-        raise RevisionPromotionError("existing sale HAMMER_PRICE JPY conflicts with proven sale")
+    _validate_economics(
+        kb,
+        row,
+        expected_event_at=expected_event_at,
+        expected_hammer_jpy=expected_hammer_jpy,
+    )
     return row
 
 
-def _subject_and_latest_resolution(
+def _subject_and_unknown_resolution(
     kb: KnowledgeBase, observation_id: str
 ) -> tuple[str, str]:
     rows = kb.connection.execute(
@@ -180,8 +187,26 @@ def _subject_and_latest_resolution(
         raise RevisionPromotionError("existing sale has multiple identity subjects")
     latest = rows[0]
     if latest["resolution_state"] != "UNKNOWN":
-        raise RevisionPromotionError("leaf unresolved sale latest identity is not UNKNOWN")
+        raise RevisionPromotionError("original sale SUBJECT identity is not UNKNOWN")
     return latest["identity_subject_id"], latest["id"]
+
+
+def _sealed_revision_children(kb: KnowledgeBase, original_observation_id: str) -> list[Mapping[str, Any]]:
+    return list(
+        kb.connection.execute(
+            """
+            SELECT revision.*
+            FROM observation_relationship AS relationship
+            JOIN market_observation AS revision
+              ON revision.id = relationship.from_observation_id
+            WHERE relationship.to_observation_id = ?
+              AND relationship.relationship_type = 'REVISION_OF'
+              AND revision.lifecycle_state = 'SEALED'
+            ORDER BY revision.created_at, revision.id
+            """,
+            (original_observation_id,),
+        ).fetchall()
+    )
 
 
 def _existing_exact_revision(
@@ -194,7 +219,7 @@ def _existing_exact_revision(
 ) -> Optional[tuple[str, str]]:
     rows = kb.connection.execute(
         """
-        SELECT revision.id, resolution.id AS resolution_id
+        SELECT revision.*, resolution.id AS resolution_id
         FROM observation_relationship AS relationship
         JOIN market_observation AS revision
           ON revision.id = relationship.from_observation_id
@@ -223,19 +248,13 @@ def _existing_exact_revision(
         return None
     if len(rows) != 1:
         raise RevisionPromotionError("multiple exact revisions already exist")
-    revision_id = rows[0]["id"]
-    revision = kb.fetch_observation(revision_id)
-    if _norm(revision["event_at"]) != _norm(expected_event_at):
-        raise RevisionPromotionError("existing exact revision event conflicts")
-    prices = _price_components(kb, revision_id)
-    economic = [component for component in prices if component.component_type != "SHIPPING"]
-    if len(economic) != 1 or (
-        economic[0].component_type != "HAMMER_PRICE"
-        or economic[0].amount_minor != int(expected_hammer_jpy)
-        or economic[0].currency != "JPY"
-    ):
-        raise RevisionPromotionError("existing exact revision price conflicts")
-    return revision_id, rows[0]["resolution_id"]
+    _validate_economics(
+        kb,
+        rows[0],
+        expected_event_at=expected_event_at,
+        expected_hammer_jpy=expected_hammer_jpy,
+    )
+    return rows[0]["id"], rows[0]["resolution_id"]
 
 
 def promote_existing_sale(
@@ -243,8 +262,12 @@ def promote_existing_sale(
     identity: Mapping[str, Any],
     sale: Mapping[str, Any],
     *,
-    ingested_at: Optional[str] = None,
+    plan: Optional[Any] = None,
+    family_applicability: Optional[Mapping[str, str]] = None,
+    revision_observed_at: Optional[str] = None,
 ) -> PromotionResult:
+    """Promote one exact sale atomically; replay returns the existing revision."""
+
     source_id = _norm(sale.get("source_native_record_id"))
     if not source_id or source_id != _norm(identity.get("source_native_record_id")):
         raise RevisionPromotionError("identity/sale source id mismatch")
@@ -253,88 +276,106 @@ def promote_existing_sale(
     if not event_at or not isinstance(hammer, int) or hammer <= 0:
         raise RevisionPromotionError("proven sale economics are incomplete")
 
-    plan, reason = print_run.canonical_plan(identity, sale)
-    if plan is None:
-        raise RevisionPromotionError(f"canonical plan blocked: {reason}")
+    resolved_plan = plan
+    if resolved_plan is None:
+        resolved_plan, reason = print_run.canonical_plan(identity, sale)
+        if resolved_plan is None:
+            raise RevisionPromotionError(f"canonical plan blocked: {reason}")
+    elif resolved_plan.source_native_record_id != source_id:
+        raise RevisionPromotionError("supplied canonical plan source id mismatch")
 
-    original = _leaf_unresolved_sale(
-        kb,
-        source_id,
-        expected_event_at=event_at,
-        expected_hammer_jpy=hammer,
-    )
-    subject_id, old_resolution_id = _subject_and_latest_resolution(kb, original["id"])
+    applicability = family_applicability
+    if applicability is None:
+        applicability = print_run.base._family_applicability([resolved_plan])[
+            print_run.base._family_key(resolved_plan)
+        ]
 
-    family_applicability = print_run.base._family_applicability([plan])
-    card_id = print_run.base._persist_canonical_in_memory(
-        kb,
-        plan,
-        family_applicability[print_run.base._family_key(plan)],
-    )
-    print_run.base._link_cardova_identifier_in_memory(
-        kb,
-        source_id=source_id,
-        canonical_card_id=card_id,
-    )
+    with kb._transaction():
+        original = _unresolved_original_sale(
+            kb,
+            source_id,
+            expected_event_at=event_at,
+            expected_hammer_jpy=hammer,
+        )
+        subject_id, old_resolution_id = _subject_and_unknown_resolution(kb, original["id"])
 
-    existing = _existing_exact_revision(
-        kb,
-        original["id"],
-        card_id,
-        expected_event_at=event_at,
-        expected_hammer_jpy=hammer,
-    )
-    if existing is not None:
+        card_id = print_run.base._persist_canonical_in_memory(
+            kb,
+            resolved_plan,
+            applicability,
+        )
+        print_run.base._link_cardova_identifier_in_memory(
+            kb,
+            source_id=source_id,
+            canonical_card_id=card_id,
+        )
+
+        existing = _existing_exact_revision(
+            kb,
+            original["id"],
+            card_id,
+            expected_event_at=event_at,
+            expected_hammer_jpy=hammer,
+        )
+        if existing is not None:
+            children = _sealed_revision_children(kb, original["id"])
+            if len(children) != 1 or children[0]["id"] != existing[0]:
+                raise RevisionPromotionError("exact revision coexists with another sealed revision")
+            return PromotionResult(
+                source_id,
+                original["id"],
+                existing[0],
+                card_id,
+                existing[1],
+                True,
+            )
+
+        children = _sealed_revision_children(kb, original["id"])
+        if children:
+            raise RevisionPromotionError("unresolved sale already has a different sealed revision")
+
+        fact = _sale_fact(kb, original["id"])
+        prices = _price_components(kb, original["id"])
+        revision_time = revision_observed_at or _utc_now()
+        revision_id = kb.append_market_observation(
+            ObservationType.SALE_TRANSACTION,
+            original["source_system_id"],
+            original["source_native_record_id"],
+            observed_at=revision_time,
+            ingested_at=revision_time,
+            source_updated_at=original["source_updated_at"],
+            source_record_id=original["source_record_id"],
+            upstream_market_system_id=original["upstream_market_system_id"],
+            upstream_event_object_id=original["upstream_event_object_id"],
+            canonical_card_id=card_id,
+            event_at=original["event_at"],
+            event_time_precision=original["event_time_precision"],
+            revision_of_observation_id=original["id"],
+            fact=fact,
+            prices=prices,
+        )
+        proven_resolution_id = kb.create_identity_resolution(
+            subject_id,
+            ResolutionState.PROVEN,
+            canonical_card_id=card_id,
+            unresolved_dimensions=(),
+            conflicts=(),
+            supersedes_resolution_id=old_resolution_id,
+        )
+        kb.link_observation_identity(
+            revision_id,
+            proven_resolution_id,
+            canonical_card_id=card_id,
+            link_role="RESOLVED_AS",
+        )
         return PromotionResult(
             source_id,
             original["id"],
-            existing[0],
+            revision_id,
             card_id,
-            existing[1],
-            True,
+            proven_resolution_id,
+            False,
         )
-
-    fact = _sale_fact(kb, original["id"])
-    prices = _price_components(kb, original["id"])
-    revision_id = kb.append_market_observation(
-        ObservationType.SALE_TRANSACTION,
-        original["source_system_id"],
-        original["source_native_record_id"],
-        observed_at=original["observed_at"],
-        ingested_at=ingested_at or _utc_now(),
-        source_updated_at=original["source_updated_at"],
-        source_record_id=original["source_record_id"],
-        upstream_market_system_id=original["upstream_market_system_id"],
-        upstream_event_object_id=original["upstream_event_object_id"],
-        canonical_card_id=card_id,
-        event_at=original["event_at"],
-        event_time_precision=original["event_time_precision"],
-        revision_of_observation_id=original["id"],
-        fact=fact,
-        prices=prices,
-    )
-    proven_resolution_id = kb.create_identity_resolution(
-        subject_id,
-        ResolutionState.PROVEN,
-        canonical_card_id=card_id,
-        unresolved_dimensions=(),
-        conflicts=(),
-        supersedes_resolution_id=old_resolution_id,
-    )
-    kb.link_observation_identity(
-        revision_id,
-        proven_resolution_id,
-        canonical_card_id=card_id,
-        link_role="RESOLVED_AS",
-    )
-    return PromotionResult(
-        source_id,
-        original["id"],
-        revision_id,
-        card_id,
-        proven_resolution_id,
-        False,
-    )
 
 
 def leaf_sale_state(kb: KnowledgeBase, source_id: str) -> Mapping[str, int]:
@@ -377,6 +418,8 @@ def safe_summary() -> Mapping[str, Any]:
         "economic_fact_changed": False,
         "exact_identity_resolution": "PROVEN",
         "unresolved_leaf_excluded_after_revision": True,
+        "promotion_atomic": True,
+        "replay_idempotent": True,
         "automatic_purchase": False,
         "automatic_bid": False,
         "automatic_offer": False,
