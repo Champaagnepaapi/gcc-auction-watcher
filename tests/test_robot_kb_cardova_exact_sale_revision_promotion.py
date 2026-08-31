@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib.util
 from pathlib import Path
 import sys
@@ -241,6 +242,41 @@ class CardovaExactSaleRevisionPromotionTests(unittest.TestCase):
             {"unresolved": 0, "exact": 1, "total": 1},
         )
 
+    def test_existing_cardova_source_metadata_is_reused_without_mutation(self):
+        with KnowledgeBase.open(":memory:") as kb:
+            legacy_name = "Cardova historical provider"
+            legacy_role = "MARKET"
+            source_system_id = kb.create_source_system("cardova", legacy_name, legacy_role)
+            built, reason = MOD.print_run.base.sale_dry.build_p3_sale(
+                self.sale,
+                observed_at=OBSERVED_AT,
+            )
+            self.assertEqual(reason, "P3_SALE_READY_UNRESOLVED_IDENTITY")
+            self.assertIsNotNone(built)
+            raw, observation = built
+            raw = replace(raw, source_name=legacy_name, source_role=legacy_role)
+            diag = ShadowDiagnostics()
+            ShadowKnowledgePersistence(kb).ingest(raw, (observation,), diag)
+            self.assertEqual(diag.sale_transactions_stored, 1)
+
+            result = MOD.promote_existing_sale(
+                kb,
+                identity_row(),
+                self.sale,
+                revision_observed_at=REVISION_AT,
+            )
+            self.assertFalse(result.replayed)
+            source = kb.connection.execute(
+                "SELECT id, name, system_role FROM source_system WHERE code = 'cardova'"
+            ).fetchone()
+            self.assertEqual(source["id"], source_system_id)
+            self.assertEqual(source["name"], legacy_name)
+            self.assertEqual(source["system_role"], legacy_role)
+            self.assertEqual(
+                MOD.leaf_sale_state(kb, SOURCE_ID),
+                {"unresolved": 0, "exact": 1, "total": 1},
+            )
+
     def test_economic_conflict_fails_closed_without_canonical_side_effects(self):
         conflicting = sale_row(final_bid_jpy=999999)
         before_cards = self.kb.connection.execute(
@@ -277,6 +313,8 @@ class CardovaExactSaleRevisionPromotionTests(unittest.TestCase):
         self.assertEqual(summary["exact_identity_resolution"], "PROVEN")
         self.assertTrue(summary["promotion_atomic"])
         self.assertTrue(summary["replay_idempotent"])
+        self.assertTrue(summary["existing_cardova_source_metadata_reused"])
+        self.assertFalse(summary["source_system_mutated"])
         for key in (
             "automatic_purchase",
             "automatic_bid",
