@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "v4_auction_item_discovery.py"
+      - "v4_auction_coverage_hardening.py"
       - "v4_auction_pagination_stability.py"
       - "v4_private_auction_coverage.py"
       - "v4_kb_shadow_bridge.py"
@@ -23,6 +24,7 @@ on:
       - "v4_tcgdex_two_of_three_backport.py"
       - "v4_tcgdex_unique_coordinate_fallback.py"
       - "compare_auction_discovery.py"
+      - "compare_auction_discovery_production.py"
       - "run_watcher_safe.py"
       - "run_watcher_multimarket.py"
       - "watcher.py"
@@ -98,10 +100,12 @@ jobs:
       - name: Compile changed V4 Python files
         run: |
           python -m py_compile v4_auction_item_discovery.py
+          python -m py_compile v4_auction_coverage_hardening.py
           python -m py_compile v4_auction_pagination_stability.py
           python -m py_compile v4_private_auction_coverage.py
           python -m py_compile v4_kb_shadow_bridge.py
           python -m py_compile compare_auction_discovery.py
+          python -m py_compile compare_auction_discovery_production.py
           python -m py_compile run_watcher_safe.py
           python -m py_compile v4_canonical_multimarket.py
           python -m py_compile v4_edge_hunter_safety.py
@@ -126,7 +130,7 @@ jobs:
         id: compare
         env:
           V4_AUCTION_COMPARE_MINUTES: "720"
-        run: python compare_auction_discovery.py
+        run: python compare_auction_discovery_production.py
 
       - name: Check diff whitespace
         run: git diff --check origin/${{ github.base_ref }}...HEAD
@@ -162,6 +166,7 @@ jobs:
               `legacy_only=${process.env.LEGACY_ONLY || "unavailable"}`,
               `effective_unresolved=${process.env.PRIMARY_UNRESOLVED || "unavailable"}`,
               `legacy_unresolved=${process.env.LEGACY_UNRESOLVED || "unavailable"}`,
+              "The comparison entrypoint installs the production auction hardening/stability chain before importing the comparison module.",
               "An invalid/incomplete public API is not trusted: V4 must prove coverage through the full legacy fallback plus the stable weekly safety net.",
               "No bids, purchases, checkout, ntfy notification, or state mutation are performed by this comparison.",
             ].join("\n");
