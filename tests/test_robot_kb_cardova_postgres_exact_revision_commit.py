@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,6 +45,31 @@ class CardovaPostgresExactRevisionCommitGuardTests(unittest.TestCase):
             backup.assert_not_called()
             connect.assert_not_called()
 
+    def test_writer_quiescence_holds_all_existing_lane_locks_and_releases_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with MOD.acquire_writer_quiescence(root) as state:
+                self.assertTrue(state["writer_lanes_quiesced"])
+                self.assertEqual(state["writer_lock_names"], list(MOD.WRITE_LOCK_NAMES))
+                for name in MOD.WRITE_LOCK_NAMES:
+                    lock = root / "locks" / f"{name}.lock"
+                    self.assertTrue(lock.is_dir())
+                    self.assertEqual(int((lock / "pid").read_text().strip()), os.getpid())
+            for name in MOD.WRITE_LOCK_NAMES:
+                self.assertFalse((root / "locks" / f"{name}.lock").exists())
+
+    def test_existing_writer_lock_blocks_without_deleting_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lock = root / "locks" / "collector.lock"
+            lock.mkdir(parents=True)
+            (lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+            with self.assertRaises(MOD.DurableCommitError):
+                with MOD.acquire_writer_quiescence(root):
+                    self.fail("quiescence must not be acquired")
+            self.assertTrue(lock.is_dir())
+            self.assertEqual(int((lock / "pid").read_text().strip()), os.getpid())
+
     def test_backup_archive_must_be_nontrivial_and_pg_restore_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "robot-kb-test.dump"
@@ -74,6 +100,8 @@ class CardovaPostgresExactRevisionCommitGuardTests(unittest.TestCase):
         summary = MOD.safe_summary()
         self.assertTrue(summary["explicit_commit_required"])
         self.assertTrue(summary["exact_confirmation_required"])
+        self.assertTrue(summary["writer_quiescence_required"])
+        self.assertEqual(summary["writer_lock_names"], list(MOD.WRITE_LOCK_NAMES))
         self.assertTrue(summary["fresh_backup_required"])
         self.assertTrue(summary["backup_archive_validation_required"])
         self.assertTrue(summary["single_transaction"])
