@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **26 août 2026** sur GitHub live. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **31 août 2026** sur GitHub live. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Ce fichier sert d'index anti-réimplémentation et de registre de supersession. Toujours re-vérifier `main`, les PRs et les workflows live avant une action.
 
@@ -8,8 +8,9 @@ Ce fichier sert d'index anti-réimplémentation et de registre de supersession. 
 
 ```text
 V4 production branch             : main
-main runtime #180                : 9365f5cd9f8949580c4e48f00ba8c4e419c22145
-main docs closeout               : 6fcda6b5dda576f2648c1f6a05a98f7d8638d385
+main runtime #212                : 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
+auction order hardening          : #211 + #212 / PROD_V4 / head 461e0ec57271901033426f3566f6ab1f6b38e86a
+auction hardening proof          : run 33438530882 SUCCESS / 831 tests PASS / live compare PASS
 Magi native identity             : #173 + #174 + #177 / PROD_V4
 Magi recovery budget             : #178 MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
 Global schedule watchdog         : #179 MERGED / ac5f7c734685422612a0f24690af22910eefa951
@@ -39,9 +40,14 @@ Statuts utilisés : `PROD_V4`, `MAIN_SUPPORT`, `GLOBAL_NOTIFY_ACTIVE`, `ROBOT_KB
 - fixed : `/on-sale-items`, discovery complète avant caps économiques ;
 - auctions : `/on-sale-items`, `AUCTION`, `ENDING_SOON`, `ON_SALE`, `endTime` individuel ;
 - horizon principal ≤60 min + safety-net legacy ;
+- #211/#212 : le fast path `ENDING_SOON` reste inchangé quand l'ordre est valide ; une dérive d'ordre déclenche uniquement pour ce snapshot une récupération exhaustive bornée de la requête filtrée, puis horizon local ;
+- erreurs structurelles de requête/pagination/endTime restent fail-closed vers le fallback legacy ;
+- l'alerte fixed distingue first-evaluation backlog, external pending retry et fresh already evaluated ;
 - Main Scanner cadencé extérieurement, pas de cron GitHub parallèle.
 
-Capacités structurantes : #9, #50, #52, #104. Ne pas reconstruire un second collector GCC parallèle.
+Capacités structurantes : #9, #50, #52, #104, #211/#212. Ne pas reconstruire un second collector GCC parallèle.
+
+Validation #211/#212 : head `461e0ec57271901033426f3566f6ab1f6b38e86a`, run `33438530882` SUCCESS, 831 tests PASS, compile/YAML/diff-check PASS, live compare PASS. Snapshot normal : API total 15049, seulement 1 page / 100 lignes lue ; récupération exhaustive non exécutée quand inutile.
 
 ## Fast Lane — `PROD_V4`
 
@@ -66,6 +72,8 @@ listing exact
 Chemins historiques conservés : `GCC_ONLY`, `GCC_EXTERNAL_CONFIRMED`, `EXTERNAL_RESCUE`, `EXTERNAL_PENDING`, `MARKET_CONFLICT_BLOCKED`.
 
 RAW Cardmarket/TCGplayer reste secondaire/manual-review ; jamais fair value automatique d'un slab.
+
+La prochaine optimisation V4 doit traiter le débit du backlog `EXTERNAL_PENDING` en réutilisant les composants existants (`v4_external_coverage_drain.py`, provider navigation resilience, run breakers, eBay hard-timeout isolation). Ne pas réimplémenter une lane parallèle et ne pas relâcher la preuve same-card/same-grader/same-grade.
 
 ## TCGdex / PokeTrace #119→#135 — `PROD_V4`
 
@@ -239,6 +247,7 @@ Les branches/PRs **historiques/superseded** restent provenance uniquement ; ne p
 - #141 : diagnostic superseded par #142/#140 ;
 - #159 : superseded fonctionnellement par #177 mergée ; reste ouverte comme provenance, ne pas merger telle quelle ;
 - #174/#177/#178/#179/#180 : **MERGED**, ne plus traiter comme PR pending ;
+- #211/#212 : **MERGED** comme une seule capacité runtime ; #212 est le miroir non-draft de #211 au même head, utilisé uniquement à cause du bug du toggle draft du connecteur ;
 - ancien moteur seed-rotation Global : benchmark/historique après #147/#148 ;
 - one-shots/temp : provenance uniquement, suppression seulement avec autorisation destructive explicite.
 

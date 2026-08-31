@@ -2,13 +2,19 @@
 
 Snapshot GitHub pertinent re-vérifié le **26 août 2026** après merge de #180. Le contrôle GitHub live reste l'autorité et il ne faut **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub**.
 
+> Addendum **31 août 2026** : #211/#212 sont désormais mergées comme une seule capacité V4 ; le runtime canonique est `main@20bd6aca88b37a07d8a0c28295c2fe4734f30d5e`.
+
 ```text
-main runtime                   9365f5cd9f8949580c4e48f00ba8c4e419c22145
+main runtime                   20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
+PR #211                        MERGED / validated head 461e0ec57271901033426f3566f6ab1f6b38e86a
+PR #212                        MERGED / runtime 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
 PR #178                        MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
 PR #179                        MERGED / ac5f7c734685422612a0f24690af22910eefa951
 PR #180                        MERGED / 9365f5cd9f8949580c4e48f00ba8c4e419c22145
 PR #8                          OPEN / DRAFT / NON MERGED
 ```
+
+#211 et #212 représentent **la même capacité et le même feature head**. #212 a été créé uniquement parce que la mutation GraphQL permettant de sortir #211 du mode draft a échoué ; le miroir non-draft a servi de véhicule de merge. GitHub a ensuite marqué #211 mergée au même commit runtime.
 
 ## PR ouvertes **pertinentes pour la gouvernance courante**
 
@@ -36,6 +42,7 @@ PR #8                          OPEN / DRAFT / NON MERGED
 
 ## Phases production récentes
 
+- #211/#212 : V4 auction order-drift hardening adaptatif ; feature head `461e0ec57271901033426f3566f6ab1f6b38e86a`, merge runtime `20bd6aca88b37a07d8a0c28295c2fe4734f30d5e`, validation run `33438530882` SUCCESS ;
 - #156 : Global scale 50 listings/run ;
 - #166 : Robot KB local PostgreSQL cutover ;
 - #168 : Cardova public anonymous read-only ;

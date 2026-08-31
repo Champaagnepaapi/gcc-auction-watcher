@@ -4,12 +4,14 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
 
-## État canonique — 26 août 2026
+## État canonique — 31 août 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main @ 9365f5cd9f8949580c4e48f00ba8c4e419c22145 (runtime merge #180)
+V4 production canonique          : main @ 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e (runtime merge #212 / validated #211)
+Auction order-drift hardening    : PR #211 + mirror #212 MERGED / head 461e0ec57271901033426f3566f6ab1f6b38e86a
+Auction hardening validation     : run 33438530882 SUCCESS / 831 tests PASS / live compare PASS
 Magi coverage production         : PR #174 + #177 MERGED
 Magi production proof            : run 32893130902 SUCCESS / 31 EXACT sur 96
 Magi budget fix                  : PR #178 MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
@@ -224,8 +226,8 @@ card_search                       4
 card_detail                       4
 set_coordinate                   19
 set_detail                        1
-sets_catalog                      1
-sets_filtered                     7
+sets_catalog                     1
+sets_filtered                    7
 TCGDEX_BUDGET_EXHAUSTED           0
 notifications sent                0
 identity gate relaxed             false
@@ -292,6 +294,16 @@ Cron-job.org ~toutes les 10 min
   -> .github/workflows/watcher.yml
   -> run_watcher_multimarket.py
 ```
+
+## Auction discovery hardening — #211 / #212
+
+Le chemin normal reste le collector rapide `AUCTION + ON_SALE + ENDING_SOON` avec `endTime` individuel. Lorsque l'ordre `ENDING_SOON` est valide, aucun scan exhaustif supplémentaire n'est exécuté.
+
+Si GCC renvoie un ordre localement incohérent, V4 tente uniquement pour ce snapshot une récupération exhaustive **bornée** sur la requête filtrée, puis applique l'horizon `≤60 min` localement. Toute erreur structurelle (requête, pagination, `endTime`, page répétée, absence de progrès, `nextPage` invalide ou limite de pages) reste **fail-closed** et déclenche le fallback legacy existant.
+
+Validation avant production : run `33438530882` SUCCESS, **831 tests PASS**, compile/YAML/diff-check PASS, live compare PASS. Le snapshot live normal a gardé le fast path : API total 15049 mais seulement **1 page / 100 lignes** lue. Aucun changement des règles identité, fair value, décote, providers ou notifications économiques.
+
+L'alerte technique fixed distingue désormais explicitement `first-evaluation backlog`, `external pending retry` et `fresh already evaluated` ; un backlog `EXTERNAL_PENDING` n'est plus présenté comme un stock de cartes jamais évaluées.
 
 ## Fast Lane
 
@@ -443,6 +455,13 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
+V4 external-market backlog
+  -> traiter le backlog EXTERNAL_PENDING sans l'assimiler à des cartes jamais évaluées
+  -> réutiliser les modules existants de drain/provider resilience/run breakers
+  -> PSA 403 : conserver le circuit breaker fail-closed, chercher une récupération conforme plutôt qu'un contournement
+  -> eBay timeouts : conserver l'isolation hard-timeout et améliorer seulement le débit sûr
+  -> ne jamais relâcher exact same-card / same-grader / same-grade ni transformer une indisponibilité provider en preuve négative
+
 Robot KB #180
   -> code multisource mergé sur main@9365f5cd9f8949580c4e48f00ba8c4e419c22145
   -> prochaine étape : exécuter l'installateur #180 sur le Mac
