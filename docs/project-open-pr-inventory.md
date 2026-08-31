@@ -2,10 +2,11 @@
 
 Snapshot GitHub pertinent re-vérifié le **26 août 2026** après merge de #180. Le contrôle GitHub live reste l'autorité et il ne faut **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub**.
 
-> Addendum **31 août 2026** : #211/#212 sont désormais mergées comme une seule capacité V4 ; le runtime canonique est `main@20bd6aca88b37a07d8a0c28295c2fe4734f30d5e`.
+> Addendum **31 août 2026** : #214 est mergée ; le runtime V4 canonique est `main@c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`. #211/#212 restent la capacité auction order-drift précédente déjà mergée.
 
 ```text
-main runtime                   20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
+main runtime                   c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
+PR #214                        MERGED / validated head 5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595 / runtime c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
 PR #211                        MERGED / validated head 461e0ec57271901033426f3566f6ab1f6b38e86a
 PR #212                        MERGED / runtime 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
 PR #178                        MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
@@ -42,6 +43,7 @@ PR #8                          OPEN / DRAFT / NON MERGED
 
 ## Phases production récentes
 
+- #214 : V4 `EXTERNAL_PENDING` throughput borné ; head validé `5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595`, merge runtime `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`, 834 tests PASS + live compare PASS ; P4/eBay 16/run, auctions eBay max 4 ;
 - #211/#212 : V4 auction order-drift hardening adaptatif ; feature head `461e0ec57271901033426f3566f6ab1f6b38e86a`, merge runtime `20bd6aca88b37a07d8a0c28295c2fe4734f30d5e`, validation run `33438530882` SUCCESS ;
 - #156 : Global scale 50 listings/run ;
 - #166 : Robot KB local PostgreSQL cutover ;
