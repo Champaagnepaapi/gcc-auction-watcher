@@ -8,7 +8,10 @@ Ce fichier sert d'index anti-réimplémentation et de registre de supersession. 
 
 ```text
 V4 production branch             : main
-main runtime #212                : 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
+V4 production runtime #214       : c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
+External pending throughput      : #214 / PROD_V4 / head 5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595
+#214 CI proof                    : run 33441243258 SUCCESS / 834 tests PASS / live compare PASS
+#214 natural production proof    : run 33441714954 SUCCESS / P4 16 / eBay 16 / auction max 4 / ETA 141
 auction order hardening          : #211 + #212 / PROD_V4 / head 461e0ec57271901033426f3566f6ab1f6b38e86a
 auction hardening proof          : run 33438530882 SUCCESS / 831 tests PASS / live compare PASS
 Magi native identity             : #173 + #174 + #177 / PROD_V4
@@ -73,7 +76,26 @@ Chemins historiques conservés : `GCC_ONLY`, `GCC_EXTERNAL_CONFIRMED`, `EXTERNAL
 
 RAW Cardmarket/TCGplayer reste secondaire/manual-review ; jamais fair value automatique d'un slab.
 
-La prochaine optimisation V4 doit traiter le débit du backlog `EXTERNAL_PENDING` en réutilisant les composants existants (`v4_external_coverage_drain.py`, provider navigation resilience, run breakers, eBay hard-timeout isolation). Ne pas réimplémenter une lane parallèle et ne pas relâcher la preuve same-card/same-grader/same-grade.
+### #214 — débit `EXTERNAL_PENDING` borné — `PROD_V4`
+
+#214 étend uniquement le drain existant ; aucune lane parallèle n'est créée :
+
+```text
+P4 scheduling                    16/run
+P4 hard configuration ceiling    20/run
+eBay SOLD total                  16/run
+fixed eBay reserve               12/run
+auction eBay max                 4/run
+budget-only cooldown             5 min
+PSA APR max                      2/run
+provider-error backoff           inchangé
+```
+
+Validation : head `5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595`, run `33441243258` SUCCESS, **834 tests PASS**, compile/YAML/diff-check PASS et live compare PASS. Merge runtime : `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`.
+
+Premier run naturel : `33441714954` SUCCESS. Le démarrage confirme exactement P4 16 / eBay 16 / reserve fixed 12 / auctions max 4. eBay a ouvert son breaker après 2 hard timeouts de 30 s ; PSA APR a ouvert le sien après HTTP 403. Le scanner est resté fail-closed et a terminé normalement. Le backlog externe était encore **2241** avec ETA **141 runs** ; `EXTERNAL_MARKET_COVERAGE=INCOMPLETE` et résultat global non trustworthy, donc aucune fausse déclaration de couverture complète.
+
+Prochaine optimisation : observer plusieurs runs naturels et la santé provider avant toute nouvelle hausse de cap. Ne pas contourner WAF/CAPTCHA, ne pas transformer les erreurs provider en clean no-match et ne jamais relâcher same-card/same-grader/same-grade.
 
 ## TCGdex / PokeTrace #119→#135 — `PROD_V4`
 
@@ -248,6 +270,7 @@ Les branches/PRs **historiques/superseded** restent provenance uniquement ; ne p
 - #159 : superseded fonctionnellement par #177 mergée ; reste ouverte comme provenance, ne pas merger telle quelle ;
 - #174/#177/#178/#179/#180 : **MERGED**, ne plus traiter comme PR pending ;
 - #211/#212 : **MERGED** comme une seule capacité runtime ; #212 est le miroir non-draft de #211 au même head, utilisé uniquement à cause du bug du toggle draft du connecteur ;
+- #214 : **MERGED** ; débit `EXTERNAL_PENDING` borné, réutilise le stack #116/#137/#175/#189 sans nouvelle lane ;
 - ancien moteur seed-rotation Global : benchmark/historique après #147/#148 ;
 - one-shots/temp : provenance uniquement, suppression seulement avec autorisation destructive explicite.
 
