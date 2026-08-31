@@ -1,12 +1,13 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **31 août 2026**. Le contrôle GitHub live reste l'autorité et il ne faut **pas utiliser le nombre de lignes comme compteur exhaustif GitHub**.
+Snapshot GitHub pertinent re-vérifié le **31 août 2026**. Le contrôle GitHub live reste l'autorité et il ne faut pas utiliser le nombre de lignes comme compteur exhaustif GitHub.
 
 ```text
 main runtime                   b98756c449718845fc1944560fcf61c02586079f
 PR #199                        OPEN / DRAFT / NON MERGED
 PR #204                        OPEN / DRAFT / NON MERGED / stacked on #199
 PR #205                        OPEN / DRAFT / NON MERGED / stacked on #204
+PR #206                        OPEN / DRAFT / NON MERGED / stacked on #205
 PR #8                          OPEN / DRAFT / NON MERGED
 ```
 
@@ -14,6 +15,7 @@ PR #8                          OPEN / DRAFT / NON MERGED
 
 | PR | Classification / instruction |
 |---|---|
+| #206 | `ROBOT_KB / MEMORY_ONLY / STACKED_ON_205`. Canonical-card + exact-sale persistence dry-run. Le schéma P3 printing non représentable reste fail-closed. Ne pas merger indépendamment. |
 | #205 | `ROBOT_KB / MEMORY_ONLY / STACKED_ON_204`. Exact-card Cardova SOLD candidate dry-run. Live 31 août : 38 exact SOLD candidates, 0 sale blocker, 5 identity blockers. Ne pas merger indépendamment. |
 | #204 | `ROBOT_KB / BOUNDED_READ_ONLY / STACKED_ON_199`. Cardova printing/microvariant proof. Baseline 37/38 exact. Ne pas merger indépendamment. |
 | #199 | `ROBOT_KB / DRAFT`. Cardova paid/completed SOLD collector + P3 persistence unresolved identity. Local collector actif. Aucun merge sans décision explicite. |
@@ -43,6 +45,7 @@ PR #8                          OPEN / DRAFT / NON MERGED
 #199 diag/robot-kb-cardova-paid-history-probe-20260829
   -> #204 diag/cardova-public-title-printing-proof-20260830
       -> #205 diag/cardova-exact-sale-dry-run-20260831
+          -> #206 diag/cardova-canonical-sale-persistence-dry-run-20260831
 ```
 
 Ne pas merger un child indépendamment du parent. Aucune de ces PR n'est autorisée au merge par la phase actuelle.
