@@ -9,6 +9,7 @@ production canonique              main @ b98756c449718845fc1944560fcf61c02586079
 Cardova paid SOLD                 diag/robot-kb-cardova-paid-history-probe-20260829 / PR #199 OPEN DRAFT
 Cardova identity proof            diag/cardova-public-title-printing-proof-20260830 / PR #204 OPEN DRAFT
 Cardova exact SOLD dry-run        diag/cardova-exact-sale-dry-run-20260831 / PR #205 OPEN DRAFT
+Cardova canonical persistence     diag/cardova-canonical-sale-persistence-dry-run-20260831 / PR #206 OPEN DRAFT
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / PR #8
 ```
 
@@ -18,7 +19,7 @@ PR #8 reste expérimentale/draft/non mergée, head `bc641dfe64c1cacc912b585d4e86
 
 ## Comptage
 
-Le dernier audit exhaustif ancien comptait 158 branches distantes. De nombreuses branches ont été créées depuis ; **ne jamais présenter 158 comme nombre actuel** sans nouvel audit exhaustif.
+Le dernier audit exhaustif ancien comptait 158 branches distantes. De nombreuses branches ont été créées depuis ; **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
 
 Toute suppression de branche exige un audit + autorisation explicite.
 
@@ -31,13 +32,16 @@ diag/robot-kb-cardova-paid-history-probe-20260829
        #204 / stacked on #199
        -> diag/cardova-exact-sale-dry-run-20260831
             #205 / stacked on #204
+            -> diag/cardova-canonical-sale-persistence-dry-run-20260831
+                 #206 / stacked on #205
 ```
 
 - #199 : provider paid/completed SOLD + P3 unresolved persistence + collector local ;
 - #204 : preuves printing/microvariant bornées, baseline 37/38 exact ;
-- #205 : compose exact identity -> même contrat SOLD P3, memory-only ; live 31 août = 38 exact SOLD candidates / 0 sale blocker / 5 identity blockers.
+- #205 : compose exact identity -> même contrat SOLD P3, memory-only ; live 31 août = 38 exact SOLD candidates / 0 sale blocker / 5 identity blockers ;
+- #206 : canonical-card + exact-sale persistence dry-run strictement `:memory:` ; le schéma P3 printing non représentable reste fail-closed.
 
-Les trois branches restent actives et **ne doivent pas être mergées indépendamment**. Aucun merge n'est autorisé par la phase courante.
+Les quatre branches restent actives et **ne doivent pas être mergées indépendamment**. Aucun merge n'est autorisé par la phase courante.
 
 ## Branches Global / V4 structurantes conservées
 
