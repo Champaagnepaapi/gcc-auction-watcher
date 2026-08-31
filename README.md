@@ -9,7 +9,10 @@
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main @ 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e (runtime merge #212 / validated #211)
+V4 production canonique          : main @ c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09 (runtime merge #214)
+External pending throughput      : PR #214 MERGED / head 5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595
+#214 validation                  : run 33441243258 SUCCESS / 834 tests PASS / live compare PASS
+#214 production proof            : run 33441714954 SUCCESS / P4 16 / eBay 16 / auctions max 4 / backlog ETA 141
 Auction order-drift hardening    : PR #211 + mirror #212 MERGED / head 461e0ec57271901033426f3566f6ab1f6b38e86a
 Auction hardening validation     : run 33438530882 SUCCESS / 831 tests PASS / live compare PASS
 Magi coverage production         : PR #174 + #177 MERGED
@@ -305,6 +308,25 @@ Validation avant production : run `33438530882` SUCCESS, **831 tests PASS**, com
 
 L'alerte technique fixed distingue désormais explicitement `first-evaluation backlog`, `external pending retry` et `fresh already evaluated` ; un backlog `EXTERNAL_PENDING` n'est plus présenté comme un stock de cartes jamais évaluées.
 
+## External pending throughput — #214
+
+PR #214 augmente uniquement le débit borné de la file fixed `EXTERNAL_PENDING` en réutilisant le stack existant de drain/provider resilience/run breakers :
+
+```text
+P4 scheduling                    16/run
+P4 hard configuration ceiling    20/run
+eBay SOLD total                  16/run
+fixed eBay reserve               12/run
+auction eBay max                 4/run
+budget-only cooldown             5 min
+PSA APR max                      2/run
+provider-error backoff           inchangé
+```
+
+Validation avant merge : run `33441243258` SUCCESS, **834 tests PASS**, compile/YAML/diff-check PASS et live compare PASS. Le premier run naturel post-merge `33441714954` sur `main@c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09` est SUCCESS en 205 s et confirme au démarrage `P4 max 16/run | eBay SOLD total 16/run | auctions max 4 | fixed reserve 12`.
+
+Le même run prouve que les protections restent fail-closed : eBay a ouvert son circuit après **2 hard timeouts de 30 s** sans bloquer le scanner ; PSA APR a ouvert son circuit après le premier **HTTP 403**. La file externe restait `INCOMPLETE` avec **2241 pending** et une ETA diagnostique de **141 runs**. Le backlog n'est donc pas déclaré résolu ; seule la capacité de drainage sûre est augmentée. Aucun provider failure n'est transformé en clean no-match.
+
 ## Fast Lane
 
 ```text
@@ -456,10 +478,11 @@ Documents de reprise :
 
 ```text
 V4 external-market backlog
-  -> traiter le backlog EXTERNAL_PENDING sans l'assimiler à des cartes jamais évaluées
-  -> réutiliser les modules existants de drain/provider resilience/run breakers
-  -> PSA 403 : conserver le circuit breaker fail-closed, chercher une récupération conforme plutôt qu'un contournement
-  -> eBay timeouts : conserver l'isolation hard-timeout et améliorer seulement le débit sûr
+  -> #214 est en production : P4 16/run, eBay 16/run, reserve fixed 12, auctions max 4, hard ceiling P4 20
+  -> observer le drainage réel sur plusieurs runs naturels ; le run 33441714954 restait à 2241 pending / ETA 141
+  -> conserver les breakers fail-closed : eBay coupe après 2 hard timeouts ; PSA coupe après 403/429
+  -> chercher une récupération provider conforme seulement si le blocage persiste ; aucun contournement WAF/CAPTCHA
+  -> ne pas augmenter encore les caps uniquement pour forcer le drainage sans nouvelle preuve de sûreté
   -> ne jamais relâcher exact same-card / same-grader / same-grade ni transformer une indisponibilité provider en preuve négative
 
 Robot KB #180
