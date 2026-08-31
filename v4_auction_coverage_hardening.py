@@ -7,12 +7,12 @@ import watcher
 import v4_auction_item_discovery as item_discovery
 
 
-# The public GCC query is explicitly filtered to on-sale auctions.  We use a
-# deliberately unreachable time horizon only to prevent the legacy collector
-# from stopping at the first >H row.  The requested production horizon is then
-# applied locally to every parsed row after the API pagination has been
-# exhausted.  This changes discovery proof only; economic rules are untouched.
+# Recovery-only horizon. Normal production keeps the canonical fast path and
+# stops as soon as the verified ENDING_SOON order crosses the requested horizon.
+# We use this unreachable horizon only after GCC has already proven that its
+# advertised order is locally inconsistent for the current snapshot.
 _EXHAUSTIVE_HORIZON_MINUTES = 1_000_000_000
+_ORDER_DRIFT_REASON = "auction API ending-soon order invalid"
 _ORIGINAL_DISCOVER_AUCTION_API_LOTS = item_discovery.discover_auction_api_lots
 _ORIGINAL_ORDER_VALIDATOR = item_discovery._api_order_is_valid
 _ORIGINAL_MAYBE_NOTIFY_INCOMPLETE_COVERAGE = watcher.maybe_notify_incomplete_coverage
@@ -28,13 +28,13 @@ def discover_auction_api_lots_exhaustive(
     max_pages: int = item_discovery.AUCTION_API_MAX_PAGES,
     now=None,
 ) -> item_discovery.AuctionApiDiscoveryResult:
-    """Prove auction coverage by exhausting the filtered API query.
+    """Recovery proof used only when GCC's ENDING_SOON order has drifted.
 
-    GCC sometimes returns a locally inverted ENDING_SOON order.  Treat that as
-    an observability signal, not as proof that the inventory is incomplete.
-    Completeness comes from advancing every page until nextPage is exhausted.
+    The filtered AUCTION + ON_SALE query is paginated until the API itself is
+    exhausted. The requested production horizon is then applied locally to all
+    parsed rows. Ordering is observed but is no longer used as a stop condition.
 
-    Structural failures remain fail-closed in the original collector: request
+    Structural failures remain fail-closed in the canonical collector: request
     failures, malformed rows/endTime, repeated pages, no progress, invalid
     nextPage and the max-page safety bound still return incomplete and trigger
     the existing legacy fallback.
@@ -51,7 +51,7 @@ def discover_auction_api_lots_exhaustive(
         nonlocal order_verified
         if not _ORIGINAL_ORDER_VALIDATOR(previous, current):
             order_verified = False
-        # Ordering is not used as a completeness proof in exhaustive mode.
+        # Ordering is not used as a completeness proof in recovery mode.
         return True
 
     previous_validator = item_discovery._api_order_is_valid
@@ -72,11 +72,11 @@ def discover_auction_api_lots_exhaustive(
     if not result.complete:
         return replace(result, order_verified=False)
 
-    # A successful exhaustive proof must end because the API itself is
-    # exhausted.  Anything else is unexpected and must not synthesize success.
+    # A successful recovery proof must end because the API itself is exhausted.
+    # Anything else is unexpected and must not synthesize success.
     if result.reason != item_discovery.PRIMARY_EXHAUSTED_REASON:
         result.coverage.mark_incomplete(
-            "auction exhaustive proof did not reach API exhaustion",
+            "auction exhaustive recovery did not reach API exhaustion",
             watcher.END_NO_PROGRESS,
         )
         setattr(result.coverage, "_auction_scope_complete", False)
@@ -91,7 +91,7 @@ def discover_auction_api_lots_exhaustive(
             complete=False,
             scope_status=item_discovery.FALLBACK_SCOPE_STATUS,
             order_verified=False,
-            reason="auction exhaustive proof did not reach API exhaustion",
+            reason="auction exhaustive recovery did not reach API exhaustion",
         )
 
     inside: list[watcher.Lot] = []
@@ -100,7 +100,7 @@ def discover_auction_api_lots_exhaustive(
         minutes = lot.minutes_to_end
         if minutes is None:
             result.coverage.mark_incomplete(
-                "auction exhaustive proof produced a timerless candidate",
+                "auction exhaustive recovery produced a timerless candidate",
                 watcher.END_MALFORMED_RESPONSE,
             )
             setattr(result.coverage, "_auction_scope_complete", False)
@@ -115,7 +115,7 @@ def discover_auction_api_lots_exhaustive(
                 complete=False,
                 scope_status=item_discovery.FALLBACK_SCOPE_STATUS,
                 order_verified=False,
-                reason="auction exhaustive proof produced timerless candidate",
+                reason="auction exhaustive recovery produced timerless candidate",
             )
         if minutes <= horizon:
             inside.append(lot)
@@ -130,7 +130,7 @@ def discover_auction_api_lots_exhaustive(
     if not order_verified:
         watcher.log(
             "Auction API ENDING_SOON order drift observed; "
-            "coverage remains proven by exhaustive filtered pagination"
+            "coverage recovered by exhaustive filtered pagination"
         )
 
     result.coverage.pagination_end_reason = item_discovery.PRIMARY_EXHAUSTED_REASON
@@ -149,6 +149,51 @@ def discover_auction_api_lots_exhaustive(
         threshold_crossed=outside_horizon,
         reason=item_discovery.PRIMARY_EXHAUSTED_REASON,
     )
+
+
+def discover_auction_api_lots_hardened(
+    *,
+    max_minutes: Optional[int] = None,
+    http_get=None,
+    page_size: int = item_discovery.AUCTION_API_PAGE_SIZE,
+    max_pages: int = item_discovery.AUCTION_API_MAX_PAGES,
+    now=None,
+) -> item_discovery.AuctionApiDiscoveryResult:
+    """Keep the fast canonical path; recover only from proven order drift."""
+
+    horizon = (
+        watcher.MAX_AUCTION_MINUTES
+        if max_minutes is None
+        else max(0, int(max_minutes))
+    )
+    primary = _ORIGINAL_DISCOVER_AUCTION_API_LOTS(
+        max_minutes=horizon,
+        http_get=http_get,
+        page_size=page_size,
+        max_pages=max_pages,
+        now=now,
+    )
+    if primary.complete or primary.reason != _ORDER_DRIFT_REASON:
+        return primary
+
+    watcher.log(
+        "Auction API ENDING_SOON order drift -> bounded exhaustive recovery "
+        "for this snapshot only"
+    )
+    recovered = discover_auction_api_lots_exhaustive(
+        max_minutes=horizon,
+        http_get=http_get,
+        page_size=page_size,
+        max_pages=max_pages,
+        now=now,
+    )
+    if recovered.complete:
+        watcher.log(
+            "Auction API order-drift recovery complete: "
+            f"{recovered.rows_seen} row(s), {len(recovered.lots)} candidate(s) "
+            f"<= {horizon} min"
+        )
+    return recovered
 
 
 def format_actionable_technical_coverage_message(
@@ -226,12 +271,12 @@ def guarded_maybe_notify_incomplete_coverage(
 
 
 def install_v4_auction_coverage_hardening() -> None:
-    """Install exhaustive auction proof plus truthful technical-alert wording."""
+    """Install order-drift recovery plus truthful technical-alert wording."""
 
     global _INSTALLED
     global _ALERT_CLARITY_INSTALLED
     if not _INSTALLED:
-        item_discovery.discover_auction_api_lots = discover_auction_api_lots_exhaustive
+        item_discovery.discover_auction_api_lots = discover_auction_api_lots_hardened
         _INSTALLED = True
     if not _ALERT_CLARITY_INSTALLED:
         watcher.maybe_notify_incomplete_coverage = guarded_maybe_notify_incomplete_coverage
