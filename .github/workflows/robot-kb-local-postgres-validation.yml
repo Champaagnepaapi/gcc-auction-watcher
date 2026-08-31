@@ -32,6 +32,7 @@ on:
       - "tests/test_robot_kb_cardova_variant_surface_probe.py"
       - "tests/test_robot_kb_cardova_variant_corroboration_probe.py"
       - "tests/test_robot_kb_cardova_sale_transaction_dry_run.py"
+      - "tests/test_robot_kb_cardova_canonical_sale_persistence_dry_run.py"
       - "tests/test_robot_kb_cardova_sale_transaction_ingest.py"
       - "tests/test_robot_kb_cardova_paid_sold_recurring.py"
       - ".github/workflows/robot-kb-cloud-shadow.yml"
@@ -116,6 +117,7 @@ jobs:
           python -m unittest discover -s tests -p "test_robot_kb_cardova_variant_surface_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_variant_corroboration_probe.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_dry_run.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_cardova_canonical_sale_persistence_dry_run.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_sale_transaction_ingest.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_cardova_paid_sold_recurring.py" -v
 
@@ -156,6 +158,8 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_variant_surface_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_variant_corroboration_probe.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_dry_run.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_exact_sale_candidate_dry_run.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_cardova_canonical_sale_persistence_dry_run.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_sale_transaction_ingest.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_cardova_paid_sold_recurring.py"
 
