@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """Guarded durable commit path for exact Cardova SALE_TRANSACTION revisions.
 
-This is deliberately separate from PR #209's rollback-only rehearsal.  It reuses
+This is deliberately separate from PR #209's rollback-only rehearsal. It reuses
 that exact proven cohort/migration/promotion path and adds operator gates required
 before a real local PostgreSQL write can occur:
 
 - canonical loopback `robot_pokemon_kb` only;
 - explicit `--commit` plus an exact confirmation phrase;
-- fresh custom-format pg_dump created before opening the write transaction;
+- all known local Robot KB write lanes quiesced through their existing lock dirs;
+- fresh custom-format pg_dump created while those writer locks are held;
 - backup archive readability check and SHA-256 recorded without secrets;
 - strict preflight state must match the successful #209 rollback rehearsal shape;
 - migration 0003 + all exact `REVISION_OF` promotions in one transaction;
 - replay/idempotency and leaf-state checks before COMMIT;
 - post-COMMIT verification of schema, registry, exact revisions and PROVEN links.
 
-The script never auto-restores or deletes data.  If a post-COMMIT verification
+The script never auto-restores or deletes data. If a post-COMMIT verification
 were to fail, the fresh backup path is retained and surfaced for manual recovery.
 No V4 economic activation, notification or commercial action is performed.
 """
@@ -22,6 +23,7 @@ No V4 economic activation, notification or commercial action is performed.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -30,7 +32,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterator, Mapping, Optional, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,13 +57,18 @@ CONFIRMATION_PHRASE = "I AUTHORIZE CARDOVA DURABLE EXACT SALE WRITE"
 DEFAULT_MAX_RECORDS = 500
 HARD_MAX_RECORDS = 500
 MIN_BACKUP_BYTES = 1024
-DEFAULT_BACKUP_DIR = (
+DEFAULT_DATA_ROOT = (
     Path.home()
     / "Library"
     / "Application Support"
     / "RobotPokemonKB"
-    / "backups"
-    / "postgres"
+)
+DEFAULT_BACKUP_DIR = DEFAULT_DATA_ROOT / "backups" / "postgres"
+WRITE_LOCK_NAMES = (
+    "collector",
+    "multisource",
+    "cardova-sold",
+    "ebay-rapidapi-shadow",
 )
 
 
@@ -82,6 +89,62 @@ def require_operator_authorization(*, commit: bool, confirmation: str) -> None:
         raise DurableCommitError("durable write requires explicit --commit")
     if confirmation != CONFIRMATION_PHRASE:
         raise DurableCommitError("durable write confirmation phrase mismatch")
+
+
+def _lock_pid(path: Path) -> Optional[int]:
+    try:
+        return int((path / "pid").read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def _pid_alive(pid: Optional[int]) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@contextmanager
+def acquire_writer_quiescence(data_root: Path = DEFAULT_DATA_ROOT) -> Iterator[Mapping[str, Any]]:
+    """Hold the exact lock dirs used by existing local Robot KB writers.
+
+    Existing runners treat a lock whose pid is alive as an already-running lane
+    and exit cleanly. We never delete someone else's lock. Even a stale/unknown
+    pre-existing lock fails closed and must be investigated separately.
+    """
+
+    root = data_root.expanduser().resolve() / "locks"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    acquired: list[Path] = []
+    owner_pid = os.getpid()
+    try:
+        for name in WRITE_LOCK_NAMES:
+            path = root / f"{name}.lock"
+            try:
+                path.mkdir(mode=0o700)
+            except FileExistsError as error:
+                pid = _lock_pid(path)
+                state = "active" if _pid_alive(pid) else "stale-or-unknown"
+                raise DurableCommitError(
+                    f"Robot KB writer lock already exists: {name} ({state}, pid={pid})"
+                ) from error
+            (path / "pid").write_text(f"{owner_pid}\n", encoding="utf-8")
+            acquired.append(path)
+        yield {
+            "writer_lanes_quiesced": True,
+            "writer_lock_names": list(WRITE_LOCK_NAMES),
+            "writer_lock_root": str(root),
+        }
+    finally:
+        for path in reversed(acquired):
+            if _lock_pid(path) == owner_pid:
+                shutil.rmtree(path, ignore_errors=True)
 
 
 def _backup_sha256(path: Path) -> str:
@@ -295,6 +358,7 @@ def run_durable_commit(
     *,
     commit: bool,
     confirmation: str,
+    data_root: Path = DEFAULT_DATA_ROOT,
     backup_directory: Path = DEFAULT_BACKUP_DIR,
     max_records: int = DEFAULT_MAX_RECORDS,
     max_groups: int = 20,
@@ -304,63 +368,65 @@ def run_durable_commit(
     require_operator_authorization(commit=commit, confirmation=confirmation)
     target = recovery.validate_local_database_url(database_url)
 
-    # Compose against read-only snapshots before creating a backup or entering
-    # the write transaction. Identity ambiguity remains fail-closed here.
-    sales, identities, plans, family_applicability, cohort = _compose_plans(
-        database_url,
-        max_records=max_records,
-        max_groups=max_groups,
-        min_distinct_dexids=min_distinct_dexids,
-        timeout_seconds=timeout_seconds,
-    )
-    source_ids = [plan.source_native_record_id for plan in plans]
+    with acquire_writer_quiescence(data_root) as quiescence:
+        # Compose against read-only snapshots only after every known local writer
+        # lane has been quiesced. The locks remain held through backup + COMMIT.
+        sales, identities, plans, family_applicability, cohort = _compose_plans(
+            database_url,
+            max_records=max_records,
+            max_groups=max_groups,
+            min_distinct_dexids=min_distinct_dexids,
+            timeout_seconds=timeout_seconds,
+        )
+        source_ids = [plan.source_native_record_id for plan in plans]
 
-    backup = create_and_validate_fresh_backup(database_url, backup_directory)
-    connection = connect_postgres(database_url)
-    committed = False
-    preflight: Mapping[str, Any] = {}
-    inside: Mapping[str, Any] = {}
-    try:
-        preflight = _assert_preflight(connection, source_ids)
-        connection.execute("BEGIN")
-        connection.execute(
-            "SELECT pg_advisory_xact_lock(?)",
-            (rehearsal.LOCK_KEY,),
-        )
-        inside = _apply_and_verify_inside_transaction(
-            connection,
-            sales,
-            identities,
-            plans,
-            family_applicability,
-        )
-        connection.execute("COMMIT")
-        committed = True
-        post = _verify_post_commit(connection, source_ids)
-        return {
-            **target,
-            **cohort,
-            "p3_runtime_required": EXPECTED_P3_RUNTIME,
-            "rehearsal_code_head_required": EXPECTED_REHEARSAL_CODE_HEAD,
-            **backup,
-            "before_schema_versions": preflight["schema_versions"],
-            "inside_transaction": inside,
-            "commit_executed": True,
-            "post_commit": post,
-            "recovery_required": False,
-            "v4_use": False,
-        }
-    except Exception as error:
-        if connection.in_transaction:
-            connection.execute("ROLLBACK")
-        if committed:
-            raise DurableCommitError(
-                f"post-commit verification failed; manual recovery may be required; "
-                f"backup retained at {backup['backup_path']}: {type(error).__name__}: {error}"
-            ) from error
-        raise
-    finally:
-        connection.close()
+        backup = create_and_validate_fresh_backup(database_url, backup_directory)
+        connection = connect_postgres(database_url)
+        committed = False
+        preflight: Mapping[str, Any] = {}
+        inside: Mapping[str, Any] = {}
+        try:
+            preflight = _assert_preflight(connection, source_ids)
+            connection.execute("BEGIN")
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(?)",
+                (rehearsal.LOCK_KEY,),
+            )
+            inside = _apply_and_verify_inside_transaction(
+                connection,
+                sales,
+                identities,
+                plans,
+                family_applicability,
+            )
+            connection.execute("COMMIT")
+            committed = True
+            post = _verify_post_commit(connection, source_ids)
+            return {
+                **target,
+                **cohort,
+                **quiescence,
+                "p3_runtime_required": EXPECTED_P3_RUNTIME,
+                "rehearsal_code_head_required": EXPECTED_REHEARSAL_CODE_HEAD,
+                **backup,
+                "before_schema_versions": preflight["schema_versions"],
+                "inside_transaction": inside,
+                "commit_executed": True,
+                "post_commit": post,
+                "recovery_required": False,
+                "v4_use": False,
+            }
+        except Exception as error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            if committed:
+                raise DurableCommitError(
+                    f"post-commit verification failed; manual recovery may be required; "
+                    f"backup retained at {backup['backup_path']}: {type(error).__name__}: {error}"
+                ) from error
+            raise
+        finally:
+            connection.close()
 
 
 def safe_summary() -> Mapping[str, Any]:
@@ -368,6 +434,8 @@ def safe_summary() -> Mapping[str, Any]:
         "mode": "GUARDED_CARDOVA_POSTGRES_EXACT_REVISION_COMMIT",
         "explicit_commit_required": True,
         "exact_confirmation_required": True,
+        "writer_quiescence_required": True,
+        "writer_lock_names": list(WRITE_LOCK_NAMES),
         "fresh_backup_required": True,
         "backup_archive_validation_required": True,
         "single_transaction": True,
@@ -390,6 +458,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--commit", action="store_true")
     parser.add_argument("--confirm", default="")
+    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--backup-directory", type=Path, default=DEFAULT_BACKUP_DIR)
     parser.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS)
     parser.add_argument("--max-groups", type=int, default=20)
@@ -414,6 +483,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 os.getenv("ROBOT_KB_DATABASE_URL", ""),
                 commit=args.commit,
                 confirmation=args.confirm,
+                data_root=args.data_root,
                 backup_directory=args.backup_directory,
                 max_records=args.max_records,
                 max_groups=args.max_groups,
