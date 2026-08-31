@@ -7,6 +7,7 @@ import unittest
 
 P3_AVAILABLE = importlib.util.find_spec("robot_kb") is not None
 PATH = Path("mac/robot-kb-local/robot_kb_cardova_sale_transaction_dry_run.py")
+EXACT_PATH = Path("mac/robot-kb-local/robot_kb_cardova_exact_sale_candidate_dry_run.py")
 
 if P3_AVAILABLE:
     from robot_kb.domain import ObservationType
@@ -15,9 +16,15 @@ if P3_AVAILABLE:
     MOD = importlib.util.module_from_spec(SPEC)
     assert SPEC.loader is not None
     SPEC.loader.exec_module(MOD)
+
+    EXACT_SPEC = importlib.util.spec_from_file_location("cardova_exact_sale_candidate_dry_run", EXACT_PATH)
+    EXACT = importlib.util.module_from_spec(EXACT_SPEC)
+    assert EXACT_SPEC.loader is not None
+    EXACT_SPEC.loader.exec_module(EXACT)
 else:
     ObservationType = None
     MOD = None
+    EXACT = None
 
 
 def paid_record() -> dict:
@@ -55,6 +62,27 @@ def paid_record() -> dict:
         "provider_card_ulid": "CARD01",
         "sale_evidence_ready": True,
         "sale_transaction_ready": False,
+    }
+
+
+def exact_identity_row() -> dict:
+    return {
+        "source_native_record_id": "01TESTCARDOVAPAIDSALE",
+        "macro_identity_exact": True,
+        "microvariant_exact": True,
+        "exact_identity_link_candidate": True,
+        "canonical_link_written": False,
+        "tcgdex_card_id": "PROMO-XY-279",
+        "tcgdex_set_id": "PROMO-XY",
+        "tcgdex_local_id": "279",
+        "card_name_provider_claim": "Pikachu",
+        "collector_number_provider_claim": "#279/XY-P",
+        "language": "Japanese",
+        "grader": "PSA",
+        "grade": "10",
+        "finish": "normal",
+        "printing": "",
+        "pinned_source_variant_dimensions": {"finish": "non_holo"},
     }
 
 
@@ -160,6 +188,37 @@ class CardovaSaleTransactionDryRunTests(unittest.TestCase):
         self.assertEqual(summary["canonical_card_links"], 0)
         self.assertEqual(summary["hammer_price_jpy_rows"], 1)
 
+    def test_exact_identity_candidate_reuses_same_p3_sale_contract(self):
+        summary = EXACT.compose_exact_sale_candidates(
+            [paid_record()],
+            [exact_identity_row()],
+            observed_at="2026-08-30T08:00:00+00:00",
+        )
+        self.assertEqual(summary["exact_card_sale_candidate_count"], 1)
+        self.assertEqual(summary["blocked"], {})
+        record = summary["records"][0]
+        self.assertTrue(record["p3_sale_contract_valid"])
+        self.assertTrue(record["commercial_identity_exact"])
+        self.assertTrue(record["exact_card_sale_candidate_ready"])
+        self.assertEqual(record["sale_occurred_at"], "2026-08-29T12:00:00+00:00")
+        self.assertEqual(record["hammer_price_jpy"], 123456)
+        self.assertEqual(record["price_component"], "HAMMER_PRICE")
+        self.assertEqual(record["currency"], "JPY")
+        self.assertFalse(record["canonical_link_written"])
+        self.assertFalse(record["robot_kb_write"])
+        self.assertFalse(record["sale_transaction_written"])
+        self.assertFalse(record["v4_economic_use"])
+
+        blocked_identity = exact_identity_row()
+        blocked_identity["microvariant_exact"] = False
+        blocked = EXACT.compose_exact_sale_candidates(
+            [paid_record()],
+            [blocked_identity],
+            observed_at="2026-08-30T08:00:00+00:00",
+        )
+        self.assertEqual(blocked["exact_card_sale_candidate_count"], 0)
+        self.assertEqual(blocked["blocked"], {"MICROVARIANT_NOT_EXACT": 1})
+
     def test_safety_contract_has_no_durable_write_or_commerce(self):
         summary = MOD.safe_summary()
         self.assertEqual(summary["database"], ":memory:")
@@ -177,6 +236,17 @@ class CardovaSaleTransactionDryRunTests(unittest.TestCase):
             "automatic_payment",
         ):
             self.assertFalse(summary[key], key)
+
+        exact_summary = EXACT.safe_summary()
+        self.assertTrue(exact_summary["existing_p3_sale_contract_reused"])
+        self.assertFalse(exact_summary["canonical_link_written"])
+        self.assertFalse(exact_summary["robot_kb_write"])
+        self.assertFalse(exact_summary["sale_transaction_written"])
+        self.assertFalse(exact_summary["v4_economic_use"])
+        self.assertFalse(exact_summary["automatic_purchase"])
+        self.assertFalse(exact_summary["automatic_bid"])
+        self.assertFalse(exact_summary["automatic_checkout"])
+        self.assertFalse(exact_summary["automatic_payment"])
 
 
 if __name__ == "__main__":

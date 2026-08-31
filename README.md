@@ -4,7 +4,7 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Les historiques et supersessions détaillés sont dans `docs/`.
 
-## État canonique — 30 août 2026
+## État canonique — 31 août 2026
 
 ```text
 Repo                              Champaagnepaapi/gcc-auction-watcher
@@ -18,12 +18,12 @@ Robot KB                          PostgreSQL local Mac ACTIF
 Robot KB runtime P3               1d06fe33b6fc640657255e15a8d17251aa02b6ce
 Cardova paid SOLD                 #199 OPEN / DRAFT / NON MERGED
 Cardova identity proof            #204 OPEN / DRAFT / NON MERGED
-Cardova proof code head validé    dcd64575e0fee27f0e9c9b99cdf49c9703c0394e
-Cardova SALE_TRANSACTION          244 unresolved disponibles
-Cardova macro exact read-only     38
-Cardova finish exact              38
-Cardova printing exact            6 No Rarity Symbol
-Cardova microvariant exact        37 / 38
+Cardova exact SOLD dry-run        #205 OPEN / DRAFT / NON MERGED
+Cardova exact SOLD code head      f575a3444477cf81b0564e832f477bb2a64863b6
+Cardova SALE_TRANSACTION          291 unresolved disponibles au dernier live
+Cardova baseline identity         37 / 38 exact sur cohort du 30 août
+Cardova exact SOLD candidates     38 au live du 31 août
+Cardova identity blockers         5 au live du 31 août
 Cardova canonical links           0
 V4_USE Robot KB                   false
 Neon                              automatic writers OFF / rollback manuel
@@ -141,9 +141,9 @@ Migration Neon → Mac vérifiée : 1,087,015 lignes, 35 tables, marker `MIGRATI
 
 ---
 
-# Cardova paid/completed SOLD — PR #199 DRAFT + identité #204 DRAFT
+# Cardova paid/completed SOLD — PR #199 + identité #204 + dry-run #205
 
-PR #199 et PR #204 restent **OPEN / DRAFT / NON MERGED**.
+PR #199, PR #204 et PR #205 restent **OPEN / DRAFT / NON MERGED**.
 
 ## Gate provider-level
 
@@ -161,9 +161,9 @@ final winning bid > 0
 
 Stockage : `SALE_TRANSACTION`, `sale_occurred_at = auction_end_at_utc`, prix `HAMMER_PRICE` JPY. Aucun timestamp de paiement, buyer premium ou all-in n'est fabriqué.
 
-## Identité macro déterministe — live validée
+## Identité macro déterministe — baseline live du 30 août
 
-Le snapshot local read-only du 30 août contient **244 `SALE_TRANSACTION` Cardova unresolved disponibles**. Le compose déterministe prouve **38 macro-identités** sans prétendre que la numérotation Cardova a une sémantique globale.
+Le snapshot local read-only du 30 août contenait **244 `SALE_TRANSACTION` Cardova unresolved disponibles**. Le compose déterministe prouvait **38 macro-identités** sans prétendre que la numérotation Cardova a une sémantique globale.
 
 Chaîne de preuve obligatoire par ligne :
 
@@ -175,7 +175,7 @@ set Cardova exact corroboré
 + source TCGdex Asian immuable @ af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-Couverture live :
+Couverture baseline :
 
 ```text
 Japanese Basic / PMCG1             17 lignes
@@ -188,7 +188,7 @@ provider numeric semantics global  false
 
 Cette preuve est **row-scoped**. Aucun alias global de numérotation Cardova n'est créé.
 
-## Finish — 38/38 exact sur ce sous-ensemble
+## Finish — 38/38 exact sur le cohort baseline
 
 Le probe de finish compose les macro-identités avec la source TCGdex pinnée :
 
@@ -196,7 +196,7 @@ Le probe de finish compose les macro-identités avec la source TCGdex pinnée :
 - claim Cardova `Holo` compatible + source => corroboré ;
 - token opaque/non corroboré => ne devient pas finish par lui-même.
 
-Live : **38/38 finish exact** sur les 38 macros.
+Baseline : **38/38 finish exact** sur les 38 macros du 30 août.
 
 ## No Rarity Symbol — preuves positives uniquement
 
@@ -249,7 +249,7 @@ Les images ne sont pas stockées dans le repo. Un symbole visible **exclut posit
 
 La closure n'active ce chemin que si la source TCGdex pinnée présente exactement deux variantes compatibles, identiques sauf `printing=no_rarity_symbol` sur l'une. Toute autre différence, token opaque ou troisième printing reste fail-closed.
 
-## Closure microvariante — live 37/38
+## Closure microvariante #204 — baseline 37/38
 
 Validation Mac read-only sur le head code `dcd64575e0fee27f0e9c9b99cdf49c9703c0394e` :
 
@@ -262,7 +262,7 @@ remaining unresolved                1
 expected_37_of_38                  true
 ```
 
-Unique bloqueur :
+Unique bloqueur du cohort baseline :
 
 ```text
 Charizard
@@ -273,9 +273,65 @@ material_tail Error(Strength)
 reason CARDOVA_PUBLIC_TITLE_MATERIAL_TAIL_UNRESOLVED
 ```
 
-Les 37 lignes sont des **exact identity link candidates** seulement. `canonical_link_written=0`, aucun `SALE_TRANSACTION` exact n'a été écrit par cette phase, `V4_USE=false`.
+Les 37 lignes étaient des **exact identity link candidates** seulement. `canonical_link_written=0`, aucun `SALE_TRANSACTION` exact n'a été écrit par cette phase, `V4_USE=false`.
 
-Tests ciblés sur ce head : **25/25 PASS** (`7 + 7 + 11`).
+Tests ciblés #204 : **25/25 PASS** (`7 + 7 + 11`).
+
+## Exact SOLD candidate dry-run #205 — live 31 août
+
+#205 réutilise les identités exactes de #204 et le contrat P3 SOLD existant de #199. Il joint strictement sur le même `source_native_record_id` et vérifie aussi carte/numéro/grader/grade (+ langue lorsqu'elle est présente). Le résultat reste **memory-only**.
+
+Head code live : `f575a3444477cf81b0564e832f477bb2a64863b6`.
+
+CI :
+
+```text
+Robot KB validation               33339319304 SUCCESS
+V4 Auction Discovery              33339319292 SUCCESS
+Cardova P3 dry-run tests          7/7 PASS
+compile / YAML / diff-check       PASS
+```
+
+Entre les deux phases, le LaunchAgent a continué à accumuler l'historique : le snapshot live du 31 août contient désormais **291** `SALE_TRANSACTION` Cardova unresolved. Le compteur global ne doit donc pas être figé à 37.
+
+Live Mac read-only #205 :
+
+```text
+unresolved Cardova SALES          291
+exact identity rows                38
+exact-card SOLD candidates         38
+sale candidate blocked              0
+distinct candidate source ids      38
+HAMMER_PRICE JPY rows              38
+all candidates memory-only        true
+identity blockers                   5
+```
+
+Les cinq blockers visibles sur ce snapshot :
+
+```text
+Charizard  01KQHACBX20NBMGD9VZAPA6Z64  CARDOVA_PUBLIC_TITLE_MATERIAL_TAIL_UNRESOLVED / Error(Strength)
+Rattata    01M07F9T9NKG76DFXGNY0NXWAY  PROVIDER_MATERIAL_TOKEN_UNRESOLVED
+Machoke    01M07F9T93G9V1BVZ3X8NTGV89  PROVIDER_MATERIAL_TOKEN_UNRESOLVED
+Machoke    01M07F9T4K90S1X1XCVHVRRKNH  PROVIDER_MATERIAL_TOKEN_UNRESOLVED
+Magnemite  01M07F9T80P8EVTY9D0S1X132J  PROVIDER_MATERIAL_TOKEN_UNRESOLVED
+```
+
+Le Charizard est le blocker historique du cohort 38 ; les quatre autres sont de nouvelles lignes apparues après le snapshot 244. Une ligne exacte supplémentaire est aussi entrée dans le périmètre, d'où **38 exact SOLD candidates** au lieu de 37 sur le snapshot courant.
+
+Invariant correct pour les futurs live :
+
+```text
+exact_card_sale_candidate_count == exact_identity_rows
+sale_candidate_blocked == {}
+distinct_candidate_source_ids == exact_card_sale_candidate_count
+HAMMER_PRICE JPY rows == exact_card_sale_candidate_count
+all candidates memory-only == true
+```
+
+Ne pas utiliser un `expected_count == 37` global : la base historique continue de croître.
+
+Aucun canonical link, aucun write exact, aucun V4 economic use et aucune notification ne sont effectués par #205.
 
 ## Stockage / activation locale
 
@@ -287,12 +343,13 @@ cadence                            02:23 / 08:23 / 14:23 / 20:23
 runtime collector pin              a2f1878186a8850d5a4c4763518a10ecfd16f2fc
 #199 collector/research head        59d006fc7259198f13d957b412bc48e4911c067f
 #204 identity proof code head       dcd64575e0fee27f0e9c9b99cdf49c9703c0394e
-SALE_TRANSACTION unresolved        244 disponibles au dernier snapshot
+#205 exact SOLD dry-run head        f575a3444477cf81b0564e832f477bb2a64863b6
+SALE_TRANSACTION unresolved        291 au live du 31 août
 canonical links                    0
 V4_USE                             false
 ```
 
-Le cursor de rotation n'a pas été ré-audité dans la phase identity du 30 août ; le dernier handoff collector documentait page 13. Ne pas déduire un cursor courant du nouveau total 244.
+Le cursor de rotation n'a pas été re-audité dans cette phase ; ne pas déduire le cursor courant du total 291.
 
 ---
 
@@ -332,15 +389,16 @@ Documents : `docs/project-current-phase.md`, `docs/project-capability-ledger.md`
 # Prochaine direction canonique
 
 ```text
-Cardova / identité
-  -> conserver 37/38 microvariantes exactes comme candidates bornées
-  -> laisser le Charizard Error(Strength) unresolved jusqu'à preuve canonique de cette microvariante
-  -> ne jamais supprimer/ignorer Error(Strength)
+Cardova / exact SOLD
+  -> #205 a validé que toutes les identités exactes du snapshot courant satisfont aussi le contrat SOLD P3
+  -> garder les blockers matériels fail-closed
+  -> ne jamais hardcoder un compteur global à 37 puisque le collector continue de croître
 
-Cardova / intégration #199
-  -> composer ces 37 exact identities dans un dry-run de canonical-link / exact-sale evidence
-  -> vérifier ligne par ligne avant toute écriture
-  -> conserver la 38e vente provider-level mais identité unresolved
+Cardova / prochaine intégration
+  -> construire un dry-run canonical-card link + exact-sale persistence
+  -> réutiliser les primitives Robot KB existantes
+  -> memory-only / rollback d'abord, puis vérification ligne par ligne
+  -> aucune écriture durable tant que ce nouveau dry-run n'est pas validé
   -> aucun V4_USE tant qu'une activation séparée n'est pas explicitement validée
 
 Cardova / collecte

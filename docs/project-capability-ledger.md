@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot re-vérifié le **30 août 2026**. Le code/Git/GitHub live reste prioritaire. Ce ledger sert d'index anti-réimplémentation et de registre des capacités/supersessions.
+Snapshot re-vérifié le **31 août 2026**. Le code/Git/GitHub live reste prioritaire. Ce ledger sert d'index anti-réimplémentation et de registre des capacités/supersessions.
 
 ## Autorité courante
 
@@ -17,13 +17,12 @@ Robot KB local cutover           #166 / PostgreSQL Mac ACTIF
 Robot KB multisource             #180 MERGED / LaunchAgents installés
 Cardova paid SOLD                #199 OPEN/DRAFT / local ACTIF / NON MERGED
 Cardova identity proof           #204 OPEN/DRAFT / NON MERGED
+Cardova exact SOLD dry-run       #205 OPEN/DRAFT / NON MERGED
 Cardova collector runtime pin    a2f1878186a8850d5a4c4763518a10ecfd16f2fc
-Cardova proof code head          dcd64575e0fee27f0e9c9b99cdf49c9703c0394e
-Cardova SALES unresolved         244 disponibles
-Cardova macro exact              38 read-only
-Cardova finish exact             38
-Cardova printing exact           6 No Rarity Symbol
-Cardova microvariant exact       37 / 38
+Cardova identity baseline        37 / 38 exact sur cohort du 30 août
+Cardova SALES unresolved         291 au live du 31 août
+Cardova exact SOLD candidates    38 au live du 31 août
+Cardova identity blockers        5 au live du 31 août
 Cardova canonical links          0
 Neon automatic writers           OFF / rollback manuel
 V5                               PR #8 OPEN / DRAFT / NON MERGED
@@ -118,7 +117,7 @@ P3 semantics :
 - unresolved identity conservée ;
 - exact identity/V4 eligibility = false tant que la microvariante commerciale complète n'est pas prouvée.
 
-Live DB read-only au 30 août : **244 `SALE_TRANSACTION` Cardova unresolved disponibles**.
+Baseline read-only du 30 août : **244 `SALE_TRANSACTION` Cardova unresolved**. Live du 31 août : **291** ; le LaunchAgent continue donc de faire croître le dataset pendant les phases de preuve.
 
 ### Macro identity compose — `ROBOT_KB / READ_ONLY`
 
@@ -129,7 +128,7 @@ Live DB read-only au 30 août : **244 `SALE_TRANSACTION` Cardova unresolved disp
 3. une seule carte TCGdex pour le dexId dans ce set ;
 4. source TCGdex Asian immuable pinnée `af33c9ac882e2acfadffaf19e8083aa976d12983`.
 
-Live :
+Baseline 30 août :
 
 ```text
 Basic / PMCG1                    17
@@ -144,7 +143,7 @@ La preuve est row-scoped. **Ne jamais réimplémenter cela comme une règle glob
 
 ### Finish compose — `ROBOT_KB / READ_ONLY`
 
-`robot_kb_cardova_legacy_macro_finish_probe.py` reste la capacité canonique pour le finish. Live : **38/38 finish exact**.
+`robot_kb_cardova_legacy_macro_finish_probe.py` reste la capacité canonique pour le finish. Baseline : **38/38 finish exact**.
 
 `FA`, `SR`, `Holo Shiny` et tokens opaques ne deviennent jamais finish ou microvariante exacts par eux-mêmes.
 
@@ -182,7 +181,7 @@ Head code validé : `dcd64575e0fee27f0e9c9b99cdf49c9703c0394e`.
 
 Tests ciblés : **25/25 PASS** (`7 + 7 + 11`).
 
-Live Mac read-only final :
+Baseline Mac read-only du 30 août :
 
 ```text
 initial microvariant exact        26
@@ -193,17 +192,73 @@ remaining unresolved               1
 expected_37_of_38                 true
 ```
 
-Unique blocker : Charizard PSA 8 cert `156405344`, `Error(Strength)`, reason `CARDOVA_PUBLIC_TITLE_MATERIAL_TAIL_UNRESOLVED`.
+Unique blocker du cohort baseline : Charizard PSA 8 cert `156405344`, `Error(Strength)`, reason `CARDOVA_PUBLIC_TITLE_MATERIAL_TAIL_UNRESOLVED`.
 
 Les 37 sont des **exact identity link candidates**, pas des writes : `canonical_links_written=0`, `robot_kb_write=false`, `sale_transaction_ready=false` dans cette phase, `V4_USE=false`.
+
+### Exact SOLD candidate compose #205 — `ROBOT_KB / MEMORY_ONLY`
+
+#205 réutilise deux capacités existantes au lieu de créer une seconde lane :
+
+1. les identités commerciales exactes produites par #204 ;
+2. `robot_kb_cardova_sale_transaction_dry_run.build_p3_sale` de #199 pour les sémantiques SOLD.
+
+Le join est strict sur le même `source_native_record_id` et revalide carte/numéro/grader/grade ainsi que la langue lorsqu'elle est présente. Une identité non exacte, un duplicate source id ou tout rejet du contrat P3 reste bloqué.
+
+Head code live : `f575a3444477cf81b0564e832f477bb2a64863b6`.
+
+Validation :
+
+```text
+Robot KB CI                      33339319304 SUCCESS
+V4 Auction Discovery             33339319292 SUCCESS
+Cardova P3 dry-run tests         7/7 PASS
+compile/YAML/diff-check          PASS
+```
+
+Live Mac read-only du 31 août sur les **291** SALES unresolved :
+
+```text
+exact identity rows               38
+exact-card SOLD candidates        38
+sale candidate blocked             0
+distinct candidate source ids     38
+HAMMER_PRICE JPY rows             38
+all candidates memory-only       true
+identity blockers                  5
+```
+
+Blockers visibles :
+
+- Charizard `01KQHACBX20NBMGD9VZAPA6Z64` — `CARDOVA_PUBLIC_TITLE_MATERIAL_TAIL_UNRESOLVED`, `Error(Strength)` ;
+- Rattata `01M07F9T9NKG76DFXGNY0NXWAY` — `PROVIDER_MATERIAL_TOKEN_UNRESOLVED` ;
+- Machoke `01M07F9T93G9V1BVZ3X8NTGV89` — `PROVIDER_MATERIAL_TOKEN_UNRESOLVED` ;
+- Machoke `01M07F9T4K90S1X1XCVHVRRKNH` — `PROVIDER_MATERIAL_TOKEN_UNRESOLVED` ;
+- Magnemite `01M07F9T80P8EVTY9D0S1X132J` — `PROVIDER_MATERIAL_TOKEN_UNRESOLVED`.
+
+Le Charizard est le blocker historique du cohort 38 ; les quatre autres sont apparus après le snapshot 244. Une identité exacte supplémentaire est aussi entrée dans le dataset, ce qui explique **38 exact SOLD candidates** au lieu du compteur historique 37.
+
+Invariant durable :
+
+```text
+exact_card_sale_candidate_count == exact_identity_rows
+sale_candidate_blocked == {}
+distinct_candidate_source_ids == exact_card_sale_candidate_count
+HAMMER_PRICE JPY rows == exact_card_sale_candidate_count
+all candidates memory-only == true
+```
+
+Ne jamais hardcoder `expected_count == 37` sur le dataset global : la collecte est continue.
+
+Cette phase ne fait **aucun** canonical link, Robot KB write exact, V4 economic use ou notification.
 
 ### Collecteur #199
 
 Architecture récurrente inchangée : front pages + rotation historique, idempotence P3, state only after commit, DB loopback, readiness retry 5000→6500→8000 ms, lock séparé. Runtime collector pin `a2f1878186a8850d5a4c4763518a10ecfd16f2fc`.
 
-Le dernier cursor collector documenté était page 13 mais n'a pas été re-audité pendant la phase identity ; ne pas l'inférer à partir du total 244.
+Le dernier cursor collector documenté était page 13 mais n'a pas été re-audité pendant cette phase ; ne pas l'inférer à partir du total 291.
 
-#199 et #204 restent OPEN/DRAFT/NON MERGED. Ne pas merger sans décision explicite.
+#199, #204 et #205 restent OPEN/DRAFT/NON MERGED. Ne pas merger sans décision explicite.
 
 ---
 
@@ -229,6 +284,7 @@ Les branches/PRs **historiques/superseded** restent de la provenance ; elles ne 
 - #87 décision produit V4 séparée, ne pas mélanger à un autre changement ;
 - #199 actif/draft Robot KB, non mergé ;
 - #204 actif/draft identity proof, non mergé ;
+- #205 actif/draft exact SOLD dry-run, non mergé ;
 - #8 protégé V5, non mergé.
 
 `SHADOW`, `DEFERRED`, `DISABLED`, `V5_ONLY` et `SUPERSEDED` ne signifient jamais production active par eux-mêmes.
@@ -241,6 +297,6 @@ Issues particulières : #1 registre V4 vivant ; #150 registre Global vivant ; #2
 
 Avant implémentation non triviale : lire README + gouvernance + ce ledger + inventaires, rechercher une capacité antérieure, suivre les supersessions, isoler V4/V5/Robot KB, utiliser SHA précis, tests ciblés + suite pertinente, compile/YAML/diff-check, live read-only lorsque pertinent, puis documenter la phase.
 
-Prochaine capacité sur Cardova : **composer les 37 exact identity candidates dans un dry-run de canonical-link / exact-sale evidence sur #199**, sans write. Le Charizard `Error(Strength)` reste unresolved jusqu'à preuve canonique spécifique. Aucun V4_USE pendant cette phase.
+Prochaine capacité Cardova : **dry-run canonical-card link + exact-sale persistence**, en réutilisant les primitives Robot KB existantes, memory-only/rollback d'abord. Les cinq blockers identité du snapshot courant restent exclus. Aucun V4_USE pendant cette phase.
 
 Aucun achat, bid, offer, checkout ou paiement automatique.
