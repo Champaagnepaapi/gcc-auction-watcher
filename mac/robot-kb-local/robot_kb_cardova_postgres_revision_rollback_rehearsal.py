@@ -34,11 +34,7 @@ import robot_kb_cardova_print_run_live_validation as live  # noqa: E402
 import robot_kb_cardova_print_run_exact_sale_dry_run as print_run  # noqa: E402
 import robot_kb_cardova_exact_sale_revision_promotion as promotion  # noqa: E402
 
-from robot_kb.postgres import (  # noqa: E402
-    POSTGRES_MIGRATION_DIRECTORY,
-    _migration_catalog,
-    connect_postgres,
-)
+from robot_kb.postgres import _migration_catalog, connect_postgres  # noqa: E402
 from robot_kb.repository import KnowledgeBase  # noqa: E402
 
 
@@ -47,7 +43,7 @@ MIGRATION_VERSION = 3
 MIGRATION_FILENAME = "0003_print_run_rarity_symbol.sql"
 DEFAULT_MAX_RECORDS = 500
 HARD_MAX_RECORDS = 500
-LOCK_KEY = 76003310720820260831
+LOCK_KEY = 760033107208202631
 
 
 class RehearsalError(RuntimeError):
@@ -228,7 +224,8 @@ def _compose_exact_cohort(
     if len(identity_by_id) != len(identities):
         raise RehearsalError("exact identity cohort contains duplicate source ids")
     exact_sales = [sale_by_id[source_id] for source_id in sorted(identity_by_id)]
-    return exact_sales, [identity_by_id[_norm(row.get("source_native_record_id"))] for row in exact_sales], {
+    exact_identities = [identity_by_id[_norm(row.get("source_native_record_id"))] for row in exact_sales]
+    return exact_sales, exact_identities, {
         "unresolved_cardova_sales_available": int(selected.get("unresolved_sale_transactions_available", 0)),
         "selected_sales": len(sales),
         "exact_identity_rows": len(identities),
@@ -267,10 +264,6 @@ def run_rehearsal(
 
     connection = connect_postgres(database_url)
     rollback_executed = False
-    inside_summary: dict[str, Any] = {}
-    before_versions: list[int] = []
-    before_registry: Mapping[str, Any] = {}
-    before_targets: Mapping[str, Any] = {}
     try:
         before_versions = _validate_applied_catalog(connection)
         if before_versions != [1, 2]:
