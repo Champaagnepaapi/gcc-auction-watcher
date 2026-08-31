@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **31 août 2026**. Le contrôle GitHub live reste l'autorité et il ne faut pas utiliser le nombre de lignes comme compteur exhaustif GitHub.
+Snapshot GitHub pertinent re-vérifié le **31 août 2026**. Le contrôle GitHub live reste l'autorité ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub.
 
 ```text
 main runtime                   b98756c449718845fc1944560fcf61c02586079f
