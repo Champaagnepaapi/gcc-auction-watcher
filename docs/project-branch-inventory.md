@@ -1,18 +1,14 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-État pertinent vérifié le **21 août 2026** après merge #154 et préparation Robot KB #157.
+État pertinent re-vérifié le **31 août 2026**. Le contrôle GitHub live reste l'autorité ; cet inventaire sert surtout à préserver les branches fonctionnelles et leurs supersessions.
 
-## Autorités
+## Autorités / branches actives pertinentes
 
 ```text
-production canonique              main @ c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c
-Global marketplace-first          feat/v4-global-marketplace-discovery-20260820 / PR #147 mergée
-Global cutover production         ops/v4-global-marketplace-cutover-20260820 / PR #148 mergée
-Global schedule registry          ops/v4-global-run-registry-20260820 / PR #151 mergée
-Global cadence 10 min             ops/v4-global-10min-cadence-20260820 / PR #153 mergée
-TCGdex detailed variants          feat/v4-tcgdex-detailed-variants-20260820 / PR #154 mergée
-Global activation                 ops/v4-global-notify-activate-20260820 / PR #146 mergée
-Robot KB local migration          feat/robot-kb-local-postgres-mac-20260821 / PR #157 OPEN
+production canonique              main @ b98756c449718845fc1944560fcf61c02586079f
+Cardova paid SOLD                 diag/robot-kb-cardova-paid-history-probe-20260829 / PR #199 OPEN DRAFT
+Cardova identity proof            diag/cardova-public-title-printing-proof-20260830 / PR #204 OPEN DRAFT
+Cardova exact SOLD dry-run        diag/cardova-exact-sale-dry-run-20260831 / PR #205 OPEN DRAFT
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / PR #8
 ```
 
@@ -22,11 +18,28 @@ PR #8 reste expérimentale/draft/non mergée, head `bc641dfe64c1cacc912b585d4e86
 
 ## Comptage
 
-Le dernier audit exhaustif, le 18 août, comptait **158 branches distantes**. Plusieurs branches ont été créées depuis, dont #156/#157 ; **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
+Le dernier audit exhaustif ancien comptait 158 branches distantes. De nombreuses branches ont été créées depuis ; **ne jamais présenter 158 comme nombre actuel** sans nouvel audit exhaustif.
 
 Toute suppression de branche exige un audit + autorisation explicite.
 
-## Branches Global / V4 récentes
+## Stack Cardova courant
+
+```text
+diag/robot-kb-cardova-paid-history-probe-20260829
+  #199 / base main
+  -> diag/cardova-public-title-printing-proof-20260830
+       #204 / stacked on #199
+       -> diag/cardova-exact-sale-dry-run-20260831
+            #205 / stacked on #204
+```
+
+- #199 : provider paid/completed SOLD + P3 unresolved persistence + collector local ;
+- #204 : preuves printing/microvariant bornées, baseline 37/38 exact ;
+- #205 : compose exact identity -> même contrat SOLD P3, memory-only ; live 31 août = 38 exact SOLD candidates / 0 sale blocker / 5 identity blockers.
+
+Les trois branches restent actives et **ne doivent pas être mergées indépendamment**. Aucun merge n'est autorisé par la phase courante.
+
+## Branches Global / V4 structurantes conservées
 
 - `shadow/v4-global-current-main-reintegration-20260819` — PR #138, superseded par #139 ;
 - `feat/v4-global-multivault-reintegration-20260819` — #139 ;
@@ -36,15 +49,15 @@ Toute suppression de branche exige un audit + autorisation explicite.
 - `fix/v4-global-external-exact-bridge-20260820` — #142, absorbée dans #140 ;
 - `feat/v4-global-notification-activation-20260820` — #145 mergée ;
 - `ops/v4-global-notify-activate-20260820` — #146 mergée ;
-- `feat/v4-global-marketplace-discovery-20260820` — #147 mergée, merge `5a1b0f050098b560e812a4dc6e64a9f8d40a8897` ;
-- `ops/v4-global-marketplace-cutover-20260820` — #148 mergée, merge `ea9a69b375434031c935de8d25fcc12acd1a1c93` ;
+- `feat/v4-global-marketplace-discovery-20260820` — #147 mergée ;
+- `ops/v4-global-marketplace-cutover-20260820` — #148 mergée ;
 - `docs/v4-global-marketplace-cutover-close-20260820` — #149 docs mergée ;
-- `ops/v4-global-run-registry-20260820` — #151 mergée, merge `c9539ca521f69b43b3d93e621fb21447a69f3fe7` ;
-- `ops/v4-global-10min-cadence-20260820` — #153 mergée, merge `e79e939c22173a020d12cb8a0878aa682df2a7a5` ;
-- `feat/v4-tcgdex-detailed-variants-20260820` — #154 mergée, merge `c3e3da39b79eb71cfdfc864bb865c4a4e7154e0c` ;
+- `ops/v4-global-run-registry-20260820` — #151 mergée ;
+- `ops/v4-global-10min-cadence-20260820` — #153 mergée ;
+- `feat/v4-tcgdex-detailed-variants-20260820` — #154 mergée ;
 - `docs/v4-tcgdex-detailed-variants-close-20260821` — docs #155 ;
-- `feat/v4-global-scale-15-20260821` — PR #156 OPEN, ligne Global séparée ;
-- `feat/robot-kb-local-postgres-mac-20260821` — PR #157 OPEN, migration stockage Robot KB préparée ; Neon reste actif jusqu'au cutover local vérifié.
+- `feat/v4-global-scale-15-20260821` — historique de scale ;
+- `feat/robot-kb-local-postgres-mac-20260821` — provenance du cutover Robot KB local, désormais livré par #166.
 
 `main` reste l'autorité après merge explicite. Les branches fonctionnelles mergées sont conservées comme provenance ; aucune suppression n'est autorisée implicitement.
 
