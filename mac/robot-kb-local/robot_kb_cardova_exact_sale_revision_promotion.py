@@ -257,6 +257,52 @@ def _existing_exact_revision(
     return rows[0]["id"], rows[0]["resolution_id"]
 
 
+def _link_cardova_identifier_reusing_source(
+    kb: KnowledgeBase,
+    *,
+    source_id: str,
+    canonical_card_id: str,
+) -> None:
+    """Reuse immutable Cardova provenance exactly as the #199 ingest does.
+
+    ``source_system.code`` is a global immutable namespace in P3. A durable
+    database may therefore already carry Cardova under historical display
+    metadata that differs from the memory-only dry-run constants. Reuse that
+    exact source row instead of attempting to recreate/rename it.
+    """
+
+    source = kb.connection.execute(
+        "SELECT id, name, system_role FROM source_system WHERE code = ?",
+        (print_run.base.sale_dry.SOURCE_CODE,),
+    ).fetchone()
+    if source is None:
+        source_system_id = kb.create_source_system(
+            print_run.base.sale_dry.SOURCE_CODE,
+            print_run.base.sale_dry.SOURCE_NAME,
+            print_run.base.sale_dry.SOURCE_ROLE,
+        )
+    else:
+        source_system_id = source["id"]
+        if not _norm(source_system_id) or not _norm(source["name"]) or not _norm(source["system_role"]):
+            raise RevisionPromotionError("existing Cardova source_system metadata is malformed")
+
+    object_id = kb.create_external_object(
+        source_system_id,
+        "LISTING",
+        source_id,
+    )
+    identifier_id = kb.add_external_identifier(
+        object_id,
+        "CARDOVA_AUCTION_ULID",
+        source_id,
+    )
+    kb.link_identifier(
+        identifier_id,
+        ResolutionState.PROVEN,
+        canonical_card_id=canonical_card_id,
+    )
+
+
 def promote_existing_sale(
     kb: KnowledgeBase,
     identity: Mapping[str, Any],
@@ -304,7 +350,7 @@ def promote_existing_sale(
             resolved_plan,
             applicability,
         )
-        print_run.base._link_cardova_identifier_in_memory(
+        _link_cardova_identifier_reusing_source(
             kb,
             source_id=source_id,
             canonical_card_id=card_id,
@@ -420,6 +466,8 @@ def safe_summary() -> Mapping[str, Any]:
         "unresolved_leaf_excluded_after_revision": True,
         "promotion_atomic": True,
         "replay_idempotent": True,
+        "existing_cardova_source_metadata_reused": True,
+        "source_system_mutated": False,
         "automatic_purchase": False,
         "automatic_bid": False,
         "automatic_offer": False,
