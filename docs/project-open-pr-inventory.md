@@ -62,7 +62,8 @@ PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION 
 | #126 | `STALE_OPEN/SUPERSEDED` par #127→#135. |
 | #115/#114/#113/#110/#109/#108 | `SUPERSEDED_BY_139` / stack Global historique. |
 | #111 | `STALE_OPEN/SUPERSEDED` docs. |
-| #107/#106 | anciennes lines PPT/Japan shadow ; ne pas merger automatiquement sur current main. |
+| #107 | `STALE_OPEN/SUPERSEDED` Japan Edge PPT display shadow ; OPEN/DRAFT, ne pas merger automatiquement sur current main. |
+| #106 | `STALE_OPEN/SUPERSEDED` V4 PPT shadow ; OPEN/DRAFT, ne pas merger automatiquement sur current main. |
 | #54 | `STALE_OPEN/SUPERSEDED`. |
 
 ## Merges récents retirés de la surface ouverte
