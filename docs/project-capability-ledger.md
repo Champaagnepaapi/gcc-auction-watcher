@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **1 septembre 2026** après #216/#217, #219 et #220. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **1 septembre 2026** après #222/#224. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Ce fichier sert d'index anti-réimplémentation et de registre de supersession. Toujours re-vérifier `main`, les PRs et les workflows live avant une action.
 
@@ -8,12 +8,13 @@ Ce fichier sert d'index anti-réimplémentation et de registre de supersession. 
 
 ```text
 V4 production branch             : main
-V4 runtime production            : 6a33ac33faa324f0fc1c6124fbb49bd736382b75 / #220
-TCGdex outage resilience         : #216/#217 / PROD_V4 / merge 03824158ac899cf142199c42d4525386a573bc15
-TCGdex validated runtime         : 53a7fd0a47d100d851c347c3fadb79e4f754d07b
-TCGdex natural prod proof        : run 33489103277 SUCCESS / breaker exact / 2029 -> 2010
+V4 runtime production            : 0be4dca95513e36f4e407ef7bac361fe488c1d36 / #224
+TCGdex transport resilience      : #216/#217 / PROD_V4 / merge 03824158ac899cf142199c42d4525386a573bc15
+TCGdex outage fallback           : #222/#224 / PROD_V4 / merge 0be4dca95513e36f4e407ef7bac361fe488c1d36
+TCGdex outage validated head     : 4cd3b215267dfc504b535831d70637e42adfb247
+TCGdex outage exact tested tree  : 8ae11e351add5e78b3765bfe410ab884ac649586
+#224 natural production proof    : run 33500303400 SUCCESS / 269 s / TCGdex errors 0
 Future-start auction guard       : #220 / PROD_V4 / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
-#220 natural production proof    : run 33490823534 SUCCESS / 253 s / discovery COMPLETE / backlog 1998
 External pending throughput      : #214 / PROD_V4 / P4 16 + eBay 16 / auction max 4
 Auction order hardening          : #211 + #212 / PROD_V4
 Magi native identity             : #174 + #177 / PROD_V4
@@ -58,7 +59,7 @@ Preuves admises : timestamp GCC structuré + row id stable, ou preuve UI forte e
 
 Aucun changement fair value, threshold, identity, provider budget ou notification.
 
-Première preuve naturelle : run `33490823534` sur `main@6a33ac33...` SUCCESS en 253 s ; discovery auction `COMPLETE`, 24 rows / 24 timers, 0 fallback et 0 enchère éligible ≤60 min. Ce snapshot n'avait donc aucun cas future-start positif à exclure, mais confirme l'absence de régression du collector courant.
+Première preuve naturelle : run `33490823534` sur `main@6a33ac33...` SUCCESS en 253 s ; discovery auction `COMPLETE`, 24 rows / 24 timers, 0 fallback et 0 enchère éligible ≤60 min. Le run post-#224 `33500303400` confirme encore 24/24 et `COMPLETE`, sans cas positif future-start présent.
 
 ## Fast Lane — `PROD_V4`
 
@@ -96,7 +97,7 @@ PSA APR max                      2/run
 provider-error backoff           inchangé
 ```
 
-Le drain est prouvé. Les provider failures restent fail-visible et ne deviennent jamais clean no-match. Backlog observé sur `33490823534` : `1998`.
+Le drain est prouvé. Les provider failures restent fail-visible et ne deviennent jamais clean no-match. Backlog : `1998` sur `33490823534`, `1985` sur le baseline pré-#224 `33498609995`, puis `1966` sur le premier Main Scanner post-#224 `33500303400`.
 
 ## #216/#217 — TCGdex transport/run resilience — `PROD_V4`
 
@@ -116,9 +117,32 @@ Validation pré-merge : 845 PASS / 2 skipped, compile/YAML/diff PASS, live compa
 
 Première preuve naturelle `33489103277` sur `main@03824158...` : SUCCESS, 16 attempted / 0 exact / 0 no-match / 16 errors, breaker ouvert exactement après 2 appels épuisés, scanner 274 s vs ~397 s pré-fix, backlog 2029 -> 2010.
 
-Sur le run post-#220 `33490823534`, TCGdex reste en panne : 16 attempted / 0 exact / 0 no-match / 16 errors, avec breaker conforme.
+La panne persistait encore sur `33490823534`, puis le provider a récupéré naturellement : baseline pré-#224 `33498609995` = `11 EXACT / 2 NO_MATCH / 3 AMBIGUOUS / 0 ERROR`.
 
 Aucune identité, économie, notification ou sémantique provider n'a été relâchée.
+
+## #222/#224 — TCGdex source-pinned transport-outage fallback — `PROD_V4`
+
+Le fallback s'exécute uniquement **après** le resolver/retry/breaker normal et seulement sur un `ERROR` de classe transport retryable. Il réutilise des preuves déjà reviewées : alias japonais, contrat exact numéro/denominator, source TCGdex immuable `af33c9ac...`, exact `set/localId`, import exact du set et finish borné.
+
+Bloquants conservés : `NO_MATCH`, `AMBIGUOUS`, non-Japonais, set non reviewé, denominator incompatible, source absente/contradictoire ou finish non prouvé.
+
+Validation exacte :
+
+```text
+head                             4cd3b215267dfc504b535831d70637e42adfb247
+tested merge tree                8ae11e351add5e78b3765bfe410ab884ac649586
+V4 validation                    33498301361 SUCCESS / 867 PASS
+compile/YAML/diff                PASS
+read-only live compare           93 effective / 91 legacy / legacy_only=0
+Robot KB validation              33498301360 SUCCESS
+merge vehicle                    #224 / mirror exact de #222
+production merge                 0be4dca95513e36f4e407ef7bac361fe488c1d36
+```
+
+Première preuve Main Scanner post-merge `33500303400` : SUCCESS en 269 s, TCGdex `17 exact / 1 no-match / 0 ambiguous / 0 errors`, PokeTrace `3 exact / 1 strong / 2 weak`, backlog `1966`, discovery auction `24/24 / COMPLETE / fallback false`.
+
+Cette preuve démontre la **non-régression en production** et que le fallback n'interfère pas avec un provider sain. Elle **n'exerce pas positivement le chemin outage**, car aucune panne transport TCGdex n'a eu lieu pendant ce run. La première activation positive reste à inspecter lorsqu'une panne transport réelle réapparaît ; aucune panne artificielle ne doit être provoquée en production.
 
 ## TCGdex / PokeTrace #119→#135 — `PROD_V4`
 
@@ -243,6 +267,8 @@ Les branches et PRs **historiques/superseded** restent de la provenance ; elles 
 - #211/#212 : MERGED comme une seule capacité runtime ;
 - #214 : MERGED ;
 - #216/#217 : MERGED comme une seule capacité runtime ; #217 était le miroir de merge ;
+- #222/#224 : MERGED comme une seule capacité runtime ; #224 était le miroir de merge à cause du bug Ready GitHub ;
+- #223 : docs-only governance repair MERGED ;
 - #182 : superseded par le port current-main #219 ;
 - #186 : superseded par le port current-main #220 ;
 - ancien moteur seed-rotation Global : historique après #147/#148 ;
