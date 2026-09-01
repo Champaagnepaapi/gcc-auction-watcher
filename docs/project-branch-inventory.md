@@ -1,50 +1,52 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-État pertinent re-vérifié le **1 septembre 2026** après #222/#224.
+État pertinent re-vérifié le **1 septembre 2026** après #227 et #229/#231.
 
-> `main` runtime production est ancré à `0be4dca95513e36f4e407ef7bac361fe488c1d36` (#224). Toujours re-vérifier le HEAD GitHub live avant une action.
+> `main` runtime production est ancré à `b6a7c834264c062ea81b64c714e6916aa8bfe9f2`. Toujours re-vérifier le HEAD GitHub live avant une action.
 
 ## Autorités
 
 ```text
-V4 production                     main
-V4 runtime production             0be4dca95513e36f4e407ef7bac361fe488c1d36
-TCGdex transport resilience       fix/v4-tcgdex-transport-resilience-20260901 / #216 MERGED
-TCGdex transport merge mirror     merge/v4-tcgdex-transport-resilience-20260901 / #217 MERGED
-TCGdex outage fallback source     fix/v4-tcgdex-source-outage-fallback-20260901 / #222 MERGED
-TCGdex outage merge mirror        merge/v4-tcgdex-source-outage-fallback-20260901 / #224 MERGED
-Docs governance repair            fix/docs-capability-recovery-markers-20260901 / #223 MERGED
-Robot KB configurator port        fix/robot-kb-configurer-executable-current-main-20260901 / #219 MERGED
+V4 production                     main / b6a7c834264c062ea81b64c714e6916aa8bfe9f2
+Auction recovery source           fix/v4-auction-recovery-capacity-20260901 / #229 MERGED
+Auction recovery merge mirror     merge/v4-auction-recovery-capacity-20260901 / #231 MERGED
+Auction recovery validation       validate/v4-auction-recovery-capacity-20260901 / #230 OPEN DRAFT DO NOT MERGE
+Docs marker repair                fix/docs-open-pr-inventory-marker-20260901 / #227 MERGED
+TCGdex transport source           fix/v4-tcgdex-transport-resilience-20260901 / #216 MERGED
+TCGdex transport mirror           merge/v4-tcgdex-transport-resilience-20260901 / #217 MERGED
+TCGdex outage source              fix/v4-tcgdex-source-outage-fallback-20260901 / #222 MERGED
+TCGdex outage mirror              merge/v4-tcgdex-source-outage-fallback-20260901 / #224 MERGED
 Future-start guard                fix/v4-upcoming-auction-start-guard-current-main-20260901 / #220 MERGED
-External pending throughput       fix/v4-external-pending-throughput-20260831 / #214 MERGED
 Auction order hardening           fix/v4-auction-order-exhaustive-coverage-20260831 / #211 MERGED
-Auction merge mirror              merge/v4-auction-order-hardening-20260831 / #212 MERGED
+Auction order mirror              merge/v4-auction-order-hardening-20260831 / #212 MERGED
 Robot KB P3 rarity-symbol         feat/robot-kb-print-run-rarity-symbol-20260831 / #207 MERGED TO P3 ONLY
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / #8 OPEN DRAFT
-Docs closeout current             docs/post-224-tcgdex-outage-fallback-closeout-20260901
+Docs closeout current             docs/post-231-auction-recovery-capacity-closeout-20260901
 ```
 
-PR #8 reste expérimentale/draft/non mergée, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` au dernier contrôle ; ne jamais la merger dans `main` sans autorisation explicite.
+PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` sans autorisation explicite.
 
-## Comptage
+## Comptage / provenance
 
-Le dernier audit exhaustif connu, le 18 août, comptait 158 branches distantes. Plusieurs branches ont été créées depuis ; **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
+Le **dernier audit exhaustif** connu, le 18 août, comptait **158 branches distantes**. Des branches ont été créées depuis : **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
 
-Toute suppression de branche exige audit + autorisation explicite.
+Toute suppression exige audit + autorisation explicite. **Aucune branche n'a été supprimée** par cette phase.
 
 ## Branches V4 / main récentes
 
-- `fix/v4-tcgdex-source-outage-fallback-20260901` — #222, head validé `4cd3b215267dfc504b535831d70637e42adfb247`, exact tested tree `8ae11e351add5e78b3765bfe410ab884ac649586`, capacité mergée via #224 ; provenance à conserver ;
-- `merge/v4-tcgdex-source-outage-fallback-20260901` — #224, miroir non-draft du même head exact utilisé car le toggle Ready GitHub échoue sur `fullDatabaseId`; merge production `0be4dca95513e36f4e407ef7bac361fe488c1d36` ;
-- `fix/docs-capability-recovery-markers-20260901` — #223, docs-only, merge `42b7ca686114f02ad0b72375b194c2c7390c1f38` ;
-- `docs/post-224-tcgdex-outage-fallback-closeout-20260901` — branche docs-only courante, base `main@0be4dca95513e36f4e407ef7bac361fe488c1d36` ;
-- `fix/v4-tcgdex-transport-resilience-20260901` — #216, validated runtime `53a7fd0a...`, capacité mergée via #217 au merge `03824158ac899cf142199c42d4525386a573bc15` ;
-- `merge/v4-tcgdex-transport-resilience-20260901` — #217, miroir non-draft du même head `812faf3314747004949945e650e76ec9389973de` ;
-- `fix/robot-kb-configurer-executable-current-main-20260901` — #219, merge `2aef339135df8b4a183ad4ba030b9e603ea9e696`, mode exécutable seulement ;
-- `fix/v4-upcoming-auction-start-guard-current-main-20260901` — #220, head `eecf845942a60fc6585f592da7aff41f66be4af0`, merge `6a33ac33faa324f0fc1c6124fbb49bd736382b75` ; future-start auctions exclues avant économie ;
-- `fix/v4-external-pending-throughput-20260831` — #214, merge runtime `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09` ;
-- `fix/v4-auction-order-exhaustive-coverage-20260831` — #211, capacité mergée ;
-- `merge/v4-auction-order-hardening-20260831` — #212, miroir de merge de la même capacité ;
+- `fix/v4-auction-recovery-capacity-20260901` — #229, head final validé `f81f81d1cf349a298d07867e9750704a9ea0c2bd`, même tree `0170d41c...`; GitHub la marque mergée vers le runtime #231 `b6a7c834...` ;
+- `merge/v4-auction-recovery-capacity-20260901` — #231, miroir non-draft exact créé car le toggle Ready de #229 échouait sur `fullDatabaseId`; validation `33563438585` SUCCESS ; merge production `b6a7c834264c062ea81b64c714e6916aa8bfe9f2` ;
+- `validate/v4-auction-recovery-capacity-20260901` — #230, validation temporaire combinant le fix + marqueur docs avant #227 ; **OPEN/DRAFT/DO NOT MERGE**, provenance seulement ;
+- `fix/docs-open-pr-inventory-marker-20260901` — #227, docs-only, merge `4323822fa324f6f9a089a1e1447b41f611ea8b95` ;
+- `docs/post-231-auction-recovery-capacity-closeout-20260901` — branche docs-only courante, base `main@b6a7c834...` ;
+- `fix/v4-tcgdex-source-outage-fallback-20260901` — #222, capacité mergée via #224 ;
+- `merge/v4-tcgdex-source-outage-fallback-20260901` — #224, miroir non-draft du même head exact ; merge `0be4dca95513e36f4e407ef7bac361fe488c1d36` ;
+- `fix/v4-tcgdex-transport-resilience-20260901` — #216, capacité mergée via #217 ;
+- `merge/v4-tcgdex-transport-resilience-20260901` — #217, miroir de merge ;
+- `fix/v4-upcoming-auction-start-guard-current-main-20260901` — #220, merge `6a33ac33faa324f0fc1c6124fbb49bd736382b75` ;
+- `fix/v4-external-pending-throughput-20260831` — #214, mergée ;
+- `fix/v4-auction-order-exhaustive-coverage-20260831` — #211, mergée ;
+- `merge/v4-auction-order-hardening-20260831` — #212, miroir de la même capacité ;
 - `feat/v4-global-marketplace-discovery-20260820` — #147 mergée ;
 - `ops/v4-global-marketplace-cutover-20260820` — #148 mergée ;
 - `ops/v4-global-run-registry-20260820` — #151 mergée ;
@@ -53,18 +55,26 @@ Toute suppression de branche exige audit + autorisation explicite.
 
 ## Robot KB / P3 / Cardova
 
-- `feat/robot-kb-print-run-rarity-symbol-20260831` — #207, **mergée uniquement dans `agent/p3-postgres-durable-shadow`**, merge `df32a19c237a75e4a1c3bb9dba938fd59fc09665`; aucune migration durable utilisateur exécutée ;
-- `agent/p3-postgres-durable-shadow` — P3 durable/shadow, séparé de `main` ;
-- Cardova stack #199/#204/#205/#206/#208/#209/#210 — branches stackées, principalement OPEN/DRAFT ; ne pas merger/écrire durablement par housekeeping ;
-- #210 prépare un commit durable gardé par autorisation explicite + backup + locks ; aucune exécution durable autorisée par défaut.
+- `feat/robot-kb-print-run-rarity-symbol-20260831` — #207, mergée uniquement dans `agent/p3-postgres-durable-shadow`; aucune migration durable utilisateur exécutée ;
+- `agent/p3-postgres-durable-shadow` — P3 durable/shadow séparé de `main` ;
+- Cardova stack #199/#204/#205/#206/#208/#209/#210 — principalement OPEN/DRAFT ; aucun write durable par housekeeping ;
+- #210 prépare un chemin durable avec backup/locks/autorisation explicite ; aucune exécution autorisée par défaut.
+
+## V5
+
+- `agent/v5-poketrace-cardmarket-market-data` — PR #8, OPEN/DRAFT/NON-MERGED ;
+- V5 et ses child/shadow ne sont pas des branches de production V4.
 
 ## Global / historique
 
+- `feat/v4-global-marketplace-discovery-20260820` — provenance #147 ;
+- `ops/v4-global-marketplace-cutover-20260820` — provenance #148 ;
+- `ops/v4-global-run-registry-20260820` — provenance #151 ;
 - `shadow/v4-global-current-main-reintegration-20260819` — #138 superseded par #139 ;
 - #108/#109/#110/#113/#114/#115 — stack historique absorbé par #139 ;
-- PR #126 : superseded par #127→#135 ;
-- #159 — superseded fonctionnellement par #177 ;
-- anciens one-shots/temp/diagnostics — provenance uniquement.
+- **PR #126 : superseded** par #127→#135 ;
+- #159 superseded fonctionnellement par #177 ;
+- anciens one-shots/temp/diagnostics = provenance uniquement.
 
 ## Provenance importante conservée
 
