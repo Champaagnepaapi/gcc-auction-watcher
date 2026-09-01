@@ -1,87 +1,88 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **26 août 2026** après merge de #178, #179 et #180, puis premier run physique #180 sur le Mac.
+État vérifié le **1 septembre 2026** pendant la validation de PR #216. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
 
 ## Autorité
 
 ```text
-V4 runtime production           main @ 9365f5cd9f8949580c4e48f00ba8c4e419c22145
-main docs closeout              4ac5873aca02fa4d4dddf6f3e92247a29d71b03c
-Magi production                 #174 + #177 + #178 MERGED
-Global schedule watchdog        #179 MERGED
-Global discovery                marketplace-first
-Global scale                    50 listings/run
-Global cadence                  20 min (`1,21,41`)
-Global schedule registry        issue #150 / PROUVÉ LIVE
-Robot KB storage                PostgreSQL local Mac ACTIF
-Robot KB cutover                #166 MERGED
-Robot KB multisource            #180 MERGED / LaunchAgents INSTALLÉS
-Robot KB first-live repair      #181 OPEN / DRAFT / NON MERGED
-Neon writers                    AUTOMATIQUES OFF / rollback manuel conservé
-V5                              PR #8 / OPEN / DRAFT / NON MERGED
+V4 production canonique          main @ 1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9
+V4 runtime production            PR #214 MERGED
+TCGdex outage resilience         PR #216 OPEN / DRAFT / NON MERGED
+#216 runtime validé               53a7fd0a47d100d851c347c3fadb79e4f754d07b
+V5                               PR #8 / OPEN / DRAFT / NON MERGED
+Robot KB                         séparé de V4 / aucun changement dans #216
+Neon                             aucun changement dans #216
 ```
 
-Toujours re-vérifier le HEAD GitHub live ; les commits docs-only peuvent suivre le SHA runtime.
+Aucun merge ou déploiement de #216 n'a été effectué.
 
-## Magi / Global
+## Constat production après #214
 
-#178 est en production. Le plafond recovery reste **36**, avec broad/nonpriority **28** et réserve **8** pour les preuves strictes `card_search + card_detail`. Validation read-only : run `32943536626` SUCCESS, `TCGDEX_BUDGET_EXHAUSTED=0`, identité non relâchée, aucune transaction.
-
-#179 ajoute le rattrapage borné des schedules Global manqués depuis le heartbeat Main Scanner sans créer de seconde lane économique.
-
-## Robot KB — #180 mergée et installée
-
-PR #180 `Robot KB: harvest multi-vault and paid market history locally` est mergée.
+Le drain fixed `EXTERNAL_PENDING` fonctionne réellement :
 
 ```text
-feature head                    4194730490efbf879188069de4cc4d17642aad46
-merge main                      9365f5cd9f8949580c4e48f00ba8c4e419c22145
-Robot KB CI                     32999776457 SUCCESS
-V4 validation                   32999776492 SUCCESS
-Mac physical install            EXÉCUTÉ
-PostgreSQL health               OK / schema [1,2]
-LaunchAgents                    fixed / sold / backup / markets / paid installés
+2241 -> 2187 -> 2162 -> 2115 -> 2099 -> 2065 -> 2045
 ```
 
-Le premier run physique a prouvé que les lanes GCC historiques restent saines : le catch-up fixed a accepté 500 observations, puis le catch-up SOLD a stocké 7 transactions finales supplémentaires. Aucun achat/bid/checkout/paiement.
-
-Deux problèmes bornés ont ensuite été observés sur les nouvelles lanes :
-
-1. le sweep multi-vault a atteint le runtime P3 puis a échoué sur un champ `LISTING_SNAPSHOT` non supporté (`provider_sale_evidence`) ; l'audit du schéma P3 montre aussi que les champs provider normalisés supplémentaires de #180 auraient été rejetés après authentification ;
-2. PokeTrace et PokemonPriceTracker ont tous deux répondu HTTP **401** au premier appel. Les contrats d'auth du code sont corrects (`X-API-Key` PokeTrace, `Authorization: Bearer` PPT) ; les clés actuellement stockées doivent donc être revalidées/remplacées sans les exposer.
-
-## PR #181 — réparation first-live, CANDIDATE
-
-PR #181 reste **OPEN / DRAFT / NON MERGED** jusqu'à validation et autorisation explicite.
-
-Elle ajoute :
-
-- un adaptateur étroit au schéma du runtime P3 immuable : `LISTING_SNAPSHOT` et `PROVIDER_METRIC_OBSERVATION` n'envoient que les colonnes réellement supportées ;
-- conservation du payload brut/provenance et `genuine_sale_evidence=false` ; aucun ASK/agrégat n'est promu en SOLD item-level ;
-- HTTP 401/403 provider rendus fail-visible via `source_failures` ;
-- `Configurer APIs Robot KB.command`, qui teste les clés existantes, demande une nouvelle clé en saisie masquée si nécessaire, n'écrase le Trousseau qu'après HTTP 200, puis relance la lane `paid`.
-
-Base #181 : `main@4ac5873aca02fa4d4dddf6f3e92247a29d71b03c`.
-
-## Cadence locale prévue après réparation
+Le dernier run naturel examiné (`33482483020`, `main@1911ba5...`) a terminé normalement en **397 s** mais a montré que la santé provider est maintenant le plafond :
 
 ```text
-public multi-vault              toutes les 2 h à :05
-PokeTrace/PPT                   01:08 / 07:08 / 13:08 / 19:08
-PPT reserve                     15000
-PokeTrace reserve               5000
-V4_USE                          false
+TCGdex                           21 attempted / 0 exact / 21 errors
+cause TCGdex                     ConnectionError
+PokeTrace                        0 (identité TCGdex non résolue)
+PSA APR                          2 attempted / 2 unavailable / 403 breaker
+eBay                             16 attempted / 13 insufficient / 3 unavailable-error
+EXTERNAL_PENDING                 2045 / ETA 128 runs
 ```
 
-Les clés PokeTrace/PPT restent uniquement dans le Trousseau macOS.
+Le résultat reste fail-closed : aucune erreur provider n'est transformée en no-match ou en comparable exact.
 
-## Prochaine phase
+## PR #216 — TCGdex transport/run outage resilience — CANDIDATE
 
-1. Valider #181 avec la suite Robot KB dédiée + compile/bash/YAML/diff-check.
-2. Merger #181 uniquement après autorisation explicite utilisateur.
-3. Sur le Mac, pull `main`, double-cliquer `Configurer APIs Robot KB.command`, valider/remplacer les deux clés puis laisser le catch-up `paid` démarrer.
-4. Relancer/vérifier `markets`, puis confirmer les nouvelles observations PostgreSQL et les counts par source.
-5. Garder `V4_USE=false` ; Robot KB reste séparé du gate économique.
-6. Garder PR #8 V5 isolée et non mergée.
+Reuse audit :
+
+- PR #145 fournit déjà la résilience transport TCGdex : 2 tentatives max, timeout effectif minimum 10 s, backoff 0,25 s, retry seulement `Timeout` / `ConnectionError` / HTTP 502/503/504 ;
+- PR #189 fournit déjà le pattern V4 de circuit-breaker process-local pour les pannes provider ; nouvel essai au run suivant, sans reclassifier une panne comme no-match.
+
+#216 réutilise ces patterns sans modifier les règles d'identité ou l'économie :
+
+```text
+appel TCGdex logique             max 2 tentatives
+Main-only breaker threshold      2 appels épuisés consécutifs
+après ouverture                  appels réseau TCGdex restants sautés ce run
+sémantique après ouverture       ERROR / fail-closed
+réponse provider réelle          remet le streak à zéro
+nouveau scanner process          circuit fermé / provider retenté
+```
+
+Le bootstrap `run_watcher_multimarket_resilient.py` installe cette couche puis exécute le runner canonique `run_watcher_multimarket` inchangé. Si #216 était mergée, `watcher.yml` utiliserait ce bootstrap avec `V4_TCGDEX_RUN_BREAKER_THRESHOLD=2`.
+
+Aucun fallback d'identité, aucune hausse de cap #214, aucun changement fair value/décote/notification/eBay/PSA/PokeTrace, aucune transaction.
+
+## Validation #216
+
+Runtime validé : `53a7fd0a47d100d851c347c3fadb79e4f754d07b`.
+
+```text
+V4 Auction Discovery CI          33484132586 SUCCESS
+V4 tests                         845 PASS / 2 skipped
+compile nouveaux runtime         PASS
+YAML / diff-check                PASS
+live auction compare             94 effective / 91 legacy
+legacy_only                      0
+unresolved                       0
+Global offline validate          33484132557 / validate SUCCESS
+Global marketplace-live-once     encore en cours au dernier contrôle
+```
+
+Le job Global live est read-only et teste la pile Global, qui conserve exactement le comportement #145 ; le breaker ajouté par #216 est Main-only et couvert par les tests V4 déterministes.
+
+## Prochaine étape
+
+1. Laisser finir `marketplace-live-once` de `33484132557` et classifier son résultat comme preuve provider/read-only, sans modifier #216 pour une panne externe non liée.
+2. Si aucun défaut du patch n'apparaît, finaliser le README/inventaires de handoff avec le SHA docs final.
+3. Garder #216 **DRAFT / NON MERGED** jusqu'à autorisation explicite utilisateur.
+4. Après autorisation seulement : merger avec SHA attendu, vérifier le nouveau `main`, puis observer un vrai run production pour confirmer que le circuit borne la panne TCGdex sans relâcher l'identité.
+5. Garder PR #8 / V5 et Robot KB/Neon séparés.
 
 Aucun achat, bid, checkout ou paiement automatique.
