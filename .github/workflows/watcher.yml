@@ -148,7 +148,9 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           scan_exit_code=$?
           if [ "$scan_exit_code" -eq 0 ]; then
-            python run_watcher_multimarket.py
+            # Bootstrap the unchanged canonical runner with PR #145's already
+            # proven TCGdex transport-only retry policy. Identity/economics stay V4.
+            python run_watcher_multimarket_resilient.py
             scan_exit_code=$?
           fi
           set -e
