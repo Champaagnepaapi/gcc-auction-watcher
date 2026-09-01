@@ -547,7 +547,7 @@ class RawPayloadMigrationTests(unittest.TestCase):
                     [row[0] for row in connection.execute(
                         "SELECT version FROM schema_migration ORDER BY version"
                     )],
-                    [1, 2, 3, 4],
+                    [1, 2, 3, 4, 5],
                 )
                 self.assertIsNotNone(
                     connection.execute(

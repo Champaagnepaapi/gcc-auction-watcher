@@ -646,12 +646,12 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gcc-kb-test-") as directory:
             path = Path(directory) / "knowledge.sqlite3"
             with KnowledgeBase.open(path) as first:
-                self.assertEqual(first.schema_versions(), [1, 2, 3, 4])
+                self.assertEqual(first.schema_versions(), [1, 2, 3, 4, 5])
                 dimension_count = first.connection.execute(
                     "SELECT COUNT(*) FROM variant_dimension"
                 ).fetchone()[0]
             with KnowledgeBase.open(path) as second:
-                self.assertEqual(second.schema_versions(), [1, 2, 3, 4])
+                self.assertEqual(second.schema_versions(), [1, 2, 3, 4, 5])
                 self.assertEqual(
                     second.connection.execute(
                         "SELECT COUNT(*) FROM variant_dimension"
