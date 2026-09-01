@@ -9,6 +9,7 @@ from dataclasses import asdict
 from playwright.sync_api import sync_playwright
 
 import watcher
+from v4_ebay_bulk_result_text import EbayBulkTextPageProxy
 from v4_external_provider_navigation_resilience import (
     install_v4_external_provider_navigation_resilience,
 )
@@ -45,7 +46,7 @@ def main() -> int:
                 browser = playwright.chromium.launch(headless=True)
                 try:
                     context = browser.new_context(locale="fr-FR")
-                    page = context.new_page()
+                    page = EbayBulkTextPageProxy(context.new_page())
                     result = watcher.scrape_ebay_sold(page, lot, with_status=True)
                     context.close()
                 finally:
