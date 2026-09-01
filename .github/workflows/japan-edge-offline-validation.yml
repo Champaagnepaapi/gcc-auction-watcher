@@ -8,6 +8,9 @@ on:
       - "japan_edge_hunter_v2.py"
       - "japan_edge_hunter_v3.py"
       - "japan_edge_full_market.py"
+      - "japan_edge_ppt_exact_set_shadow.py"
+      - "japan_edge_ppt_provider_catalog_fix.py"
+      - "japan_edge_ppt_notification_context.py"
       - "tests_japan/**"
       - ".github/workflows/japan-edge-hunter.yml"
       - ".github/workflows/japan-edge-offline-validation.yml"
@@ -17,13 +20,30 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name != 'workflow_dispatch' || github.ref_name != 'agent/japan-edge-ppt-clean-20260816'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      POKEMONPRICETRACKER_API_KEY: ""
+      JAPAN_EDGE_PPT_CONTEXT_ENABLED: "false"
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+      NTFY_TOPIC: ""
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert offline safety contract
+        shell: bash
+        run: |
+          test -z "${POKEMONPRICETRACKER_API_KEY:-}"
+          test "${JAPAN_EDGE_PPT_CONTEXT_ENABLED}" = "false"
+          test "${JAPAN_EDGE_NOTIFY_ENABLED}" = "false"
+          test -z "${NTFY_TOPIC:-}"
+          echo "Japan Edge PPT context validation: offline, no provider secret, no ntfy"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,10 +59,145 @@ jobs:
         run: python -m unittest discover -s tests_japan -p "test*.py" -v
 
       - name: Compile Japan Edge files
-        run: python -m py_compile japan_edge_hunter.py japan_edge_hunter_v2.py japan_edge_hunter_v3.py japan_edge_full_market.py tests_japan/test_japan_edge_hunter.py tests_japan/test_japan_edge_hunter_v2.py tests_japan/test_japan_edge_hunter_v3.py
+        run: |
+          python -m py_compile \
+            japan_edge_hunter.py \
+            japan_edge_hunter_v2.py \
+            japan_edge_hunter_v3.py \
+            japan_edge_full_market.py \
+            japan_edge_ppt_exact_set_shadow.py \
+            japan_edge_ppt_provider_catalog_fix.py \
+            japan_edge_ppt_notification_context.py \
+            tests_japan/test_japan_edge_hunter.py \
+            tests_japan/test_japan_edge_hunter_v2.py \
+            tests_japan/test_japan_edge_hunter_v3.py \
+            tests_japan/test_japan_edge_ppt_exact_set_shadow.py \
+            tests_japan/test_japan_edge_ppt_provider_catalog_fix.py \
+            tests_japan/test_japan_edge_ppt_notification_context.py
+
+      - name: PPT notification-context safety assertions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          context = Path('japan_edge_ppt_notification_context.py').read_text(encoding='utf-8')
+          v3 = Path('japan_edge_hunter_v3.py').read_text(encoding='utf-8')
+          workflow = Path('.github/workflows/japan-edge-hunter.yml').read_text(encoding='utf-8')
+          validation = Path('.github/workflows/japan-edge-offline-validation.yml').read_text(encoding='utf-8')
+
+          assert 'SOLD_AGGREGATED' in context
+          assert 'notification_decision_use: bool = False' in context
+          assert 'production_decision_use: bool = False' in context
+          assert 'PPT = CONTEXTE AFFICHÉ, PAS DÉCIDEUR' in v3
+          assert 'decision = classify_market(op, external, min_discount)' in v3
+          assert 'ppt_display = ppt_client.fetch(op, now)' in v3
+          assert v3.index('decision = classify_market(op, external, min_discount)') < v3.index('ppt_display = ppt_client.fetch(op, now)')
+          assert 'JAPAN_EDGE_PPT_CONTEXT_MAX_HTTP_CALLS: "8"' in workflow
+          assert 'JAPAN_EDGE_PPT_CONTEXT_MAX_CREDITS: "40"' in workflow
+          assert 'JAPAN_EDGE_PPT_CONTEXT_DAILY_REMAINING_FLOOR: "15000"' in workflow
+          assert "github.ref_name != 'agent/japan-edge-ppt-clean-20260816'" in validation
+          print('Japan Edge PPT display-only safety assertions: PASS')
+          PY
 
       - name: Parse Japan Edge workflows
         run: python -c 'import pathlib,yaml; [yaml.safe_load(pathlib.Path(p).read_text()) for p in [".github/workflows/japan-edge-hunter.yml", ".github/workflows/japan-edge-offline-validation.yml"]]; print("YAML PASS")'
 
       - name: Check diff whitespace
         run: git diff --check origin/${{ github.base_ref }}...HEAD
+
+  ppt-context-live-shadow:
+    if: github.event_name == 'workflow_dispatch' && github.ref_name == 'agent/japan-edge-ppt-clean-20260816'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JAPAN_EDGE_GCC_PAGES: "20"
+      JAPAN_EDGE_MAX_SEEDS_PER_RUN: "12"
+      JAPAN_EDGE_MAX_ITEMS_PER_SEARCH: "25"
+      JAPAN_EDGE_MIN_DISCOUNT_PCT: "30"
+      JAPAN_EDGE_PROXY_FIXED_JPY: "500"
+      JAPAN_EDGE_LOGISTICS_BUFFER_PCT: "12"
+      JAPAN_EDGE_GLOBAL_MAX_CANDIDATES: "12"
+      V4_POKETRACE_MAX_REQUESTS_PER_RUN: "12"
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      JAPAN_EDGE_PPT_CONTEXT_ENABLED: "true"
+      JAPAN_EDGE_PPT_CONTEXT_MAX_CANDIDATES: "4"
+      JAPAN_EDGE_PPT_CONTEXT_MAX_HTTP_CALLS: "8"
+      JAPAN_EDGE_PPT_CONTEXT_MAX_CREDITS: "40"
+      JAPAN_EDGE_PPT_CONTEXT_DAILY_REMAINING_FLOOR: "15000"
+      JAPAN_EDGE_PPT_CONTEXT_INTERVAL_SECONDS: "1.10"
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+      NTFY_TOPIC: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Checkout selected clean Japan branch without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Assert live-shadow safety contract
+        shell: bash
+        run: |
+          test "${GITHUB_REF_NAME}" = "agent/japan-edge-ppt-clean-20260816"
+          test -n "${POKEMONPRICETRACKER_API_KEY:-}"
+          test "${JAPAN_EDGE_PPT_CONTEXT_ENABLED}" = "true"
+          test "${JAPAN_EDGE_NOTIFY_ENABLED}" = "false"
+          test -z "${NTFY_TOPIC:-}"
+          echo "Japan Edge PPT context live: display-only, ephemeral state, no ntfy"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run bounded Japan Edge V3 with PPT display context
+        shell: bash
+        run: |
+          mkdir -p .japan-edge-ppt-clean-live
+          python japan_edge_hunter_v3.py \
+            --state .japan-edge-ppt-clean-live/state.json \
+            --output japan_edge_ppt_context_live_report.json \
+            2>&1 | tee japan_edge_ppt_context_live.log
+
+      - name: Assert PPT remained display-only
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path('japan_edge_ppt_context_live_report.json').read_text(encoding='utf-8'))
+          summary = report.get('global_market', {}).get('ppt_notification_context', {})
+          assert summary.get('production_decision_use') is False
+          assert summary.get('notification_decision_use') is False
+          assert summary.get('notification_display_use') is True
+          assert summary.get('evidence_class') == 'SOLD_AGGREGATED'
+          assert summary.get('correlation_group') == 'EBAY_GRADED_AGGREGATE'
+          for row in report.get('opportunities', []):
+              decision = row.get('market_decision') or {}
+              ppt = row.get('ppt_notification_context') or {}
+              assert 'status' in decision
+              assert ppt.get('production_decision_use') is False
+              assert ppt.get('notification_decision_use') is False
+          log = Path('japan_edge_ppt_context_live.log').read_text(encoding='utf-8', errors='replace')
+          assert 'Notification ntfy' not in log
+          print(json.dumps({'ppt_context': summary, 'opportunities': len(report.get('opportunities', []))}, ensure_ascii=False))
+          print('Japan Edge PPT display-only live safety assertions: PASS')
+          PY
+
+      - name: Upload bounded live report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: japan-edge-ppt-context-live-${{ github.run_id }}
+          path: |
+            japan_edge_ppt_context_live_report.json
+            japan_edge_ppt_context_live.log
+          if-no-files-found: error
+          retention-days: 14
