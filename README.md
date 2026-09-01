@@ -36,10 +36,12 @@ TCGdex during that run           : 16 attempted / 0 exact / 0 no-match / 16 erro
 TCGdex breaker                   : opened after 2 exhausted logical calls
 scanner duration                 : 274 s vs ~397 s comparable pre-fix
 EXTERNAL_PENDING                 : 2029 -> 2010
-#220 first natural prod run      : not yet observed at last closeout check
+#220 first natural prod run      : run 33490823534 SUCCESS / 253 s
+#220 auction discovery           : COMPLETE / 24 rows / 24 timers / 0 fallback
+#220 external pending backlog    : 1998
 ```
 
-Le dernier run V4 enregistré avant le merge #220 était `33490000741` sur `2aef3391...` à `09:05:40 UTC`; #220 a mergé à `09:07:01 UTC`. Ne pas revendiquer une preuve naturelle #220 avant un vrai run sur `6a33ac33...`.
+Le premier run naturel post-#220 a chargé exactement `main@6a33ac33...`. Le snapshot contenait 0 enchère Pokémon 0–100 € à ≤60 min : il ne fournit donc pas encore un cas positif d'exclusion future-start, mais il confirme que le collector/timers/pagination restent cohérents et que le scan termine proprement avec les breakers provider actifs.
 
 ---
 
@@ -113,6 +115,8 @@ Une enchère prouvée comme n'ayant **pas encore commencé** est exclue avant in
 
 #220 se superpose au hardening #211/#212 ; il ne remplace pas la découverte actuelle.
 
+Première preuve naturelle post-merge : run `33490823534` SUCCESS, 24 auctions découvertes / 24 timers lisibles, discovery `COMPLETE`, fallback `false`, 0 enchère éligible ≤60 min. Aucun cas future-start positif n'était présent dans ce snapshot.
+
 ## External pending throughput — #214
 
 ```text
@@ -126,7 +130,7 @@ PSA APR max                      2/run
 provider-error backoff           inchangé
 ```
 
-Le drain fonctionne réellement. Les erreurs eBay/PSA/TCGdex restent des erreurs provider, jamais une preuve négative fabriquée.
+Le drain fonctionne réellement. Les erreurs eBay/PSA/TCGdex restent des erreurs provider, jamais une preuve négative fabriquée. Sur le run post-#220 `33490823534`, le backlog `EXTERNAL_PENDING` est à `1998`.
 
 ## Fast Lane
 
@@ -320,8 +324,7 @@ Documents de reprise :
 
 ```text
 V4
-  -> observer le premier run naturel sur #220 / 6a33ac33...
-  -> vérifier discovery/coverage + future-start exclusions
+  -> continuer d'observer les snapshots auction jusqu'au premier cas future-start réellement exclu
   -> continuer d'observer TCGdex/eBay/PSA et EXTERNAL_PENDING
   -> ne pas augmenter les caps uniquement pour forcer le drainage
 
