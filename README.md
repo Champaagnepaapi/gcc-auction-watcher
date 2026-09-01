@@ -10,9 +10,11 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch             : main
-V4 runtime production            : 6a33ac33faa324f0fc1c6124fbb49bd736382b75 (#220)
-TCGdex outage resilience         : #216/#217 MERGED / runtime 03824158ac899cf142199c42d4525386a573bc15
-TCGdex resilience validated code : 53a7fd0a47d100d851c347c3fadb79e4f754d07b
+V4 runtime production            : 0be4dca95513e36f4e407ef7bac361fe488c1d36 (#224)
+TCGdex transport resilience      : #216/#217 MERGED / runtime 03824158ac899cf142199c42d4525386a573bc15
+TCGdex outage fallback           : #222/#224 MERGED / runtime 0be4dca95513e36f4e407ef7bac361fe488c1d36
+TCGdex outage validated head     : 4cd3b215267dfc504b535831d70637e42adfb247
+TCGdex outage exact tested tree  : 8ae11e351add5e78b3765bfe410ab884ac649586
 Robot KB configurator mode       : #219 MERGED / 2aef339135df8b4a183ad4ba030b9e603ea9e696
 Future-start auction guard       : #220 MERGED / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
 External pending throughput      : #214 MERGED / P4 16 + eBay 16 / auctions eBay max 4
@@ -31,7 +33,7 @@ TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ### Preuves production récentes
 
 ```text
-#216/#217 first natural prod     : run 33489103277 SUCCESS
+#216/#217 outage proof           : run 33489103277 SUCCESS
 TCGdex during that run           : 16 attempted / 0 exact / 0 no-match / 16 errors
 TCGdex breaker                   : opened after 2 exhausted logical calls
 scanner duration                 : 274 s vs ~397 s comparable pre-fix
@@ -39,9 +41,15 @@ EXTERNAL_PENDING                 : 2029 -> 2010
 #220 first natural prod run      : run 33490823534 SUCCESS / 253 s
 #220 auction discovery           : COMPLETE / 24 rows / 24 timers / 0 fallback
 #220 external pending backlog    : 1998
+pre-#224 provider recovery       : run 33498609995 / 11 EXACT / 2 NO_MATCH / 3 AMBIGUOUS / 0 ERROR
+#224 first Main prod proof       : run 33500303400 SUCCESS / 269 s
+#224 TCGdex                      : 17 exact / 1 no-match / 0 ambiguous / 0 errors
+#224 PokeTrace                   : 3 exact / 1 strong / 2 weak / 0 errors
+#224 auction discovery           : COMPLETE / 24 rows / 24 timers / 0 fallback
+#224 EXTERNAL_PENDING            : 1966
 ```
 
-Le premier run naturel post-#220 a chargé exactement `main@6a33ac33...`. Le snapshot contenait 0 enchère Pokémon 0–100 € à ≤60 min : il ne fournit donc pas encore un cas positif d'exclusion future-start, mais il confirme que le collector/timers/pagination restent cohérents et que le scan termine proprement avec les breakers provider actifs.
+Le premier Main Scanner post-#224 a chargé exactement `main@0be4dca9...`. TCGdex était sain pendant ce snapshot : la phase prouve donc la **non-régression production** du fallback et son absence d'interférence avec le chemin normal, mais **pas encore une activation positive du chemin outage**. Cette preuve positive devra être observée lors d'une panne transport réelle ; aucune panne artificielle ne doit être provoquée en production.
 
 ---
 
@@ -78,9 +86,9 @@ Cron-job.org ~toutes les 10 min
   -> run_watcher_multimarket.py
 ```
 
-Le bootstrap résilient installe la protection TCGdex puis délègue au runner canonique.
+Le bootstrap résilient installe la protection TCGdex, puis le fallback source-pinné borné, avant de déléguer au runner canonique.
 
-### TCGdex outage resilience — #216/#217 EN PRODUCTION
+### TCGdex transport resilience — #216/#217 EN PRODUCTION
 
 ```text
 appel TCGdex logique             max 2 tentatives
@@ -97,6 +105,23 @@ nouveau process                  circuit fermé / provider retenté
 - aucune identité, fair value, décote, notification, PokeTrace, PSA ou eBay n'a été relâchée.
 
 Validation : runtime `53a7fd0a...`, 845 PASS / 2 skipped, compile/YAML/diff PASS, live compare superset. Première preuve naturelle : run `33489103277` SUCCESS, breaker exactement conforme, backlog `2029 -> 2010`.
+
+### TCGdex source-pinned outage fallback — #222/#224 EN PRODUCTION
+
+Le resolver/retry/breaker normal s'exécute toujours en premier. Le fallback ne peut agir que sur un résultat `ERROR` provenant d'une panne transport retryable et exige simultanément :
+
+- langue japonaise ;
+- alias de set déjà reviewé ;
+- numéro/denominator exact compatible ;
+- source TCGdex immuable `af33c9ac882e2acfadffaf19e8083aa976d12983` ;
+- exact `set/localId` + import exact du set ;
+- finish uniquement dans le vocabulaire déjà accepté.
+
+`NO_MATCH`, `AMBIGUOUS`, autre langue, set non reviewé ou preuve incomplète restent inchangés. Aucun nouveau resolver générique, alias treadmill ou relaxation d'identité n'a été ajouté.
+
+Validation exacte après #223 : head `4cd3b215...`, exact tested tree `8ae11e351add...`, V4 run `33498301361` SUCCESS avec **867 PASS**, compile/YAML/diff PASS, live compare `effective=93 / legacy=91 / legacy_only=0`, Robot KB run `33498301360` SUCCESS. Le bug GitHub du toggle Ready (`fullDatabaseId`) a imposé le miroir #224, bit-for-bit sur le même head/tree validé.
+
+Première preuve production post-merge : run `33500303400` SUCCESS sur `main@0be4dca9...`, 269 s, TCGdex `17 exact / 1 no-match / 0 ambiguous / 0 errors`, PokeTrace `3 exact / 1 strong / 2 weak`, backlog `1966`. Comme le provider était sain, c'est une preuve de **non-régression**, pas encore une preuve positive d'activation du fallback outage.
 
 ## Auction discovery hardening — #211/#212
 
@@ -115,7 +140,7 @@ Une enchère prouvée comme n'ayant **pas encore commencé** est exclue avant in
 
 #220 se superpose au hardening #211/#212 ; il ne remplace pas la découverte actuelle.
 
-Première preuve naturelle post-merge : run `33490823534` SUCCESS, 24 auctions découvertes / 24 timers lisibles, discovery `COMPLETE`, fallback `false`, 0 enchère éligible ≤60 min. Aucun cas future-start positif n'était présent dans ce snapshot.
+Première preuve naturelle post-merge : run `33490823534` SUCCESS, 24 auctions découvertes / 24 timers lisibles, discovery `COMPLETE`, fallback `false`, 0 enchère éligible ≤60 min. Le run post-#224 `33500303400` confirme encore 24/24 et `COMPLETE`. Aucun cas future-start positif n'était présent dans ces snapshots.
 
 ## External pending throughput — #214
 
@@ -130,7 +155,7 @@ PSA APR max                      2/run
 provider-error backoff           inchangé
 ```
 
-Le drain fonctionne réellement. Les erreurs eBay/PSA/TCGdex restent des erreurs provider, jamais une preuve négative fabriquée. Sur le run post-#220 `33490823534`, le backlog `EXTERNAL_PENDING` est à `1998`.
+Le drain fonctionne réellement. Les erreurs eBay/PSA/TCGdex restent des erreurs provider, jamais une preuve négative fabriquée. Backlog observé : `1998` sur `33490823534`, `1985` sur le baseline pré-#224, puis `1966` sur `33500303400`.
 
 ## Fast Lane
 
@@ -223,7 +248,7 @@ Restent volontairement bloqués tant qu'aucune preuve déterministe suffisante n
 
 # TCGdex — identité et microvariantes
 
-La lignée #119→#135 reste l'autorité de récupération exacte : coordinate, aliases de set prouvés, unicité catalogue et fallback source-pinné immuable.
+La lignée #119→#135 reste l'autorité de récupération exacte : coordinate, aliases de set prouvés, unicité catalogue et fallback source-pinné immuable. #222/#224 ajoute uniquement le chemin borné de récupération pendant une **panne transport réelle**, sans changer les preuves d'identité admises.
 
 `variants_detailed` peut prouver après identité exacte :
 
@@ -324,8 +349,10 @@ Documents de reprise :
 
 ```text
 V4
+  -> observer naturellement la première panne transport TCGdex post-#224 pour inspecter l'activation positive du fallback source-pinné
   -> continuer d'observer les snapshots auction jusqu'au premier cas future-start réellement exclu
-  -> continuer d'observer TCGdex/eBay/PSA et EXTERNAL_PENDING
+  -> continuer d'observer eBay/PSA et EXTERNAL_PENDING
+  -> ne pas provoquer artificiellement une panne provider en production
   -> ne pas augmenter les caps uniquement pour forcer le drainage
 
 Robot KB
