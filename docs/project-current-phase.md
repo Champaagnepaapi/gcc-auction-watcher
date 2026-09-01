@@ -8,7 +8,8 @@
 main GitHub / docs               1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9
 V4 runtime production            c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09 / PR #214 MERGED
 TCGdex outage resilience         PR #216 OPEN / DRAFT / NON MERGED
-#216 runtime validé               53a7fd0a47d100d851c347c3fadb79e4f754d07b
+#216 runtime validé              53a7fd0a47d100d851c347c3fadb79e4f754d07b
+#216 docs head                   df943b52057a68bd7bf15207706250e2208876b5
 V5                               PR #8 / OPEN / DRAFT / NON MERGED
 Robot KB                         séparé de V4 / aucun changement dans #216
 Neon                             aucun changement dans #216
@@ -69,21 +70,23 @@ V4 runtime CI                    33484132586 SUCCESS
 V4 tests                         845 PASS / 2 skipped
 compile / YAML / diff-check      PASS
 live auction compare             94 effective / 91 legacy / legacy_only=0
-Global offline runtime           33484132557 / validate SUCCESS
+Global runtime                   33484132557 SUCCESS
+Global marketplace-live-once     SUCCESS / read-only / safety PASS / no mutation PASS
 
-docs-head avant closeout         fa3914fbcae78a83305c4dca8848a0a2c677de1e
-V4 docs-head CI                  33484530583 SUCCESS
-live auction compare docs-head   96 effective / 93 legacy / legacy_only=0
-Robot KB docs-head               33484530594 SUCCESS
-Global offline docs-head         33484530595 / validate SUCCESS
-Global marketplace-live-once     encore en cours au dernier contrôle
+docs head                        df943b52057a68bd7bf15207706250e2208876b5
+delta depuis runtime             README + docs seulement / aucun code
+V4 docs-head tests               845 PASS / 2 skipped
+Robot KB docs-head               33487523595 SUCCESS
+Global offline docs-head         33487523606 / validate SUCCESS
+V4 live compare docs-head        en cours au dernier contrôle
+Global live docs-head            en cours au dernier contrôle (redondant avec runtime live SUCCESS)
 ```
 
-Le job Global live est read-only et teste la pile Global, qui conserve exactement le comportement #145 ; le breaker ajouté par #216 est Main-only et couvert par les tests V4 déterministes. Un timeout/failure de ce job pendant la panne provider ne doit pas être reclassé comme une régression du breaker Main sans preuve correspondante.
+Le live Global du runtime a rencontré des erreurs TCGdex intermittentes mais a terminé avec le contrat read-only intact : aucune notification, aucune mutation, aucune relaxation d'identité, aucune transaction.
 
 ## Prochaine étape
 
-1. Laisser finir les `marketplace-live-once` read-only déjà lancés et classifier leur résultat comme preuve provider/Global.
+1. Laisser finir le live compare V4 du docs-head `df943b...` et enregistrer son résultat dans la PR sans nouveau commit documentaire si possible.
 2. Garder #216 **DRAFT / NON MERGED** jusqu'à autorisation explicite utilisateur.
 3. Après autorisation seulement : merger avec SHA attendu, vérifier le nouveau `main`, puis observer un vrai run production pour confirmer que le circuit borne la panne TCGdex sans relâcher l'identité.
 4. Garder PR #8 / V5 et Robot KB/Neon séparés.
