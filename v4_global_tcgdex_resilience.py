@@ -1,8 +1,10 @@
-"""Global-only bounded resilience for transient TCGdex transport failures.
+"""Bounded resilience for transient TCGdex transport failures.
 
-This wrapper is deliberately not installed by the canonical V4 production scanner.
-It changes neither identity rules nor negative-evidence semantics: exhausted retries
-still propagate as transient errors, so callers remain fail-closed.
+This wrapper was introduced and live-validated for Global in PR #145. The
+canonical V4 Main Scanner may reuse the same transport-only policy through
+``install_v4_tcgdex_resilience``. It changes neither identity rules nor
+negative-evidence semantics: exhausted retries still propagate as transient
+errors, so callers remain fail-closed.
 """
 from __future__ import annotations
 
@@ -102,7 +104,7 @@ def _resilient_json_get(
 
 
 def install_global_tcgdex_resilience() -> None:
-    """Install the transport wrapper only in Global runners that opt into it."""
+    """Install the proven transport wrapper in Global runners that opt into it."""
     global _ORIGINAL_JSON_GET
     current = canonical._json_get
     if getattr(current, "_v4_global_tcgdex_resilience", False) is True:
@@ -110,3 +112,8 @@ def install_global_tcgdex_resilience() -> None:
     _ORIGINAL_JSON_GET = current
     _resilient_json_get._v4_global_tcgdex_resilience = True  # type: ignore[attr-defined]
     canonical._json_get = _resilient_json_get
+
+
+def install_v4_tcgdex_resilience() -> None:
+    """Reuse PR #145's exact bounded transport policy in the V4 Main Scanner."""
+    install_global_tcgdex_resilience()
