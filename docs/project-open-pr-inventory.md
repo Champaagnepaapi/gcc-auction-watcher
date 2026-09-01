@@ -1,68 +1,83 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** pendant la validation de #216. Le contrôle GitHub live reste l'autorité ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub.
+Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #216/#217, #219 et #220. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
-> État courant : le HEAD GitHub `main` est `1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9` (closeout docs #215) ; le runtime V4 déployé reste celui de #214 à `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`. PR #216 est un candidat TCGdex **OPEN / DRAFT / NON MERGED**.
+> V4 runtime production : `main@6a33ac33faa324f0fc1c6124fbb49bd736382b75`. #216/#217, #219 et #220 sont **MERGED** et ne font plus partie de la surface PR ouverte.
 
 ```text
-main GitHub / docs             1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9
-V4 runtime                     c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
-PR #216                        OPEN / DRAFT / NON MERGED / runtime validé 53a7fd0a47d100d851c347c3fadb79e4f754d07b
-PR #214                        MERGED / validated head 5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595 / runtime c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
-PR #211                        MERGED / validated head 461e0ec57271901033426f3566f6ab1f6b38e86a
-PR #212                        MERGED / runtime 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
-PR #178                        MERGED / 545223613ce21e6c4cf886e07201bc3c105a5e69
-PR #179                        MERGED / ac5f7c734685422612a0f24690af22910eefa951
-PR #180                        MERGED / 9365f5cd9f8949580c4e48f00ba8c4e419c22145
-PR #8                          OPEN / DRAFT / NON MERGED
+V4 runtime                     6a33ac33faa324f0fc1c6124fbb49bd736382b75
+PR #216/#217                  MERGED / TCGdex resilience / 03824158ac899cf142199c42d4525386a573bc15
+PR #219                       MERGED / Robot KB configurator executable / 2aef339135df8b4a183ad4ba030b9e603ea9e696
+PR #220                       MERGED / future-start auction guard / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
+PR #8                         OPEN / DRAFT / NON MERGED
+PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION AUTHORIZATION
 ```
 
-#211 et #212 représentent **la même capacité et le même feature head**. #212 a été créé uniquement parce que la mutation GraphQL permettant de sortir #211 du mode draft a échoué ; le miroir non-draft a servi de véhicule de merge. GitHub a ensuite marqué #211 mergée au même commit runtime.
-
-## PR ouvertes **pertinentes pour la gouvernance courante**
+## PR ouvertes à décision explicite / risque matériel
 
 | PR | Classification / instruction |
 |---|---|
-| #216 | **`ACTIVE_CANDIDATE / V4 TCGdex transport resilience`**. Runtime validé `53a7fd0a...`, 845 PASS/2 skips, live compare superset. OPEN/DRAFT/NON-MERGED. Ne pas merger sans autorisation explicite utilisateur. |
-| #176 | `STALE_OPEN / DOCS`. Handoff eBay ancien ; revalider avant tout merge. |
-| #159 | `STALE_OPEN/SUPERSEDED` fonctionnellement par #177 Battle Partners déjà mergée. Ne pas rejouer telle quelle. |
+| #210 | **`ROBOT_KB_DURABLE_WRITE_GUARD / EXPLICIT_AUTH_REQUIRED`**. Prépare un commit durable Cardova exact-sale avec backup/locks/double autorisation. Aucun commit durable exécuté. Ne pas merger/exécuter automatiquement. |
+| #209 | `ROBOT_KB_ROLLBACK_REHEARSAL`. Preuve PostgreSQL réelle sous rollback ; durable state restauré. Ne pas traiter comme autorisation de write. |
+| #208 | `ROBOT_KB_MEMORY_ONLY / P3_STACKED`. Exact-sale persistence avec #207 `print_run`, pas de durable write. |
+| #206 | `ROBOT_KB_PRE_207_FAIL_CLOSED_PROOF`. Historique memory-only montrant le gap schema avant #207. |
+| #205 | `ROBOT_KB_MEMORY_ONLY_SOLD_CANDIDATES`. Exact candidates, aucune persistance durable. |
+| #204 | `ROBOT_KB_CARDOVA_MICROVARIANT_PROOF`. No Rarity / visible rarity-symbol proof bornée. |
+| #199 | `ROBOT_KB_CARDOVA_SOLD_STACK_ROOT`. Cardova paid/completed SOLD collection + identity work ; reste draft/non-merged. |
+| #193 | `ROBOT_KB_MANUAL_WRITE_PATH / STACKED`. Écriture manuelle corroborated eBay seulement après gates strictes ; ne pas merger indépendamment. |
+| #195 | `ROBOT_KB_BATCH_STACKED`. Compose #193 + #194 ; ne pas merger indépendamment. |
+| #8 | **`V5_ONLY / PROTECTED`**. OPEN/DRAFT/NON-MERGED. Ne jamais merger dans `main` sans autorisation explicite utilisateur. |
+| #87 | **Décision produit V4 séparée** : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
+
+## Robot KB / marché — recherche ou shadow à revalider avant intégration
+
+| PR | Classification / instruction |
+|---|---|
+| #198 | `ROBOT_KB_COMC_PUBLIC_HISTORY_DIAGNOSTIC`. Read-only ; ne pas fabriquer SOLD depuis Sold Out/chart. |
+| #197 | `ROBOT_KB_FANATICS_PAID_HISTORY_DIAGNOSTIC`. PAID explicite requis ; currency encore non prouvée dans la phase documentée. |
+| #196 | `ROBOT_KB_LOCAL_PSA_CORROBORATION`. Local Mac evidence only ; ne pas revivre en V4 GitHub Actions. |
+| #194 | `ROBOT_KB_CANONICAL_BOOTSTRAP / STACKED`. Exact TCGdex canonicalization ; aucune market observation créée. |
+| #192 | `ROBOT_KB_EBAY_BENCHMARK`. Read-only / corroboration stricte ; provider seul ne prouve pas SOLD. |
+| #190 | `STALE_OPEN / DOCS_DIAGNOSTIC`. PSA cert 403 sur GitHub Actions ; ne pas contourner WAF. |
+| #187 | `ROBOT_KB_PUBLIC_MARKET_RECOVERY`. Revalider current-main/supersession avant toute intégration. |
+
+## V5 child/shadow
+
+| PR | Classification / instruction |
+|---|---|
+| #92 | `V5 child/shadow/deferred`; PokemonPriceTracker shadow uniquement. Ne pas merger dans `main`. |
+| #96 | `V5 child/deferred`; digital TCG Pocket reject + curated catalog gap. Ne pas merger dans `main`. |
+| #8 | `V5 root experimental`; reste l'autorité de protection de la ligne V5. |
+
+## Stale / superseded / historique — ne pas merger automatiquement
+
+| PR | Classification / instruction |
+|---|---|
+| #176 | `STALE_OPEN / DOCS`. Ancien closeout eBay ; revalider avant merge. |
+| #159 | `STALE_OPEN/SUPERSEDED` fonctionnellement par #177. |
 | #141 | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
 | #138 | `SUPERSEDED_BY_139`. |
-| #126 | `STALE_OPEN/SUPERSEDED` par #127→#135. Ne pas merger. |
-| #115 | `SUPERSEDED_BY_139` / child historique Global. |
-| #114 | `SUPERSEDED_BY_139` / child historique Global. |
-| #113 | `SUPERSEDED_BY_139` / child historique Global. |
-| #110 | `SUPERSEDED_BY_139` / diagnostic historique. |
+| #126 | `STALE_OPEN/SUPERSEDED` par #127→#135. |
+| #115/#114/#113/#110/#109/#108 | `SUPERSEDED_BY_139` / stack Global historique. |
 | #111 | `STALE_OPEN/SUPERSEDED` docs. |
-| #109 | `SUPERSEDED_BY_139` / stack Global historique. |
-| #108 | `SUPERSEDED_BY_139` / fondation Global historique. |
-| #107 | Japan Edge PPT display-only historique ; ne pas merger automatiquement. |
-| #106 | ancien V4 PPT shadow ; ne pas merger automatiquement. |
-| #96 | `V5 child/deferred`; ne pas merger dans `main`. |
-| #92 | `V5 shadow/deferred`; ne pas merger dans `main`. |
-| #87 | **Décision produit V4 séparée/non déployée** : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
+| #107/#106 | anciennes lines PPT/Japan shadow ; ne pas merger automatiquement sur current main. |
 | #54 | `STALE_OPEN/SUPERSEDED`. |
-| #8 | **V5 expérimentale. OPEN / DRAFT / NON MERGED. Ne jamais merger dans `main` sans autorisation explicite utilisateur.** |
 
-## Phases production / candidates récentes
+## Merges récents retirés de la surface ouverte
 
-- #216 : **candidat non déployé** de résilience TCGdex Main-only ; runtime validé `53a7fd0a47d100d851c347c3fadb79e4f754d07b`, V4 run `33484132586` SUCCESS, 845 PASS / 2 skips ; le run naturel main `33484902370` confirme encore 18/18 `ConnectionError` et backlog 2029 ;
-- #214 : V4 `EXTERNAL_PENDING` throughput borné ; head validé `5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595`, merge runtime `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`, 834 tests PASS + live compare PASS ; P4/eBay 16/run, auctions eBay max 4 ;
-- #211/#212 : V4 auction order-drift hardening adaptatif ; feature head `461e0ec57271901033426f3566f6ab1f6b38e86a`, merge runtime `20bd6aca88b37a07d8a0c28295c2fe4734f30d5e`, validation run `33438530882` SUCCESS ;
-- #156 : Global scale 50 listings/run ;
-- #166 : Robot KB local PostgreSQL cutover ;
-- #168 : Cardova public anonymous read-only ;
-- #169 : Global cadence 20 min + timeout recovery ;
-- #174 + #177 : Magi deterministic exact identity ;
-- #178 : protection du budget recovery Magi, merge `545223613ce21e6c4cf886e07201bc3c105a5e69` ;
-- #179 : watchdog/rattrapage Global, merge `ac5f7c734685422612a0f24690af22910eefa951` ;
-- #180 : Robot KB multisource local, merge `9365f5cd9f8949580c4e48f00ba8c4e419c22145`.
+- #216 / #217 : résilience TCGdex Main-only **MERGED / PROD_V4** ;
+- #219 : configurateur Robot KB mode exécutable **MERGED / MAIN_SUPPORT** ;
+- #220 : future-start GCC auction guard **MERGED / PROD_V4** ;
+- #214 : throughput `EXTERNAL_PENDING` **MERGED** ;
+- #211/#212 : auction order-drift hardening **MERGED** ;
+- #178/#179/#180 : **MERGED**.
 
 ## Règles
 
 - `open` ne veut pas dire `à merger` ;
+- draft/non-draft ne vaut pas autorisation ;
 - vérifier patch + ancestry + supersession avant toute décision ;
-- ne jamais rejouer les PRs historiques absorbées par #139 ;
+- ne jamais merger un child stacké directement si son parent n'est pas résolu ;
+- ne jamais exécuter une migration/écriture durable Robot KB par simple merge de code préparatoire ;
 - aucune fermeture housekeeping destructive sans autorisation utilisateur ;
-- **PR #216 reste candidate/draft et non mergée sans autorisation explicite** ;
 - **PR #8 reste explicitement protégée** et non mergée.
