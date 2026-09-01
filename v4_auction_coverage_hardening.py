@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Optional
 
@@ -13,11 +14,46 @@ import v4_auction_item_discovery as item_discovery
 # advertised order is locally inconsistent for the current snapshot.
 _EXHAUSTIVE_HORIZON_MINUTES = 1_000_000_000
 _ORDER_DRIFT_REASON = "auction API ending-soon order invalid"
+_RECOVERY_PAGE_HEADROOM = 2
+_RECOVERY_MAX_PAGES_HARD_LIMIT = 250
 _ORIGINAL_DISCOVER_AUCTION_API_LOTS = item_discovery.discover_auction_api_lots
 _ORIGINAL_ORDER_VALIDATOR = item_discovery._api_order_is_valid
 _ORIGINAL_MAYBE_NOTIFY_INCOMPLETE_COVERAGE = watcher.maybe_notify_incomplete_coverage
 _INSTALLED = False
 _ALERT_CLARITY_INSTALLED = False
+
+
+def _adaptive_recovery_max_pages(
+    primary: item_discovery.AuctionApiDiscoveryResult,
+    *,
+    page_size: int,
+    base_max_pages: int,
+    hard_limit: int = _RECOVERY_MAX_PAGES_HARD_LIMIT,
+) -> int:
+    """Size only the recovery request budget from GCC's wider count hint.
+
+    `api_total` is deliberately *not* a completeness proof: the recovery still
+    has to reach the API's own exhaustion (`nextPage` absent). The count can be
+    wider than the exact target scope, so it is safe only as a capacity hint.
+    A hard request ceiling remains in force; if GCC cannot exhaust inside it,
+    the canonical collector stays incomplete and falls back to legacy discovery.
+    """
+
+    safe_base = max(1, int(base_max_pages))
+    safe_hard_limit = max(safe_base, int(hard_limit))
+    budget = safe_base
+    total = primary.api_total
+
+    if (
+        isinstance(total, int)
+        and not isinstance(total, bool)
+        and total >= 0
+        and page_size > 0
+    ):
+        hinted_pages = math.ceil(total / page_size) + _RECOVERY_PAGE_HEADROOM
+        budget = max(budget, hinted_pages)
+
+    return min(budget, safe_hard_limit)
 
 
 def discover_auction_api_lots_exhaustive(
@@ -158,6 +194,7 @@ def discover_auction_api_lots_hardened(
     page_size: int = item_discovery.AUCTION_API_PAGE_SIZE,
     max_pages: int = item_discovery.AUCTION_API_MAX_PAGES,
     now=None,
+    recovery_max_pages: Optional[int] = None,
 ) -> item_discovery.AuctionApiDiscoveryResult:
     """Keep the fast canonical path; recover only from proven order drift."""
 
@@ -180,11 +217,39 @@ def discover_auction_api_lots_hardened(
         "Auction API ENDING_SOON order drift -> bounded exhaustive recovery "
         "for this snapshot only"
     )
+    recovery_base = (
+        max_pages if recovery_max_pages is None else max(1, int(recovery_max_pages))
+    )
+    recovery_page_budget = _adaptive_recovery_max_pages(
+        primary,
+        page_size=page_size,
+        base_max_pages=recovery_base,
+    )
+    if recovery_page_budget > recovery_base:
+        watcher.log(
+            "Auction API recovery capacity expanded: "
+            f"{recovery_base} -> {recovery_page_budget} page(s) "
+            f"from provider count hint {primary.api_total}; "
+            "count is sizing-only, API exhaustion remains mandatory"
+        )
+    elif (
+        isinstance(primary.api_total, int)
+        and not isinstance(primary.api_total, bool)
+        and page_size > 0
+        and math.ceil(primary.api_total / page_size) + _RECOVERY_PAGE_HEADROOM
+        > recovery_page_budget
+    ):
+        watcher.log(
+            "Auction API recovery count hint exceeds hard page ceiling; "
+            f"budget remains {recovery_page_budget} page(s) and will fail closed "
+            "unless API exhaustion is reached"
+        )
+
     recovered = discover_auction_api_lots_exhaustive(
         max_minutes=horizon,
         http_get=http_get,
         page_size=page_size,
-        max_pages=max_pages,
+        max_pages=recovery_page_budget,
         now=now,
     )
     if recovered.complete:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import v4_auction_item_discovery as discovery
 import v4_auction_coverage_hardening as hardening
@@ -126,6 +128,62 @@ class AuctionHardeningDispatchTests(unittest.TestCase):
         self.assertFalse(result.order_verified)
         self.assertEqual(getter.calls, 2)
         self.assertEqual(len(result.lots), 2)
+
+    def test_recovery_budget_expands_from_wider_api_total_hint(self):
+        primary = SimpleNamespace(api_total=15049)
+
+        budget = hardening._adaptive_recovery_max_pages(
+            primary,
+            page_size=100,
+            base_max_pages=100,
+        )
+
+        self.assertEqual(budget, 153)
+
+    def test_recovery_budget_keeps_hard_ceiling_for_large_inventory(self):
+        primary = SimpleNamespace(api_total=50000)
+
+        budget = hardening._adaptive_recovery_max_pages(
+            primary,
+            page_size=100,
+            base_max_pages=100,
+        )
+
+        self.assertEqual(budget, 250)
+
+    def test_order_drift_passes_adaptive_budget_to_exhaustive_recovery(self):
+        drifting = payload(
+            [
+                row(
+                    "11111111-1111-1111-1111-111111111111",
+                    "2026-08-31T20:20:00Z",
+                ),
+                row(
+                    "22222222-2222-2222-2222-222222222222",
+                    "2026-08-31T20:00:00Z",
+                ),
+            ],
+            next_page=2,
+        )
+        drifting["info"]["counts"]["total"] = 15049
+        getter = Getter([drifting])
+        recovered = SimpleNamespace(complete=False)
+
+        with patch.object(
+            hardening,
+            "discover_auction_api_lots_exhaustive",
+            return_value=recovered,
+        ) as mocked_recovery:
+            result = hardening.discover_auction_api_lots_hardened(
+                max_minutes=60,
+                http_get=getter,
+                page_size=100,
+                now=NOW,
+            )
+
+        self.assertIs(result, recovered)
+        self.assertEqual(mocked_recovery.call_args.kwargs["max_pages"], 153)
+        self.assertEqual(getter.calls, 1)
 
 
 if __name__ == "__main__":
