@@ -125,10 +125,12 @@ Aucune identité, économie, notification ou sémantique provider n'a été rel�
 - exact-coordinate ; padding collector ; set/localId ; unicité catalogue ;
 - bridges provider exacts ;
 - finish/set source-pinnés ;
-- fallback catalogue immuable quand REST TCGdex est stale ;
+- fallback générique catalogue immuable quand REST TCGdex est stale ;
 - PokeTrace market-only après identité TCGdex.
 
 **Pas de treadmill d'alias carte-par-carte.**
+
+PR #126 = `SUPERSEDED` par #127→#135 ; ne pas rejouer cette ligne historique.
 
 ## #154 — TCGdex `variants_detailed` — `PROD_V4 / MAIN_SUPPORT`
 
@@ -140,7 +142,13 @@ Axes inconnus/multiples/malformés/contradictoires => fail-closed. `pricing` / `
 
 # Global Multi-Vault — `GLOBAL_NOTIFY_ACTIVE`
 
-Surface canonique : **GCC / Cardova / Magi / Fanatics / COMC**.
+## #139 — réintégration du stack Global historique
+
+#139 a absorbé/revalidé le stack historique #108→#115 ; les branches enfants restent provenance uniquement.
+
+Surface canonique historique : **GCC/Cardova/magi/Fanatics/COMC**.
+
+Surface d'exploitation actuelle : **GCC / Cardova / Magi / Fanatics / COMC**.
 
 ```text
 marketplace inventory
@@ -157,6 +165,8 @@ marketplace inventory
 - `ACTIVE_AUCTION` non actionnable ;
 - PPT/PokeTrace/eBay = famille corrélée `EBAY_GRADED_AGGREGATE` ;
 - aucune transaction.
+
+PPT = `SOLD_AGGREGATED`, jamais item-level SOLD.
 
 Scale : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTrace 60, cadence 20 min, inner timeout 17 min, job timeout 25 min.
 
@@ -177,6 +187,8 @@ Les cinq classes historiques sans preuve suffisante restent bloquées. Pas de fa
 Contrat : append-only, provenance + payload brut, SOLD finaux prouvés prioritaires, fixed baseline + changements utiles, auction SOLD final prioritaire, snapshot ≤5 min fallback seulement, ASK/live/disparition/WAITING_FOR_PAYMENT != vente.
 
 PostgreSQL local Mac actif ; `V4_USE=false`. Neon writers automatiques OFF ; rollback/recovery manuel.
+
+**Robot KB mirror/collectors séparés** : les collectors historiques et multisource restent distincts des lanes de décision V4/Global.
 
 ## #180 — multisource local — `ROBOT_KB`
 
@@ -218,6 +230,8 @@ TCGdex reste le resolver normal. PokeTrace reste marché/prix après identité. 
 ---
 
 # Supersessions / provenance importantes
+
+Les branches et PRs **historiques/superseded** restent de la provenance ; elles ne doivent pas être rejouées automatiquement.
 
 - #54 : stale/superseded ;
 - #111 : ancien snapshot docs ;
