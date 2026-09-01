@@ -13,6 +13,7 @@ TCGdex outage resilience         : #216/#217 / PROD_V4 / merge 03824158ac899cf14
 TCGdex validated runtime         : 53a7fd0a47d100d851c347c3fadb79e4f754d07b
 TCGdex natural prod proof        : run 33489103277 SUCCESS / breaker exact / 2029 -> 2010
 Future-start auction guard       : #220 / PROD_V4 / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
+#220 natural production proof    : run 33490823534 SUCCESS / 253 s / discovery COMPLETE / backlog 1998
 External pending throughput      : #214 / PROD_V4 / P4 16 + eBay 16 / auction max 4
 Auction order hardening          : #211 + #212 / PROD_V4
 Magi native identity             : #174 + #177 / PROD_V4
@@ -57,6 +58,8 @@ Preuves admises : timestamp GCC structuré + row id stable, ou preuve UI forte e
 
 Aucun changement fair value, threshold, identity, provider budget ou notification.
 
+Première preuve naturelle : run `33490823534` sur `main@6a33ac33...` SUCCESS en 253 s ; discovery auction `COMPLETE`, 24 rows / 24 timers, 0 fallback et 0 enchère éligible ≤60 min. Ce snapshot n'avait donc aucun cas future-start positif à exclure, mais confirme l'absence de régression du collector courant.
+
 ## Fast Lane — `PROD_V4`
 
 - recheck ciblé des auctions déjà armées à ≤5 min ;
@@ -93,7 +96,7 @@ PSA APR max                      2/run
 provider-error backoff           inchangé
 ```
 
-Le drain est prouvé. Les provider failures restent fail-visible et ne deviennent jamais clean no-match.
+Le drain est prouvé. Les provider failures restent fail-visible et ne deviennent jamais clean no-match. Backlog observé sur `33490823534` : `1998`.
 
 ## #216/#217 — TCGdex transport/run resilience — `PROD_V4`
 
@@ -112,6 +115,8 @@ new process                      retry provider from closed circuit
 Validation pré-merge : 845 PASS / 2 skipped, compile/YAML/diff PASS, live compare superset.
 
 Première preuve naturelle `33489103277` sur `main@03824158...` : SUCCESS, 16 attempted / 0 exact / 0 no-match / 16 errors, breaker ouvert exactement après 2 appels épuisés, scanner 274 s vs ~397 s pré-fix, backlog 2029 -> 2010.
+
+Sur le run post-#220 `33490823534`, TCGdex reste en panne : 16 attempted / 0 exact / 0 no-match / 16 errors, avec breaker conforme.
 
 Aucune identité, économie, notification ou sémantique provider n'a été relâchée.
 
