@@ -25,7 +25,7 @@ PR #8 reste expérimentale/draft/non mergée, head `bc641dfe64c1cacc912b585d4e86
 
 ## Comptage
 
-Le dernier audit exhaustif connu, le 18 août, comptait 158 branches distantes. Plusieurs branches ont été créées depuis ; **ne pas présenter 158 comme nombre actuel** sans nouvel audit exhaustif.
+Le dernier audit exhaustif connu, le 18 août, comptait 158 branches distantes. Plusieurs branches ont été créées depuis ; **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
 
 Toute suppression de branche exige audit + autorisation explicite.
 
@@ -55,7 +55,7 @@ Toute suppression de branche exige audit + autorisation explicite.
 
 - `shadow/v4-global-current-main-reintegration-20260819` — #138 superseded par #139 ;
 - #108/#109/#110/#113/#114/#115 — stack historique absorbé par #139 ;
-- #126 — superseded par #127→#135 ;
+- PR #126 : superseded par #127→#135 ;
 - #159 — superseded fonctionnellement par #177 ;
 - anciens one-shots/temp/diagnostics — provenance uniquement.
 
@@ -83,4 +83,4 @@ Toute suppression de branche exige audit + autorisation explicite.
 6. autorisation explicite ;
 7. jamais de suppression V5/P3/branche active par simple housekeeping.
 
-Aucune branche n'est supprimée par ce closeout.
+Aucune branche n'a été supprimée par ce closeout.
