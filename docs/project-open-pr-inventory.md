@@ -1,11 +1,13 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **26 août 2026** après merge de #180. Le contrôle GitHub live reste l'autorité et il ne faut **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub**.
+Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** pendant la validation de #216. Le contrôle GitHub live reste l'autorité et il ne faut **pas utiliser le nombre de lignes comme compteur exhaustif GitHub**.
 
-> Addendum **31 août 2026** : #214 est mergée ; le runtime V4 canonique est `main@c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`. #211/#212 restent la capacité auction order-drift précédente déjà mergée.
+> État courant : le HEAD GitHub `main` est `1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9` (closeout docs #215) ; le runtime V4 déployé reste celui de #214 à `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`. PR #216 est un candidat TCGdex **OPEN / DRAFT / NON MERGED**.
 
 ```text
-main runtime                   c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
+main GitHub / docs             1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9
+V4 runtime                     c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
+PR #216                        OPEN / DRAFT / NON MERGED / runtime validé 53a7fd0a47d100d851c347c3fadb79e4f754d07b
 PR #214                        MERGED / validated head 5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595 / runtime c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09
 PR #211                        MERGED / validated head 461e0ec57271901033426f3566f6ab1f6b38e86a
 PR #212                        MERGED / runtime 20bd6aca88b37a07d8a0c28295c2fe4734f30d5e
@@ -21,6 +23,7 @@ PR #8                          OPEN / DRAFT / NON MERGED
 
 | PR | Classification / instruction |
 |---|---|
+| #216 | **`ACTIVE_CANDIDATE / V4 TCGdex transport resilience`**. Runtime validé `53a7fd0a...`, 845 PASS/2 skips, live compare superset. OPEN/DRAFT/NON-MERGED. Ne pas merger sans autorisation explicite utilisateur. |
 | #176 | `STALE_OPEN / DOCS`. Handoff eBay ancien ; revalider avant tout merge. |
 | #159 | `STALE_OPEN/SUPERSEDED` fonctionnellement par #177 Battle Partners déjà mergée. Ne pas rejouer telle quelle. |
 | #141 | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
@@ -41,8 +44,9 @@ PR #8                          OPEN / DRAFT / NON MERGED
 | #54 | `STALE_OPEN/SUPERSEDED`. |
 | #8 | **V5 expérimentale. OPEN / DRAFT / NON MERGED. Ne jamais merger dans `main` sans autorisation explicite utilisateur.** |
 
-## Phases production récentes
+## Phases production / candidates récentes
 
+- #216 : **candidat non déployé** de résilience TCGdex Main-only ; runtime validé `53a7fd0a47d100d851c347c3fadb79e4f754d07b`, V4 run `33484132586` SUCCESS, 845 PASS / 2 skips ; le run naturel main `33484902370` confirme encore 18/18 `ConnectionError` et backlog 2029 ;
 - #214 : V4 `EXTERNAL_PENDING` throughput borné ; head validé `5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595`, merge runtime `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`, 834 tests PASS + live compare PASS ; P4/eBay 16/run, auctions eBay max 4 ;
 - #211/#212 : V4 auction order-drift hardening adaptatif ; feature head `461e0ec57271901033426f3566f6ab1f6b38e86a`, merge runtime `20bd6aca88b37a07d8a0c28295c2fe4734f30d5e`, validation run `33438530882` SUCCESS ;
 - #156 : Global scale 50 listings/run ;
@@ -52,7 +56,7 @@ PR #8                          OPEN / DRAFT / NON MERGED
 - #174 + #177 : Magi deterministic exact identity ;
 - #178 : protection du budget recovery Magi, merge `545223613ce21e6c4cf886e07201bc3c105a5e69` ;
 - #179 : watchdog/rattrapage Global, merge `ac5f7c734685422612a0f24690af22910eefa951` ;
-- #180 : Robot KB multisource local, merge `9365f5cd9f8949580c4e48f00ba8c4e419c22145` ; installation physique Mac encore à vérifier.
+- #180 : Robot KB multisource local, merge `9365f5cd9f8949580c4e48f00ba8c4e419c22145`.
 
 ## Règles
 
@@ -60,4 +64,5 @@ PR #8                          OPEN / DRAFT / NON MERGED
 - vérifier patch + ancestry + supersession avant toute décision ;
 - ne jamais rejouer les PRs historiques absorbées par #139 ;
 - aucune fermeture housekeeping destructive sans autorisation utilisateur ;
+- **PR #216 reste candidate/draft et non mergée sans autorisation explicite** ;
 - **PR #8 reste explicitement protégée** et non mergée.

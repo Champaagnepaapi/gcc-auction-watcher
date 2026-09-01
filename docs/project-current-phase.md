@@ -5,8 +5,8 @@
 ## Autorité
 
 ```text
-V4 production canonique          main @ 1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9
-V4 runtime production            PR #214 MERGED
+main GitHub / docs               1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9
+V4 runtime production            c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09 / PR #214 MERGED
 TCGdex outage resilience         PR #216 OPEN / DRAFT / NON MERGED
 #216 runtime validé               53a7fd0a47d100d851c347c3fadb79e4f754d07b
 V5                               PR #8 / OPEN / DRAFT / NON MERGED
@@ -21,18 +21,19 @@ Aucun merge ou déploiement de #216 n'a été effectué.
 Le drain fixed `EXTERNAL_PENDING` fonctionne réellement :
 
 ```text
-2241 -> 2187 -> 2162 -> 2115 -> 2099 -> 2065 -> 2045
+2241 -> 2187 -> 2162 -> 2115 -> 2099 -> 2065 -> 2045 -> 2029
 ```
 
-Le dernier run naturel examiné (`33482483020`, `main@1911ba5...`) a terminé normalement en **397 s** mais a montré que la santé provider est maintenant le plafond :
+Le run naturel le plus récent examiné (`33484902370`, `main@1911ba5...`) a terminé normalement mais confirme que la santé provider reste le plafond :
 
 ```text
-TCGdex                           21 attempted / 0 exact / 21 errors
+TCGdex                           18 attempted / 0 exact / 18 errors
 cause TCGdex                     ConnectionError
 PokeTrace                        0 (identité TCGdex non résolue)
 PSA APR                          2 attempted / 2 unavailable / 403 breaker
-eBay                             16 attempted / 13 insufficient / 3 unavailable-error
-EXTERNAL_PENDING                 2045 / ETA 128 runs
+eBay                             16 attempted / 0 sufficient / 6 insufficient / 10 unavailable
+EXTERNAL_PENDING                 2029 / ETA 127 runs
+scanner total_seconds            397.7 s
 ```
 
 Le résultat reste fail-closed : aucune erreur provider n'est transformée en no-match ou en comparable exact.
@@ -64,25 +65,27 @@ Aucun fallback d'identité, aucune hausse de cap #214, aucun changement fair val
 Runtime validé : `53a7fd0a47d100d851c347c3fadb79e4f754d07b`.
 
 ```text
-V4 Auction Discovery CI          33484132586 SUCCESS
+V4 runtime CI                    33484132586 SUCCESS
 V4 tests                         845 PASS / 2 skipped
-compile nouveaux runtime         PASS
-YAML / diff-check                PASS
-live auction compare             94 effective / 91 legacy
-legacy_only                      0
-unresolved                       0
-Global offline validate          33484132557 / validate SUCCESS
+compile / YAML / diff-check      PASS
+live auction compare             94 effective / 91 legacy / legacy_only=0
+Global offline runtime           33484132557 / validate SUCCESS
+
+docs-head avant closeout         fa3914fbcae78a83305c4dca8848a0a2c677de1e
+V4 docs-head CI                  33484530583 SUCCESS
+live auction compare docs-head   96 effective / 93 legacy / legacy_only=0
+Robot KB docs-head               33484530594 SUCCESS
+Global offline docs-head         33484530595 / validate SUCCESS
 Global marketplace-live-once     encore en cours au dernier contrôle
 ```
 
-Le job Global live est read-only et teste la pile Global, qui conserve exactement le comportement #145 ; le breaker ajouté par #216 est Main-only et couvert par les tests V4 déterministes.
+Le job Global live est read-only et teste la pile Global, qui conserve exactement le comportement #145 ; le breaker ajouté par #216 est Main-only et couvert par les tests V4 déterministes. Un timeout/failure de ce job pendant la panne provider ne doit pas être reclassé comme une régression du breaker Main sans preuve correspondante.
 
 ## Prochaine étape
 
-1. Laisser finir `marketplace-live-once` de `33484132557` et classifier son résultat comme preuve provider/read-only, sans modifier #216 pour une panne externe non liée.
-2. Si aucun défaut du patch n'apparaît, finaliser le README/inventaires de handoff avec le SHA docs final.
-3. Garder #216 **DRAFT / NON MERGED** jusqu'à autorisation explicite utilisateur.
-4. Après autorisation seulement : merger avec SHA attendu, vérifier le nouveau `main`, puis observer un vrai run production pour confirmer que le circuit borne la panne TCGdex sans relâcher l'identité.
-5. Garder PR #8 / V5 et Robot KB/Neon séparés.
+1. Laisser finir les `marketplace-live-once` read-only déjà lancés et classifier leur résultat comme preuve provider/Global.
+2. Garder #216 **DRAFT / NON MERGED** jusqu'à autorisation explicite utilisateur.
+3. Après autorisation seulement : merger avec SHA attendu, vérifier le nouveau `main`, puis observer un vrai run production pour confirmer que le circuit borne la panne TCGdex sans relâcher l'identité.
+4. Garder PR #8 / V5 et Robot KB/Neon séparés.
 
 Aucun achat, bid, checkout ou paiement automatique.
