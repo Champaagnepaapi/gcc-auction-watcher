@@ -1,95 +1,83 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État re-vérifié le **1 septembre 2026** après les merges #216/#217, #219, #220, #223 et #222/#224. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
+État re-vérifié le **1 septembre 2026** après #227 et #229/#231. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
 
 ## Autorité
 
 ```text
 V4 production branch             main
-V4 runtime production            0be4dca95513e36f4e407ef7bac361fe488c1d36 / PR #224 MERGED
-TCGdex transport resilience      #216/#217 MERGED / runtime 03824158ac899cf142199c42d4525386a573bc15
-TCGdex outage fallback           #222/#224 MERGED / runtime 0be4dca95513e36f4e407ef7bac361fe488c1d36
-#222 validated head              4cd3b215267dfc504b535831d70637e42adfb247
-#222 exact tested tree           8ae11e351add5e78b3765bfe410ab884ac649586
-#224 first Main prod proof       run 33500303400 SUCCESS / 269 s
-Robot KB API configurator        #219 MERGED / 2aef339135df8b4a183ad4ba030b9e603ea9e696
+V4 runtime production            b6a7c834264c062ea81b64c714e6916aa8bfe9f2 / #229/#231 MERGED
+Auction recovery capacity        adaptive sizing / hard cap 250
+Auction order hardening          #211/#212 MERGED
 Future-start auction guard       #220 MERGED / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
+TCGdex transport resilience      #216/#217 MERGED / 03824158ac899cf142199c42d4525386a573bc15
+TCGdex outage fallback           #222/#224 MERGED / 0be4dca95513e36f4e407ef7bac361fe488c1d36
 V5                               PR #8 / OPEN / DRAFT / NON MERGED
-Robot KB durable                 PostgreSQL local Mac / séparé de V4
+Robot KB durable                 PostgreSQL local Mac / séparé de V4 / V4_USE=false
 Neon                             writers automatiques OFF / rollback manuel
 ```
 
-## #216/#217 — résilience transport TCGdex
+## Phase terminée — #229/#231 auction recovery capacity
 
-Le Main Scanner conserve : max 2 tentatives par appel logique, retry seulement sur `Timeout` / `ConnectionError` / HTTP 502/503/504, breaker après 2 appels logiques épuisés consécutifs, puis `ERROR` fail-closed pour le reste du run. Une vraie réponse provider remet le streak à zéro et un nouveau process repart circuit fermé.
+Le problème n'était pas le cap économique 360 : pendant une dérive d'ordre GCC, la récupération exhaustive #211 pouvait simplement dépasser son ancien safety bound de **100 pages** parce que l'univers `AUCTION + ON_SALE` avait grandi au-delà de 10 000 lignes.
 
-Première preuve production de panne : run `33489103277` SUCCESS, 16/16 TCGdex en `ERROR`, breaker ouvert exactement après 2 appels épuisés, scanner 274 s, backlog `2029 -> 2010`. Aucune panne n'a été transformée en clean no-match.
+Preuves naturelles pré-fix :
 
-## #222/#224 — fallback source-pinné pendant panne transport
+- `33547948642` : order drift → recovery → safety limit 100 pages → fallback legacy ; 39/39 auctions ≤60 min économiquement tentées, 0 différée par cap ;
+- `33548929050` : fast path voisin sain, `COMPLETE`, 96 rows / 28 ≤60 min, fallback false ;
+- `33549911988` : même safety-limit recovery → fallback ; 14/14 ≤60 min tentées, 0 différée par cap.
 
-#222 a ajouté un fallback **étroit** après la résilience #216/#217. Il ne peut agir que si le resolver normal termine en `ERROR` d'une classe transport retryable, puis exige simultanément :
-
-1. langue japonaise ;
-2. alias de set déjà reviewé ;
-3. numéro/denominator exact compatible ;
-4. source TCGdex immuable `af33c9ac882e2acfadffaf19e8083aa976d12983` ;
-5. exact `set/localId` + import exact du set ;
-6. finish uniquement dans le vocabulaire déjà admis.
-
-`NO_MATCH`, `AMBIGUOUS`, autre langue, set non reviewé ou preuve incomplète restent inchangés/fail-closed. Aucun changement fair value, seuil, cap, notification, eBay, PSA, PokeTrace, Robot KB ou V5.
-
-Validation exacte après #223 :
+Correction production :
 
 ```text
-validated head                   4cd3b215267dfc504b535831d70637e42adfb247
-exact tested merge tree          8ae11e351add5e78b3765bfe410ab884ac649586
-V4 validation                    run 33498301361 SUCCESS / 867 PASS
+recovery budget                  ceil(api_total / page_size) + 2
+minimum                          ancien bound
+hard ceiling                     250 pages
+api_total                        sizing-only ; jamais preuve COMPLETE
+preuve COMPLETE                  vraie exhaustion API / nextPage absent
+fast path                        inchangé
+auction economic cap             360 inchangé
+```
+
+Pour ~15 049 rows à 100/page, la capacité devient 153 pages au lieu de 100.
+
+Validation :
+
+```text
+exact head/tree                  f81f81d1cf349a298d07867e9750704a9ea0c2bd / 0170d41c548878f4a4a77b7662f0b0a6e0f002c2
+#229 own validation              33563203801 SUCCESS
+#231 merge-mirror validation     33563438585 SUCCESS
+complete V4 suite                PASS
 compile / YAML / diff-check      PASS
-read-only live compare           effective=93 / legacy=91 / legacy_only=0
-Robot KB validation              run 33498301360 SUCCESS
-merge vehicle                    #224 (mirror non-draft, Ready toggle GitHub cassé)
-production merge                 0be4dca95513e36f4e407ef7bac361fe488c1d36
+read-only live compare           api_primary_complete=true / legacy_only=0 / unresolved=0
+production merge                 b6a7c834264c062ea81b64c714e6916aa8bfe9f2
 ```
 
-## Première preuve production post-#224
+Le Ready toggle de #229 a échoué sur le bug GraphQL GitHub `fullDatabaseId`; #231 a donc été créé comme miroir non-draft du **même SHA/tree** et validé avant merge. GitHub marque ensuite #229 et #231 comme mergées vers le même merge production.
 
-Le premier Main Scanner post-merge `33500303400` a chargé exactement `main@0be4dca95513e36f4e407ef7bac361fe488c1d36` et terminé **SUCCESS**.
+## Preuve production naturelle post-#231
 
-```text
-scanner duration                 269 s
-final opportunities              0
-TCGdex                           exact 17 / no-match 1 / ambiguous 0 / errors 0
-PokeTrace                        3 exact / 1 strong / 2 weak / 0 error
-PokeTrace strong example         Erika's Invitation PSA 10 / 81 ventes agrégées
-auction discovery                COMPLETE
-auction rows / timers            24 / 24
-auction <=60 min                 0
-legacy fallback used             false
-PSA APR                          HTTP 403 -> breaker fail-closed
-external pending backlog         1966
-first-evaluation coverage        COMPLETE
-external-market coverage         INCOMPLETE
-```
+**Pas encore disponible au moment de ce closeout.** Le registre #1 ne contient encore aucun run exact sur `main@b6a7c834...`. Le dernier run enregistré avant le merge reste sur l'ancien runtime.
 
-TCGdex était déjà revenu en ligne sur le baseline pré-merge `33498609995` (`11 EXACT / 2 NO_MATCH / 3 AMBIGUOUS / 0 ERROR`). Le run post-merge prouve donc la **non-régression en production** et le fait que le fallback n'interfère pas avec le provider sain. Il **ne constitue pas une preuve positive d'activation du fallback outage**, puisqu'aucune erreur transport TCGdex n'a eu lieu pendant ce snapshot.
+Ne pas lancer le Main Scanner manuellement juste pour fabriquer la preuve. Attendre le scheduler externe et inspecter le premier run naturel, idéalement le premier avec vraie dérive d'ordre.
 
-## #220 — enchères GCC à début futur
+## Invariants inchangés
 
-Le guard future-start reste en production sous le runtime courant. Une enchère prouvée comme n'ayant pas commencé est exclue avant interprétation du prix/countdown ; aucun timestamp absent/malformé n'est deviné. Le hardening #211/#212 reste l'autorité de découverte/pagination.
-
-Les snapshots post-#220 et post-#224 observés avaient 0 enchère Pokémon 0–100 € à ≤60 min, donc le premier cas future-start positif reste à observer naturellement.
-
-## Robot KB / P3
-
-PR #207 a été mergée **uniquement dans la branche P3** (`agent/p3-postgres-durable-shadow`) au merge `df32a19c237a75e4a1c3bb9dba938fd59fc09665`. Elle ajoute `NO_RARITY_SYMBOL` / `RARITY_SYMBOL_PRESENT` sur `print_run`. **Aucune migration PostgreSQL durable utilisateur n'a été exécutée.**
-
-Le stack Cardova durable #199/#204–#210 reste séparé ; aucun commit durable ne doit être exécuté sans autorisation explicite opérateur.
+- #211/#212 restent l'autorité de discovery/pagination ;
+- #220 future-start reste actif et le premier cas positif réel reste à observer naturellement ;
+- TCGdex #216/#217 + #222/#224 restent stricts/fail-closed ;
+- eBay/PSA/provider errors restent fail-visible ;
+- `EXTERNAL_PENDING` ne doit pas être forcé par hausse opportuniste de caps ;
+- identité/grade/langue/microvariant incompatibles ne sont jamais mélangés ;
+- ASK/current auction/disappearance != SOLD ;
+- Robot KB reste séparé ; aucun durable write Cardova sans autorisation explicite ;
+- PR #8 / V5 reste expérimentale et non mergée ;
+- aucun achat, bid, checkout ou paiement automatique.
 
 ## Prochaine étape
 
-1. Continuer à observer naturellement TCGdex ; si une panne transport réapparaît, vérifier la première activation positive du fallback #222/#224 et inspecter les identités récupérées.
-2. Continuer d'observer les snapshots auction jusqu'au premier cas future-start réellement exclu.
-3. Continuer le drain `EXTERNAL_PENDING` sans augmenter les caps uniquement pour forcer le drainage.
-4. Garder Robot KB/Cardova durable séparé et sans write non autorisé.
-5. Garder PR #8 / V5 expérimentale, draft et non mergée.
-6. Aucun achat, bid, checkout ou paiement automatique.
+1. Attendre un run naturel `main@b6a7c834...`.
+2. Si l'ordre GCC dérive, vérifier que le recovery adaptatif peut dépasser 100 pages et atteint l'épuisement réel ou reste fail-closed.
+3. Continuer d'observer le premier cas future-start réellement exclu.
+4. Continuer d'observer TCGdex/eBay/PSA et le backlog `EXTERNAL_PENDING` sans relâcher les preuves.
+5. Garder Robot KB/Cardova durable et V5 séparés.
