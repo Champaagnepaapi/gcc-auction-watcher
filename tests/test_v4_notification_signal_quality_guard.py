@@ -140,23 +140,38 @@ class ManualReviewSignalQualityTests(unittest.TestCase):
         )
         self.assertFalse(guard._illiquid_phone_worthy(lead))
 
-    def test_gcc_only_small_illiquid_edge_is_log_only_even_for_fixed(self):
+    def test_gcc_only_sub_30pct_edge_is_log_only_even_for_fixed(self):
         anchors = [
             pd.AdjacentAnchor(
                 "EXACT_GCC_SOLD", "gcc", "PCA", "9.5", "fr", 12.0, "SOLD"
             ),
             pd.AdjacentAnchor(
-                "EXACT_GCC_SOLD", "gcc", "PCA", "9.5", "fr", 16.0, "SOLD"
+                "EXACT_GCC_SOLD", "gcc", "PCA", "9.5", "fr", 14.0, "SOLD"
             ),
             pd.AdjacentAnchor(
-                "EXACT_GCC_SOLD", "gcc", "PCA", "9.5", "fr", 20.0, "SOLD"
+                "EXACT_GCC_SOLD", "gcc", "PCA", "9.5", "fr", 16.0, "SOLD"
             ),
         ]
         lead = make_lead(
             make_lot(price=10.0, source_type="fixed"),
-            make_signal(reference=16.0, ratio=1.6, anchors=anchors),
+            make_signal(reference=14.0, ratio=1.4, anchors=anchors),
         )
         self.assertFalse(guard._illiquid_phone_worthy(lead))
+
+    def test_gcc_only_30pct_fixed_discount_notifies_even_below_10_eur_upside(self):
+        anchors = [
+            pd.AdjacentAnchor(
+                "EXACT_GCC_SOLD", "gcc", "PCA", "9.5", "fr", 9.0, "SOLD"
+            ),
+            pd.AdjacentAnchor(
+                "EXACT_GCC_SOLD", "gcc", "PCA", "9.5", "fr", 10.0, "SOLD"
+            ),
+        ]
+        lead = make_lead(
+            make_lot(price=7.0, source_type="fixed"),
+            make_signal(reference=10.0, ratio=(10.0 / 7.0), anchors=anchors),
+        )
+        self.assertTrue(guard._illiquid_phone_worthy(lead))
 
     def test_gcc_only_large_fixed_dislocation_can_still_notify(self):
         anchors = [
