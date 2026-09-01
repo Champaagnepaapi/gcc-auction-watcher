@@ -4,12 +4,21 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Ce README décrit l'état fonctionnel courant ; les détails historiques et de gouvernance sont dans `docs/`.
 
-## État canonique — 31 août 2026
+## État canonique — 1 septembre 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
-V4 production canonique          : main @ c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09 (runtime merge #214)
+main GitHub / docs               : 1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9 (docs closeout #215)
+V4 runtime production            : c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09 (runtime merge #214)
+TCGdex outage resilience         : PR #216 OPEN / DRAFT / NON MERGED
+#216 runtime validé              : 53a7fd0a47d100d851c347c3fadb79e4f754d07b
+#216 V4 validation               : run 33484132586 SUCCESS / 845 PASS / 2 skipped / live compare PASS
+#216 Global live                 : run 33484132557 SUCCESS / read-only / safety + no-mutation PASS
+#216 final docs head             : b25e74b2988dc2bc09c840861121122720e16afc
+#216 final-head V4               : run 33487091553 SUCCESS / 845 PASS / 2 skipped / 94 vs 92 / legacy_only=0
+#216 final-head Robot KB         : run 33487091496 SUCCESS
+Dernier outage naturel TCGdex    : run 33484902370 / 18 attempted / 0 exact / 18 ConnectionError / backlog 2029
 External pending throughput      : PR #214 MERGED / head 5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595
 #214 validation                  : run 33441243258 SUCCESS / 834 tests PASS / live compare PASS
 #214 production proof            : run 33441714954 SUCCESS / P4 16 / eBay 16 / auctions max 4 / backlog ETA 141
@@ -22,7 +31,6 @@ Magi #178 read-only proof        : run 32943536626 SUCCESS / 30 EXACT + 55 SOLD 
 Global schedule watchdog         : PR #179 MERGED / ac5f7c734685422612a0f24690af22910eefa951
 Robot KB cutover runtime         : PR #166 / 611edf469dfe5e5bfc46390ba6680b9c2ebe9fee
 Robot KB multisource runtime     : PR #180 MERGED / 9365f5cd9f8949580c4e48f00ba8c4e419c22145
-Robot KB multisource Mac install : PENDING — repo prêt, installateur à exécuter sur le Mac
 Global scale production          : PR #156 / f43e7f5aa01bd84ee3a575232ca966bf2ab01d19
 Cardova public read-only         : PR #168 / 48caf402e851e2d888999ba94f93a9355f14d7bb
 Global schedule recovery         : PR #169 / 81db5cf2ffc788a517c9cb63d36cfd1f88c347a6
@@ -285,6 +293,28 @@ Une entrée affirmant deux valeurs incompatibles sur le même axe ne devient jam
 
 PR #159 est superseded fonctionnellement par #177 déjà mergée ; elle reste historique/provenance et ne doit pas être rejouée telle quelle.
 
+## Transport outage — PR #216 CANDIDATE / NON DÉPLOYÉE
+
+Les runs naturels de `main` ont confirmé une panne TCGdex provider-wide en `ConnectionError`. Le run `33484902370` a tenté **18** identités, obtenu **0 exact** et **18 erreurs**, avec PokeTrace non appelé faute d'identité TCGdex. Le backlog externe restait à **2029**.
+
+Un simple retry 2×10 s sur chaque carte aurait pu augmenter dangereusement la durée du Main Scanner. #216 réutilise donc deux patterns existants sans toucher à l'identité :
+
+```text
+transport #145                  2 tentatives max / timeout effectif >=10 s
+retry                            Timeout / ConnectionError / HTTP 502/503/504 seulement
+404 / vraie réponse provider     pas de retry synthétique ; reset du streak
+breaker Main-only #189 pattern   après 2 appels logiques épuisés consécutifs
+circuit ouvert                   appels réseau TCGdex restants sautés ce run
+sémantique                       ERROR / fail-closed, jamais clean no-match fabriqué
+nouveau process                  circuit fermé, provider retenté
+```
+
+Runtime validé : `53a7fd0a47d100d851c347c3fadb79e4f754d07b`. V4 CI `33484132586` : **845 PASS / 2 skipped**, compile/YAML/diff PASS, live auction compare superset (`94 vs 91`, `legacy_only=0`). Global `33484132557` est aussi **SUCCESS** jusqu'au `marketplace-live-once` read-only : safety contract et absence de mutation PASS, aucune notification, transaction ou relaxation d'identité. Le Global live a lui-même observé des erreurs TCGdex intermittentes mais a terminé proprement.
+
+Head documentaire final : `b25e74b2988dc2bc09c840861121122720e16afc`. Le delta depuis le runtime validé contient uniquement README + trois inventaires/handoff, aucun code. Sur ce head : V4 `33487091553` **SUCCESS**, 845 PASS / 2 skipped, live compare `94 vs 92`, `legacy_only=0`, unresolved 0 ; Robot KB `33487091496` **SUCCESS** ; Global offline `33487091530` **SUCCESS**, son live read-only étant encore en cours au dernier contrôle.
+
+#216 reste **OPEN / DRAFT / NON MERGED**. Aucun déploiement sans autorisation explicite utilisateur.
+
 ---
 
 # V4 — production canonique
@@ -297,6 +327,8 @@ Cron-job.org ~toutes les 10 min
   -> .github/workflows/watcher.yml
   -> run_watcher_multimarket.py
 ```
+
+Le chemin ci-dessus est le runtime actuellement déployé. Si #216 était explicitement autorisée puis mergée, `watcher.yml` passerait par le bootstrap mince `run_watcher_multimarket_resilient.py`, qui installe la résilience TCGdex puis délègue au runner canonique inchangé.
 
 ## Auction discovery hardening — #211 / #212
 
@@ -325,7 +357,7 @@ provider-error backoff           inchangé
 
 Validation avant merge : run `33441243258` SUCCESS, **834 tests PASS**, compile/YAML/diff-check PASS et live compare PASS. Le premier run naturel post-merge `33441714954` sur `main@c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09` est SUCCESS en 205 s et confirme au démarrage `P4 max 16/run | eBay SOLD total 16/run | auctions max 4 | fixed reserve 12`.
 
-Le même run prouve que les protections restent fail-closed : eBay a ouvert son circuit après **2 hard timeouts de 30 s** sans bloquer le scanner ; PSA APR a ouvert son circuit après le premier **HTTP 403**. La file externe restait `INCOMPLETE` avec **2241 pending** et une ETA diagnostique de **141 runs**. Le backlog n'est donc pas déclaré résolu ; seule la capacité de drainage sûre est augmentée. Aucun provider failure n'est transformé en clean no-match.
+Le même run prouve que les protections restent fail-closed : eBay a ouvert son circuit après **2 hard timeouts de 30 s** sans bloquer le scanner ; PSA APR a ouvert son circuit après le premier **HTTP 403**. La file externe restait `INCOMPLETE` avec **2241 pending** et une ETA diagnostique de **141 runs**. Les runs suivants ont continué à drainer le backlog jusqu'à **2029**, mais TCGdex est devenu le plafond provider avec des `ConnectionError` répétés. Aucun provider failure n'est transformé en clean no-match.
 
 ## Fast Lane
 
@@ -389,10 +421,9 @@ feature head                     4194730490efbf879188069de4cc4d17642aad46
 merge main                       9365f5cd9f8949580c4e48f00ba8c4e419c22145
 Robot KB CI                      run 32999776457 SUCCESS
 V4 validation                    run 32999776492 SUCCESS
-Mac physical install             PENDING
 ```
 
-La nouvelle lane ajoute, sans modifier le gate économique V4/Global :
+La lane multisource reste séparée du gate économique V4/Global :
 
 - Fanatics, COMC, Magi et Cardova publics : baseline puis changements matériels ;
 - PokeTrace : marchés US/EU, Pokémon EN/JP, **single cards uniquement**, prix courants + historique `period=all`, priorité PSA 10/9/8/8.5 ;
@@ -401,19 +432,7 @@ La nouvelle lane ajoute, sans modifier le gate économique V4/Global :
 - `SOLD_AGGREGATED` reste agrégé et ne devient jamais un item-level SOLD ;
 - `cardmarket_unsold` reste `FIXED_ASK_AGGREGATED` ; ASK reste ASK.
 
-Après exécution de l'installateur #180 sur le Mac :
-
-```text
-public multi-vault               LaunchAgent toutes les 2 h à :05
-PokeTrace + PPT                  LaunchAgent 01:08 / 07:08 / 13:08 / 19:08
-PPT remaining reserve            15000
-PokeTrace remaining reserve      5000
-paid runtime max                 1800 s/run
-```
-
-Les clés PokeTrace/PPT doivent rester **uniquement dans le Trousseau macOS**. Elles ne doivent apparaître ni dans Git, ni dans les plist, ni dans les states/logs. Le harvest provider utilise un lock séparé du collector GCC pour ne pas bloquer fixed/SOLD.
-
-**Important : le merge #180 rend le code/installateur disponible sur `main`, mais ne prouve pas encore que les nouveaux LaunchAgents ont été installés et chargés sur le Mac.** Cette vérification doit être faite après exécution réelle de l'installateur sur la machine.
+Les clés PokeTrace/PPT doivent rester **uniquement dans le Trousseau macOS**. Elles ne doivent apparaître ni dans Git, ni dans les plist, ni dans les states/logs.
 
 ---
 
@@ -477,21 +496,26 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
-V4 external-market backlog
-  -> #214 est en production : P4 16/run, eBay 16/run, reserve fixed 12, auctions max 4, hard ceiling P4 20
-  -> observer le drainage réel sur plusieurs runs naturels ; le run 33441714954 restait à 2241 pending / ETA 141
-  -> conserver les breakers fail-closed : eBay coupe après 2 hard timeouts ; PSA coupe après 403/429
-  -> chercher une récupération provider conforme seulement si le blocage persiste ; aucun contournement WAF/CAPTCHA
-  -> ne pas augmenter encore les caps uniquement pour forcer le drainage sans nouvelle preuve de sûreté
-  -> ne jamais relâcher exact same-card / same-grader / same-grade ni transformer une indisponibilité provider en preuve négative
+V4 / TCGdex provider outage
+  -> #216 est CANDIDATE / OPEN / DRAFT / NON MERGED ; runtime validé 53a7fd0a47d100d851c347c3fadb79e4f754d07b
+  -> panne toujours observée sur main : run 33484902370 = 18/18 ConnectionError ; backlog EXTERNAL_PENDING 2029
+  -> conserver le fail-closed : une panne TCGdex reste ERROR, jamais clean no-match
+  -> conserver le breaker Main-only proposé : 2 appels logiques épuisés puis coupe réseau du run ; nouvel essai au run suivant
+  -> Global live read-only du runtime #216 est SUCCESS : sécurité et absence de mutation prouvées malgré des erreurs TCGdex intermittentes
+  -> final docs head b25e74b2988dc2bc09c840861121122720e16afc : V4 + Robot KB + Global offline verts
+  -> aucun merge/déploiement #216 sans autorisation explicite utilisateur
+  -> après autorisation seulement : merge avec SHA attendu, vérifier main, puis run naturel de production pour mesurer durée + TCGdex + backlog
 
-Robot KB #180
-  -> code multisource mergé sur main@9365f5cd9f8949580c4e48f00ba8c4e419c22145
-  -> prochaine étape : exécuter l'installateur #180 sur le Mac
-  -> vérifier LaunchAgents public :05 / paid 01:08,07:08,13:08,19:08
-  -> vérifier premier catch-up public puis paid borné, logs et nouvelles observations PostgreSQL
-  -> confirmer qu'aucun secret n'apparaît hors Trousseau
-  -> garder V4_USE=false pendant cette phase
+V4 external-market backlog
+  -> #214 reste en production : P4 16/run, eBay 16/run, reserve fixed 12, auctions max 4, hard ceiling P4 20
+  -> le backlog a drainé de 2241 à 2029 mais la couverture externe reste INCOMPLETE
+  -> conserver les breakers fail-closed eBay/PSA et le provider-error backoff
+  -> ne pas augmenter encore les caps uniquement pour forcer le drainage
+
+Robot KB
+  -> rester séparé de V4 ; V4_USE=false
+  -> conserver observations immuables et priorité SOLD exact final
+  -> Neon reste rollback manuel
 
 Global / Magi
   -> #177, #178 et #179 sont en production
@@ -499,16 +523,9 @@ Global / Magi
   -> conserver les 5 set-name cases bloqués tant qu'aucune preuve exacte n'existe
   -> chercher seulement des classes déterministes répétées, pas des aliases carte-par-carte
 
-TCGdex
-  -> #159 est superseded fonctionnellement par #177 ; ne pas la rejouer telle quelle
-  -> ne jamais fabriquer une microvariante
-
 V5
   -> PR #8 reste expérimentale/draft/non mergée
   -> aucun merge sans autorisation explicite
-
-Neon
-  -> conserver comme rollback manuel
 ```
 
 Aucun achat, bid, checkout ou paiement automatique.

@@ -110,6 +110,10 @@ jobs:
           V4_TCGDEX_ENABLED: "true"
           V4_TCGDEX_REQUEST_TIMEOUT: "6"
           V4_TCGDEX_CACHE_TTL_HOURS: "24"
+          # Main-only provider-outage guard: after two fully exhausted transient
+          # TCGdex logical calls, skip further TCGdex network work for this run.
+          # Every skipped identity remains ERROR/fail-closed; next run retries.
+          V4_TCGDEX_RUN_BREAKER_THRESHOLD: "2"
 
           V4_POKETRACE_ENABLED: "true"
           V4_POKETRACE_MAX_REQUESTS_PER_RUN: "40"
@@ -148,7 +152,10 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           scan_exit_code=$?
           if [ "$scan_exit_code" -eq 0 ]; then
-            python run_watcher_multimarket.py
+            # Bootstrap the unchanged canonical runner with PR #145's proven
+            # bounded TCGdex retry policy plus a Main-only process-local outage
+            # circuit. Identity/economics remain canonical V4 and fail-closed.
+            python run_watcher_multimarket_resilient.py
             scan_exit_code=$?
           fi
           set -e

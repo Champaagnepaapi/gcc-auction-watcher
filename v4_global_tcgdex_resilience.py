@@ -1,8 +1,11 @@
-"""Global-only bounded resilience for transient TCGdex transport failures.
+"""Bounded resilience for transient TCGdex transport failures.
 
-This wrapper is deliberately not installed by the canonical V4 production scanner.
-It changes neither identity rules nor negative-evidence semantics: exhausted retries
-still propagate as transient errors, so callers remain fail-closed.
+PR #145 introduced and live-validated the Global transport wrapper. Global keeps
+that exact policy. The V4 Main Scanner reuses it and adds only a process-local
+run breaker so a provider-wide outage cannot multiply the retry cost across the
+whole fixed queue. Identity, no-match and cache semantics remain unchanged:
+exhausted failures still propagate as transient errors and a new scanner process
+tries TCGdex again normally.
 """
 from __future__ import annotations
 
@@ -13,10 +16,18 @@ from typing import Callable, Mapping, Optional
 import requests
 
 import v4_canonical_multimarket as canonical
+import watcher
 
 
 _TRANSIENT_HTTP = frozenset({502, 503, 504})
 _ORIGINAL_JSON_GET = None
+_V4_ORIGINAL_RESILIENT_JSON_GET = None
+_V4_RUN_OPEN = False
+_V4_CONSECUTIVE_EXHAUSTED = 0
+
+_DEFAULT_V4_RUN_BREAKER_THRESHOLD = 2
+_MIN_V4_RUN_BREAKER_THRESHOLD = 2
+_MAX_V4_RUN_BREAKER_THRESHOLD = 5
 
 
 def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
@@ -32,6 +43,21 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 2) -> int
     except ValueError:
         value = default
     return min(maximum, max(minimum, value))
+
+
+def _v4_run_breaker_threshold() -> int:
+    raw = os.getenv(
+        "V4_TCGDEX_RUN_BREAKER_THRESHOLD",
+        str(_DEFAULT_V4_RUN_BREAKER_THRESHOLD),
+    ).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = _DEFAULT_V4_RUN_BREAKER_THRESHOLD
+    return max(
+        _MIN_V4_RUN_BREAKER_THRESHOLD,
+        min(_MAX_V4_RUN_BREAKER_THRESHOLD, value),
+    )
 
 
 def _is_tcgdex_url(url: object) -> bool:
@@ -101,8 +127,81 @@ def _resilient_json_get(
     )
 
 
+def _record_v4_exhausted_failure() -> None:
+    global _V4_RUN_OPEN, _V4_CONSECUTIVE_EXHAUSTED
+    _V4_CONSECUTIVE_EXHAUSTED += 1
+    threshold = _v4_run_breaker_threshold()
+    if _V4_CONSECUTIVE_EXHAUSTED >= threshold and not _V4_RUN_OPEN:
+        _V4_RUN_OPEN = True
+        watcher.log(
+            "TCGdex V4 run circuit: "
+            f"{_V4_CONSECUTIVE_EXHAUSTED} consecutive exhausted transient calls; "
+            "remaining TCGdex network calls skipped this run"
+        )
+
+
+def _call_with_v4_run_breaker(
+    original: Callable[..., tuple[int, object, Mapping[str, str]]],
+    url: str,
+    *,
+    params: Optional[Mapping[str, object]] = None,
+    headers: Optional[Mapping[str, str]] = None,
+    timeout: float,
+) -> tuple[int, object, Mapping[str, str]]:
+    """Bound provider-wide TCGdex outage cost while preserving ERROR semantics."""
+    global _V4_CONSECUTIVE_EXHAUSTED
+
+    if not _is_tcgdex_url(url):
+        return original(url, params=params, headers=headers, timeout=timeout)
+
+    if _V4_RUN_OPEN:
+        raise requests.ConnectionError(
+            "V4 TCGdex run circuit open after repeated transient failures"
+        )
+
+    try:
+        result = original(url, params=params, headers=headers, timeout=timeout)
+    except (requests.Timeout, requests.ConnectionError):
+        _record_v4_exhausted_failure()
+        raise
+
+    status = int(result[0] or 0)
+    if status in _TRANSIENT_HTTP:
+        _record_v4_exhausted_failure()
+    else:
+        # Any real provider response proves the transport route is alive again.
+        # This includes a legitimate 404/no-match response, whose semantics are
+        # left entirely to the canonical resolver.
+        _V4_CONSECUTIVE_EXHAUSTED = 0
+    return result
+
+
+def _v4_guarded_json_get(
+    url: str,
+    *,
+    params: Optional[Mapping[str, object]] = None,
+    headers: Optional[Mapping[str, str]] = None,
+    timeout: float,
+) -> tuple[int, object, Mapping[str, str]]:
+    assert _V4_ORIGINAL_RESILIENT_JSON_GET is not None
+    return _call_with_v4_run_breaker(
+        _V4_ORIGINAL_RESILIENT_JSON_GET,
+        url,
+        params=params,
+        headers=headers,
+        timeout=timeout,
+    )
+
+
+def reset_v4_tcgdex_run_breaker_for_tests() -> None:
+    """Reset process-local breaker state; production gets a fresh process/run."""
+    global _V4_RUN_OPEN, _V4_CONSECUTIVE_EXHAUSTED
+    _V4_RUN_OPEN = False
+    _V4_CONSECUTIVE_EXHAUSTED = 0
+
+
 def install_global_tcgdex_resilience() -> None:
-    """Install the transport wrapper only in Global runners that opt into it."""
+    """Install the proven transport wrapper in Global runners that opt into it."""
     global _ORIGINAL_JSON_GET
     current = canonical._json_get
     if getattr(current, "_v4_global_tcgdex_resilience", False) is True:
@@ -110,3 +209,22 @@ def install_global_tcgdex_resilience() -> None:
     _ORIGINAL_JSON_GET = current
     _resilient_json_get._v4_global_tcgdex_resilience = True  # type: ignore[attr-defined]
     canonical._json_get = _resilient_json_get
+
+
+def install_v4_tcgdex_resilience() -> None:
+    """Reuse #145 retries plus a Main-Scanner-only process-local run breaker."""
+    global _V4_ORIGINAL_RESILIENT_JSON_GET
+
+    install_global_tcgdex_resilience()
+    current = canonical._json_get
+    if getattr(current, "_v4_tcgdex_run_breaker", False) is True:
+        return
+
+    _V4_ORIGINAL_RESILIENT_JSON_GET = current
+    _v4_guarded_json_get._v4_global_tcgdex_resilience = True  # type: ignore[attr-defined]
+    _v4_guarded_json_get._v4_tcgdex_run_breaker = True  # type: ignore[attr-defined]
+    canonical._json_get = _v4_guarded_json_get
+    watcher.log(
+        "TCGdex V4 transport resilience enabled: max 2 attempts/call; run circuit "
+        f"after {_v4_run_breaker_threshold()} consecutive exhausted transient calls"
+    )
