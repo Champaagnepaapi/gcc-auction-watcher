@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #216/#217, #219 et #220. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
+Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #216/#217, #219 et #220. Le contrôle GitHub live reste l'autorité ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub et ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
 > V4 runtime production : `main@6a33ac33faa324f0fc1c6124fbb49bd736382b75`. #216/#217, #219 et #220 sont **MERGED** et ne font plus partie de la surface PR ouverte.
 
@@ -13,7 +13,9 @@ PR #8                         OPEN / DRAFT / NON MERGED
 PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION AUTHORIZATION
 ```
 
-## PR ouvertes à décision explicite / risque matériel
+## PR ouvertes **pertinentes pour la gouvernance courante**
+
+### Décision explicite / risque matériel
 
 | PR | Classification / instruction |
 |---|---|
@@ -27,7 +29,7 @@ PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION 
 | #193 | `ROBOT_KB_MANUAL_WRITE_PATH / STACKED`. Écriture manuelle corroborated eBay seulement après gates strictes ; ne pas merger indépendamment. |
 | #195 | `ROBOT_KB_BATCH_STACKED`. Compose #193 + #194 ; ne pas merger indépendamment. |
 | #8 | **`V5_ONLY / PROTECTED`**. OPEN/DRAFT/NON-MERGED. Ne jamais merger dans `main` sans autorisation explicite utilisateur. |
-| #87 | **Décision produit V4 séparée** : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
+| #87 | **Décision produit V4 séparée/non déployée** : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
 
 ## Robot KB / marché — recherche ou shadow à revalider avant intégration
 
