@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -228,6 +229,18 @@ class SourcePinnedOutageFallbackTests(unittest.TestCase):
         finally:
             canonical.resolve_tcgdex_card = original_resolver
             outage._ORIGINAL_RESOLVER = original_saved
+
+    def test_bootstrap_installs_transport_before_source_outage_fallback(self):
+        source = Path("run_watcher_multimarket_resilient.py").read_text(
+            encoding="utf-8"
+        )
+        retry_pos = source.index("install_v4_tcgdex_resilience()")
+        fallback_pos = source.index(
+            "install_v4_tcgdex_source_pinned_outage_fallback()"
+        )
+        runner_pos = source.index('runpy.run_module("run_watcher_multimarket"')
+        self.assertLess(retry_pos, fallback_pos)
+        self.assertLess(fallback_pos, runner_pos)
 
 
 if __name__ == "__main__":
