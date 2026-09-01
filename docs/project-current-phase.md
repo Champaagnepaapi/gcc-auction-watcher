@@ -1,52 +1,25 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État vérifié le **1 septembre 2026** pendant la validation de PR #216. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
+État re-vérifié le **1 septembre 2026** après les merges #216/#217, #219 et #220. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
 
 ## Autorité
 
 ```text
-main GitHub / docs               1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9
-V4 runtime production            c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09 / PR #214 MERGED
-TCGdex outage resilience         PR #216 OPEN / DRAFT / NON MERGED
+V4 production branch             main
+V4 runtime production            6a33ac33faa324f0fc1c6124fbb49bd736382b75 / PR #220 MERGED
+TCGdex outage resilience         #216/#217 MERGED / runtime 03824158ac899cf142199c42d4525386a573bc15
 #216 runtime validé              53a7fd0a47d100d851c347c3fadb79e4f754d07b
-#216 docs head                   df943b52057a68bd7bf15207706250e2208876b5
+Robot KB API configurator        #219 MERGED / 2aef339135df8b4a183ad4ba030b9e603ea9e696
+Future-start auction guard       #220 MERGED / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
+#220 natural production proof    run 33490823534 SUCCESS / 253 s / discovery COMPLETE
 V5                               PR #8 / OPEN / DRAFT / NON MERGED
-Robot KB                         séparé de V4 / aucun changement dans #216
-Neon                             aucun changement dans #216
+Robot KB durable                 PostgreSQL local Mac / séparé de V4
+Neon                             writers automatiques OFF / rollback manuel
 ```
 
-Aucun merge ou déploiement de #216 n'a été effectué.
+## #216/#217 — résilience TCGdex en production
 
-## Constat production après #214
-
-Le drain fixed `EXTERNAL_PENDING` fonctionne réellement :
-
-```text
-2241 -> 2187 -> 2162 -> 2115 -> 2099 -> 2065 -> 2045 -> 2029
-```
-
-Le run naturel le plus récent examiné (`33484902370`, `main@1911ba5...`) a terminé normalement mais confirme que la santé provider reste le plafond :
-
-```text
-TCGdex                           18 attempted / 0 exact / 18 errors
-cause TCGdex                     ConnectionError
-PokeTrace                        0 (identité TCGdex non résolue)
-PSA APR                          2 attempted / 2 unavailable / 403 breaker
-eBay                             16 attempted / 0 sufficient / 6 insufficient / 10 unavailable
-EXTERNAL_PENDING                 2029 / ETA 127 runs
-scanner total_seconds            397.7 s
-```
-
-Le résultat reste fail-closed : aucune erreur provider n'est transformée en no-match ou en comparable exact.
-
-## PR #216 — TCGdex transport/run outage resilience — CANDIDATE
-
-Reuse audit :
-
-- PR #145 fournit déjà la résilience transport TCGdex : 2 tentatives max, timeout effectif minimum 10 s, backoff 0,25 s, retry seulement `Timeout` / `ConnectionError` / HTTP 502/503/504 ;
-- PR #189 fournit déjà le pattern V4 de circuit-breaker process-local pour les pannes provider ; nouvel essai au run suivant, sans reclassifier une panne comme no-match.
-
-#216 réutilise ces patterns sans modifier les règles d'identité ou l'économie :
+#216 a été mergée via le miroir non-draft #217, sans changement d'identité, fair value, seuil, notification, PokeTrace, PSA ou eBay.
 
 ```text
 appel TCGdex logique             max 2 tentatives
@@ -57,38 +30,83 @@ réponse provider réelle          remet le streak à zéro
 nouveau scanner process          circuit fermé / provider retenté
 ```
 
-Le bootstrap `run_watcher_multimarket_resilient.py` installe cette couche puis exécute le runner canonique `run_watcher_multimarket` inchangé. Si #216 était mergée, `watcher.yml` utiliserait ce bootstrap avec `V4_TCGDEX_RUN_BREAKER_THRESHOLD=2`.
-
-Aucun fallback d'identité, aucune hausse de cap #214, aucun changement fair value/décote/notification/eBay/PSA/PokeTrace, aucune transaction.
-
-## Validation #216
-
-Runtime validé : `53a7fd0a47d100d851c347c3fadb79e4f754d07b`.
+Validation pré-merge :
 
 ```text
-V4 runtime CI                    33484132586 SUCCESS
-V4 tests                         845 PASS / 2 skipped
-compile / YAML / diff-check      PASS
-live auction compare             94 effective / 91 legacy / legacy_only=0
-Global runtime                   33484132557 SUCCESS
-Global marketplace-live-once     SUCCESS / read-only / safety PASS / no mutation PASS
-
-docs head                        df943b52057a68bd7bf15207706250e2208876b5
-delta depuis runtime             README + docs seulement / aucun code
-V4 docs-head tests               845 PASS / 2 skipped
-Robot KB docs-head               33487523595 SUCCESS
-Global offline docs-head         33487523606 / validate SUCCESS
-V4 live compare docs-head        en cours au dernier contrôle
-Global live docs-head            en cours au dernier contrôle (redondant avec runtime live SUCCESS)
+runtime validé                   53a7fd0a47d100d851c347c3fadb79e4f754d07b
+V4 current-head                  run 33487708113 SUCCESS / 845 PASS / 2 skipped
+Robot KB                         run 33487708197 SUCCESS
+Global offline                   run 33487708135 SUCCESS
+Global live read-only            SUCCESS / safety + no-mutation PASS
 ```
 
-Le live Global du runtime a rencontré des erreurs TCGdex intermittentes mais a terminé avec le contrat read-only intact : aucune notification, aucune mutation, aucune relaxation d'identité, aucune transaction.
+Première preuve production naturelle post-merge :
+
+```text
+run                              33489103277 SUCCESS
+main                             03824158ac899cf142199c42d4525386a573bc15
+TCGdex                           16 attempted / 0 exact / 0 no-match / 16 errors
+breaker                          ouvert après 2 appels logiques consécutifs épuisés
+scanner                          274 s
+baseline pré-fix comparable      ~397 s
+EXTERNAL_PENDING                 2029 -> 2010
+```
+
+La panne provider reste une erreur technique ; aucun clean no-match n'est fabriqué.
+
+## #219 — correctif exécutable Robot KB
+
+PR #219 a porté proprement l'ancien correctif #182 sur le `main` courant :
+
+- `mac/robot-kb-local/Configurer APIs Robot KB.command` passe de mode Git `100644` à `100755` ;
+- blob/contenu inchangé ;
+- aucun runtime commercial, secret, provider ou comportement économique modifié.
+
+Merge : `2aef339135df8b4a183ad4ba030b9e603ea9e696`.
+
+## #220 — enchères GCC à début futur
+
+PR #220 est en production sur `main@6a33ac33faa324f0fc1c6124fbb49bd736382b75`.
+
+But : une enchère qui n'a pas encore commencé ne doit jamais entrer dans l'économie V4 comme si son prix de départ était un bid courant ou son countdown-to-start un temps avant fin.
+
+Le guard exige une preuve structurée/stable du début futur ou une preuve UI forte ; les timestamps absents/malformés ne sont pas devinés. Le hardening #211/#212 reste l'autorité de découverte/pagination.
+
+Aucun changement fair value, seuil, identité, provider budget ou notification.
+
+## Robot KB / P3
+
+PR #207 a été mergée **uniquement dans la branche P3** (`agent/p3-postgres-durable-shadow`) au merge `df32a19c237a75e4a1c3bb9dba938fd59fc09665`.
+
+Elle ajoute les valeurs proof-preserving `NO_RARITY_SYMBOL` / `RARITY_SYMBOL_PRESENT` sur l'axe `print_run`. **Aucune migration PostgreSQL durable utilisateur n'a été exécutée.**
+
+Le stack Cardova durable #199/#204–#210 reste séparé. En particulier #210 prépare un chemin de commit durable mais exige une autorisation opérateur explicite et ne doit pas être exécuté automatiquement.
+
+## Première preuve production post-#220
+
+Le run `33490823534` a chargé exactement `main@6a33ac33faa324f0fc1c6124fbb49bd736382b75` et terminé **SUCCESS**.
+
+```text
+run                              33490823534
+scanner duration                 253 s
+final opportunities              0
+auction discovery                COMPLETE
+auction rows / timers            24 / 24
+auction <=60 min                 0
+legacy fallback used             false
+TCGdex                           16 attempted / 0 exact / 0 no-match / 16 errors
+TCGdex breaker                   ouvert après 2 appels logiques épuisés
+external pending backlog         1998
+first-evaluation coverage        COMPLETE
+external-market coverage         INCOMPLETE
+```
+
+Le snapshot ne contenait aucune enchère Pokémon 0–100 € à ≤60 min, donc il ne pouvait pas démontrer une exclusion future-start positive sur un cas concret ; il démontre néanmoins que #220 ne casse pas le collector courant, la pagination/timers restent cohérents et le scan reste fail-closed pendant la panne TCGdex/eBay/PSA.
 
 ## Prochaine étape
 
-1. Laisser finir le live compare V4 du docs-head `df943b...` et enregistrer son résultat dans la PR sans nouveau commit documentaire si possible.
-2. Garder #216 **DRAFT / NON MERGED** jusqu'à autorisation explicite utilisateur.
-3. Après autorisation seulement : merger avec SHA attendu, vérifier le nouveau `main`, puis observer un vrai run production pour confirmer que le circuit borne la panne TCGdex sans relâcher l'identité.
-4. Garder PR #8 / V5 et Robot KB/Neon séparés.
-
-Aucun achat, bid, checkout ou paiement automatique.
+1. Continuer d'observer les prochains snapshots auction et vérifier la première exclusion future-start réelle lorsqu'un cas apparaît, sans lancer de live manuel supplémentaire.
+2. Continuer d'observer le drain `EXTERNAL_PENDING` et la santé TCGdex/eBay/PSA avant toute nouvelle hausse de cap.
+3. Garder le stack Cardova durable non exécuté tant qu'aucune autorisation explicite n'est donnée.
+4. Garder PR #8 / V5 expérimentale, draft et non mergée.
+5. Aucun achat, bid, checkout ou paiement automatique.
