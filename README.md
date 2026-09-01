@@ -14,7 +14,10 @@ V4 runtime production            : c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09 (run
 TCGdex outage resilience         : PR #216 OPEN / DRAFT / NON MERGED
 #216 runtime validé              : 53a7fd0a47d100d851c347c3fadb79e4f754d07b
 #216 V4 validation               : run 33484132586 SUCCESS / 845 PASS / 2 skipped / live compare PASS
-#216 docs-head validation        : run 33484530583 SUCCESS / 845 PASS / 2 skipped / live compare PASS
+#216 Global live                 : run 33484132557 SUCCESS / read-only / safety + no-mutation PASS
+#216 final docs head             : b25e74b2988dc2bc09c840861121122720e16afc
+#216 final-head V4               : run 33487091553 SUCCESS / 845 PASS / 2 skipped / 94 vs 92 / legacy_only=0
+#216 final-head Robot KB         : run 33487091496 SUCCESS
 Dernier outage naturel TCGdex    : run 33484902370 / 18 attempted / 0 exact / 18 ConnectionError / backlog 2029
 External pending throughput      : PR #214 MERGED / head 5aa3acd3ea3d52bb2c5fca4cf8b0c0c0901ba595
 #214 validation                  : run 33441243258 SUCCESS / 834 tests PASS / live compare PASS
@@ -306,7 +309,9 @@ sémantique                       ERROR / fail-closed, jamais clean no-match fab
 nouveau process                  circuit fermé, provider retenté
 ```
 
-Runtime validé : `53a7fd0a47d100d851c347c3fadb79e4f754d07b`. V4 CI `33484132586` : **845 PASS / 2 skipped**, compile/YAML/diff PASS, live auction compare superset (`94 vs 91`, `legacy_only=0`). Le docs-head `fa3914fb...` a aussi validé V4 (`33484530583`, `96 vs 93`, `legacy_only=0`) et Robot KB (`33484530594` SUCCESS). Les validations Global offline sont vertes ; leurs `marketplace-live-once` read-only étaient encore en cours au dernier contrôle. Le breaker #216 est Main-only et ne modifie pas le comportement Global #145.
+Runtime validé : `53a7fd0a47d100d851c347c3fadb79e4f754d07b`. V4 CI `33484132586` : **845 PASS / 2 skipped**, compile/YAML/diff PASS, live auction compare superset (`94 vs 91`, `legacy_only=0`). Global `33484132557` est aussi **SUCCESS** jusqu'au `marketplace-live-once` read-only : safety contract et absence de mutation PASS, aucune notification, transaction ou relaxation d'identité. Le Global live a lui-même observé des erreurs TCGdex intermittentes mais a terminé proprement.
+
+Head documentaire final : `b25e74b2988dc2bc09c840861121122720e16afc`. Le delta depuis le runtime validé contient uniquement README + trois inventaires/handoff, aucun code. Sur ce head : V4 `33487091553` **SUCCESS**, 845 PASS / 2 skipped, live compare `94 vs 92`, `legacy_only=0`, unresolved 0 ; Robot KB `33487091496` **SUCCESS** ; Global offline `33487091530` **SUCCESS**, son live read-only étant encore en cours au dernier contrôle.
 
 #216 reste **OPEN / DRAFT / NON MERGED**. Aucun déploiement sans autorisation explicite utilisateur.
 
@@ -496,7 +501,8 @@ V4 / TCGdex provider outage
   -> panne toujours observée sur main : run 33484902370 = 18/18 ConnectionError ; backlog EXTERNAL_PENDING 2029
   -> conserver le fail-closed : une panne TCGdex reste ERROR, jamais clean no-match
   -> conserver le breaker Main-only proposé : 2 appels logiques épuisés puis coupe réseau du run ; nouvel essai au run suivant
-  -> attendre/observer les lives Global read-only déjà lancés, sans confondre une panne provider Global avec une régression du breaker Main-only
+  -> Global live read-only du runtime #216 est SUCCESS : sécurité et absence de mutation prouvées malgré des erreurs TCGdex intermittentes
+  -> final docs head b25e74b2988dc2bc09c840861121122720e16afc : V4 + Robot KB + Global offline verts
   -> aucun merge/déploiement #216 sans autorisation explicite utilisateur
   -> après autorisation seulement : merge avec SHA attendu, vérifier main, puis run naturel de production pour mesurer durée + TCGdex + backlog
 
