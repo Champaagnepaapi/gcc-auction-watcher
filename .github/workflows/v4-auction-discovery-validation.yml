@@ -15,6 +15,7 @@ on:
       - "v4_external_coverage_drain.py"
       - "v4_external_provider_navigation_resilience.py"
       - "v4_external_provider_run_breaker.py"
+      - "v4_global_tcgdex_resilience.py"
       - "v4_multimarket_safety.py"
       - "v4_structural_edge_hunter.py"
       - "v4_provider_rejection_observability.py"
@@ -27,6 +28,7 @@ on:
       - "compare_auction_discovery_production.py"
       - "run_watcher_safe.py"
       - "run_watcher_multimarket.py"
+      - "run_watcher_multimarket_resilient.py"
       - "watcher.py"
       - "tests/**"
       - ".github/workflows/watcher.yml"
@@ -112,6 +114,7 @@ jobs:
           python -m py_compile v4_external_coverage_drain.py
           python -m py_compile v4_external_provider_navigation_resilience.py
           python -m py_compile v4_external_provider_run_breaker.py
+          python -m py_compile v4_global_tcgdex_resilience.py
           python -m py_compile v4_multimarket_safety.py
           python -m py_compile v4_structural_edge_hunter.py
           python -m py_compile v4_provider_rejection_observability.py
@@ -121,6 +124,7 @@ jobs:
           python -m py_compile v4_tcgdex_two_of_three_backport.py
           python -m py_compile v4_tcgdex_unique_coordinate_fallback.py
           python -m py_compile run_watcher_multimarket.py
+          python -m py_compile run_watcher_multimarket_resilient.py
 
       - name: Parse changed workflow YAML
         run: |
