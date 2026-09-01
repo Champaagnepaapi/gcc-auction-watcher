@@ -11,6 +11,7 @@ TCGdex outage resilience         #216/#217 MERGED / runtime 03824158ac899cf14219
 #216 runtime validé              53a7fd0a47d100d851c347c3fadb79e4f754d07b
 Robot KB API configurator        #219 MERGED / 2aef339135df8b4a183ad4ba030b9e603ea9e696
 Future-start auction guard       #220 MERGED / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
+#220 natural production proof    run 33490823534 SUCCESS / 253 s / discovery COMPLETE
 V5                               PR #8 / OPEN / DRAFT / NON MERGED
 Robot KB durable                 PostgreSQL local Mac / séparé de V4
 Neon                             writers automatiques OFF / rollback manuel
@@ -81,15 +82,30 @@ Elle ajoute les valeurs proof-preserving `NO_RARITY_SYMBOL` / `RARITY_SYMBOL_PRE
 
 Le stack Cardova durable #199/#204–#210 reste séparé. En particulier #210 prépare un chemin de commit durable mais exige une autorisation opérateur explicite et ne doit pas être exécuté automatiquement.
 
-## Run naturel post-#220
+## Première preuve production post-#220
 
-Au dernier contrôle, le registre V4 ne contenait **pas encore** de run naturel sur `6a33ac33...`. Le dernier run enregistré était `33490000741` à `09:05:40 UTC` sur `2aef3391...`, soit avant le merge #220 à `09:07:01 UTC`.
+Le run `33490823534` a chargé exactement `main@6a33ac33faa324f0fc1c6124fbb49bd736382b75` et terminé **SUCCESS**.
 
-Ne pas revendiquer une preuve production naturelle #220 avant qu'un run `watcher.yml` sur `6a33ac33...` soit réellement terminé et vérifié.
+```text
+run                              33490823534
+scanner duration                 253 s
+final opportunities              0
+auction discovery                COMPLETE
+auction rows / timers            24 / 24
+auction <=60 min                 0
+legacy fallback used             false
+TCGdex                           16 attempted / 0 exact / 0 no-match / 16 errors
+TCGdex breaker                   ouvert après 2 appels logiques épuisés
+external pending backlog         1998
+first-evaluation coverage        COMPLETE
+external-market coverage         INCOMPLETE
+```
+
+Le snapshot ne contenait aucune enchère Pokémon 0–100 € à ≤60 min, donc il ne pouvait pas démontrer une exclusion future-start positive sur un cas concret ; il démontre néanmoins que #220 ne casse pas le collector courant, la pagination/timers restent cohérents et le scan reste fail-closed pendant la panne TCGdex/eBay/PSA.
 
 ## Prochaine étape
 
-1. Observer le premier vrai run naturel V4 sur `6a33ac33...` et vérifier que le guard future-start ne dégrade pas discovery/coverage.
+1. Continuer d'observer les prochains snapshots auction et vérifier la première exclusion future-start réelle lorsqu'un cas apparaît, sans lancer de live manuel supplémentaire.
 2. Continuer d'observer le drain `EXTERNAL_PENDING` et la santé TCGdex/eBay/PSA avant toute nouvelle hausse de cap.
 3. Garder le stack Cardova durable non exécuté tant qu'aucune autorisation explicite n'est donnée.
 4. Garder PR #8 / V5 expérimentale, draft et non mergée.
