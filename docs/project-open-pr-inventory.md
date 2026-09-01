@@ -1,12 +1,14 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #216/#217, #219 et #220. Le contrôle GitHub live reste l'autorité ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub et ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
+Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #222/#224. Le contrôle GitHub live reste l'autorité ; ce document n'est pas un compteur exhaustif GitHub sans nouveau search live.
 
-> V4 runtime production : `main@6a33ac33faa324f0fc1c6124fbb49bd736382b75`. #216/#217, #219 et #220 sont **MERGED** et ne font plus partie de la surface PR ouverte.
+> V4 runtime production : `main@0be4dca95513e36f4e407ef7bac361fe488c1d36`. #216/#217, #219, #220, #223 et #222/#224 sont **MERGED** et ne font plus partie de la surface PR ouverte.
 
 ```text
-V4 runtime                     6a33ac33faa324f0fc1c6124fbb49bd736382b75
-PR #216/#217                  MERGED / TCGdex resilience / 03824158ac899cf142199c42d4525386a573bc15
+V4 runtime                     0be4dca95513e36f4e407ef7bac361fe488c1d36
+PR #222/#224                  MERGED / TCGdex source-pinned outage fallback / 0be4dca95513e36f4e407ef7bac361fe488c1d36
+PR #223                       MERGED / docs governance marker repair / 42b7ca686114f02ad0b72375b194c2c7390c1f38
+PR #216/#217                  MERGED / TCGdex transport resilience / 03824158ac899cf142199c42d4525386a573bc15
 PR #219                       MERGED / Robot KB configurator executable / 2aef339135df8b4a183ad4ba030b9e603ea9e696
 PR #220                       MERGED / future-start auction guard / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
 PR #8                         OPEN / DRAFT / NON MERGED
@@ -68,7 +70,9 @@ PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION 
 
 ## Merges récents retirés de la surface ouverte
 
-- #216 / #217 : résilience TCGdex Main-only **MERGED / PROD_V4** ;
+- #222 / #224 : fallback TCGdex source-pinné sur panne transport **MERGED / PROD_V4** ; #224 était le miroir de merge ; premier Main Scanner post-merge `33500303400` SUCCESS, provider sain, preuve de non-régression ;
+- #223 : restauration docs des marqueurs de gouvernance **MERGED / DOCS_ONLY** ;
+- #216 / #217 : résilience transport TCGdex Main-only **MERGED / PROD_V4** ;
 - #219 : configurateur Robot KB mode exécutable **MERGED / MAIN_SUPPORT** ;
 - #220 : future-start GCC auction guard **MERGED / PROD_V4** ;
 - #214 : throughput `EXTERNAL_PENDING` **MERGED** ;
