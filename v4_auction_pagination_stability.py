@@ -105,7 +105,7 @@ def discover_auction_api_lots_stable(
 
 
 def install_v4_auction_pagination_stability() -> None:
-    """Install exhaustive proof, then the live-pagination stability wrapper."""
+    """Install exhaustive proof, stable pagination, then future-start guard."""
 
     global _ORIGINAL_DISCOVER_AUCTION_API_LOTS
     global _INSTALLED
@@ -118,4 +118,11 @@ def install_v4_auction_pagination_stability() -> None:
     install_v4_auction_coverage_hardening()
     _ORIGINAL_DISCOVER_AUCTION_API_LOTS = item_discovery.discover_auction_api_lots
     item_discovery.discover_auction_api_lots = discover_auction_api_lots_stable
+
+    # Layer the narrow future-start exclusion above the current hardened/stable
+    # collector. Import here so the guard captures the already-installed stack,
+    # rather than an historical base collector at module-import time.
+    from v4_upcoming_auction_guard import install_v4_upcoming_auction_guard
+
+    install_v4_upcoming_auction_guard()
     _INSTALLED = True
