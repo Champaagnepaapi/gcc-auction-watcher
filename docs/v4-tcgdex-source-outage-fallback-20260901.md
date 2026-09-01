@@ -41,10 +41,10 @@ Aucun changement de :
 - V5 / PR #8 ;
 - achat, bid, checkout ou paiement.
 
-## Validation attendue avant tout merge
+## Validation avant merge
 
-- tests ciblés fallback/source-pinned/transport ;
-- suite V4 complète ;
-- compile/YAML/diff-check ;
-- live comparison read-only ;
-- inspection du nombre d'identités récupérées sans faux `NO_MATCH` et sans relaxation d'identité.
+Validation initiale sur `main@4c4bfd54534ac8371fc0e76f40e0ab6473de2ce0` : 867 tests V4 PASS (2 skipped), compile/YAML/diff-check PASS et live comparison read-only PASS (`effective=93`, `legacy=91`, `legacy_only=0`).
+
+Après merge docs-only #223, `main` est passé à `42b7ca686114f02ad0b72375b194c2c7390c1f38`. Les trois fichiers de gouvernance présents sur la branche #222 sont bit-for-bit identiques à ce nouveau `main`; une nouvelle CI PR est déclenchée pour revalider le fallback contre cette base avant tout merge.
+
+La preuve production attendue après merge reste : observer un run naturel V4 et vérifier qu'une panne transport TCGdex ne récupère que les identités japonaises source-pinnées strictement prouvées, sans faux `NO_MATCH`, sans relaxation d'identité et sans changement économique.
