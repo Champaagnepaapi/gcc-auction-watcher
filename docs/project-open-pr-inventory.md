@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #222/#224. Le contrôle GitHub live reste l'autorité ; ce document n'est pas un compteur exhaustif GitHub sans nouveau search live.
+Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #222/#224. Le contrôle GitHub live reste l'autorité ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub et ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
 > V4 runtime production : `main@0be4dca95513e36f4e407ef7bac361fe488c1d36`. #216/#217, #219, #220, #223 et #222/#224 sont **MERGED** et ne font plus partie de la surface PR ouverte.
 
