@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #222/#224. Le contrôle GitHub live reste l'autorité ; ce document n'est pas un compteur exhaustif GitHub sans nouveau search live.
+Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** après #222/#224. Le contrôle GitHub live reste l'autorité ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub et ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
 > V4 runtime production : `main@0be4dca95513e36f4e407ef7bac361fe488c1d36`. #216/#217, #219, #220, #223 et #222/#224 sont **MERGED** et ne font plus partie de la surface PR ouverte.
 
@@ -43,7 +43,7 @@ PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION 
 | #194 | `ROBOT_KB_CANONICAL_BOOTSTRAP / STACKED`. Exact TCGdex canonicalization ; aucune market observation créée. |
 | #192 | `ROBOT_KB_EBAY_BENCHMARK`. Read-only / corroboration stricte ; provider seul ne prouve pas SOLD. |
 | #190 | `STALE_OPEN / DOCS_DIAGNOSTIC`. PSA cert 403 sur GitHub Actions ; ne pas contourner WAF. |
-| #187 | `ROBOT_KB_PUBLIC_MARKET_RECOVERY`. Revalider current-main/supersession avant toute intégration. |
+| #187 | `ROBOT_KB_PUBLIC_MARKET_RECOVERY`. Revalider current-main/supersession avant intégration. |
 
 ## V5 child/shadow
 
