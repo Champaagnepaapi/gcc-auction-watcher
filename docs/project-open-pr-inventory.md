@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** pendant la validation de #216. Le contrôle GitHub live reste l'autorité et il ne faut pas utiliser le nombre de lignes comme compteur exhaustif GitHub.
+Snapshot GitHub pertinent re-vérifié le **1 septembre 2026** pendant la validation de #216. Le contrôle GitHub live reste l'autorité ; ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub.
 
 > État courant : le HEAD GitHub `main` est `1911ba5cdfd60d4dbc57dbb8ba07c42d3f22aea9` (closeout docs #215) ; le runtime V4 déployé reste celui de #214 à `c2bb3890fcf6e98e29d3ccf937b42ae2fddbae09`. PR #216 est un candidat TCGdex **OPEN / DRAFT / NON MERGED**.
 
