@@ -1,0 +1,57 @@
+name: V4 eBay Bulk Live Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/v4_ebay_bulk_live_benchmark.py
+      - .github/workflows/v4-ebay-bulk-live-benchmark.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-python312-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure Chromium runtime is usable
+        shell: bash
+        run: |
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            playwright install chromium
+          fi
+          set +e
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              browser.close()
+          PY
+          launch_status=$?
+          set -e
+          if [ "$launch_status" -ne 0 ]; then
+            playwright install --with-deps chromium
+          fi
+
+      - name: Run bounded read-only eBay extraction benchmark
+        run: python scripts/v4_ebay_bulk_live_benchmark.py
