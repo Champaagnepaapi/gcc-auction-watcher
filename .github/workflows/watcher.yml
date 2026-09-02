@@ -219,7 +219,7 @@ jobs:
               `auction_fallback_used=${process.env.AUCTION_FALLBACK_USED || "unavailable"}`,
             ].join("\n");
 
-            // Issue #1 is the historical registry and hit GitHub's >2500-comment hard limit.
+            // Historical archive target was issue_number: 1; it hit GitHub's >2500-comment hard limit.
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
