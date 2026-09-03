@@ -60,10 +60,20 @@ legacy_only / unresolved         : 0 / 0
 production merge                 : a39c693d629b003f69f66ba20753303b197737af
 Fast Lane post-merge             : 33798827669 SUCCESS
 Fast Lane post-merge             : 33799115189 SUCCESS
-Main Scanner exact production    : 33799767652 / a39c693d... / IN_PROGRESS au dernier contrôle
+Main Scanner post-merge          : 33799767652 SUCCESS / exact a39c693d...
+scan exit / duration             : 0 / 253 s
+auction rows / timers            : 100 / 100
+auction scope                    : COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+auction fallback                 : false
+API page size                    : 100
+pagination end                   : AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER
 ```
 
-Le run `33798768727` ne doit **pas** être utilisé comme preuve post-#245 : il a démarré avant le merge et exécute l'ancien `a93cd862...`.
+Le log post-merge confirme le **fast path normal** avec `page=1&limit=100`, `incomplete reasons: NONE` et coverage auction COMPLETE. Ce run **ne reproduit pas une dérive d'ordre post-fix** : la preuve du chemin pathologique reste la reproduction pré-fix `33795854886` + le test ciblé qui vérifie que le wrapper n'injecte plus `24`.
+
+Le run `33798768727` ne doit pas être utilisé comme preuve post-#245 : il a démarré avant le merge et exécute l'ancien `a93cd862...`.
+
+L'état global de `33799767652` reste économiquement INCOMPLETE uniquement à cause du marché externe (`EXTERNAL_PENDING=2004`) ; la discovery auction elle-même est COMPLETE.
 
 Ledger dédié : `docs/v4-auction-pagination-default-preservation-20260903.md`.
 
@@ -90,7 +100,7 @@ Sans preuve structurée de démarrage, la fiche GCC est vérifiée **avant écon
 
 #238/#239 réduit l'overhead Playwright des résultats eBay en lisant `li.s-item` via un bulk `all_inner_texts()` avec fallback historique. #242 conserve un résultat eBay déjà validé avant un teardown Chromium bloqué, avec cleanup borné du worker disposable.
 
-Ces changements sont non-régressifs mais **ne prouvent pas la disparition des hard timeouts eBay**. Le prochain travail eBay doit rester un diagnostic borné/read-only par étape : navigation, challenge/provider page, row count, extraction, parsing, teardown. Aucun contournement anti-bot/WAF.
+Le Main Scanner `33799767652` confirme plusieurs résultats valides préservés malgré des teardown dépassant 2 s, mais des navigation timeouts subsistent. Ces changements ne modifient ni matching, ni définition SOLD, ni économie. Le prochain travail eBay reste un diagnostic borné/read-only par étape ; aucun contournement anti-bot/WAF.
 
 ### Registre V4 #235
 
@@ -142,7 +152,7 @@ Chemin normal : `AUCTION + ON_SALE + ENDING_SOON` avec `endTime` individuel.
 - dérive d'ordre prouvée : récupération exhaustive bornée puis horizon appliqué localement ;
 - erreurs requête/pagination/endTime/repeated-page/no-progress : fail-closed vers le fallback legacy existant ;
 - `api_total` sert uniquement au sizing, jamais à prouver la complétude ;
-- statut `COMPLETE` uniquement après preuve d'épuisement réel de l'API (`nextPage` absent).
+- statut `COMPLETE` uniquement après preuve d'épuisement réel de l'API ou horizon correctement franchi dans un ordre vérifié.
 
 Recovery après dérive :
 
@@ -324,18 +334,20 @@ Documents de reprise :
 
 ```text
 V4 auction discovery
-  -> #245 est mergé sur a39c693d...
-  -> attendre/valider le premier Main Scanner naturel exact a39c693d...
-  -> ne pas utiliser 33798768727 comme preuve post-merge : ancien SHA
-  -> si un vrai drift ENDING_SOON survient, vérifier que recovery reste sous 250 avec default 100
-  -> si 250 pages reached réapparaît, inspecter les logs avant toute autre modification
+  -> #245 est en production sur a39c693d...
+  -> premier Main Scanner naturel exact: 33799767652 SUCCESS
+  -> fast path: 100 rows / 100 timers / COMPLETE / fallback=false / page size 100
+  -> ce run ne reproduit pas order drift post-fix
+  -> preuve pathologique: 33795854886 pré-fix + test ciblé #245
+  -> continuer à observer les runs naturels
+  -> si 250 pages reached réapparaît sur a39c693d..., inspecter avant toute modification
   -> ne pas augmenter le hard cap par réflexe
-  -> aucun dispatch manuel uniquement pour fabriquer une preuve
 
 V4 eBay / providers
   -> continuer l'investigation stage-timed read-only eBay
+  -> #242 préserve les résultats valides malgré certains teardown bloqués
+  -> navigation timeouts encore présents
   -> ne pas contourner anti-bot/WAF
-  -> continuer d'observer PSA / EXTERNAL_PENDING
   -> ne pas augmenter les caps pour masquer les erreurs provider
 
 Robot KB
