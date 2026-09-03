@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -27,6 +28,28 @@ _INSTALLED = False
 _ORIGINAL_SCRAPE_EBAY_SOLD = None
 _DEFAULT_HARD_TIMEOUT_SECONDS = 30
 _MIN_HARD_TIMEOUT_SECONDS = 12
+_STAGE_LINE_RE = re.compile(r"^EBAY_STAGE\|([a-z0-9_]{1,48})\|(\d{1,9})$")
+_STAGE_SUMMARY_ORDER = (
+    "worker",
+    "resilience_install",
+    "playwright",
+    "browser_launch",
+    "context_create",
+    "page_create",
+    "scrape",
+    "navigation",
+    "page_wait",
+    "items_count",
+    "items_bulk_text",
+    "items_item_text",
+    "body_count",
+    "body_inner_text",
+    "other_count",
+    "other_inner_text",
+    "page_content",
+    "context_close",
+    "browser_close",
+)
 _SENSITIVE_ENV_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -64,6 +87,8 @@ def _worker_env() -> dict[str, str]:
         "EBAY_PAGE_WAIT_MS",
         "EBAY_NAV_TIMEOUT",
         "HEADLESS",
+        "V4_EBAY_STAGE_TIMING_ENABLED",
+        "V4_EBAY_STAGE_TIMING_LOG_SUCCESS",
     ):
         if key in os.environ:
             output[key] = os.environ[key]
@@ -122,6 +147,65 @@ def _decode_result(raw: str) -> watcher.ExternalScrapeResult:
     )
 
 
+def _stderr_text(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
+def _stage_markers(stderr: Any) -> list[tuple[str, int]]:
+    """Parse only whitelisted technical markers; ignore every other stderr line."""
+    markers: list[tuple[str, int]] = []
+    for line in _stderr_text(stderr).splitlines():
+        match = _STAGE_LINE_RE.fullmatch(line.strip())
+        if match is None:
+            continue
+        markers.append((match.group(1), int(match.group(2))))
+    return markers
+
+
+def _stage_timing_summary(stderr: Any) -> str:
+    markers = _stage_markers(stderr)
+    if not markers:
+        return ""
+
+    starts: dict[str, list[int]] = {}
+    totals: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for name, elapsed_ms in markers:
+        if name.endswith("_start"):
+            base = name[:-6]
+            starts.setdefault(base, []).append(elapsed_ms)
+            continue
+        if name.endswith("_done") or name.endswith("_error"):
+            base = name.rsplit("_", 1)[0]
+            pending = starts.get(base)
+            if not pending:
+                continue
+            started_ms = pending.pop()
+            totals[base] = totals.get(base, 0) + max(0, elapsed_ms - started_ms)
+            counts[base] = counts.get(base, 0) + 1
+
+    last_name, last_ms = markers[-1]
+    parts = [f"elapsed={last_ms}ms"]
+    for stage in _STAGE_SUMMARY_ORDER:
+        if counts.get(stage):
+            parts.append(f"{stage}={totals[stage]}ms/{counts[stage]}")
+    parts.append(f"last={last_name}@{last_ms}ms")
+    return " | ".join(parts)
+
+
+def _success_timing_log_enabled() -> bool:
+    return os.getenv("V4_EBAY_STAGE_TIMING_LOG_SUCCESS", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 def _kill_worker(proc: subprocess.Popen) -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -152,16 +236,21 @@ def _run_isolated_ebay(lot: watcher.Lot) -> watcher.ExternalScrapeResult:
         )
 
     try:
-        stdout, _stderr = proc.communicate(payload, timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
+        stdout, stderr = proc.communicate(payload, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        partial_stderr = _stderr_text(getattr(exc, "stderr", None))
         _kill_worker(proc)
         try:
-            proc.communicate(timeout=2)
+            _stdout_after_kill, stderr_after_kill = proc.communicate(timeout=2)
+            stderr = _stderr_text(stderr_after_kill) or partial_stderr
         except Exception:
-            pass
+            stderr = partial_stderr
+        timing = _stage_timing_summary(stderr)
+        timing_suffix = f" | {timing}" if timing else ""
         watcher.log(
             f"eBay isolation: HARD TIMEOUT after {timeout_seconds}s; "
             "child browser killed, V4 continues fail-closed"
+            f"{timing_suffix}"
         )
         return watcher.ExternalScrapeResult(
             [],
@@ -169,11 +258,17 @@ def _run_isolated_ebay(lot: watcher.Lot) -> watcher.ExternalScrapeResult:
             f"eBay hard timeout after {timeout_seconds}s",
         )
 
+    timing = _stage_timing_summary(stderr)
     if proc.returncode != 0:
-        watcher.log(f"eBay isolation: worker failed exit={proc.returncode}")
+        timing_suffix = f" | {timing}" if timing else ""
+        watcher.log(
+            f"eBay isolation: worker failed exit={proc.returncode}{timing_suffix}"
+        )
         return watcher.ExternalScrapeResult(
             [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker failed"
         )
+    if timing and _success_timing_log_enabled():
+        watcher.log(f"eBay isolation timing: {timing}")
     try:
         return _decode_result(stdout)
     except Exception as exc:
