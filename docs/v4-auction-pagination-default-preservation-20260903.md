@@ -73,7 +73,30 @@ head                        a39c693d629b003f69f66ba20753303b197737af
 
 Un second Fast Lane naturel `33799115189` est également SUCCESS sur le même SHA.
 
-Main Scanner naturel exact `a39c693d...` : **PENDING au moment de la création de ce ledger**. Le run `33798768727` ne compte pas : il avait démarré avant le merge et exécute l'ancien SHA `a93cd862...`.
+Premier Main Scanner naturel exact production :
+
+```text
+run                         33799767652 SUCCESS
+head                        a39c693d629b003f69f66ba20753303b197737af
+scan_exit_code              0
+duration_seconds            253
+auction mode                AUCTION_API_PLUS_LEGACY_SAFETY_NET
+auction scope               COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+rows / endTime              100 / 100
+ending <=60m                0
+fallback                    false
+API page size               100
+pagination end              AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER
+incomplete reasons          NONE
+```
+
+Le registre issue #235 et le log concordent. Le log montre explicitement `page=1&limit=100` et `coverage status: COMPLETE` pour les auctions.
+
+Cette preuve post-merge valide le **fast path normal** et confirme que le default 100 rows/page atteint bien la production. Elle **ne reproduit pas une dérive `ENDING_SOON` post-fix** ; le comportement pathologique reste prouvé par la reproduction pré-fix `33795854886` et le test ciblé qui vérifie que l'override `24` n'est plus injecté.
+
+Le run `33798768727` ne compte pas : il avait démarré avant le merge et exécutait l'ancien SHA `a93cd862...`.
+
+Le scan global `33799767652` reste économiquement INCOMPLETE à cause du marché externe (`EXTERNAL_PENDING=2004`), sans lien avec la discovery auction qui est COMPLETE.
 
 ## Invariants inchangés
 
@@ -81,7 +104,7 @@ Main Scanner naturel exact `a39c693d...` : **PENDING au moment de la création d
 - priorité `<=5m`, puis `<=12m`, puis `<=60m` inchangée ;
 - fair value, seuils et max recommendation inchangés ;
 - identité carte/langue/grader/grade/microvariante inchangée ;
-- eBay/PSA/PokeTrace/TCGdex inchangés ;
+- eBay/PSA/PokeTrace/TCGdex inchangés par #245 ;
 - notifications inchangées ;
 - Robot KB / Neon inchangés ;
 - V5 / PR #8 inchangée et non mergée ;
