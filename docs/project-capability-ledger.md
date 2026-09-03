@@ -115,7 +115,9 @@ Exact-coordinate, set/localId, unicité catalogue, bridges exacts, finish/set so
 
 # Global Multi-Vault
 
-#139 a réintégré/revalidé le stack historique #108/#109/#110/#113/#114/#115/#138. Surface : GCC/Cardova/Magi/Fanatics/COMC → identité commerciale exacte → TCGdex exact + microvariante → SOLD exact optionnel → PPT/PokeTrace graded aggregate → décision.
+## #139 — réintégration du stack historique
+
+#139 a réintégré/revalidé le stack #108/#109/#110/#113/#114/#115/#138. Surface : GCC/Cardova/magi/Fanatics/COMC → identité commerciale exacte → TCGdex exact + microvariante → SOLD exact optionnel → PPT/PokeTrace graded aggregate → décision.
 
 - disappearance != SOLD ;
 - ACTIVE_AUCTION non actionnable ;
@@ -137,7 +139,7 @@ Scale courant : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTr
 
 PostgreSQL local Mac actif, `V4_USE=false`, Neon writers automatiques OFF. Append-only daté ; SOLD final prouvé prioritaire ; ASK/live/disparition/WAITING_FOR_PAYMENT != vente.
 
-#180 collecte Fanatics/COMC/Magi/Cardova + PokeTrace/PPT en conservant les sémantiques ; `SOLD_AGGREGATED` != item-level SOLD et `FIXED_ASK_AGGREGATED` reste ASK.
+**Robot KB mirror/collectors séparés** de la décision V4/Global. #180 collecte Fanatics/COMC/Magi/Cardova + PokeTrace/PPT en conservant les sémantiques ; `SOLD_AGGREGATED` != item-level SOLD et `FIXED_ASK_AGGREGATED` reste ASK.
 
 #207 est `P3_ONLY` et n'a exécuté aucune migration durable utilisateur. #210 reste OPEN/DRAFT ; aucun durable write Cardova sans autorisation explicite.
 
@@ -149,7 +151,7 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED. Ne jamais merger PR #8 dans `main`
 
 ---
 
-# Supersessions / provenance
+# Supersessions / provenance historiques/superseded
 
 - #54 : stale/superseded ;
 - #111 : ancien snapshot docs ;
