@@ -42,16 +42,22 @@ comparison effective / legacy    : 80 / 80
 legacy_only / unresolved         : 0 / 0
 production merge                 : 0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
 Fast Lane post-merge             : 33741652374 SUCCESS
-Main Scanner post-merge          : en attente du scheduler externe ; aucun dispatch manuel
+Main Scanner post-merge          : 33741995589 SUCCESS / natural external scheduler
+scan total / registry duration   : 173.68 s / 175 s
+eBay post-merge                  : 12 attempted / 2 insufficient / 10 unavailable / 10 errors
+hard-timeout class               : PERSISTS / 2 × 30 s then run breaker
+external pending backlog         : 1970
 ```
 
 Le toggle GitHub `Ready for review` de #238 a de nouveau échoué sur le bug GraphQL `fullDatabaseId`. #239 a donc servi de miroir non-draft **sur le même head exact**. GitHub marque #238/#239 comme mergées vers le même merge production.
+
+La première preuve naturelle post-merge montre que le bulk text est **non-régressif mais insuffisant pour supprimer le problème dominant eBay** : deux hard timeouts de 30 s persistent puis le breaker s'ouvre. La durée totale a baissé sur ce run, mais le panel/queue diffère ; **ne pas attribuer cette baisse à #239** sans preuve contrôlée supplémentaire.
 
 ### Registre V4 #235
 
 Issue #1 a dépassé la limite GitHub de 2500 commentaires et faisait échouer uniquement l'étape d'archivage après un scan réussi. #237 a déplacé le registre actif vers **issue #235** sans changer le scanner.
 
-Preuve naturelle : run `33741053547` SUCCESS sur `9fac4bd5...`; étape `Register V4 run in issue #235` SUCCESS ; commentaire #235 écrit avec `scan_exit_code=0`, discovery auctions `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`, `24/24` timers et `fallback=false`.
+Preuve naturelle : run `33741053547` SUCCESS sur `9fac4bd5...`; étape `Register V4 run in issue #235` SUCCESS ; commentaire #235 écrit avec `scan_exit_code=0`, discovery auctions `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`, `24/24` timers et `fallback=false`. Le premier run post-#239 `33741995589` s'est également enregistré avec succès dans #235.
 
 Issue #1 reste l'archive historique ; ne pas la supprimer/réécrire.
 
@@ -108,7 +114,30 @@ identity / grade / language       inchangés
 fair value / budgets / ntfy       inchangés
 ```
 
-La validation CI prouve l'équivalence contractuelle et la non-régression, **pas encore un gain live eBay**. Le benchmark public #234 était inconclusif car le runner n'a vu aucun `li.s-item`. Attendre le premier Main Scanner naturel sur `0cab2f...` avant d'affirmer une amélioration de latence ou de couverture eBay.
+La validation CI prouve l'équivalence contractuelle et la non-régression. Le benchmark public #234 était inconclusif car le runner n'a vu aucun `li.s-item`.
+
+### Premier live naturel post-#239
+
+Run `33741995589`, exact `main@0cab2f3868e8...` :
+
+```text
+workflow                         SUCCESS
+total_seconds                    173.68
+registry duration                175 s
+eBay attempted                   12
+eBay sufficient                  0
+eBay insufficient                2
+eBay unavailable / errors        10 / 10
+hard timeouts                    2 × 30 s
+breaker                          OPEN après les 2 hard timeouts
+external pending backlog         1970
+fixed discovery                  3268 / 33 pages / COMPLETE
+auction discovery                24 rows / 24 timers / COMPLETE / fallback=false
+```
+
+Conclusion : **la classe de panne hard-timeout persiste**. #239 peut réduire l'IPC lorsque des rows DOM sont effectivement exploitables, mais ce premier live ne prouve pas que l'IPC était la cause dominante. La baisse de durée vs certaines baselines est confondue par un panel externe différent ; ne pas la créditer au patch.
+
+Prochaine investigation eBay : instrumenter de façon bornée/read-only les étapes du worker isolé (navigation, présence/challenge/row count, bulk extraction, parsing) pour localiser les 30 s, sans changer matching/SOLD/économie et sans contournement anti-bot.
 
 ## Auction discovery — #211/#212 + #229/#231
 
@@ -178,7 +207,9 @@ provider-error backoff           inchangé
 
 Les erreurs provider restent fail-visible et ne deviennent jamais une preuve négative fabriquée. Ne pas augmenter les caps uniquement pour forcer le drainage.
 
-Dernière baseline immédiatement pré-#239 : run `33741053547`, backlog `EXTERNAL_PENDING=1976`, eBay `attempted=16 / insufficient=7 / unavailable=9 / errors=9`; plusieurs hard timeouts de 30 s puis breaker. Cette baseline est **pré-fix** car le run avait démarré sur `9fac4bd5...` avant le merge #239.
+Baseline immédiatement pré-#239 : run `33741053547`, backlog `EXTERNAL_PENDING=1976`, eBay `attempted=16 / insufficient=7 / unavailable=9 / errors=9`; plusieurs hard timeouts de 30 s puis breaker. Cette baseline est **pré-fix** car le run avait démarré sur `9fac4bd5...` avant le merge #239.
+
+Premier run post-#239 `33741995589` : backlog `1970`; eBay `attempted=12 / insufficient=2 / unavailable=10 / errors=10`; exactement deux hard timeouts de 30 s puis breaker. Le backlog continue à drainer lentement, mais la disponibilité eBay reste le bottleneck.
 
 ## Fast Lane
 
@@ -300,9 +331,10 @@ Documents de reprise :
 
 ```text
 V4
-  -> attendre le premier Main Scanner naturel main@0cab2f3868e8...
-  -> mesurer eBay: hard timeouts, résultats utilisables, breaker, durée et backlog
-  -> ne pas attribuer un gain à #239 avant cette preuve
+  -> #239 est mergé et non-régressif, mais le hard-timeout eBay persiste
+  -> instrumenter read-only le worker eBay: navigation / challenge / row count / bulk / parsing
+  -> localiser précisément les 30 s avant tout nouveau changement comportemental
+  -> ne pas augmenter les caps et ne pas contourner anti-bot/WAF
   -> continuer d'observer le premier cas future-start réellement exclu
   -> continuer d'observer PSA/EXTERNAL_PENDING
   -> aucun dispatch manuel uniquement pour fabriquer une preuve
