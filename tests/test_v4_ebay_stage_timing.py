@@ -1,10 +1,12 @@
+import inspect
 import io
-import subprocess
+import os
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
 
 import v4_ebay_hard_timeout_isolation as isolation
+import v4_ebay_isolated_worker as worker
 import v4_ebay_stage_timing as timing
 import watcher
 from v4_ebay_bulk_result_text import EbayBulkTextPageProxy
@@ -83,23 +85,26 @@ class _Page:
         return self.body
 
 
-class _HungWithStageStderr:
-    def __init__(self, stderr):
+class _FakeStdin:
+    def write(self, value):
+        return len(value)
+
+    def close(self):
+        return None
+
+
+class _Process:
+    def __init__(self):
         self.pid = 4321
         self.returncode = None
-        self.stderr = stderr
-        self.communicate_calls = 0
+        self.stdin = _FakeStdin()
 
-    def communicate(self, payload=None, timeout=None):
-        self.communicate_calls += 1
-        if self.communicate_calls == 1:
-            raise subprocess.TimeoutExpired(
-                "worker", timeout, stderr=self.stderr
-            )
-        return "", self.stderr
+    def wait(self, timeout=None):
+        self.returncode = -9
+        return self.returncode
 
     def kill(self):
-        return None
+        self.returncode = -9
 
 
 class EbayStageTimingTests(unittest.TestCase):
@@ -210,11 +215,12 @@ class EbayStageTimingTests(unittest.TestCase):
                 "EBAY_STAGE|navigation_start|500",
             ]
         )
-        proc = _HungWithStageStderr(stderr)
+        proc = _Process()
         with (
             patch.object(isolation.subprocess, "Popen", return_value=proc),
+            patch.object(isolation, "_read_early_result", side_effect=TimeoutError),
             patch.object(isolation, "_hard_timeout_seconds", return_value=12),
-            patch.object(isolation.os, "getpgid", return_value=4321),
+            patch.object(isolation, "_stderr_from_file", return_value=stderr),
             patch.object(isolation.os, "killpg"),
             patch.object(watcher, "log") as log,
         ):
@@ -226,6 +232,34 @@ class EbayStageTimingTests(unittest.TestCase):
         self.assertIn("last=navigation_start@500ms", message)
         self.assertNotIn("SECRET", message)
         self.assertNotIn("private query", message)
+
+    def test_worker_result_pipe_is_complete_newline_delimited_utf8(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            with patch.dict(
+                worker.os.environ,
+                {worker._RESULT_FD_ENV: str(write_fd)},
+                clear=True,
+            ):
+                emitted = worker._emit_early_result('{"note":"Pokémon"}')
+            raw = os.read(read_fd, 4096)
+        finally:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+        self.assertTrue(emitted)
+        self.assertEqual(raw.decode("utf-8"), '{"note":"Pokémon"}\n')
+
+    def test_worker_emits_result_before_browser_close_in_main_protocol(self):
+        source = inspect.getsource(worker.main)
+        self.assertLess(source.index("_emit_early_result"), source.index("browser.close"))
+        self.assertLess(source.index("context.close"), source.index("_emit_early_result"))
 
     def test_worker_env_keeps_public_timing_switches_but_scrubs_secrets(self):
         env = {
