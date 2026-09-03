@@ -1,13 +1,15 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État re-vérifié le **1 septembre 2026** après #227 et #229/#231. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
+État re-vérifié le **3 septembre 2026** après #237 et #238/#239. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
 
 ## Autorité
 
 ```text
 V4 production branch             main
-V4 runtime production            b6a7c834264c062ea81b64c714e6916aa8bfe9f2 / #229/#231 MERGED
-Auction recovery capacity        adaptive sizing / hard cap 250
+V4 runtime production            0cab2f3868e80c7c0ed9e6829e44123a2ecd3005 / #238/#239 MERGED
+V4 run registry                  issue #235 ACTIVE / issue #1 archive / #237 MERGED
+eBay worker bulk text            validated head 90741ac0eaca42f90a6bc7fca816d347aaccafeb
+Auction recovery capacity        #229/#231 MERGED / adaptive sizing / hard cap 250
 Auction order hardening          #211/#212 MERGED
 Future-start auction guard       #220 MERGED / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
 TCGdex transport resilience      #216/#217 MERGED / 03824158ac899cf142199c42d4525386a573bc15
@@ -17,54 +19,87 @@ Robot KB durable                 PostgreSQL local Mac / séparé de V4 / V4_USE=
 Neon                             writers automatiques OFF / rollback manuel
 ```
 
-## Phase terminée — #229/#231 auction recovery capacity
+## Phase terminée — registre Main Scanner #235
 
-Le problème n'était pas le cap économique 360 : pendant une dérive d'ordre GCC, la récupération exhaustive #211 pouvait simplement dépasser son ancien safety bound de **100 pages** parce que l'univers `AUCTION + ON_SALE` avait grandi au-delà de 10 000 lignes.
+Issue #1 avait dépassé la limite GitHub de 2500 commentaires : le scan V4 finissait correctement mais l'étape d'ajout du commentaire renvoyait HTTP 403, donnant un faux run rouge.
 
-Preuves naturelles pré-fix :
+#237 a déplacé uniquement la cible d'archivage vers l'issue #235. Issue #1 reste l'archive historique.
 
-- `33547948642` : order drift → recovery → safety limit 100 pages → fallback legacy ; 39/39 auctions ≤60 min économiquement tentées, 0 différée par cap ;
-- `33548929050` : fast path voisin sain, `COMPLETE`, 96 rows / 28 ≤60 min, fallback false ;
-- `33549911988` : même safety-limit recovery → fallback ; 14/14 ≤60 min tentées, 0 différée par cap.
-
-Correction production :
+Preuve naturelle :
 
 ```text
-recovery budget                  ceil(api_total / page_size) + 2
-minimum                          ancien bound
-hard ceiling                     250 pages
-api_total                        sizing-only ; jamais preuve COMPLETE
-preuve COMPLETE                  vraie exhaustion API / nextPage absent
-fast path                        inchangé
-auction economic cap             360 inchangé
+run                              33741053547
+head                             9fac4bd5cd8211731ee7eaf21bd0302e71fa3a88
+workflow conclusion              SUCCESS
+scan_exit_code                   0
+registry step                    SUCCESS / issue #235
+auction scope                    COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+auction rows / timers            24 / 24
+auction fallback                 false
 ```
 
-Pour ~15 049 rows à 100/page, la capacité devient 153 pages au lieu de 100.
+Le premier run post-#239 `33741995589` s'est également enregistré avec succès dans #235. Aucune sémantique discovery/identité/valorisation/provider/notification n'a changé.
 
-Validation :
+## Phase runtime — eBay bulk text #238/#239
+
+Problème observé naturellement avant fix : eBay public continuait à provoquer des hard timeouts de 30 s dans le worker enfant isolé, puis le breaker du run sautait les appels restants. La baseline immédiatement pré-merge `33741053547` avait `eBay attempted=16 / insufficient=7 / unavailable=9 / errors=9`, backlog externe `1976`.
+
+Correction :
 
 ```text
-exact head/tree                  f81f81d1cf349a298d07867e9750704a9ea0c2bd / 0170d41c548878f4a4a77b7662f0b0a6e0f002c2
-#229 own validation              33563203801 SUCCESS
-#231 merge-mirror validation     33563438585 SUCCESS
-complete V4 suite                PASS
+surface                          li.s-item visible text
+nouveau chemin                   un all_inner_texts() bulk par locator
+fallback                         nth(i).inner_text() historique si nécessaire
+worker isolation                 inchangée
+hard timeout / breaker           inchangés
+query / parsing SOLD             inchangés
+identity/economics/budgets/ntfy  inchangés
+```
+
+Validation exacte :
+
+```text
+head                             90741ac0eaca42f90a6bc7fca816d347aaccafeb
+run                              33650958804 SUCCESS
+suite V4                         875 PASS / 2 skipped
 compile / YAML / diff-check      PASS
-read-only live compare           api_primary_complete=true / legacy_only=0 / unresolved=0
-production merge                 b6a7c834264c062ea81b64c714e6916aa8bfe9f2
+read-only live auction compare   PASS
+comparison                       effective=80 / legacy=80 / legacy_only=0 / unresolved=0
+production merge                 0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
+Fast Lane post-merge             33741652374 SUCCESS
 ```
 
-Le Ready toggle de #229 a échoué sur le bug GraphQL GitHub `fullDatabaseId`; #231 a donc été créé comme miroir non-draft du **même SHA/tree** et validé avant merge. GitHub marque ensuite #229 et #231 comme mergées vers le même merge production.
+Le Ready toggle de #238 a échoué sur le bug GraphQL `fullDatabaseId`; #239 a servi de miroir non-draft au même head exact. GitHub marque les deux PRs comme mergées vers le même merge commit.
 
-## Preuve production naturelle post-#231
+### Preuve Main Scanner post-#239
 
-**Pas encore disponible au moment de ce closeout.** Le registre #1 ne contient encore aucun run exact sur `main@b6a7c834...`. Le dernier run enregistré avant le merge reste sur l'ancien runtime.
+Premier run naturel exact :
 
-Ne pas lancer le Main Scanner manuellement juste pour fabriquer la preuve. Attendre le scheduler externe et inspecter le premier run naturel, idéalement le premier avec vraie dérive d'ordre.
+```text
+run                              33741995589
+head                             0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
+workflow                         SUCCESS
+scan total / registry duration   173.68 s / 175 s
+eBay attempted                   12
+eBay sufficient                  0
+eBay insufficient                2
+eBay unavailable / errors        10 / 10
+eBay hard timeouts               2 × 30 s
+eBay breaker                     OPEN après les 2 hard timeouts
+external pending backlog         1970
+fixed discovery                  3268 / 33 pages / COMPLETE
+auction discovery                24 rows / 24 timers / COMPLETE
+auction fallback                 false
+```
+
+Conclusion : **#239 est non-régressif mais n'élimine pas le hard-timeout eBay**. La durée totale est plus courte que plusieurs baselines pré-fix, mais le panel externe n'est pas identique ; ne pas attribuer ce gain à #239. Le benchmark #234 reste inconclusif (0 `li.s-item` visible au runner).
+
+Le prochain travail eBay doit être un diagnostic borné/read-only de l'intérieur du worker isolé : timing navigation, classification challenge/provider page, row count, bulk extraction et parsing. Aucun contournement anti-bot/WAF, aucune relaxation SOLD/identité/économie.
 
 ## Invariants inchangés
 
-- #211/#212 restent l'autorité de discovery/pagination ;
-- #220 future-start reste actif et le premier cas positif réel reste à observer naturellement ;
+- #211/#212 + #229/#231 restent l'autorité discovery/recovery auction ;
+- #220 future-start reste actif ; premier cas positif réel toujours à observer naturellement ;
 - TCGdex #216/#217 + #222/#224 restent stricts/fail-closed ;
 - eBay/PSA/provider errors restent fail-visible ;
 - `EXTERNAL_PENDING` ne doit pas être forcé par hausse opportuniste de caps ;
@@ -76,8 +111,8 @@ Ne pas lancer le Main Scanner manuellement juste pour fabriquer la preuve. Atten
 
 ## Prochaine étape
 
-1. Attendre un run naturel `main@b6a7c834...`.
-2. Si l'ordre GCC dérive, vérifier que le recovery adaptatif peut dépasser 100 pages et atteint l'épuisement réel ou reste fail-closed.
-3. Continuer d'observer le premier cas future-start réellement exclu.
-4. Continuer d'observer TCGdex/eBay/PSA et le backlog `EXTERNAL_PENDING` sans relâcher les preuves.
+1. Instrumenter read-only les phases du worker eBay isolé pour localiser les 30 s.
+2. Conserver le breaker/hard isolation et ne modifier aucun matching/SOLD/économie avant preuve.
+3. Continuer d'observer le premier cas future-start réellement exclu et la santé PSA/`EXTERNAL_PENDING`.
+4. Ne pas augmenter les caps pour masquer les erreurs provider.
 5. Garder Robot KB/Cardova durable et V5 séparés.

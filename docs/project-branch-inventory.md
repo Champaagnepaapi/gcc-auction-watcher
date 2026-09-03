@@ -1,17 +1,20 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-État pertinent re-vérifié le **1 septembre 2026** après #227 et #229/#231.
+État pertinent re-vérifié le **3 septembre 2026** après #237 et #238/#239.
 
-> `main` runtime production est ancré à `b6a7c834264c062ea81b64c714e6916aa8bfe9f2`. Toujours re-vérifier le HEAD GitHub live avant une action.
+> `main` runtime production est ancré à `0cab2f3868e80c7c0ed9e6829e44123a2ecd3005`. Toujours re-vérifier le HEAD GitHub live avant une action.
 
 ## Autorités
 
 ```text
-V4 production                     main / b6a7c834264c062ea81b64c714e6916aa8bfe9f2
+V4 production                     main / 0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
+eBay bulk source                  fix/v4-ebay-bulk-result-extraction-current-main-post237-20260902 / #238 MERGED
+eBay bulk merge mirror            merge/v4-ebay-bulk-result-extraction-20260903 / #239 MERGED
+eBay duplicate exact branch       merge/v4-ebay-bulk-result-extraction-20260903-mirror / same 90741ac0... / NO PR / DO NOT DELETE WITHOUT AUTH
+V4 registry rollover              fix/v4-run-registry-rollover-20260902 / #237 lineage MERGED
 Auction recovery source           fix/v4-auction-recovery-capacity-20260901 / #229 MERGED
 Auction recovery merge mirror     merge/v4-auction-recovery-capacity-20260901 / #231 MERGED
 Auction recovery validation       validate/v4-auction-recovery-capacity-20260901 / #230 OPEN DRAFT DO NOT MERGE
-Docs marker repair                fix/docs-open-pr-inventory-marker-20260901 / #227 MERGED
 TCGdex transport source           fix/v4-tcgdex-transport-resilience-20260901 / #216 MERGED
 TCGdex transport mirror           merge/v4-tcgdex-transport-resilience-20260901 / #217 MERGED
 TCGdex outage source              fix/v4-tcgdex-source-outage-fallback-20260901 / #222 MERGED
@@ -21,7 +24,7 @@ Auction order hardening           fix/v4-auction-order-exhaustive-coverage-20260
 Auction order mirror              merge/v4-auction-order-hardening-20260831 / #212 MERGED
 Robot KB P3 rarity-symbol         feat/robot-kb-print-run-rarity-symbol-20260831 / #207 MERGED TO P3 ONLY
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / #8 OPEN DRAFT
-Docs closeout current             docs/post-231-auction-recovery-capacity-closeout-20260901
+Docs closeout current             docs/post-239-ebay-registry-closeout-20260903
 ```
 
 PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` sans autorisation explicite.
@@ -34,13 +37,16 @@ Toute suppression exige audit + autorisation explicite. **Aucune branche n'a ét
 
 ## Branches V4 / main récentes
 
-- `fix/v4-auction-recovery-capacity-20260901` — #229, head final validé `f81f81d1cf349a298d07867e9750704a9ea0c2bd`, même tree `0170d41c...`; GitHub la marque mergée vers le runtime #231 `b6a7c834...` ;
-- `merge/v4-auction-recovery-capacity-20260901` — #231, miroir non-draft exact créé car le toggle Ready de #229 échouait sur `fullDatabaseId`; validation `33563438585` SUCCESS ; merge production `b6a7c834264c062ea81b64c714e6916aa8bfe9f2` ;
-- `validate/v4-auction-recovery-capacity-20260901` — #230, validation temporaire combinant le fix + marqueur docs avant #227 ; **OPEN/DRAFT/DO NOT MERGE**, provenance seulement ;
-- `fix/docs-open-pr-inventory-marker-20260901` — #227, docs-only, merge `4323822fa324f6f9a089a1e1447b41f611ea8b95` ;
-- `docs/post-231-auction-recovery-capacity-closeout-20260901` — branche docs-only courante, base `main@b6a7c834...` ;
+- `fix/v4-ebay-bulk-result-extraction-current-main-post237-20260902` — #238, head validé `90741ac0eaca42f90a6bc7fca816d347aaccafeb`; GitHub marque la PR mergée vers `0cab2f3868e80c7c0ed9e6829e44123a2ecd3005` ;
+- `merge/v4-ebay-bulk-result-extraction-20260903` — #239, miroir non-draft du même head exact créé car le toggle Ready de #238 échouait sur `fullDatabaseId`; merge production `0cab2f3868e80c7c0ed9e6829e44123a2ecd3005` ;
+- `merge/v4-ebay-bulk-result-extraction-20260903-mirror` — branche dupliquée accidentellement au même `90741ac0...`, sans PR ; provenance uniquement, **ne pas supprimer sans autorisation explicite** ;
+- `fix/v4-run-registry-rollover-20260902` — lignée #236/#237, déplacement du registre actif vers issue #235 ; merge production `9fac4bd5cd8211731ee7eaf21bd0302e71fa3a88` ;
+- `docs/post-239-ebay-registry-closeout-20260903` — branche docs/gouvernance courante, base `main@0cab2f...` ;
+- `fix/v4-auction-recovery-capacity-20260901` — #229, head validé `f81f81d1cf349a298d07867e9750704a9ea0c2bd` ; capacité mergée via #231 ;
+- `merge/v4-auction-recovery-capacity-20260901` — #231, merge production `b6a7c834264c062ea81b64c714e6916aa8bfe9f2` ;
+- `validate/v4-auction-recovery-capacity-20260901` — #230, **OPEN/DRAFT/DO NOT MERGE**, validation historique ;
 - `fix/v4-tcgdex-source-outage-fallback-20260901` — #222, capacité mergée via #224 ;
-- `merge/v4-tcgdex-source-outage-fallback-20260901` — #224, miroir non-draft du même head exact ; merge `0be4dca95513e36f4e407ef7bac361fe488c1d36` ;
+- `merge/v4-tcgdex-source-outage-fallback-20260901` — #224, merge `0be4dca95513e36f4e407ef7bac361fe488c1d36` ;
 - `fix/v4-tcgdex-transport-resilience-20260901` — #216, capacité mergée via #217 ;
 - `merge/v4-tcgdex-transport-resilience-20260901` — #217, miroir de merge ;
 - `fix/v4-upcoming-auction-start-guard-current-main-20260901` — #220, merge `6a33ac33faa324f0fc1c6124fbb49bd736382b75` ;
@@ -52,6 +58,11 @@ Toute suppression exige audit + autorisation explicite. **Aucune branche n'a ét
 - `ops/v4-global-run-registry-20260820` — #151 mergée ;
 - `feat/v4-tcgdex-detailed-variants-20260820` — #154 mergée ;
 - `ops/v4-global-notify-activate-20260820` — #146 mergée.
+
+## Ancienne lignée eBay devenue provenance
+
+- `fix/v4-ebay-bulk-result-extraction-20260901` et branches associées #226/#228/#233 : superseded par #238/#239 ; ne pas merger automatiquement ;
+- `validate/v4-ebay-bulk-live-benchmark-20260902` — #234, validation read-only inconclusive ; ne pas merger.
 
 ## Robot KB / P3 / Cardova
 
