@@ -135,20 +135,22 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         inventory = Path("docs/project-issue-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("exactement **4 issues uniques**", inventory)
+        self.assertIn("exactement **5 issues uniques**", inventory)
         rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ `", line)]
         numbers = {
             int(re.match(r"^\| #(\d+) `", line).group(1))
             for line in rows
         }
-        self.assertEqual(numbers, {1, 28, 58, 150})
-        self.assertEqual(len(rows), 4)
+        self.assertEqual(numbers, {1, 28, 58, 150, 235})
+        self.assertEqual(len(rows), 5)
+        self.assertIn("V4_RUN_REGISTRY_ARCHIVE", inventory)
         self.assertIn("ACTIVE_V4_RUN_REGISTRY", inventory)
         self.assertIn("ACTIVE_GLOBAL_RUN_REGISTRY", inventory)
         self.assertIn("SUPERSEDED_BY_IMPLEMENTATION", inventory)
         self.assertIn("STALE_PLANNING_ISSUE", inventory)
         self.assertIn("#59/#60/#62/#68/#72/#75/#76", inventory)
         self.assertIn("Ne pas mélanger les runs Global dans #1", inventory)
+        self.assertIn("Issue #235 — registre V4 actif", inventory)
 
 
 if __name__ == "__main__":
