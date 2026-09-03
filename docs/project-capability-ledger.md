@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **3 septembre 2026** après le merge production #245. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **3 septembre 2026** après le merge production #245 et sa première preuve naturelle Main Scanner. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`.
 
@@ -53,7 +53,11 @@ transactions                     aucune
 
 Validation exacte : head `c553796d8829e5f6dd615acfc7177ddb60f4bf91`, run `33796972288` SUCCESS, `898 PASS / 2 skipped`, compile/YAML/diff PASS, focused regression PASS, live auction compare read-only `effective=36 / legacy=32 / legacy_only=0 / unresolved=0`. Merge production `a39c693d629b003f69f66ba20753303b197737af`.
 
-Post-merge : Fast Lane `33798827669` et `33799115189` SUCCESS sur `a39c693d...`. Le Main Scanner `33798768727` ne compte pas comme preuve #245 car il avait démarré avant le merge et exécute `a93cd862...`. Premier Main Scanner naturel exact `a39c693d...` encore à observer au dernier contrôle.
+Preuve naturelle post-merge : Main Scanner **`33799767652` SUCCESS** sur exact `a39c693d...`, `scan_exit_code=0`, scope `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`, `100/100` rows/endTime, `fallback=false`. Le log confirme `page=1&limit=100`, `page size: 100`, `pagination end: AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER`, `incomplete reasons: NONE`. C'est une preuve saine du fast path post-merge, **pas** une reproduction post-fix du chemin order-drift. La preuve du chemin pathologique reste `33795854886` + le test ciblé.
+
+Fast Lane `33798827669`, `33799115189` et suivants : SUCCESS sur `a39c693d...`. Le run Main Scanner `33798768727` ne compte pas comme preuve #245 car il avait démarré avant le merge et exécutait `a93cd862...`.
+
+L'état global de `33799767652` reste économiquement INCOMPLETE uniquement à cause de `EXTERNAL_PENDING=2004`; la discovery auction est COMPLETE.
 
 Ledger détaillé : `docs/v4-auction-pagination-default-preservation-20260903.md`.
 
@@ -94,7 +98,7 @@ Capacités structurantes : #9, #50, #52, #104, #211/#212, #220, #229/#231, #243,
 
 #238/#239 réduit l'overhead de lecture Playwright des `li.s-item` via une lecture bulk `all_inner_texts()` avec fallback historique. #242 conserve un résultat eBay SOLD déjà validé avant un teardown Chromium qui se bloque, avec cleanup borné et kill du process disposable si nécessaire.
 
-Ces capacités ne changent ni matching, ni définition SOLD, ni identité, ni économie. Les hard timeouts eBay restent un problème provider/worker à diagnostiquer read-only ; ne pas contourner anti-bot/WAF.
+Ces capacités ne changent ni matching, ni définition SOLD, ni identité, ni économie. Le Main Scanner `33799767652` confirme que plusieurs résultats valides survivent à des teardown dépassant la grace de 2 s, mais des navigation timeouts subsistent. L'investigation eBay reste read-only et sans contournement anti-bot/WAF.
 
 ## #237 — rollover du registre Main Scanner — `MAIN_SUPPORT`
 
