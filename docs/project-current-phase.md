@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État re-vérifié le **3 septembre 2026** après le merge production #245. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
+État re-vérifié le **3 septembre 2026** après le merge production #245 et sa première preuve naturelle Main Scanner. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
 
 ## Autorité
 
@@ -9,6 +9,7 @@ V4 production branch             main
 V4 production HEAD               a39c693d629b003f69f66ba20753303b197737af / #245 MERGED
 #245 validated head              c553796d8829e5f6dd615acfc7177ddb60f4bf91
 #245 validation run              33796972288 SUCCESS / 898 PASS / 2 skipped
+#245 Main Scanner post-merge      33799767652 SUCCESS / exact a39c693d...
 V4 run registry                  issue #235 ACTIVE / issue #1 archive / #237 MERGED
 Auction pagination preservation  #245 MERGED / stable default 100 rows/page preserved
 Auction recovery capacity        #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -62,16 +63,28 @@ legacy_only / unresolved         0 / 0
 production merge                 a39c693d629b003f69f66ba20753303b197737af
 ```
 
-### Post-merge
+### Post-merge naturel
 
 ```text
 Fast Lane                        33798827669 SUCCESS / a39c693d...
 Fast Lane                        33799115189 SUCCESS / a39c693d...
-Main Scanner 33798768727         SUCCESS mais ancien SHA a93cd862... / NE COMPTE PAS
-Main Scanner exact a39c693d...   PENDING au dernier contrôle
+Main Scanner                     33799767652 SUCCESS / exact a39c693d...
+scan_exit_code                   0
+duration                         253 s
+auction scope                    COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+auction rows / timers            100 / 100
+auction ending <=60m             0
+auction fallback                 false
+API page size                    100
+pagination end                   AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER
+auction incomplete reasons       NONE
 ```
 
-Ne jamais présenter `33798768727` comme preuve post-#245 : il avait démarré avant le merge.
+Le log confirme le fast path normal avec `page=1&limit=100`, scope COMPLETE et aucun fallback. **Ce run ne reproduit pas une dérive d'ordre post-fix** ; la preuve du chemin pathologique reste la reproduction pré-fix `33795854886` + le test ciblé #245. Il démontre en revanche que la production post-merge utilise bien le default 100 rows/page sans régression sur le fast path.
+
+Le run `33798768727` ne compte pas : il avait démarré avant le merge et exécutait l'ancien SHA `a93cd862...`.
+
+L'état global de `33799767652` reste `INCOMPLETE` uniquement à cause de la couverture marché externe (`EXTERNAL_PENDING=2004`) ; la discovery auction elle-même est COMPLETE.
 
 ## Phase précédente #243 — guard future-start
 
@@ -85,7 +98,7 @@ Validation #243 : `33794118816` SUCCESS, `896 PASS / 2 skipped`, compile/YAML/di
 
 #238/#239 a réduit la lecture DOM à un bulk `all_inner_texts()` avec fallback historique ; #242 conserve un résultat validé avant teardown Chromium bloqué. Ces changements sont non-régressifs mais **ne prouvent pas la disparition des hard timeouts eBay**.
 
-Le prochain travail eBay reste un diagnostic borné/read-only des phases worker : navigation, challenge/provider page, row count, extraction, parsing et teardown. Aucun contournement anti-bot/WAF et aucune relaxation matching/SOLD/économie.
+Le Main Scanner `33799767652` montre plusieurs résultats valides préservés malgré des teardown >2 s, mais aussi des navigation timeouts. Le prochain travail eBay reste un diagnostic borné/read-only des phases worker : navigation, challenge/provider page, row count, extraction, parsing et teardown. Aucun contournement anti-bot/WAF et aucune relaxation matching/SOLD/économie.
 
 ## Invariants inchangés
 
@@ -104,9 +117,8 @@ Le prochain travail eBay reste un diagnostic borné/read-only des phases worker 
 
 ## Prochaine étape
 
-1. Attendre le premier **Main Scanner naturel exact `a39c693d...`** ; aucun dispatch manuel uniquement pour fabriquer une preuve.
-2. Vérifier dans issue #235 : `scan_exit_code=0`, scope auction, rows/timers, `auction_fallback_used` et, si order drift, absence de nouveau hit artificiel du plafond 250.
-3. Si le même échec `250 pages reached` réapparaît sur `a39c693d...`, inspecter les logs avant toute autre modification ; ne pas augmenter le hard cap par réflexe.
-4. Fermer ensuite le handoff docs #245 avec la preuve naturelle exacte.
-5. Reprendre séparément l'investigation eBay stage-timed.
-6. Garder Robot KB/Cardova durable et V5 strictement séparés.
+1. Fermer le closeout docs #246 après validation docs-only/checks et autorisation de merge requise.
+2. Continuer d'observer les prochains Main Scanner naturels ; si une vraie dérive `ENDING_SOON` survient, vérifier le recovery à 100 rows/page sans relever le hard cap 250.
+3. Si `250 pages reached` réapparaît sur `a39c693d...`, inspecter les logs avant toute autre modification.
+4. Reprendre séparément l'investigation eBay stage-timed/read-only.
+5. Garder Robot KB/Cardova durable et V5 strictement séparés.
