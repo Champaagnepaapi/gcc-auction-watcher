@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **3 septembre 2026** après #237 et #238/#239. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **3 septembre 2026** après le merge production #245. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`.
 
@@ -8,12 +8,14 @@ Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`,
 
 ```text
 V4 production branch             : main
-V4 runtime production            : 0cab2f3868e80c7c0ed9e6829e44123a2ecd3005 / #238/#239
-V4 run registry                  : issue #235 ACTIVE / issue #1 archive / #237
-V4 eBay bulk result text         : #238/#239 / PROD_V4 / validated head 90741ac0eaca42f90a6bc7fca816d347aaccafeb
+V4 production HEAD               : a39c693d629b003f69f66ba20753303b197737af / #245
+Auction pagination preservation  : #245 / PROD_V4 / stable default 100 rows/page preserved
 Auction recovery capacity        : #229/#231 / PROD_V4 / adaptive sizing / hard cap 250
 Auction order hardening          : #211/#212 / PROD_V4
-Future-start auction guard       : #220 / PROD_V4 / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
+Future-start auction guard       : #220 + #243 / PROD_V4 / validated head 20e1a12e35464840952cdb9079e6063f014e3bef
+V4 run registry                  : issue #235 ACTIVE / issue #1 archive / #237
+eBay bulk result text            : #238/#239 / PROD_V4 / validated head 90741ac0eaca42f90a6bc7fca816d347aaccafeb
+eBay result before teardown      : #242 / PROD_V4 / validated head 7c97d73a9caf93871d918a8dabc5a7be72375697
 TCGdex transport resilience      : #216/#217 / PROD_V4 / 03824158ac899cf142199c42d4525386a573bc15
 TCGdex outage fallback           : #222/#224 / PROD_V4 / 0be4dca95513e36f4e407ef7bac361fe488c1d36
 External pending throughput      : #214 / PROD_V4 / P4 16 + eBay 16 / auction max 4
@@ -30,52 +32,38 @@ TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 
 # V4 production
 
-## #238/#239 — eBay bulk visible-text extraction — `PROD_V4`
+## #245 — preserve hardened auction pagination defaults — `PROD_V4`
 
-But : réduire l'overhead Playwright dans le worker eBay déjà isolé, sans changer la preuve économique.
+Incident naturel pré-fix : Main Scanner `33795854886` sur `a93cd862...` détecte une dérive `ENDING_SOON`, un provider count hint `16264`, étend le recovery `100 -> 250` pages puis échoue sur `auction API safety limit 250 pages reached` et bascule fail-closed sur le fallback legacy.
 
-```text
-locator                          li.s-item
-lecture principale               all_inner_texts() une fois
-fallback                         nth(i).inner_text() si bulk échoue/partiel/non-list
-worker hard isolation            inchangée
-30s hard timeout / run breaker   inchangés
-queries / matching / SOLD        inchangés
-identity / grade / language      inchangés
-pricing / budgets / ntfy         inchangés
-```
+Cause exacte : le wrapper future-start transmettait implicitement `page_size=24`, écrasant le default **100 rows/page** de `v4_auction_pagination_stability`. À ~16.2k rows, le sizing passait artificiellement d'environ 163 pages à ~678 pages.
 
-Validation exacte : head `90741ac0eaca42f90a6bc7fca816d347aaccafeb`, run `33650958804` SUCCESS, `875 PASS / 2 skipped`, compile/YAML/diff PASS, live auction compare read-only `80=80`, `legacy_only=0`, unresolved=0. Merge production `0cab2f3868e80c7c0ed9e6829e44123a2ecd3005` via miroir #239 après bug GitHub Ready `fullDatabaseId` sur #238.
-
-Benchmark #234 : inconclusif (0 `li.s-item` visible au runner).
-
-Baseline pré-fix utile : run `33741053547`, eBay `attempted=16 / insufficient=7 / unavailable=9 / errors=9`, plusieurs hard timeouts de 30 s puis breaker, backlog externe `1976`.
-
-Premier Main Scanner naturel post-merge :
+Contrat #245 :
 
 ```text
-run                              33741995589
-head                             0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
-workflow                         SUCCESS
-scan total / registry duration   173.68 s / 175 s
-eBay attempted                   12
-eBay insufficient                2
-eBay unavailable / errors        10 / 10
-hard timeouts                    2 × 30 s
-run breaker                      OPEN après les 2 hard timeouts
-external pending backlog         1970
-auction discovery                24/24 timers / COMPLETE / no fallback
+omitted page_size / max_pages    non transmis au wrapped collector
+stable underlying default        100 rows/page conservé
+explicit overrides               conservés
+recovery hard ceiling            250 pages inchangé
+auction economic cap             360 inchangé
+priority                         <=5m -> <=12m -> <=60m inchangée
+identity / FV / providers        inchangés
+transactions                     aucune
 ```
 
-**Classification de résultat : non-régression prouvée, correction du hard-timeout non prouvée et manifestement incomplète.** La classe de panne de 30 s persiste. La durée du run est plus courte, mais le panel externe diffère ; ne pas attribuer ce gain à #239.
+Validation exacte : head `c553796d8829e5f6dd615acfc7177ddb60f4bf91`, run `33796972288` SUCCESS, `898 PASS / 2 skipped`, compile/YAML/diff PASS, focused regression PASS, live auction compare read-only `effective=36 / legacy=32 / legacy_only=0 / unresolved=0`. Merge production `a39c693d629b003f69f66ba20753303b197737af`.
 
-Prochaine capacité à construire : diagnostic eBay read-only/stage-timed dans le worker isolé (navigation, page/challenge, row count, bulk extraction, parsing), sans contournement anti-bot/WAF et sans changement matching/SOLD/économie.
+Post-merge : Fast Lane `33798827669` et `33799115189` SUCCESS sur `a39c693d...`. Le Main Scanner `33798768727` ne compte pas comme preuve #245 car il avait démarré avant le merge et exécute `a93cd862...`. Premier Main Scanner naturel exact `a39c693d...` encore à observer au dernier contrôle.
 
-## #237 — rollover du registre Main Scanner — `MAIN_SUPPORT`
+Ledger détaillé : `docs/v4-auction-pagination-default-preservation-20260903.md`.
 
-Issue #1 a atteint la limite GitHub de commentaires et reste archive. Le workflow actif écrit désormais les métadonnées minimales dans l'issue #235.
+## #220 + #243 — future-start auction guard — `PROD_V4`
 
-Preuve naturelle `33741053547` : workflow SUCCESS, `scan_exit_code=0`, étape registre #235 SUCCESS, auctions `24/24`, scope COMPLETE, fallback false. Le run post-#239 `33741995589` a également écrit correctement dans #235. Aucun comportement scanner économique n'a changé.
+Une enchère prouvée future-start est exclue avant que starting price/countdown-to-start puissent devenir bid courant/temps avant fin.
+
+#243 ferme le bypass Main Scanner où une row API déjà munie de `minutes_to_end` évitait auparavant la vérification rendue. Sans preuve structurée de démarrage, la fiche GCC est vérifiée avant économie : upcoming explicite => exclusion ; page ambiguë/erreur => fail-closed ; vraie auction live => action de bid + fin explicite.
+
+Incident déclencheur : Braixen #069/068 PSA 9 et Altaria #194/172 PSA 10. Validation #243 : head `20e1a12e35464840952cdb9079e6063f014e3bef`, run `33794118816` SUCCESS, `896 PASS / 2 skipped`, compile/YAML/diff/live compare PASS, merge `3ada7785d3fbef8050a7712bc773a52fd569716d`.
 
 ## #229/#231 — auction order-drift recovery capacity — `PROD_V4`
 
@@ -87,7 +75,9 @@ minimum = ancien bound
 hard ceiling = 250 pages
 ```
 
-`api_total` sert au sizing seulement ; `COMPLETE` exige l'épuisement API réel. Fast path, cap économique auctions `360`, identité, valorisation, providers, notifications et transactions inchangés. Merge capacité `b6a7c834264c062ea81b64c714e6916aa8bfe9f2`.
+`api_total` sert au sizing seulement ; `COMPLETE` exige l'épuisement API réel. #245 garantit désormais que le wrapper future-start ne remplace plus silencieusement le `page_size=100` durci par `24`.
+
+Fast path, cap économique auctions `360`, identité, valorisation, providers, notifications et transactions restent inchangés.
 
 ## Discovery GCC #211/#212 — `PROD_V4`
 
@@ -98,11 +88,17 @@ hard ceiling = 250 pages
 - pagination/endTime invalides restent fail-closed ;
 - Main Scanner cadencé extérieurement ; pas de cron GitHub parallèle.
 
-Capacités structurantes : #9, #50, #52, #104, #211/#212, #220, #229/#231.
+Capacités structurantes : #9, #50, #52, #104, #211/#212, #220, #229/#231, #243, #245.
 
-## #220 — future-start auction guard — `PROD_V4`
+## #238/#239 + #242 — eBay worker resilience — `PROD_V4`
 
-Une enchère prouvée future-start est exclue avant que starting price/countdown-to-start puissent devenir bid courant/temps avant fin. Preuve absente ou malformée => aucune supposition. Premier cas positif naturel toujours à observer.
+#238/#239 réduit l'overhead de lecture Playwright des `li.s-item` via une lecture bulk `all_inner_texts()` avec fallback historique. #242 conserve un résultat eBay SOLD déjà validé avant un teardown Chromium qui se bloque, avec cleanup borné et kill du process disposable si nécessaire.
+
+Ces capacités ne changent ni matching, ni définition SOLD, ni identité, ni économie. Les hard timeouts eBay restent un problème provider/worker à diagnostiquer read-only ; ne pas contourner anti-bot/WAF.
+
+## #237 — rollover du registre Main Scanner — `MAIN_SUPPORT`
+
+Issue #1 a atteint la limite GitHub de commentaires et reste archive. Le workflow actif écrit désormais les métadonnées minimales dans l'issue #235. Aucun comportement scanner économique n'a changé.
 
 ## #216/#217 — TCGdex transport/run resilience — `PROD_V4`
 
@@ -125,7 +121,7 @@ PSA APR max                      2/run
 provider-error backoff           inchangé
 ```
 
-Provider failures restent fail-visible et ne deviennent jamais clean no-match.
+Provider failures restent fail-visible et ne deviennent jamais clean no-match. Ne pas augmenter les caps uniquement pour forcer le drainage.
 
 ## TCGdex / PokeTrace #119→#135 — `PROD_V4`
 
@@ -135,9 +131,7 @@ Exact-coordinate, set/localId, unicité catalogue, bridges exacts, finish/set so
 
 # Global Multi-Vault
 
-## #139 — réintégration du stack historique
-
-#139 a réintégré/revalidé le stack #108/#109/#110/#113/#114/#115/#138. Surface : GCC/Cardova/magi/Fanatics/COMC → identité commerciale exacte → TCGdex exact + microvariante → SOLD exact optionnel → PPT/PokeTrace graded aggregate → décision.
+#139 a réintégré/revalidé le stack historique #108/#109/#110/#113/#114/#115/#138. Surface : GCC/Cardova/Magi/Fanatics/COMC → identité commerciale exacte → TCGdex exact + microvariante → SOLD exact optionnel → PPT/PokeTrace graded aggregate → décision.
 
 - disappearance != SOLD ;
 - ACTIVE_AUCTION non actionnable ;
@@ -145,13 +139,13 @@ Exact-coordinate, set/localId, unicité catalogue, bridges exacts, finish/set so
 - PPT = `SOLD_AGGREGATED`, jamais item-level SOLD ;
 - aucune transaction.
 
-Scale courant : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTrace 60, cadence 20 min, inner timeout 17 min, job timeout 25 min. #179 apporte le watchdog borné sans seconde lane économique.
+Scale courant : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTrace 60, cadence 20 min (`1,21,41`), inner timeout 17 min, job timeout 25 min. #179 apporte le watchdog borné sans seconde lane économique.
 
 ---
 
 # Magi — `PROD_V4`
 
-#174 + #177 = identité native déterministe ; #178 = recovery total 36, broad/nonpriority max 28, reserve exact search/detail 8. Pas de name-only/alias carte-par-carte.
+#174 + #177 = identité native déterministe ; #178 = recovery total 36, broad/nonpriority max 28, réserve exact search/detail 8. Pas de name-only/alias carte-par-carte.
 
 ---
 
@@ -159,7 +153,7 @@ Scale courant : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTr
 
 PostgreSQL local Mac actif, `V4_USE=false`, Neon writers automatiques OFF. Append-only daté ; SOLD final prouvé prioritaire ; ASK/live/disparition/WAITING_FOR_PAYMENT != vente.
 
-**Robot KB mirror/collectors séparés** de la décision V4/Global. #180 collecte Fanatics/COMC/Magi/Cardova + PokeTrace/PPT en conservant les sémantiques ; `SOLD_AGGREGATED` != item-level SOLD et `FIXED_ASK_AGGREGATED` reste ASK.
+#180 collecte Fanatics/COMC/Magi/Cardova + PokeTrace/PPT en conservant les sémantiques ; `SOLD_AGGREGATED` != item-level SOLD et `FIXED_ASK_AGGREGATED` reste ASK.
 
 #207 est `P3_ONLY` et n'a exécuté aucune migration durable utilisateur. #210 reste OPEN/DRAFT ; aucun durable write Cardova sans autorisation explicite.
 
@@ -171,7 +165,7 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED. Ne jamais merger PR #8 dans `main`
 
 ---
 
-# Supersessions / provenance historiques/superseded
+# Supersessions / provenance
 
 - #54 : stale/superseded ;
 - #111 : ancien snapshot docs ;
@@ -184,6 +178,8 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED. Ne jamais merger PR #8 dans `main`
 - #222/#224 : une capacité runtime, #224 mirror ;
 - #229/#231 : une capacité runtime ;
 - #238/#239 : une capacité eBay runtime, #239 mirror ;
+- #243 complète #220 sur le bypass Main Scanner ;
+- #245 complète #229/#231 et #243 sur la préservation du default de pagination ;
 - #234 : diagnostic benchmark read-only inconclusif, ne pas traiter comme preuve de performance.
 
 ---
@@ -196,4 +192,5 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED. Ne jamais merger PR #8 dans `main`
 - Robot KB local séparé de V4 ;
 - aucune écriture durable Cardova sans autorisation explicite ;
 - identité ambiguë/microvariante incertaine = fail-closed ;
+- ASK, enchère live et disparition != SOLD ;
 - avant nouveau code, réutiliser d'abord les capacités recensées ici et dans le README.
