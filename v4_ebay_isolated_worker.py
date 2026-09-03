@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 from dataclasses import asdict
 
@@ -14,6 +15,8 @@ from v4_ebay_stage_timing import EbayStageTelemetry, EbayStageTimingPageProxy
 from v4_external_provider_navigation_resilience import (
     install_v4_external_provider_navigation_resilience,
 )
+
+_RESULT_FD_ENV = "V4_EBAY_RESULT_FD"
 
 
 def _sale_payload(sale: watcher.ComparableSale) -> dict:
@@ -31,9 +34,38 @@ def _result_payload(result: watcher.ExternalScrapeResult) -> dict:
     }
 
 
+def _emit_early_result(encoded_result: str) -> bool:
+    """Send a complete result to the parent before browser teardown when requested."""
+    raw_fd = os.getenv(_RESULT_FD_ENV, "").strip()
+    if not raw_fd:
+        return False
+    try:
+        fd = int(raw_fd)
+    except ValueError as exc:
+        raise RuntimeError("invalid eBay result pipe") from exc
+    if fd < 0:
+        raise RuntimeError("invalid eBay result pipe")
+
+    payload = (encoded_result + "\n").encode("utf-8")
+    view = memoryview(payload)
+    try:
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise RuntimeError("eBay result pipe write failed")
+            view = view[written:]
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return True
+
+
 def main() -> int:
     telemetry = EbayStageTelemetry()
     telemetry.mark("worker_start")
+    result_json = None
     try:
         payload = json.loads(sys.stdin.read())
         lot_payload = payload.get("lot") if isinstance(payload, dict) else None
@@ -68,13 +100,26 @@ def main() -> int:
                             )
                         with telemetry.span("context_close"):
                             context.close()
+                        if not isinstance(result, watcher.ExternalScrapeResult):
+                            raise TypeError("unexpected eBay worker result")
+                        result_json = json.dumps(
+                            _result_payload(result), ensure_ascii=False
+                        )
+                        if _emit_early_result(result_json):
+                            telemetry.mark("result_ready")
                     finally:
+                        # The parent now treats this as bounded cleanup only.
+                        # A valid result has already crossed the dedicated pipe;
+                        # if Chromium teardown wedges, the parent kills this
+                        # disposable process group after a short grace period.
                         with telemetry.span("browser_close"):
                             browser.close()
-        if not isinstance(result, watcher.ExternalScrapeResult):
+        if result_json is None:
             raise TypeError("unexpected eBay worker result")
         telemetry.mark("worker_done")
-        sys.stdout.write(json.dumps(_result_payload(result), ensure_ascii=False))
+        # Preserve the historical stdout protocol for direct/manual callers.
+        # Production isolation consumes the dedicated result pipe instead.
+        sys.stdout.write(result_json)
         return 0
     except Exception as exc:
         telemetry.mark("worker_error")

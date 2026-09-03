@@ -1,22 +1,29 @@
 """Hard-isolate V4 eBay scraping from Playwright/driver deadlocks.
 
 Playwright's own navigation timeout only helps while the sync RPC can return to
-Python.  If the driver/browser IPC wedges, the whole V4 process can otherwise
-remain blocked until GitHub's six-hour job ceiling.  This module runs each
+Python. If the driver/browser IPC wedges, the whole V4 process can otherwise
+remain blocked until GitHub's six-hour job ceiling. This module runs each
 bounded eBay SOLD scrape in a disposable child process and kills the whole
 child process group on a hard deadline.
 
-The failure mode is provider-unavailable, never a clean no-match.  Matching,
-valuation and notification semantics remain owned by watcher.py.
+A validated result is delivered through a dedicated pipe before browser
+teardown. Browser cleanup then gets only a short grace period: cleanup hangs
+are force-killed without discarding already-computed SOLD evidence. If no valid
+result arrives before the scrape deadline, failure remains provider-unavailable,
+never a clean no-match. Matching, valuation and notification semantics remain
+owned by watcher.py.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import fields
 from datetime import datetime
 from typing import Any
@@ -28,6 +35,11 @@ _INSTALLED = False
 _ORIGINAL_SCRAPE_EBAY_SOLD = None
 _DEFAULT_HARD_TIMEOUT_SECONDS = 30
 _MIN_HARD_TIMEOUT_SECONDS = 12
+_DEFAULT_CLEANUP_GRACE_SECONDS = 2.0
+_MIN_CLEANUP_GRACE_SECONDS = 0.25
+_MAX_CLEANUP_GRACE_SECONDS = 5.0
+_MAX_EARLY_RESULT_BYTES = 262_144
+_RESULT_FD_ENV = "V4_EBAY_RESULT_FD"
 _STAGE_LINE_RE = re.compile(r"^EBAY_STAGE\|([a-z0-9_]{1,48})\|(\d{1,9})$")
 _STAGE_SUMMARY_ORDER = (
     "worker",
@@ -69,7 +81,21 @@ def _hard_timeout_seconds() -> int:
     return max(_MIN_HARD_TIMEOUT_SECONDS, value)
 
 
-def _worker_env() -> dict[str, str]:
+def _cleanup_grace_seconds() -> float:
+    raw = os.getenv(
+        "V4_EBAY_CLEANUP_GRACE_SECONDS", str(_DEFAULT_CLEANUP_GRACE_SECONDS)
+    )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = _DEFAULT_CLEANUP_GRACE_SECONDS
+    return min(
+        _MAX_CLEANUP_GRACE_SECONDS,
+        max(_MIN_CLEANUP_GRACE_SECONDS, value),
+    )
+
+
+def _worker_env(*, result_fd: int | None = None) -> dict[str, str]:
     """Inherit runtime needs while keeping unrelated credentials out of the child."""
     output: dict[str, str] = {}
     for key, value in os.environ.items():
@@ -95,6 +121,8 @@ def _worker_env() -> dict[str, str]:
     # Prevent the child navigation-resilience installer from recursively
     # enabling this process-isolation layer again.
     output["V4_EBAY_ISOLATED_WORKER"] = "1"
+    if result_fd is not None:
+        output[_RESULT_FD_ENV] = str(result_fd)
     return output
 
 
@@ -136,7 +164,9 @@ def _decode_result(raw: str) -> watcher.ExternalScrapeResult:
                 exact_card=bool(item.get("exact_card", True)),
                 match_score=int(item.get("match_score", 100)),
                 grade_qualifier=item.get("grade_qualifier"),
-                proven_commercial_dimensions=tuple(item.get("proven_commercial_dimensions") or ()),
+                proven_commercial_dimensions=tuple(
+                    item.get("proven_commercial_dimensions") or ()
+                ),
                 identity_provenance=str(item.get("identity_provenance") or ""),
             )
         )
@@ -153,6 +183,15 @@ def _stderr_text(raw: Any) -> str:
     if isinstance(raw, bytes):
         return raw.decode("utf-8", errors="replace")
     return str(raw)
+
+
+def _stderr_from_file(handle) -> str:
+    try:
+        handle.flush()
+        handle.seek(0)
+        return _stderr_text(handle.read())
+    except Exception:
+        return ""
 
 
 def _stage_markers(stderr: Any) -> list[tuple[str, int]]:
@@ -207,81 +246,179 @@ def _success_timing_log_enabled() -> bool:
 
 
 def _kill_worker(proc: subprocess.Popen) -> None:
+    # start_new_session=True makes the worker PID the process-group ID. Use the
+    # known PGID directly so Chromium descendants can still be killed even if
+    # the Python group leader has already exited.
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        os.killpg(proc.pid, signal.SIGKILL)
+        return
+    except ProcessLookupError:
+        return
     except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _wait_after_kill(proc: subprocess.Popen) -> None:
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
+def _read_early_result(result_fd: int, timeout_seconds: float) -> str:
+    """Read exactly one newline-delimited result, bounded by the scrape deadline."""
+    deadline = time.monotonic() + timeout_seconds
+    data = bytearray()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("eBay result deadline exceeded")
+        readable, _, _ = select.select([result_fd], [], [], remaining)
+        if not readable:
+            raise TimeoutError("eBay result deadline exceeded")
+        chunk = os.read(result_fd, 65_536)
+        if not chunk:
+            raise EOFError("eBay worker closed result pipe before result")
+        data.extend(chunk)
+        if len(data) > _MAX_EARLY_RESULT_BYTES:
+            raise ValueError("eBay worker result exceeds bounded protocol size")
+        newline = data.find(b"\n")
+        if newline < 0:
+            continue
+        if data[newline + 1 :].strip():
+            raise ValueError("eBay worker emitted multiple result payloads")
+        return bytes(data[:newline]).decode("utf-8")
+
+
+def _finish_cleanup_after_result(proc: subprocess.Popen) -> bool:
+    """Return True when teardown had to be force-killed after a valid result."""
+    try:
+        proc.wait(timeout=_cleanup_grace_seconds())
+        return False
+    except subprocess.TimeoutExpired:
+        _kill_worker(proc)
+        _wait_after_kill(proc)
+        return True
 
 
 def _run_isolated_ebay(lot: watcher.Lot) -> watcher.ExternalScrapeResult:
     payload = json.dumps({"lot": _lot_payload(lot)}, ensure_ascii=False)
     timeout_seconds = _hard_timeout_seconds()
+    result_read_fd, result_write_fd = os.pipe()
+    stderr_file = tempfile.TemporaryFile(mode="w+b")
+    proc = None
     try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "v4_ebay_isolated_worker"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=_worker_env(),
-            start_new_session=True,
-        )
-    except Exception as exc:
-        watcher.log(f"eBay isolation: worker launch failed ({type(exc).__name__})")
-        return watcher.ExternalScrapeResult(
-            [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker launch failed"
-        )
-
-    try:
-        stdout, stderr = proc.communicate(payload, timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        partial_stderr = _stderr_text(getattr(exc, "stderr", None))
-        _kill_worker(proc)
         try:
-            _stdout_after_kill, stderr_after_kill = proc.communicate(timeout=2)
-            stderr = _stderr_text(stderr_after_kill) or partial_stderr
-        except Exception:
-            stderr = partial_stderr
-        timing = _stage_timing_summary(stderr)
-        timing_suffix = f" | {timing}" if timing else ""
-        watcher.log(
-            f"eBay isolation: HARD TIMEOUT after {timeout_seconds}s; "
-            "child browser killed, V4 continues fail-closed"
-            f"{timing_suffix}"
-        )
-        return watcher.ExternalScrapeResult(
-            [],
-            watcher.EXTERNAL_PROVIDER_ERROR,
-            f"eBay hard timeout after {timeout_seconds}s",
-        )
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "v4_ebay_isolated_worker"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                text=True,
+                env=_worker_env(result_fd=result_write_fd),
+                pass_fds=(result_write_fd,),
+                start_new_session=True,
+            )
+        except Exception as exc:
+            watcher.log(f"eBay isolation: worker launch failed ({type(exc).__name__})")
+            return watcher.ExternalScrapeResult(
+                [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker launch failed"
+            )
+        finally:
+            try:
+                os.close(result_write_fd)
+            except OSError:
+                pass
 
-    timing = _stage_timing_summary(stderr)
-    if proc.returncode != 0:
+        try:
+            if proc.stdin is None:
+                raise RuntimeError("eBay isolated worker stdin unavailable")
+            proc.stdin.write(payload)
+            proc.stdin.close()
+        except Exception as exc:
+            _kill_worker(proc)
+            _wait_after_kill(proc)
+            watcher.log(f"eBay isolation: worker input failed ({type(exc).__name__})")
+            return watcher.ExternalScrapeResult(
+                [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker input failed"
+            )
+
+        try:
+            raw_result = _read_early_result(result_read_fd, timeout_seconds)
+        except TimeoutError:
+            _kill_worker(proc)
+            _wait_after_kill(proc)
+            timing = _stage_timing_summary(_stderr_from_file(stderr_file))
+            timing_suffix = f" | {timing}" if timing else ""
+            watcher.log(
+                f"eBay isolation: HARD TIMEOUT before valid result after {timeout_seconds}s; "
+                "child browser killed, V4 continues fail-closed"
+                f"{timing_suffix}"
+            )
+            return watcher.ExternalScrapeResult(
+                [],
+                watcher.EXTERNAL_PROVIDER_ERROR,
+                f"eBay hard timeout after {timeout_seconds}s",
+            )
+        except Exception as exc:
+            _kill_worker(proc)
+            _wait_after_kill(proc)
+            timing = _stage_timing_summary(_stderr_from_file(stderr_file))
+            timing_suffix = f" | {timing}" if timing else ""
+            watcher.log(
+                f"eBay isolation: worker ended before valid result ({type(exc).__name__})"
+                f"{timing_suffix}"
+            )
+            return watcher.ExternalScrapeResult(
+                [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker returned no valid result"
+            )
+
+        try:
+            result = _decode_result(raw_result)
+        except Exception as exc:
+            _kill_worker(proc)
+            _wait_after_kill(proc)
+            watcher.log(f"eBay isolation: invalid early result ({type(exc).__name__})")
+            return watcher.ExternalScrapeResult(
+                [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker returned invalid data"
+            )
+
+        cleanup_forced = _finish_cleanup_after_result(proc)
+        timing = _stage_timing_summary(_stderr_from_file(stderr_file))
         timing_suffix = f" | {timing}" if timing else ""
-        watcher.log(
-            f"eBay isolation: worker failed exit={proc.returncode}{timing_suffix}"
-        )
-        return watcher.ExternalScrapeResult(
-            [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker failed"
-        )
-    if timing and _success_timing_log_enabled():
-        watcher.log(f"eBay isolation timing: {timing}")
-    try:
-        return _decode_result(stdout)
-    except Exception as exc:
-        watcher.log(f"eBay isolation: invalid worker result ({type(exc).__name__})")
-        return watcher.ExternalScrapeResult(
-            [], watcher.EXTERNAL_PROVIDER_ERROR, "eBay isolated worker returned invalid data"
-        )
+        if cleanup_forced:
+            watcher.log(
+                "eBay isolation: valid result preserved; browser teardown exceeded "
+                f"{_cleanup_grace_seconds():.2f}s grace and process group was killed"
+                f"{timing_suffix}"
+            )
+        elif proc.returncode not in (None, 0):
+            watcher.log(
+                f"eBay isolation: worker teardown exit={proc.returncode} after valid result"
+                f"{timing_suffix}"
+            )
+        elif timing and _success_timing_log_enabled():
+            watcher.log(f"eBay isolation timing: {timing}")
+        return result
+    finally:
+        try:
+            os.close(result_read_fd)
+        except OSError:
+            pass
+        try:
+            stderr_file.close()
+        except Exception:
+            pass
 
 
 def _isolated_scrape_ebay_sold(
     page, lot: watcher.Lot, *, with_status: bool = False
 ):
-    # Deliberately do not pass or touch the parent Playwright page.  A wedged
+    # Deliberately do not pass or touch the parent Playwright page. A wedged
     # eBay browser/driver must be disposable without poisoning the V4 scanner.
     result = _run_isolated_ebay(lot)
     return result if with_status else result.sales
