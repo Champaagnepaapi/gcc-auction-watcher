@@ -73,6 +73,49 @@ def payload(row: dict) -> dict:
     }
 
 
+class FakeBodyLocator:
+    def __init__(self, body):
+        self.body = body
+
+    def inner_text(self, timeout=None):
+        return self.body
+
+
+class FakePage:
+    def __init__(self, body="", *, fail=False):
+        self.body = body
+        self.fail = fail
+        self.goto_calls = []
+
+    def goto(self, url, **_kwargs):
+        self.goto_calls.append(url)
+        if self.fail:
+            raise RuntimeError("navigation failed")
+
+    def wait_for_timeout(self, _milliseconds):
+        return None
+
+    def locator(self, selector):
+        if selector != "body":
+            raise AssertionError(f"unexpected selector {selector}")
+        return FakeBodyLocator(self.body)
+
+
+def auction_lot(
+    *,
+    url="https://gradedcardcenter.com/item/7a84f68f-80e6-42e2-8e46-52acf1de2d74",
+    minutes=46,
+) -> watcher.Lot:
+    return watcher.Lot(
+        url=url,
+        title="Braixen",
+        current_price=10.0,
+        source_type="auction",
+        minutes_to_end=minutes,
+        end_text="0j 0h 46m 0s",
+    )
+
+
 class UpcomingAuctionStructuredGuardTests(unittest.TestCase):
     def setUp(self):
         self.base_discover = guard._BASE_DISCOVER_AUCTION_API_LOTS
@@ -121,7 +164,24 @@ class UpcomingAuctionStructuredGuardTests(unittest.TestCase):
         self.assertEqual(len(result.lots), 1)
         self.assertEqual(result.lots[0].current_price, 10.0)
         self.assertEqual(result.lots[0].minutes_to_end, 47)
+        self.assertEqual(
+            getattr(result.lots[0], "auction_start_state", ""),
+            guard.STARTED_STRUCTURED,
+        )
         self.assertEqual(getattr(result.coverage, "auction_upcoming_excluded", 0), 0)
+
+    def test_missing_start_is_marked_unproven_for_rendered_verification(self):
+        getter = FakeGet(payload(auction_row()))
+        result = guard.guarded_discover_auction_api_lots(
+            max_minutes=60,
+            http_get=getter,
+            now=NOW,
+        )
+        self.assertEqual(len(result.lots), 1)
+        self.assertEqual(
+            getattr(result.lots[0], "auction_start_state", ""),
+            guard.START_UNPROVEN,
+        )
 
     def test_malformed_row_without_stable_id_is_not_hidden(self):
         row = auction_row(start_time="2026-08-27T19:00:00Z")
@@ -160,6 +220,21 @@ class UpcomingAuctionRenderedGuardTests(unittest.TestCase):
             )
         )
 
+    def test_live_requires_bid_action_and_end_semantics(self):
+        self.assertTrue(
+            guard.rendered_page_proves_live(
+                "Weekly Auction\n10€\n0 enchères\nFin le 06/09 @ 14h27\nEnchérir"
+            )
+        )
+        self.assertFalse(
+            guard.rendered_page_proves_live(
+                "Weekly Auction\n10€\n0 enchères\nDébut le 06/09 @ 14h27\nProgrammer une enchère"
+            )
+        )
+        self.assertFalse(
+            guard.rendered_page_proves_live("Weekly Auction\n10€\n0 enchères")
+        )
+
     def test_rendered_upcoming_page_clears_starting_price_and_start_countdown(self):
         original = guard._BASE_INSPECT_ITEM
 
@@ -188,12 +263,125 @@ class UpcomingAuctionRenderedGuardTests(unittest.TestCase):
         self.assertEqual(getattr(inspected, "auction_state", ""), guard.UPCOMING_AUCTION)
 
 
+class UpcomingAuctionMainLoopBypassRegressionTests(unittest.TestCase):
+    def setUp(self):
+        self.base_collect = guard._BASE_COLLECT_LOTS_FROM_LISTING
+
+    def tearDown(self):
+        guard._BASE_COLLECT_LOTS_FROM_LISTING = self.base_collect
+
+    def _set_collector(self, lots):
+        def fake_collect(*_args, **_kwargs):
+            return list(lots)
+        guard._BASE_COLLECT_LOTS_FROM_LISTING = fake_collect
+
+    def test_timer_bearing_upcoming_api_lot_is_filtered_before_main_economics(self):
+        lot = auction_lot()
+        setattr(lot, "auction_start_state", guard.START_UNPROVEN)
+        self._set_collector([lot])
+        page = FakePage(
+            "Enchères à venir\nDébut le 03/09 à 21h00\n10€\nProgrammer une enchère"
+        )
+
+        result = guard.guarded_collect_lots_from_listing(
+            page,
+            auction_discovery.AUCTION_INDEX_URL,
+            "auction",
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(page.goto_calls, [lot.url])
+        self.assertIsNone(lot.current_price)
+        self.assertIsNone(lot.minutes_to_end)
+        self.assertEqual(getattr(lot, "auction_state", ""), guard.UPCOMING_AUCTION)
+
+    def test_timer_bearing_live_api_lot_is_retained_unchanged(self):
+        lot = auction_lot()
+        setattr(lot, "auction_start_state", guard.START_UNPROVEN)
+        self._set_collector([lot])
+        page = FakePage(
+            "Weekly Auction\n10€\n0 enchères\nFin le 06/09 @ 14h27\nEnchérir"
+        )
+
+        result = guard.guarded_collect_lots_from_listing(
+            page,
+            auction_discovery.AUCTION_INDEX_URL,
+            "auction",
+        )
+
+        self.assertEqual(result, [lot])
+        self.assertEqual(lot.current_price, 10.0)
+        self.assertEqual(lot.minutes_to_end, 46)
+        self.assertEqual(getattr(lot, "auction_state", ""), guard.LIVE_AUCTION)
+
+    def test_timer_bearing_ambiguous_page_fails_closed(self):
+        lot = auction_lot()
+        setattr(lot, "auction_start_state", guard.START_UNPROVEN)
+        self._set_collector([lot])
+        page = FakePage("Weekly Auction\n10€\n0 enchères")
+
+        result = guard.guarded_collect_lots_from_listing(
+            page,
+            auction_discovery.AUCTION_INDEX_URL,
+            "auction",
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(getattr(lot, "auction_state", ""), guard.START_UNPROVEN)
+
+    def test_rendered_verification_error_fails_closed(self):
+        lot = auction_lot()
+        setattr(lot, "auction_start_state", guard.START_UNPROVEN)
+        self._set_collector([lot])
+        page = FakePage(fail=True)
+
+        result = guard.guarded_collect_lots_from_listing(
+            page,
+            auction_discovery.AUCTION_INDEX_URL,
+            "auction",
+        )
+
+        self.assertEqual(result, [])
+
+    def test_structured_started_lot_skips_rendered_probe(self):
+        lot = auction_lot()
+        setattr(lot, "auction_start_state", guard.STARTED_STRUCTURED)
+        self._set_collector([lot])
+        page = FakePage(fail=True)
+
+        result = guard.guarded_collect_lots_from_listing(
+            page,
+            auction_discovery.AUCTION_INDEX_URL,
+            "auction",
+        )
+
+        self.assertEqual(result, [lot])
+        self.assertEqual(page.goto_calls, [])
+
+    def test_timerless_lot_stays_on_existing_inspect_item_fallback_path(self):
+        lot = auction_lot(minutes=None)
+        setattr(lot, "auction_start_state", guard.START_UNPROVEN)
+        self._set_collector([lot])
+        page = FakePage(fail=True)
+
+        result = guard.guarded_collect_lots_from_listing(
+            page,
+            auction_discovery.AUCTION_INDEX_URL,
+            "auction",
+        )
+
+        self.assertEqual(result, [lot])
+        self.assertEqual(page.goto_calls, [])
+
+
 class UpcomingAuctionInstallerTests(unittest.TestCase):
-    def test_guard_wraps_whichever_collector_is_current_at_install_time(self):
+    def test_guard_wraps_whichever_collectors_are_current_at_install_time(self):
         saved_discover = auction_discovery.discover_auction_api_lots
         saved_inspect = watcher.inspect_item
+        saved_collect = watcher.collect_lots_from_listing
         saved_base_discover = guard._BASE_DISCOVER_AUCTION_API_LOTS
         saved_base_inspect = guard._BASE_INSPECT_ITEM
+        saved_base_collect = guard._BASE_COLLECT_LOTS_FROM_LISTING
         saved_installed = guard._INSTALLED_V4
 
         def current_collector(**_kwargs):
@@ -202,23 +390,34 @@ class UpcomingAuctionInstallerTests(unittest.TestCase):
         def current_inspect(*_args, **_kwargs):
             return None
 
+        def current_listing_collect(*_args, **_kwargs):
+            return []
+
         try:
             auction_discovery.discover_auction_api_lots = current_collector
             watcher.inspect_item = current_inspect
+            watcher.collect_lots_from_listing = current_listing_collect
             guard._INSTALLED_V4 = False
             guard.install_v4_upcoming_auction_guard()
             self.assertIs(guard._BASE_DISCOVER_AUCTION_API_LOTS, current_collector)
             self.assertIs(guard._BASE_INSPECT_ITEM, current_inspect)
+            self.assertIs(guard._BASE_COLLECT_LOTS_FROM_LISTING, current_listing_collect)
             self.assertIs(
                 auction_discovery.discover_auction_api_lots,
                 guard.guarded_discover_auction_api_lots,
             )
             self.assertIs(watcher.inspect_item, guard.guarded_inspect_item)
+            self.assertIs(
+                watcher.collect_lots_from_listing,
+                guard.guarded_collect_lots_from_listing,
+            )
         finally:
             auction_discovery.discover_auction_api_lots = saved_discover
             watcher.inspect_item = saved_inspect
+            watcher.collect_lots_from_listing = saved_collect
             guard._BASE_DISCOVER_AUCTION_API_LOTS = saved_base_discover
             guard._BASE_INSPECT_ITEM = saved_base_inspect
+            guard._BASE_COLLECT_LOTS_FROM_LISTING = saved_base_collect
             guard._INSTALLED_V4 = saved_installed
 
     def test_stability_installer_places_upcoming_guard_above_current_hardening(self):
