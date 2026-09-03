@@ -10,12 +10,13 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch             : main
-V4 runtime production            : 0cab2f3868e80c7c0ed9e6829e44123a2ecd3005 (#238/#239)
+V4 runtime production            : 3ada7785d3fbef8050a7712bc773a52fd569716d (#243)
 eBay worker bulk text            : #238/#239 MERGED / validated head 90741ac0eaca42f90a6bc7fca816d347aaccafeb
+eBay result before teardown      : #242 MERGED / validated head 7c97d73a9caf93871d918a8dabc5a7be72375697 / merge 0410160d62492682027ed6d80036daa4cf133777
 V4 run registry                  : issue #235 ACTIVE / issue #1 archive saturée / #237 MERGED
 Auction recovery capacity        : #229/#231 MERGED / b6a7c834264c062ea81b64c714e6916aa8bfe9f2
 Auction order-drift hardening    : #211/#212 MERGED
-Future-start auction guard       : #220 MERGED / 6a33ac33faa324f0fc1c6124fbb49bd736382b75
+Future-start auction guard       : #220 + #243 MERGED / validated head 20e1a12e35464840952cdb9079e6063f014e3bef
 TCGdex transport resilience      : #216/#217 MERGED / 03824158ac899cf142199c42d4525386a573bc15
 TCGdex outage fallback           : #222/#224 MERGED / 0be4dca95513e36f4e407ef7bac361fe488c1d36
 External pending throughput      : #214 MERGED / P4 16 + eBay 16 / auctions eBay max 4
@@ -52,6 +53,25 @@ external pending backlog         : 1970
 Le toggle GitHub `Ready for review` de #238 a de nouveau échoué sur le bug GraphQL `fullDatabaseId`. #239 a donc servi de miroir non-draft **sur le même head exact**. GitHub marque #238/#239 comme mergées vers le même merge production.
 
 La première preuve naturelle post-merge montre que le bulk text est **non-régressif mais insuffisant pour supprimer le problème dominant eBay** : deux hard timeouts de 30 s persistent puis le breaker s'ouvre. La durée totale a baissé sur ce run, mais le panel/queue diffère ; **ne pas attribuer cette baisse à #239** sans preuve contrôlée supplémentaire.
+
+### Validation du guard future-start #243
+
+Incident naturel reproduit le 3 septembre 2026 : Braixen #069/068 PSA 9 et Altaria #194/172 PSA 10 ont été notifiées comme `GCC AUCTION — EXTERNAL RESCUE` à 10 € avec `Fin : ~45 min`, alors que GCC affichait en réalité le **prix de départ** et le compte à rebours **jusqu'au début** de l'enchère.
+
+La cause exacte était un bypass Main Scanner : les rows API déjà munies de `minutes_to_end` ne passaient pas par le fallback `inspect_item`, donc le guard rendu de #220 n'était jamais consulté.
+
+```text
+validated head                   : 20e1a12e35464840952cdb9079e6063f014e3bef
+validation run                   : 33794118816 SUCCESS
+V4 complete suite                : 896 PASS / 2 skipped
+compile / YAML / diff-check      : PASS
+read-only live auction compare   : PASS
+effective / legacy               : 73 / 71
+legacy_only / unresolved         : 0 / 0
+production merge                 : 3ada7785d3fbef8050a7712bc773a52fd569716d
+```
+
+#243 ajoute une vérification de l'état rendu **avant toute économie** pour les auctions avec timer mais sans preuve structurée qu'elles ont déjà commencé. `Enchères à venir` / `Programmer une enchère` => exclusion ; page ambiguë ou erreur => fail-closed ; une vraie enchère live exige une sémantique d'action de bid + fin explicite. Aucun heuristique `10 €`, `0 enchère`, etc. n'est utilisé comme preuve d'état.
 
 ### Registre V4 #235
 
@@ -161,16 +181,20 @@ hard ceiling = 250 pages
 
 Aucun changement : cap économique auctions `360`, priorité `≤5 min` puis `≤12 min` puis `≤60 min`, fair value, identité, providers, notifications ou transactions.
 
-## Future-start auction guard — #220
+## Future-start auction guard — #220 + #243
 
 Une enchère prouvée comme n'ayant pas encore commencé est exclue avant interprétation du prix/countdown :
 
-- timestamp GCC structuré + row id stable => exclusion ;
+- `startTime > observed_at` avec row id stable => exclusion structurée ;
+- `startTime <= observed_at` => démarrage structuré prouvé, chemin live normal conservé ;
 - timestamp manquant/malformé => aucune supposition ;
-- preuve UI uniquement si forte (`Schedule a bid` / équivalent ou upcoming + start label explicite) ;
+- si l'API fournit déjà un timer mais ne prouve pas le démarrage, #243 vérifie la fiche GCC rendue **avant toute valorisation** ;
+- `Enchères à venir` / `Programmer une enchère` ou upcoming + start label explicite => exclusion ;
+- vraie enchère live rendue => action de bid + sémantique explicite de fin ;
+- page ambiguë / erreur de vérification => fail-closed ;
 - starting price et countdown-to-start ne deviennent jamais bid courant / temps avant fin.
 
-Le guard se superpose au hardening de discovery ; il ne le remplace pas. Le premier cas positif naturel reste à observer.
+Le guard se superpose au hardening de discovery ; il ne le remplace pas. #243 ferme explicitement le bypass observé sur Braixen/Altaria où un timer API évitait auparavant `inspect_item`. Fast Lane reste protégée par le guard rendu. Aucun changement de fair value, discount, prix max, identité, providers ou transaction.
 
 ## TCGdex transport resilience — #216/#217
 
@@ -331,11 +355,10 @@ Documents de reprise :
 
 ```text
 V4
-  -> #239 est mergé et non-régressif, mais le hard-timeout eBay persiste
-  -> instrumenter read-only le worker eBay: navigation / challenge / row count / bulk / parsing
-  -> localiser précisément les 30 s avant tout nouveau changement comportemental
+  -> #243 est mergé : le bypass timer API des enchères non démarrées est fermé
+  -> observer les prochains scans naturels pour confirmer absence de faux `EXTERNAL RESCUE` pre-start
+  -> #242 conserve les résultats eBay validés avant teardown, mais continuer d'observer le provider
   -> ne pas augmenter les caps et ne pas contourner anti-bot/WAF
-  -> continuer d'observer le premier cas future-start réellement exclu
   -> continuer d'observer PSA/EXTERNAL_PENDING
   -> aucun dispatch manuel uniquement pour fabriquer une preuve
 
