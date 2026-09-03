@@ -38,7 +38,7 @@ auction rows / timers            24 / 24
 auction fallback                 false
 ```
 
-Aucune sémantique discovery/identité/valorisation/provider/notification n'a changé.
+Le premier run post-#239 `33741995589` s'est également enregistré avec succès dans #235. Aucune sémantique discovery/identité/valorisation/provider/notification n'a changé.
 
 ## Phase runtime — eBay bulk text #238/#239
 
@@ -51,7 +51,7 @@ surface                          li.s-item visible text
 nouveau chemin                   un all_inner_texts() bulk par locator
 fallback                         nth(i).inner_text() historique si nécessaire
 worker isolation                 inchangée
-hard timeout / breaker            inchangés
+hard timeout / breaker           inchangés
 query / parsing SOLD             inchangés
 identity/economics/budgets/ntfy  inchangés
 ```
@@ -73,9 +73,28 @@ Le Ready toggle de #238 a échoué sur le bug GraphQL `fullDatabaseId`; #239 a s
 
 ### Preuve Main Scanner post-#239
 
-**Encore en attente au moment de ce closeout.** Aucun Main Scanner naturel sur `main@0cab2f...` n'était encore disponible. Ne pas en déclencher un manuellement juste pour fabriquer la preuve.
+Premier run naturel exact :
 
-Le benchmark public #234 reste inconclusif : eBay n'avait exposé aucun `li.s-item` au runner, donc aucune amélioration live de latence/couverture ne doit être revendiquée avant le premier run naturel.
+```text
+run                              33741995589
+head                             0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
+workflow                         SUCCESS
+scan total / registry duration   173.68 s / 175 s
+eBay attempted                   12
+eBay sufficient                  0
+eBay insufficient                2
+eBay unavailable / errors        10 / 10
+eBay hard timeouts               2 × 30 s
+eBay breaker                     OPEN après les 2 hard timeouts
+external pending backlog         1970
+fixed discovery                  3268 / 33 pages / COMPLETE
+auction discovery                24 rows / 24 timers / COMPLETE
+auction fallback                 false
+```
+
+Conclusion : **#239 est non-régressif mais n'élimine pas le hard-timeout eBay**. La durée totale est plus courte que plusieurs baselines pré-fix, mais le panel externe n'est pas identique ; ne pas attribuer ce gain à #239. Le benchmark #234 reste inconclusif (0 `li.s-item` visible au runner).
+
+Le prochain travail eBay doit être un diagnostic borné/read-only de l'intérieur du worker isolé : timing navigation, classification challenge/provider page, row count, bulk extraction et parsing. Aucun contournement anti-bot/WAF, aucune relaxation SOLD/identité/économie.
 
 ## Invariants inchangés
 
@@ -92,8 +111,8 @@ Le benchmark public #234 reste inconclusif : eBay n'avait exposé aucun `li.s-it
 
 ## Prochaine étape
 
-1. Attendre le premier Main Scanner naturel exact `main@0cab2f3868e8...`.
-2. Comparer eBay aux baselines : hard timeouts, résultats utilisables, breaker, durée totale et backlog `EXTERNAL_PENDING`.
-3. N'attribuer un gain à #239 que si le live naturel le montre réellement.
-4. Continuer d'observer le premier cas future-start réellement exclu et la santé PSA.
+1. Instrumenter read-only les phases du worker eBay isolé pour localiser les 30 s.
+2. Conserver le breaker/hard isolation et ne modifier aucun matching/SOLD/économie avant preuve.
+3. Continuer d'observer le premier cas future-start réellement exclu et la santé PSA/`EXTERNAL_PENDING`.
+4. Ne pas augmenter les caps pour masquer les erreurs provider.
 5. Garder Robot KB/Cardova durable et V5 séparés.
