@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from math import isfinite
 from typing import Callable, Optional
 
 import watcher
@@ -17,11 +18,11 @@ def _degenerate_strong_poketrace_aggregate(
 ) -> bool:
     """Reject a strong aggregate when it carries no informative price range.
 
-    PokeTrace's graded eBay surface is aggregate-only.  A response where
-    low == central == high cannot prove dispersion: in the observed production
-    failure this shape came from missing low/high bounds that V4 had imputed
-    from avg.  Treat it as insufficient rather than manufacturing a zero-width
-    market range.
+    PokeTrace's graded eBay surface is aggregate-only. A response where
+    low == central == high cannot prove dispersion. That shape is also exactly
+    what V4 produces when provider low/high bounds are absent and the canonical
+    collector substitutes avg for both. Treat it as insufficient rather than
+    manufacturing a zero-width market range.
     """
 
     if not (
@@ -39,12 +40,12 @@ def _degenerate_strong_poketrace_aggregate(
         high = float(estimate.high)
     except (TypeError, ValueError):
         return True
-    if min(low, central, high) <= 0:
+    if not all(isfinite(value) and value > 0 for value in (low, central, high)):
         return True
 
-    # Prices are user-facing at cent precision.  A <= 1 cent total envelope is
-    # non-informative for an aggregate market distribution and must be
-    # corroborated by the independent APR/eBay fallback before it can act.
+    # Prices are user-facing at cent precision. A <= 1 cent total envelope is
+    # non-informative for an aggregate market distribution and must be checked
+    # through the existing APR/eBay fallback before it can act.
     return max(low, central, high) - min(low, central, high) <= 0.01
 
 
@@ -57,7 +58,7 @@ def _downgrade_degenerate_aggregate(
     diagnostics = getattr(multimarket, "_DIAGNOSTICS", None)
     if diagnostics is not None:
         # The wrapped canonical collector has already counted this result as
-        # strong.  Reclassify the same observation once so run diagnostics match
+        # strong. Reclassify the same observation once so run diagnostics match
         # the evidence that downstream arbitration actually receives.
         if getattr(diagnostics, "poketrace_strong", 0) > 0:
             diagnostics.poketrace_strong -= 1
@@ -92,7 +93,7 @@ def _quality_guarded_original_evidence(*args, **kwargs):
 def install_v4_poketrace_aggregate_quality_guard() -> None:
     """Guard PokeTrace aggregate evidence before structured retrieval publishes it.
 
-    The production bootstrap installs this before run_watcher_multimarket.  The
+    The production bootstrap installs this before run_watcher_multimarket. The
     later structured-retrieval installer therefore keeps all TCGdex-first exact
     identity logic while calling this guarded original evidence function.
     """
