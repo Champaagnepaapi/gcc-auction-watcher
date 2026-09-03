@@ -153,8 +153,8 @@ def guarded_discover_auction_api_lots(
     *,
     max_minutes: Optional[int] = None,
     http_get=None,
-    page_size: int = auction_discovery.AUCTION_API_PAGE_SIZE,
-    max_pages: int = auction_discovery.AUCTION_API_MAX_PAGES,
+    page_size: Optional[int] = None,
+    max_pages: Optional[int] = None,
     now: Optional[datetime] = None,
 ):
     """Remove proven future-start rows before countdown/price interpretation.
@@ -166,6 +166,12 @@ def guarded_discover_auction_api_lots(
     collector can trust them without another rendered-page probe. Rows with no
     explicit start proof remain START_UNPROVEN and must be verified before any
     timer/starting-price can enter economic evaluation.
+
+    Pagination is intentionally transparent: when the caller does not request
+    an override, omit page_size/max_pages so the wrapped collector keeps its own
+    hardened defaults. In production that preserves the stability layer's
+    100-row pages instead of silently collapsing recovery back to the base
+    collector's historical 24-row default.
     """
 
     reference = _reference_utc(now or datetime.now(timezone.utc))
@@ -215,13 +221,17 @@ def guarded_discover_auction_api_lots(
         filtered["results"] = kept
         return _FilteredResponse(response, filtered)
 
-    result = _active_discover_base()(
-        max_minutes=max_minutes,
-        http_get=guarded_get,
-        page_size=page_size,
-        max_pages=max_pages,
-        now=reference,
-    )
+    discover_kwargs = {
+        "max_minutes": max_minutes,
+        "http_get": guarded_get,
+        "now": reference,
+    }
+    if page_size is not None:
+        discover_kwargs["page_size"] = page_size
+    if max_pages is not None:
+        discover_kwargs["max_pages"] = max_pages
+
+    result = _active_discover_base()(**discover_kwargs)
 
     # A row can appear in repeated stabilized snapshots. Any future-start proof
     # remains authoritative even if another pass omitted the start field.
