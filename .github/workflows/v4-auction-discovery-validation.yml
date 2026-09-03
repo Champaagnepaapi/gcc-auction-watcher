@@ -17,6 +17,7 @@ on:
       - "v4_external_provider_run_breaker.py"
       - "v4_global_tcgdex_resilience.py"
       - "v4_multimarket_safety.py"
+      - "v4_poketrace_aggregate_quality_guard.py"
       - "v4_structural_edge_hunter.py"
       - "v4_provider_rejection_observability.py"
       - "v4_tcgdex_exact_coordinate_recovery.py"
@@ -116,6 +117,7 @@ jobs:
           python -m py_compile v4_external_provider_run_breaker.py
           python -m py_compile v4_global_tcgdex_resilience.py
           python -m py_compile v4_multimarket_safety.py
+          python -m py_compile v4_poketrace_aggregate_quality_guard.py
           python -m py_compile v4_structural_edge_hunter.py
           python -m py_compile v4_provider_rejection_observability.py
           python -m py_compile v4_tcgdex_exact_coordinate_recovery.py
