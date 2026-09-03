@@ -47,15 +47,35 @@ pricing / budgets / ntfy         inchangés
 
 Validation exacte : head `90741ac0eaca42f90a6bc7fca816d347aaccafeb`, run `33650958804` SUCCESS, `875 PASS / 2 skipped`, compile/YAML/diff PASS, live auction compare read-only `80=80`, `legacy_only=0`, unresolved=0. Merge production `0cab2f3868e80c7c0ed9e6829e44123a2ecd3005` via miroir #239 après bug GitHub Ready `fullDatabaseId` sur #238.
 
-**Limite de preuve :** benchmark #234 inconclusif (0 `li.s-item` visible au runner). La première mesure Main Scanner naturelle sur `0cab2f...` est encore attendue ; ne pas revendiquer de gain live avant elle.
+Benchmark #234 : inconclusif (0 `li.s-item` visible au runner).
 
 Baseline pré-fix utile : run `33741053547`, eBay `attempted=16 / insufficient=7 / unavailable=9 / errors=9`, plusieurs hard timeouts de 30 s puis breaker, backlog externe `1976`.
+
+Premier Main Scanner naturel post-merge :
+
+```text
+run                              33741995589
+head                             0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
+workflow                         SUCCESS
+scan total / registry duration   173.68 s / 175 s
+eBay attempted                   12
+eBay insufficient                2
+eBay unavailable / errors        10 / 10
+hard timeouts                    2 × 30 s
+run breaker                      OPEN après les 2 hard timeouts
+external pending backlog         1970
+auction discovery                24/24 timers / COMPLETE / no fallback
+```
+
+**Classification de résultat : non-régression prouvée, correction du hard-timeout non prouvée et manifestement incomplète.** La classe de panne de 30 s persiste. La durée du run est plus courte, mais le panel externe diffère ; ne pas attribuer ce gain à #239.
+
+Prochaine capacité à construire : diagnostic eBay read-only/stage-timed dans le worker isolé (navigation, page/challenge, row count, bulk extraction, parsing), sans contournement anti-bot/WAF et sans changement matching/SOLD/économie.
 
 ## #237 — rollover du registre Main Scanner — `MAIN_SUPPORT`
 
 Issue #1 a atteint la limite GitHub de commentaires et reste archive. Le workflow actif écrit désormais les métadonnées minimales dans l'issue #235.
 
-Preuve naturelle `33741053547` : workflow SUCCESS, `scan_exit_code=0`, étape registre #235 SUCCESS, auctions `24/24`, scope COMPLETE, fallback false. Aucun comportement scanner économique n'a changé.
+Preuve naturelle `33741053547` : workflow SUCCESS, `scan_exit_code=0`, étape registre #235 SUCCESS, auctions `24/24`, scope COMPLETE, fallback false. Le run post-#239 `33741995589` a également écrit correctement dans #235. Aucun comportement scanner économique n'a changé.
 
 ## #229/#231 — auction order-drift recovery capacity — `PROD_V4`
 
