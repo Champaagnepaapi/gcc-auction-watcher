@@ -22,6 +22,7 @@ _CHALLENGE_MARKERS = (
     "cloudflare",
     "datadome",
 )
+_EBAY_TIMEOUT_REASONS = frozenset({"items", "challenge", "empty_dom", "wrong_host"})
 
 _INSTALLED = False
 _ORIGINAL_SCRAPE_EBAY_SOLD = None
@@ -60,6 +61,27 @@ def _has_challenge_marker(page) -> bool:
     return any(marker in body for marker in _CHALLENGE_MARKERS)
 
 
+def _annotate_ebay_timeout_result(result, reason: str):
+    """Attach only a fixed technical enum to provider-error diagnostics.
+
+    The economic result is unchanged: same sales and same status. This exists
+    only so natural production logs can distinguish why the already-existing
+    no-retry timeout salvage accepted or rejected the current DOM.
+    """
+    if not isinstance(result, watcher.ExternalScrapeResult):
+        return result
+    if result.status != watcher.EXTERNAL_PROVIDER_ERROR:
+        return result
+    if reason not in _EBAY_TIMEOUT_REASONS:
+        return result
+    suffix = f"[nav_timeout={reason}]"
+    note = str(result.note or "").strip()
+    if suffix in note:
+        return result
+    annotated_note = f"{note} {suffix}".strip()
+    return watcher.ExternalScrapeResult(result.sales, result.status, annotated_note)
+
+
 class NavigationTimeoutSalvageProxy:
     """Continue after a Playwright navigation timeout only when usable DOM is proven.
 
@@ -72,19 +94,31 @@ class NavigationTimeoutSalvageProxy:
     def __init__(self, page, provider: str):
         self._page = page
         self._provider = provider
+        self._timeout_reason = ""
 
     def __getattr__(self, name):
         return getattr(self._page, name)
 
+    @property
+    def timeout_reason(self) -> str:
+        return self._timeout_reason
+
     def _usable_after_timeout(self, target_url: str) -> bool:
         current_url = str(getattr(self._page, "url", "") or "")
         if not _same_target_host(current_url, target_url):
+            if self._provider == "ebay":
+                self._timeout_reason = "wrong_host"
             return False
 
         if self._provider == "ebay":
-            return _safe_locator_count(self._page, _EBAY_ITEM_SELECTOR) > 0 or _has_challenge_marker(
-                self._page
-            )
+            if _safe_locator_count(self._page, _EBAY_ITEM_SELECTOR) > 0:
+                self._timeout_reason = "items"
+                return True
+            if _has_challenge_marker(self._page):
+                self._timeout_reason = "challenge"
+                return True
+            self._timeout_reason = "empty_dom"
+            return False
         if self._provider == "psa_apr":
             return _safe_locator_count(self._page, _PSA_SEARCH_SELECTOR) > 0 or _has_challenge_marker(
                 self._page
@@ -92,6 +126,7 @@ class NavigationTimeoutSalvageProxy:
         return False
 
     def goto(self, url, *args, **kwargs):
+        self._timeout_reason = ""
         try:
             return self._page.goto(url, *args, **kwargs)
         except Exception as exc:
@@ -110,9 +145,9 @@ class NavigationTimeoutSalvageProxy:
 def resilient_scrape_ebay_sold(page, *args, **kwargs):
     if _ORIGINAL_SCRAPE_EBAY_SOLD is None:
         raise RuntimeError("V4 eBay navigation resilience is not installed")
-    return _ORIGINAL_SCRAPE_EBAY_SOLD(
-        NavigationTimeoutSalvageProxy(page, "ebay"), *args, **kwargs
-    )
+    proxy = NavigationTimeoutSalvageProxy(page, "ebay")
+    result = _ORIGINAL_SCRAPE_EBAY_SOLD(proxy, *args, **kwargs)
+    return _annotate_ebay_timeout_result(result, proxy.timeout_reason)
 
 
 def resilient_scrape_psa_apr(page, *args, **kwargs):
