@@ -1,33 +1,39 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **3 septembre 2026** après #237 et #238/#239. Le contrôle GitHub live reste l'autorité ; **ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub** et ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
+Snapshot GitHub pertinent re-vérifié le **4 septembre 2026** après le merge #247 et l'extension du closeout docs #246. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
-> V4 runtime production : `main@0cab2f3868e80c7c0ed9e6829e44123a2ecd3005`. #237 et #238/#239 sont **MERGED** et ne font plus partie de la surface PR ouverte.
+> V4 production : `main@a7666faf4b0ef2fab74295a45ebcf75d9832f284`. #245 et #247 sont **MERGED**. #246 reste **DOCS ONLY / DRAFT** jusqu'à sa nouvelle validation sur l'état courant.
 
 ```text
-V4 runtime                     0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
-PR #238/#239                  MERGED / eBay bulk result text / 0cab2f3868e80c7c0ed9e6829e44123a2ecd3005
-PR #237                       MERGED / V4 registry rollover to issue #235 / 9fac4bd5cd8211731ee7eaf21bd0302e71fa3a88
-PR #234                       OPEN / DRAFT / VALIDATION ONLY / INCONCLUSIVE / DO NOT MERGE
-PR #233                       OPEN / DRAFT / SUPERSEDED BY #238/#239
-PR #230                       OPEN / DRAFT / VALIDATION ONLY / DO NOT MERGE
-PR #226/#228                  OPEN historical eBay lineage / SUPERSEDED BY #238/#239
-PR #8                         OPEN / DRAFT / NON MERGED
-PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION AUTHORIZATION
+V4 production                  a7666faf4b0ef2fab74295a45ebcf75d9832f284 / #247
+PR #247                        MERGED / PokeTrace aggregate quality guard
+PR #246                        OPEN / DRAFT / DOCS ONLY / closeout #245 + #247
+PR #245                        MERGED / auction pagination default preservation
+PR #243/#244                   MERGED / future-start runtime + docs closeout
+PR #242                        MERGED / eBay result-before-teardown
+PR #238/#239                   MERGED / eBay bulk visible-text
+PR #237                        MERGED / V4 registry rollover to issue #235
+PR #234                        OPEN / DRAFT / VALIDATION ONLY / INCONCLUSIVE / DO NOT MERGE
+PR #233                        OPEN / DRAFT / SUPERSEDED BY #238/#239
+PR #230                        OPEN / DRAFT / VALIDATION ONLY / DO NOT MERGE
+PR #226/#228                   OPEN historical eBay lineage / SUPERSEDED BY #238/#239
+PR #8                          OPEN / DRAFT / NON MERGED
+PR #210                        OPEN / DRAFT / durable write guard / NO EXECUTION AUTHORIZATION
 ```
 
-## PR ouvertes **pertinentes pour la gouvernance courante**
+## PR ouvertes pertinentes pour la gouvernance courante
 
 ### V4 courant / validation
 
 | PR | Classification / instruction |
 |---|---|
-| #234 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Benchmark eBay public borné ; inconclusif car 0 `li.s-item` visible au runner. Ne pas utiliser comme preuve de performance et ne pas merger. |
+| #246 | `DOCS_ONLY / OPEN_DRAFT`. Closeout canonique combiné #245 + #247. Aucun runtime/workflow/économie/identité/provider/Robot KB/V5 change. Revalider après le dernier head docs ; ne merger qu'après checks verts et autorisation explicite. |
+| #234 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Benchmark eBay public borné ; inconclusif car 0 `li.s-item` visible au runner. Ne pas utiliser comme preuve de performance. |
 | #233 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ancien port current-main du bulk eBay ; la capacité exacte est déjà en production. Ne pas merger. |
-| #230 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Validation temporaire de l'ancienne phase auction recovery ; la capacité est déjà en production via #231. |
+| #230 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Validation temporaire de l'ancienne phase auction recovery ; la capacité est déjà en production via #231 puis complétée par #245. |
 | #226 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ancienne implémentation eBay bulk text. Ne pas merger automatiquement. |
 | #228 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ancien miroir de validation eBay. Ne pas merger. |
-| #87 | **Décision produit V4 séparée/non déployée** : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
+| #87 | Décision produit V4 séparée/non déployée : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
 
 ### Décision explicite / risque matériel
 
@@ -73,29 +79,25 @@ PR #210                       OPEN / DRAFT / durable write guard / NO EXECUTION 
 | #141 | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
 | #138 | `SUPERSEDED_BY_139`. |
 | #126 | `STALE_OPEN/SUPERSEDED` par #127→#135. |
-| #115 | `SUPERSEDED_BY_139` / stack Global historique. |
-| #114 | `SUPERSEDED_BY_139` / stack Global historique. |
-| #113 | `SUPERSEDED_BY_139` / stack Global historique. |
-| #110 | `SUPERSEDED_BY_139` / stack Global historique. |
-| #109 | `SUPERSEDED_BY_139` / stack Global historique. |
-| #108 | `SUPERSEDED_BY_139` / stack Global historique. |
+| #115/#114/#113/#110/#109/#108 | `SUPERSEDED_BY_139` / stack Global historique. |
 | #111 | `STALE_OPEN/SUPERSEDED` docs. |
-| #107 | `STALE_OPEN/SUPERSEDED` Japan Edge PPT display shadow ; OPEN/DRAFT, ne pas merger automatiquement sur current main. |
-| #106 | `STALE_OPEN/SUPERSEDED` V4 PPT shadow ; OPEN/DRAFT, ne pas merger automatiquement sur current main. |
-| #96 | `V5 child/deferred`; ne pas merger dans `main`. |
-| #92 | `V5 child/shadow/deferred`; ne pas merger dans `main`. |
-| #87 | **Décision produit V4 séparée/non déployée** ; pas de merge automatique. |
+| #107 | `STALE_OPEN/SUPERSEDED` Japan Edge PPT display shadow. |
+| #106 | `STALE_OPEN/SUPERSEDED` V4 PPT shadow. |
+| #87 | Décision produit V4 séparée/non déployée ; pas de merge automatique. |
 | #54 | `STALE_OPEN/SUPERSEDED`. |
 
 ## Merges récents retirés de la surface ouverte
 
-- #238 / #239 : bulk visible-text eBay dans worker isolé **MERGED / PROD_V4** ; head validé `90741ac0...`, production `0cab2f...` ;
-- #237 : rollover registre Main Scanner vers issue #235 **MERGED / MAIN_SUPPORT** ; production précédente `9fac4bd5...` ;
-- #229 / #231 : capacité recovery auction adaptative **MERGED / PROD_V4** ;
-- #222 / #224 : fallback TCGdex source-pinné sur panne transport **MERGED / PROD_V4** ;
-- #216 / #217 : résilience transport TCGdex Main-only **MERGED / PROD_V4** ;
-- #219 : configurateur Robot KB mode exécutable **MERGED / MAIN_SUPPORT** ;
-- #220 : future-start GCC auction guard **MERGED / PROD_V4** ;
+- #247 : PokeTrace aggregate quality guard **MERGED / PROD_V4** ; head validé `03ce93ae...`, production `a7666faf...` ;
+- #245 : préservation du default de pagination auction durci **MERGED / PROD_V4** ; head validé `c553796d...`, production `a39c693d...` ;
+- #243/#244 : future-start guard Main Scanner + closeout docs **MERGED** ; runtime `3ada7785...`, docs `a93cd862...` ;
+- #242 : eBay result-before-teardown **MERGED / PROD_V4** ;
+- #238/#239 : bulk visible-text eBay **MERGED / PROD_V4** ;
+- #237 : rollover registre Main Scanner vers issue #235 **MERGED / MAIN_SUPPORT** ;
+- #229/#231 : capacité recovery auction adaptative **MERGED / PROD_V4** ;
+- #222/#224 : fallback TCGdex source-pinné sur panne transport **MERGED / PROD_V4** ;
+- #216/#217 : résilience transport TCGdex Main-only **MERGED / PROD_V4** ;
+- #220 : future-start GCC auction guard initial **MERGED / PROD_V4** ;
 - #214 : throughput `EXTERNAL_PENDING` **MERGED** ;
 - #211/#212 : auction order-drift hardening **MERGED** ;
 - #178/#179/#180 : **MERGED**.
