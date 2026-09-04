@@ -77,6 +77,7 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(len(page.goto_calls), 1)
+        self.assertEqual(proxy.timeout_reason, "items")
         log.assert_called_once()
 
     def test_ebay_timeout_without_usable_dom_remains_fail_closed(self):
@@ -87,6 +88,7 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
             proxy.goto("https://www.ebay.fr/sch/i.html?q=pokemon")
 
         self.assertEqual(len(page.goto_calls), 1)
+        self.assertEqual(proxy.timeout_reason, "empty_dom")
 
     def test_ebay_timeout_challenge_page_is_salvaged_for_existing_classifier(self):
         page = _Page(fail=TimeoutError("nav"), body="Pardon our interruption")
@@ -96,6 +98,7 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(len(page.goto_calls), 1)
+        self.assertEqual(proxy.timeout_reason, "challenge")
 
     def test_psa_timeout_with_search_control_is_salvaged(self):
         page = _Page(
@@ -142,6 +145,8 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             proxy.goto("https://www.ebay.fr/sch/i.html?q=pokemon")
 
+        self.assertEqual(proxy.timeout_reason, "wrong_host")
+
     def test_non_timeout_exception_is_never_swallowed(self):
         page = _Page(fail=RuntimeError("boom"), item_count=1)
         proxy = resilience.NavigationTimeoutSalvageProxy(page, "ebay")
@@ -149,12 +154,53 @@ class ExternalProviderNavigationResilienceTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             proxy.goto("https://www.ebay.fr/sch/i.html?q=pokemon")
 
+        self.assertEqual(proxy.timeout_reason, "")
+
     def test_successful_navigation_result_is_unchanged(self):
         page = _Page(item_count=1)
         proxy = resilience.NavigationTimeoutSalvageProxy(page, "ebay")
 
         self.assertEqual(proxy.goto("https://www.ebay.fr/sch/i.html?q=pokemon"), "ok")
         self.assertEqual(len(page.goto_calls), 1)
+        self.assertEqual(proxy.timeout_reason, "")
+
+    def test_ebay_wrapper_adds_only_safe_reason_to_provider_error_note(self):
+        def delegate(page, *args, **kwargs):
+            try:
+                page.goto("https://www.ebay.fr/sch/i.html?q=pokemon")
+            except TimeoutError:
+                return watcher.ExternalScrapeResult(
+                    [],
+                    watcher.EXTERNAL_PROVIDER_ERROR,
+                    "eBay navigation TimeoutError",
+                )
+            raise AssertionError("timeout should remain fail-closed")
+
+        resilience._ORIGINAL_SCRAPE_EBAY_SOLD = delegate
+        page = _Page(fail=TimeoutError("private payload must not surface"))
+
+        result = resilience.resilient_scrape_ebay_sold(
+            page, "lot", with_status=True
+        )
+
+        self.assertEqual(result.sales, [])
+        self.assertEqual(result.status, watcher.EXTERNAL_PROVIDER_ERROR)
+        self.assertEqual(
+            result.note,
+            "eBay navigation TimeoutError [nav_timeout=empty_dom]",
+        )
+        self.assertNotIn("private payload", result.note)
+        self.assertEqual(len(page.goto_calls), 1)
+
+    def test_safe_reason_never_changes_non_provider_error_result(self):
+        result = watcher.ExternalScrapeResult(
+            [], watcher.EXTERNAL_CLEAN_NO_MATCH, "clean"
+        )
+
+        annotated = resilience._annotate_ebay_timeout_result(result, "empty_dom")
+
+        self.assertIs(annotated, result)
+        self.assertEqual(annotated.note, "clean")
 
     def test_installer_wraps_current_scrapers_then_enables_hard_ebay_isolation(self):
         ebay_delegate = Mock(return_value="ebay-result")
