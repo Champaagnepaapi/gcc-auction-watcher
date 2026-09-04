@@ -1,12 +1,13 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot GitHub pertinent re-vérifié le **3 septembre 2026** après le merge #245 et la création du closeout docs #246. Le contrôle GitHub live reste l'autorité ; **ne pas utiliser ce document comme compteur exhaustif sans nouveau search live**.
+Snapshot GitHub pertinent re-vérifié le **4 septembre 2026** après le merge #247 et l'extension du closeout docs #246. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
-> V4 production : `main@a39c693d629b003f69f66ba20753303b197737af`. #245 est **MERGED**. #246 est un closeout **DOCS ONLY / DRAFT** jusqu'à la preuve du premier Main Scanner naturel exact `a39c693d...`.
+> V4 production : `main@a7666faf4b0ef2fab74295a45ebcf75d9832f284`. #245 et #247 sont **MERGED**. #246 reste **DOCS ONLY / DRAFT** jusqu'à sa nouvelle validation sur l'état courant.
 
 ```text
-V4 production                  a39c693d629b003f69f66ba20753303b197737af / #245
-PR #246                        OPEN / DRAFT / DOCS ONLY / closeout #245
+V4 production                  a7666faf4b0ef2fab74295a45ebcf75d9832f284 / #247
+PR #247                        MERGED / PokeTrace aggregate quality guard
+PR #246                        OPEN / DRAFT / DOCS ONLY / closeout #245 + #247
 PR #245                        MERGED / auction pagination default preservation
 PR #243/#244                   MERGED / future-start runtime + docs closeout
 PR #242                        MERGED / eBay result-before-teardown
@@ -26,13 +27,13 @@ PR #210                        OPEN / DRAFT / durable write guard / NO EXECUTION
 
 | PR | Classification / instruction |
 |---|---|
-| #246 | `DOCS_ONLY / OPEN_DRAFT`. Closeout canonique de #245. Aucun runtime/workflow/économie/identité/provider/Robot KB/V5 change. Ne merger qu'après preuve naturelle post-merge et autorisation requise. |
+| #246 | `DOCS_ONLY / OPEN_DRAFT`. Closeout canonique combiné #245 + #247. Aucun runtime/workflow/économie/identité/provider/Robot KB/V5 change. Revalider après le dernier head docs ; ne merger qu'après checks verts et autorisation explicite. |
 | #234 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Benchmark eBay public borné ; inconclusif car 0 `li.s-item` visible au runner. Ne pas utiliser comme preuve de performance. |
 | #233 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ancien port current-main du bulk eBay ; la capacité exacte est déjà en production. Ne pas merger. |
 | #230 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Validation temporaire de l'ancienne phase auction recovery ; la capacité est déjà en production via #231 puis complétée par #245. |
 | #226 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ancienne implémentation eBay bulk text. Ne pas merger automatiquement. |
 | #228 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ancien miroir de validation eBay. Ne pas merger. |
-| #87 | **Décision produit V4 séparée/non déployée** : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
+| #87 | Décision produit V4 séparée/non déployée : GCC-only illiquid notification 30 %. Ne pas mélanger à un autre changement. |
 
 ### Décision explicite / risque matériel
 
@@ -82,11 +83,12 @@ PR #210                        OPEN / DRAFT / durable write guard / NO EXECUTION
 | #111 | `STALE_OPEN/SUPERSEDED` docs. |
 | #107 | `STALE_OPEN/SUPERSEDED` Japan Edge PPT display shadow. |
 | #106 | `STALE_OPEN/SUPERSEDED` V4 PPT shadow. |
-| #87 | **Décision produit V4 séparée/non déployée** ; pas de merge automatique. |
+| #87 | Décision produit V4 séparée/non déployée ; pas de merge automatique. |
 | #54 | `STALE_OPEN/SUPERSEDED`. |
 
 ## Merges récents retirés de la surface ouverte
 
+- #247 : PokeTrace aggregate quality guard **MERGED / PROD_V4** ; head validé `03ce93ae...`, production `a7666faf...` ;
 - #245 : préservation du default de pagination auction durci **MERGED / PROD_V4** ; head validé `c553796d...`, production `a39c693d...` ;
 - #243/#244 : future-start guard Main Scanner + closeout docs **MERGED** ; runtime `3ada7785...`, docs `a93cd862...` ;
 - #242 : eBay result-before-teardown **MERGED / PROD_V4** ;
