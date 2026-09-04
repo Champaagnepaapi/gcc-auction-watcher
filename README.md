@@ -4,13 +4,14 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Les SHA ci-dessous sont des ancres runtime/capacité ; toujours re-vérifier `main`, les PR et les workflows live avant une action importante.
 
-## État canonique — 3 septembre 2026
+## État canonique — 4 septembre 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch             : main
-V4 production HEAD               : a39c693d629b003f69f66ba20753303b197737af (#245)
+V4 production HEAD               : a7666faf4b0ef2fab74295a45ebcf75d9832f284 (#247)
+PokeTrace aggregate guard        : #247 MERGED / validated head 03ce93ae08eedf3301813f030b67f120b7abd4a4
 Auction pagination preservation  : #245 MERGED / validated head c553796d8829e5f6dd615acfc7177ddb60f4bf91
 Auction recovery capacity        : #229/#231 MERGED / adaptive sizing / hard cap 250
 Auction order-drift hardening    : #211/#212 MERGED
@@ -31,6 +32,52 @@ Neon                             : writers automatiques OFF / rollback manuel
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
+
+### #247 — guard qualité des agrégats PokeTrace
+
+Risque observé : une surface PokeTrace eBay gradée agrégée pouvait exposer une enveloppe sans dispersion informative telle que `124.83–124.83 EUR / PSA 9 / 29 ventes`. Cette forme ne prouve pas une distribution de marché et ne doit pas devenir seule une ancre `STRONG` / `EXTERNAL_RESCUE`.
+
+#247 protège uniquement une preuve PokeTrace déjà `MATCHED + STRONG` :
+
+```text
+prix invalide / non positif      : CLEAN_INSUFFICIENT / WEAK
+range total <= 0.01 EUR          : CLEAN_INSUFFICIENT / WEAK
+estimate économique              : supprimé
+fallback                         : PSA APR / eBay requis
+range réellement informatif      : comportement historique conservé
+```
+
+Validation :
+
+```text
+validated head                   : 03ce93ae08eedf3301813f030b67f120b7abd4a4
+validation run                   : 33799908680 SUCCESS
+suite V4                         : PASS
+focused aggregate guard tests    : PASS
+compile / YAML / diff-check      : PASS
+read-only auction compare        : PASS
+production merge                 : a7666faf4b0ef2fab74295a45ebcf75d9832f284
+```
+
+Premier Main Scanner naturel exact post-merge :
+
+```text
+run                              : 33844655319 SUCCESS
+head                             : a7666faf4b0ef2fab74295a45ebcf75d9832f284
+scan exit / duration             : 0 / 175 s
+fixed discovery                  : 3259 / 33 pages / COMPLETE
+auction rows / timers            : 100 / 100
+auction scope                    : COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+auction fallback                 : false
+final opportunities              : 0
+PokeTrace strong / weak / errors : 0 / 0 / 0
+```
+
+**Limite de preuve :** ce run n'a pas rencontré un nouvel agrégat PokeTrace dégénéré STRONG. Il prouve le déploiement et la non-régression ; le déclenchement positif du guard est établi par les tests ciblés #247. Plusieurs runs naturels suivants sur `a7666...` sont également SUCCESS.
+
+Aucun changement de discovery GCC, identité TCGdex, langue, grader, grade, microvariante, définition SOLD, seuil économique, cap, budget, notification ou transaction.
+
+Ledger : `docs/v4-poketrace-aggregate-quality-guard-20260904.md`.
 
 ### #245 — préservation du default de pagination auction
 
@@ -69,17 +116,15 @@ API page size                    : 100
 pagination end                   : AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER
 ```
 
-Le log post-merge confirme le **fast path normal** avec `page=1&limit=100`, `incomplete reasons: NONE` et coverage auction COMPLETE. Ce run **ne reproduit pas une dérive d'ordre post-fix** : la preuve du chemin pathologique reste la reproduction pré-fix `33795854886` + le test ciblé qui vérifie que le wrapper n'injecte plus `24`.
+Le log post-merge confirme le fast path normal avec `page=1&limit=100`, `incomplete reasons: NONE` et coverage auction COMPLETE. Ce run **ne reproduit pas une dérive d'ordre post-fix** : la preuve du chemin pathologique reste la reproduction pré-fix `33795854886` + le test ciblé qui vérifie que le wrapper n'injecte plus `24`.
 
 Le run `33798768727` ne doit pas être utilisé comme preuve post-#245 : il a démarré avant le merge et exécute l'ancien `a93cd862...`.
 
-L'état global de `33799767652` reste économiquement INCOMPLETE uniquement à cause du marché externe (`EXTERNAL_PENDING=2004`) ; la discovery auction elle-même est COMPLETE.
-
-Ledger dédié : `docs/v4-auction-pagination-default-preservation-20260903.md`.
+Ledger : `docs/v4-auction-pagination-default-preservation-20260903.md`.
 
 ### #243 — guard future-start Main Scanner
 
-Incident naturel du 3 septembre 2026 : Braixen #069/068 PSA 9 et Altaria #194/172 PSA 10 avaient été interprétées comme `GCC AUCTION — EXTERNAL RESCUE` alors que GCC affichait en réalité un starting price et un countdown-to-start.
+Incident du 3 septembre 2026 : Braixen #069/068 PSA 9 et Altaria #194/172 PSA 10 avaient été interprétées comme `GCC AUCTION — EXTERNAL RESCUE` alors que GCC affichait en réalité un starting price et un countdown-to-start.
 
 La cause était un bypass Main Scanner : une row API déjà munie de `minutes_to_end` pouvait éviter la vérification de la fiche GCC rendue.
 
@@ -100,7 +145,9 @@ Sans preuve structurée de démarrage, la fiche GCC est vérifiée **avant écon
 
 #238/#239 réduit l'overhead Playwright des résultats eBay en lisant `li.s-item` via un bulk `all_inner_texts()` avec fallback historique. #242 conserve un résultat eBay déjà validé avant un teardown Chromium bloqué, avec cleanup borné du worker disposable.
 
-Le Main Scanner `33799767652` confirme plusieurs résultats valides préservés malgré des teardown dépassant 2 s, mais des navigation timeouts subsistent. Ces changements ne modifient ni matching, ni définition SOLD, ni économie. Le prochain travail eBay reste un diagnostic borné/read-only par étape ; aucun contournement anti-bot/WAF.
+Les runs récents confirment que des résultats valides peuvent être préservés malgré des teardown lents, mais des navigation timeouts subsistent. PSA APR reste aussi susceptible de renvoyer HTTP 403. Ces problèmes provider sont séparés de #247 et ne doivent pas être masqués par une hausse de caps.
+
+Prochaine investigation eBay : instrumentation bornée/read-only des étapes worker ; aucun contournement anti-bot/WAF.
 
 ### Registre V4 #235
 
@@ -165,7 +212,7 @@ hard ceiling                     250 pages
 
 #245 garantit qu'un wrapper future-start sans override explicite ne remplace plus silencieusement `100` par `24`.
 
-Aucun changement : cap économique auctions `360`, priorité `≤5 min` puis `≤12 min` puis `≤60 min`, fair value, identité, providers, notifications ou transactions.
+Aucun changement : cap économique auctions `360`, priorité `≤5 min` puis `≤12 min` puis `≤60 min`, fair value générale, identité, providers, notifications ou transactions.
 
 ## Future-start auction guard — #220 + #243
 
@@ -179,6 +226,12 @@ Une auction prouvée non démarrée est exclue avant interprétation du prix/cou
 - vraie auction live rendue => action de bid + fin explicite ;
 - page ambiguë/erreur => fail-closed ;
 - starting price et countdown-to-start ne deviennent jamais bid courant / temps avant fin.
+
+## PokeTrace aggregate quality — #247
+
+PokeTrace reste une source **agrégée** et corrélée à la famille eBay. Après identité TCGdex exacte, une preuve PokeTrace `STRONG` dont l'enveloppe de prix est invalide, non positive ou `<= 0.01 EUR` est rétrogradée `CLEAN_INSUFFICIENT / WEAK` et son estimate est retiré du chemin économique. APR/eBay doit alors prendre le relais. Une plage réellement informative reste inchangée.
+
+Ce guard ne fabrique aucune vente item-level et ne rend pas PokeTrace indépendant de la famille `EBAY_GRADED_AGGREGATE`.
 
 ## TCGdex transport resilience — #216/#217
 
@@ -333,20 +386,22 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
+V4 PokeTrace
+  -> #247 est en production sur a7666faf...
+  -> premier Main Scanner exact 33844655319 SUCCESS
+  -> pas de nouvel agrégat dégénéré STRONG observé dans ce run
+  -> preuve positive du guard = tests ciblés #247
+  -> observer naturellement le premier déclenchement réel
+
 V4 auction discovery
-  -> #245 est en production sur a39c693d...
-  -> premier Main Scanner naturel exact: 33799767652 SUCCESS
-  -> fast path: 100 rows / 100 timers / COMPLETE / fallback=false / page size 100
-  -> ce run ne reproduit pas order drift post-fix
-  -> preuve pathologique: 33795854886 pré-fix + test ciblé #245
-  -> continuer à observer les runs naturels
-  -> si 250 pages reached réapparaît sur a39c693d..., inspecter avant toute modification
+  -> #245 reste actif sous #247
+  -> default 100 rows/page et hard ceiling 250 inchangés
+  -> si 250 pages reached réapparaît, inspecter avant toute modification
   -> ne pas augmenter le hard cap par réflexe
 
 V4 eBay / providers
   -> continuer l'investigation stage-timed read-only eBay
-  -> #242 préserve les résultats valides malgré certains teardown bloqués
-  -> navigation timeouts encore présents
+  -> navigation timeouts et PSA APR 403 restent fail-visible
   -> ne pas contourner anti-bot/WAF
   -> ne pas augmenter les caps pour masquer les erreurs provider
 
