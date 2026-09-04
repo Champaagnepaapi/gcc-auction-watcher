@@ -51,16 +51,16 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
             "Capacités structurantes : #9, #50, #52, #104",
         ):
             self.assertIn(marker, ledger)
-        self.assertIn("historiques/superseded", ledger)
+        self.assertIn("Supersessions / provenance", ledger)
 
     def test_capability_ledger_preserves_recovered_foundations(self):
         ledger = Path("docs/project-capability-ledger.md").read_text(encoding="utf-8")
         for marker in (
             "TCGdex / PokeTrace #119→#135",
             "fallback générique catalogue immuable",
-            "Robot KB mirror/collectors séparés",
-            "#139 — réintégration",
-            "GCC/Cardova/magi/Fanatics/COMC",
+            "#180 collecte Fanatics/COMC/Magi/Cardova",
+            "#139 a réintégré/revalidé le stack historique",
+            "GCC/Cardova/Magi/Fanatics/COMC",
             "PPT = `SOLD_AGGREGATED`",
             "PR #126 = `SUPERSEDED`",
         ):
@@ -88,8 +88,8 @@ class V4CapabilityRecoveryWiringTests(unittest.TestCase):
         inventory = Path("docs/project-open-pr-inventory.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("PR ouvertes **pertinentes pour la gouvernance courante**", inventory)
-        self.assertIn("ne pas utiliser le nombre de lignes comme compteur exhaustif GitHub", inventory)
+        self.assertIn("PR ouvertes pertinentes pour la gouvernance courante", inventory)
+        self.assertIn("ne pas utiliser ce document comme compteur exhaustif sans nouveau search live", inventory)
         rows = [line for line in inventory.splitlines() if re.match(r"^\| #\d+ \|", line)]
         numbers = {
             int(re.match(r"^\| #(\d+) \|", line).group(1))
