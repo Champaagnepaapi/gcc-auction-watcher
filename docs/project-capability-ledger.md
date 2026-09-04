@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **3 septembre 2026** après le merge production #245 et sa première preuve naturelle Main Scanner. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **4 septembre 2026** après les merges production #245 et #247 et leurs preuves naturelles Main Scanner. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`.
 
@@ -8,7 +8,8 @@ Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`,
 
 ```text
 V4 production branch             : main
-V4 production HEAD               : a39c693d629b003f69f66ba20753303b197737af / #245
+V4 production HEAD               : a7666faf4b0ef2fab74295a45ebcf75d9832f284 / #247
+PokeTrace aggregate quality      : #247 / PROD_V4 / degenerate STRONG -> WEAK/INSUFFICIENT
 Auction pagination preservation  : #245 / PROD_V4 / stable default 100 rows/page preserved
 Auction recovery capacity        : #229/#231 / PROD_V4 / adaptive sizing / hard cap 250
 Auction order hardening          : #211/#212 / PROD_V4
@@ -32,6 +33,33 @@ TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 
 # V4 production
 
+## #247 — PokeTrace aggregate quality guard — `PROD_V4`
+
+But : empêcher un agrégat PokeTrace eBay gradé sans dispersion informative de devenir seul une preuve `STRONG` / `EXTERNAL_RESCUE`.
+
+Contrat :
+
+```text
+input                            PokeTrace MATCHED + STRONG + estimate
+invalid / non-positive price     CLEAN_INSUFFICIENT / WEAK
+price envelope <= 0.01 EUR       CLEAN_INSUFFICIENT / WEAK
+estimate after downgrade         absent du chemin économique
+fallback                         PSA APR / eBay requis
+informative price range          comportement historique conservé
+```
+
+Le cas de régression `124.83–124.83 EUR / PSA 9 / 29 ventes` ne peut plus ancrer seul une valorisation PokeTrace à 124.83 EUR ni une décote artificielle.
+
+Validation exacte : head `03ce93ae08eedf3301813f030b67f120b7abd4a4`, workflow `33799908680` SUCCESS, suite V4 PASS, tests ciblés du guard PASS, compile/YAML/diff PASS, live auction compare read-only PASS. Merge production `a7666faf4b0ef2fab74295a45ebcf75d9832f284`.
+
+Preuve naturelle post-merge : Main Scanner `33844655319` SUCCESS sur exact `a7666faf...`, `scan_exit_code=0`, fixed discovery `3259/3259` COMPLETE, auctions `100/100` rows/timers, scope COMPLETE, fallback false, 0 opportunité finale. PokeTrace `attempted=1 / strong=0 / weak=0 / errors=0`.
+
+**Limite de preuve :** ce premier run n'a pas rencontré un nouvel agrégat PokeTrace dégénéré STRONG. Il prouve le déploiement/non-régression ; le déclenchement positif du guard est établi par les tests ciblés. Plusieurs runs naturels suivants sur `a7666...` sont également SUCCESS.
+
+Aucun changement de discovery GCC, TCGdex/identité, langue, grader, grade, microvariante, définition SOLD, seuil économique, cap, budget, notification ou transaction.
+
+Ledger détaillé : `docs/v4-poketrace-aggregate-quality-guard-20260904.md`.
+
 ## #245 — preserve hardened auction pagination defaults — `PROD_V4`
 
 Incident naturel pré-fix : Main Scanner `33795854886` sur `a93cd862...` détecte une dérive `ENDING_SOON`, un provider count hint `16264`, étend le recovery `100 -> 250` pages puis échoue sur `auction API safety limit 250 pages reached` et bascule fail-closed sur le fallback legacy.
@@ -53,11 +81,7 @@ transactions                     aucune
 
 Validation exacte : head `c553796d8829e5f6dd615acfc7177ddb60f4bf91`, run `33796972288` SUCCESS, `898 PASS / 2 skipped`, compile/YAML/diff PASS, focused regression PASS, live auction compare read-only `effective=36 / legacy=32 / legacy_only=0 / unresolved=0`. Merge production `a39c693d629b003f69f66ba20753303b197737af`.
 
-Preuve naturelle post-merge : Main Scanner **`33799767652` SUCCESS** sur exact `a39c693d...`, `scan_exit_code=0`, scope `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`, `100/100` rows/endTime, `fallback=false`. Le log confirme `page=1&limit=100`, `page size: 100`, `pagination end: AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER`, `incomplete reasons: NONE`. C'est une preuve saine du fast path post-merge, **pas** une reproduction post-fix du chemin order-drift. La preuve du chemin pathologique reste `33795854886` + le test ciblé.
-
-Fast Lane `33798827669`, `33799115189` et suivants : SUCCESS sur `a39c693d...`. Le run Main Scanner `33798768727` ne compte pas comme preuve #245 car il avait démarré avant le merge et exécutait `a93cd862...`.
-
-L'état global de `33799767652` reste économiquement INCOMPLETE uniquement à cause de `EXTERNAL_PENDING=2004`; la discovery auction est COMPLETE.
+Preuve naturelle post-merge : Main Scanner `33799767652` SUCCESS sur exact `a39c693d...`, `scan_exit_code=0`, scope `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`, `100/100` rows/endTime, `fallback=false`. Le log confirme `page=1&limit=100`, `page size: 100`, `pagination end: AUCTION_HORIZON_CROSSED_IN_ENDING_SOON_ORDER`, `incomplete reasons: NONE`. C'est une preuve saine du fast path post-merge, pas une reproduction post-fix du chemin order-drift. La preuve pathologique reste `33795854886` + le test ciblé.
 
 Ledger détaillé : `docs/v4-auction-pagination-default-preservation-20260903.md`.
 
@@ -79,7 +103,7 @@ minimum = ancien bound
 hard ceiling = 250 pages
 ```
 
-`api_total` sert au sizing seulement ; `COMPLETE` exige l'épuisement API réel. #245 garantit désormais que le wrapper future-start ne remplace plus silencieusement le `page_size=100` durci par `24`.
+`api_total` sert au sizing seulement ; `COMPLETE` exige l'épuisement API réel ou le franchissement correct de l'horizon dans un ordre vérifié. #245 garantit que le wrapper future-start ne remplace plus silencieusement le `page_size=100` durci par `24`.
 
 Fast path, cap économique auctions `360`, identité, valorisation, providers, notifications et transactions restent inchangés.
 
@@ -98,7 +122,7 @@ Capacités structurantes : #9, #50, #52, #104, #211/#212, #220, #229/#231, #243,
 
 #238/#239 réduit l'overhead de lecture Playwright des `li.s-item` via une lecture bulk `all_inner_texts()` avec fallback historique. #242 conserve un résultat eBay SOLD déjà validé avant un teardown Chromium qui se bloque, avec cleanup borné et kill du process disposable si nécessaire.
 
-Ces capacités ne changent ni matching, ni définition SOLD, ni identité, ni économie. Le Main Scanner `33799767652` confirme que plusieurs résultats valides survivent à des teardown dépassant la grace de 2 s, mais des navigation timeouts subsistent. L'investigation eBay reste read-only et sans contournement anti-bot/WAF.
+Ces capacités ne changent ni matching, ni définition SOLD, ni identité, ni économie. Les logs naturels sur `a7666...` montrent toujours des erreurs/navigation timeouts eBay ; le problème provider reste séparé de #247. L'investigation eBay reste read-only et sans contournement anti-bot/WAF.
 
 ## #237 — rollover du registre Main Scanner — `MAIN_SUPPORT`
 
@@ -129,7 +153,7 @@ Provider failures restent fail-visible et ne deviennent jamais clean no-match. N
 
 ## TCGdex / PokeTrace #119→#135 — `PROD_V4`
 
-Exact-coordinate, set/localId, unicité catalogue, bridges exacts, finish/set source-pinnés et fallback générique catalogue immuable lorsque le REST TCGdex est stale ; PokeTrace market-only après identité TCGdex. Aucun alias treadmill. PR #126 = `SUPERSEDED` par #127→#135.
+Exact-coordinate, set/localId, unicité catalogue, bridges exacts, finish/set source-pinnés et fallback générique catalogue immuable lorsque le REST TCGdex est stale ; PokeTrace market-only après identité TCGdex. #247 ajoute uniquement un guard de qualité sur la forme de l'agrégat de prix après cette identité exacte. Aucun alias treadmill. PR #126 = `SUPERSEDED` par #127→#135.
 
 ---
 
@@ -184,6 +208,7 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED. Ne jamais merger PR #8 dans `main`
 - #238/#239 : une capacité eBay runtime, #239 mirror ;
 - #243 complète #220 sur le bypass Main Scanner ;
 - #245 complète #229/#231 et #243 sur la préservation du default de pagination ;
+- #247 complète la lignée PokeTrace en bloquant les agrégats STRONG sans dispersion informative ;
 - #234 : diagnostic benchmark read-only inconclusif, ne pas traiter comme preuve de performance.
 
 ---
