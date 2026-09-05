@@ -118,7 +118,7 @@ def _worker_env(*, result_fd: int | None = None) -> dict[str, str]:
         "V4_EBAY_STAGE_TIMING_LOG_SUCCESS",
     ):
         if key in os.environ:
-            output[key] = value
+            output[key] = os.environ[key]
     # Prevent the child navigation-resilience installer from recursively
     # enabling this process-isolation layer again.
     output["V4_EBAY_ISOLATED_WORKER"] = "1"
