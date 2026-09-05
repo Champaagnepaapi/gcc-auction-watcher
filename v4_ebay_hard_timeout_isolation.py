@@ -118,7 +118,7 @@ def _worker_env(*, result_fd: int | None = None) -> dict[str, str]:
         "V4_EBAY_STAGE_TIMING_LOG_SUCCESS",
     ):
         if key in os.environ:
-            output[key] = os.environ[key]
+            output[key] = value
     # Prevent the child navigation-resilience installer from recursively
     # enabling this process-isolation layer again.
     output["V4_EBAY_ISOLATED_WORKER"] = "1"
@@ -214,6 +214,7 @@ def _stage_timing_summary(stderr: Any) -> str:
     starts: dict[str, list[int]] = {}
     totals: dict[str, int] = {}
     counts: dict[str, int] = {}
+    errors: dict[str, int] = {}
     for name, elapsed_ms in markers:
         if name.endswith("_start"):
             base = name[:-6]
@@ -227,12 +228,16 @@ def _stage_timing_summary(stderr: Any) -> str:
             started_ms = pending.pop()
             totals[base] = totals.get(base, 0) + max(0, elapsed_ms - started_ms)
             counts[base] = counts.get(base, 0) + 1
+            if name.endswith("_error"):
+                errors[base] = errors.get(base, 0) + 1
 
     last_name, last_ms = markers[-1]
     parts = [f"elapsed={last_ms}ms"]
     for stage in _STAGE_SUMMARY_ORDER:
         if counts.get(stage):
             parts.append(f"{stage}={totals[stage]}ms/{counts[stage]}")
+            if stage == "body_text_content":
+                parts.append(f"body_text_content_errors={errors.get(stage, 0)}")
     parts.append(f"last={last_name}@{last_ms}ms")
     return " | ".join(parts)
 
