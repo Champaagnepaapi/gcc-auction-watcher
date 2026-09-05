@@ -37,10 +37,23 @@ class _Items:
         return self.items[index]
 
 
+class _Body:
+    def __init__(self, text="body text", *, error=None):
+        self.text = text
+        self.error = error
+        self.inner_text_calls = 0
+
+    def inner_text(self, *args, **kwargs):
+        self.inner_text_calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.text
+
+
 class _Page:
-    def __init__(self, items):
+    def __init__(self, items, body=None):
         self.items = items
-        self.body = object()
+        self.body = body or _Body()
         self.calls = []
         self.url = "https://www.ebay.fr/sch/i.html"
 
@@ -98,7 +111,69 @@ class EbayBulkResultTextTests(unittest.TestCase):
         self.assertEqual(delegate.bulk_calls, 1)
         self.assertEqual(delegate.items[0].inner_text_calls, 1)
 
-    def test_page_proxy_changes_only_ebay_result_locator(self):
+    def test_normal_body_text_passes_through_without_touching_items(self):
+        delegate = _Items(["Pokemon card\n42,00 EUR"])
+        body_delegate = _Body("normal body")
+        page = _Page(delegate, body_delegate)
+        proxy = EbayBulkTextPageProxy(page)
+
+        body = proxy.locator("body")
+
+        self.assertEqual(body.inner_text(timeout=2500), "normal body")
+        self.assertEqual(body_delegate.inner_text_calls, 1)
+        self.assertEqual(delegate.bulk_calls, 0)
+
+    def test_body_timeout_recovers_from_readable_structured_eur_rows(self):
+        delegate = _Items(
+            [
+                "Pokemon Pikachu PSA 10\n42,00 EUR\nVendu 1 sept. 2026",
+                "Pokemon Eevee PSA 9\n35,00 €\nVendu 31 août 2026",
+            ]
+        )
+        body_delegate = _Body(error=TimeoutError("body timeout"))
+        proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
+
+        recovered = proxy.locator("body").inner_text(timeout=2500)
+
+        self.assertIn("42,00 EUR", recovered)
+        self.assertIn("35,00 €", recovered)
+        self.assertEqual(body_delegate.inner_text_calls, 1)
+        self.assertEqual(delegate.bulk_calls, 1)
+        self.assertEqual([item.inner_text_calls for item in delegate.items], [0, 0])
+
+    def test_body_timeout_with_empty_or_non_price_rows_stays_fail_closed(self):
+        for texts in ([], ["Pardon our interruption"], ["Pokemon result without price"]):
+            with self.subTest(texts=texts):
+                delegate = _Items(texts)
+                body_delegate = _Body(error=TimeoutError("body timeout"))
+                proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
+
+                with self.assertRaises(TimeoutError):
+                    proxy.locator("body").inner_text(timeout=2500)
+
+                self.assertEqual(delegate.bulk_calls, 1)
+
+    def test_body_timeout_with_bulk_failure_stays_fail_closed(self):
+        delegate = _Items(["Pokemon Pikachu\n42,00 EUR"], bulk_error=True)
+        body_delegate = _Body(error=TimeoutError("body timeout"))
+        proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
+
+        with self.assertRaises(TimeoutError):
+            proxy.locator("body").inner_text(timeout=2500)
+
+        self.assertEqual(delegate.bulk_calls, 1)
+
+    def test_non_timeout_body_error_propagates_without_structured_salvage(self):
+        delegate = _Items(["Pokemon Pikachu\n42,00 EUR"])
+        body_delegate = _Body(error=RuntimeError("body failed"))
+        proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
+
+        with self.assertRaisesRegex(RuntimeError, "body failed"):
+            proxy.locator("body").inner_text(timeout=2500)
+
+        self.assertEqual(delegate.bulk_calls, 0)
+
+    def test_page_proxy_keeps_result_locator_and_other_page_behavior(self):
         delegate = _Items(["first"])
         page = _Page(delegate)
         proxy = EbayBulkTextPageProxy(page)
@@ -107,7 +182,7 @@ class EbayBulkResultTextTests(unittest.TestCase):
         body = proxy.locator("body")
 
         self.assertIsInstance(cards, BulkTextItemLocator)
-        self.assertIs(body, page.body)
+        self.assertEqual(body.inner_text(), "body text")
         self.assertEqual(proxy.url, page.url)
         self.assertEqual(proxy.goto("url"), "goto-result")
 
