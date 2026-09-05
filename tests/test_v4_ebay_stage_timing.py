@@ -206,6 +206,39 @@ class EbayStageTimingTests(unittest.TestCase):
         self.assertNotIn("SECRET", summary)
         self.assertNotIn("query", summary)
 
+    def test_parent_summary_surfaces_body_text_fallback_and_error_count(self):
+        success_stderr = "\n".join(
+            [
+                "provider payload SECRET",
+                "EBAY_STAGE|worker_start|0",
+                "EBAY_STAGE|body_inner_text_start|100",
+                "EBAY_STAGE|body_inner_text_error|2600",
+                "EBAY_STAGE|body_text_content_start|2601",
+                "EBAY_STAGE|body_text_content_done|2751",
+                "EBAY_STAGE|worker_done|2800",
+            ]
+        )
+        failure_stderr = "\n".join(
+            [
+                "EBAY_STAGE|worker_start|0",
+                "EBAY_STAGE|body_inner_text_start|100",
+                "EBAY_STAGE|body_inner_text_error|2600",
+                "EBAY_STAGE|body_text_content_start|2601",
+                "EBAY_STAGE|body_text_content_error|3301",
+                "EBAY_STAGE|worker_done|3400",
+            ]
+        )
+
+        success = isolation._stage_timing_summary(success_stderr)
+        failure = isolation._stage_timing_summary(failure_stderr)
+
+        self.assertIn("body_inner_text=2500ms/1", success)
+        self.assertIn("body_text_content=150ms/1", success)
+        self.assertIn("body_text_content_errors=0", success)
+        self.assertIn("body_text_content=700ms/1", failure)
+        self.assertIn("body_text_content_errors=1", failure)
+        self.assertNotIn("SECRET", success)
+
     def test_hard_timeout_surfaces_last_safe_stage_only(self):
         stderr = "\n".join(
             [
