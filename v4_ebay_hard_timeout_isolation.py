@@ -56,6 +56,7 @@ _STAGE_SUMMARY_ORDER = (
     "items_item_text",
     "body_count",
     "body_inner_text",
+    "body_text_content",
     "other_count",
     "other_inner_text",
     "page_content",
