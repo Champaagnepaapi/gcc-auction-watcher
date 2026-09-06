@@ -58,23 +58,44 @@ class MarketplaceEconomicTests(unittest.TestCase):
         self.assertIsNone(decision.gcc_fair_eur)
         self.assertEqual(decision.confirmed_fair_eur, 100.0)
 
-    def test_gcc_when_present_remains_conservative_floor(self):
+    def test_gcc_history_is_diagnostic_only_and_cannot_cap_fair_value(self):
         decision = economic.evaluate_marketplace_card(
-            _card(60, gcc_fair=95),
+            _card(60, gcc_fair=25),
             ppt=_external("PokemonPriceTracker", 100),
             poketrace=legacy.ExternalAggregate("PokeTrace/eBay SOLD", "UNAVAILABLE"),
         )
-        self.assertEqual(decision.valuation_basis, "GCC_PLUS_EXTERNAL")
-        self.assertEqual(decision.confirmed_fair_eur, 95.0)
+        self.assertEqual(decision.status, "MULTIMARKET_CONFIRMED")
+        self.assertTrue(decision.would_notify)
+        self.assertEqual(decision.valuation_basis, "EXTERNAL_ONLY")
+        self.assertEqual(decision.gcc_fair_eur, 25.0)
+        self.assertEqual(decision.confirmed_fair_eur, 100.0)
+        self.assertIsNone(decision.market_ratio)
+        self.assertIn("diagnostic-only", decision.note)
 
-    def test_material_gcc_external_conflict_blocks(self):
+    def test_high_gcc_history_cannot_create_or_conflict_block_edge(self):
         decision = economic.evaluate_marketplace_card(
-            _card(60, gcc_fair=160),
+            _card(60, gcc_fair=500),
             ppt=_external("PokemonPriceTracker", 100),
             poketrace=legacy.ExternalAggregate("PokeTrace/eBay SOLD", "UNAVAILABLE"),
         )
-        self.assertEqual(decision.status, "MARKET_CONFLICT_BLOCKED")
-        self.assertFalse(decision.would_notify)
+        self.assertEqual(decision.status, "MULTIMARKET_CONFIRMED")
+        self.assertTrue(decision.would_notify)
+        self.assertEqual(decision.confirmed_fair_eur, 100.0)
+        self.assertEqual(decision.valuation_basis, "EXTERNAL_ONLY")
+
+    def test_marketplace_ask_never_becomes_fair_value(self):
+        decision = economic.evaluate_marketplace_card(
+            _card(60, gcc_fair=100),
+            ppt=_external("PokemonPriceTracker", 80),
+            poketrace=legacy.ExternalAggregate("PokeTrace/eBay SOLD", "UNAVAILABLE"),
+        )
+        self.assertEqual(decision.external_fair_eur, 80.0)
+        self.assertEqual(decision.confirmed_fair_eur, 80.0)
+        self.assertNotEqual(decision.confirmed_fair_eur, decision.offer_all_in_eur)
+        payload = economic.decision_payload(decision)
+        self.assertFalse(payload["marketplace_listing_is_valuation"])
+        self.assertFalse(payload["gcc_history_economic_authority"])
+        self.assertFalse(payload["ask_is_sold"])
 
     def test_correlated_provider_conflict_stays_blocked(self):
         decision = economic.evaluate_marketplace_card(
@@ -93,6 +114,7 @@ class MarketplaceEconomicTests(unittest.TestCase):
         )
         self.assertEqual(decision.status, "NO_EXTERNAL_CONFIRMATION")
         self.assertFalse(decision.would_notify)
+        self.assertEqual(decision.valuation_basis, "EXTERNAL_ONLY")
 
 
 if __name__ == "__main__":
