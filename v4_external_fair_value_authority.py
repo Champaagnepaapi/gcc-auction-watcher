@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 
 import watcher
+from v4_pricecharting_mandatory_policy import (
+    install_v4_pricecharting_mandatory_guide_policy,
+)
+from v4_pricecharting_valuation import (
+    install_v4_pricecharting_valuation_source_roles,
+)
 
 
 _POLICY_MARKER = "_v4_external_fair_value_authority_installed"
@@ -35,17 +41,27 @@ def gcc_without_economic_authority(
 
 
 def install_v4_external_fair_value_authority() -> None:
-    """Make strong external market evidence the sole V4 fair-value authority.
+    """Make external valuation providers the sole V4 fair-value authority.
 
-    The existing external provider tree, strict identity gates, SOLD semantics,
-    cache, budgets and arbitration implementation stay intact. This wrapper only
-    removes GCC history from the economic side of arbitration. Therefore:
+    Source roles are explicit:
 
-    - strong exact external evidence can still create EXTERNAL_RESCUE;
-    - external PENDING/WEAK/UNAVAILABLE cannot fall back to GCC_ONLY economics;
-    - GCC terminal safety rejection stays terminal;
+    - PokeTrace / PSA APR keep priority when stronger compatible market evidence
+      exists;
+    - PriceCharting is consulted systematically as a GUIDE reference for exact
+      PSA 8/9/10 cards and may stand alone when stronger evidence is unavailable;
+    - Grade 9 / Grade 8 guide buckets are accepted as PSA 9 / PSA 8-equivalent
+      guide estimates, without claiming item-level SOLD or underlying grader;
+    - direct eBay SOLD scraping is removed from fair-value authority in this
+      source-role phase;
+    - GCC history cannot create, anchor, confirm or cap fair value;
     - no purchase/bid/checkout behavior is introduced.
     """
+
+    # Install source roles before arbitration. The mandatory guide layer wraps
+    # the canonical PokeTrace path too, so PriceCharting is still consulted when
+    # PokeTrace is already strong instead of being only a last fallback.
+    install_v4_pricecharting_valuation_source_roles()
+    install_v4_pricecharting_mandatory_guide_policy()
 
     current = watcher.arbitrate_market_evidence
     if getattr(current, _POLICY_MARKER, False):
@@ -63,6 +79,6 @@ def install_v4_external_fair_value_authority() -> None:
     setattr(external_fair_value_arbitration, "_wrapped_arbitration", current)
     watcher.arbitrate_market_evidence = external_fair_value_arbitration
     watcher.log(
-        "Fair value authority: EXTERNAL_ONLY "
-        "(GCC history observational; strong external market evidence required)"
+        "Fair value authority: EXTERNAL_ONLY + mandatory PriceCharting guide "
+        "reference (GCC history observational only)"
     )

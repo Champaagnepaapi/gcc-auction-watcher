@@ -7,6 +7,10 @@ import v4_global_economic_confirmation as legacy
 from v4_global_market_core import AUCTION_SNAPSHOT_LE5, FIXED_ASK
 
 
+PRICECHARTING_GUIDE_STRENGTH = "GUIDE_STRONG"
+PRICECHARTING_MIN_DISCOUNT_PCT = legacy.DEFAULT_MIN_DISCOUNT
+
+
 @dataclass(frozen=True)
 class MarketplaceDecision:
     status: str
@@ -22,6 +26,8 @@ class MarketplaceDecision:
     external_provider: str = ""
     external_sales_count: int = 0
     valuation_basis: str = ""
+    valuation_evidence_type: str = ""
+    required_discount_pct: Optional[float] = None
     note: str = ""
 
 
@@ -52,20 +58,67 @@ def _optional_positive(value: object) -> Optional[float]:
     return parsed if parsed > 0 else None
 
 
+def _usable_pricecharting_guide(
+    evidence: Optional[legacy.ExternalAggregate],
+) -> bool:
+    return bool(
+        evidence is not None
+        and evidence.status == "MATCHED"
+        and evidence.fair_eur is not None
+        and evidence.fair_eur > 0
+        and evidence.evidence_strength == PRICECHARTING_GUIDE_STRENGTH
+    )
+
+
+def _select_valuation_provider(
+    ppt: legacy.ExternalAggregate,
+    poketrace: legacy.ExternalAggregate,
+    pricecharting: Optional[legacy.ExternalAggregate],
+) -> tuple[Optional[legacy.ExternalAggregate], str, str, float]:
+    """Prefer SOLD-derived evidence; use the PriceCharting guide when needed."""
+
+    external, selection_note = legacy.select_correlated_external(ppt, poketrace)
+    if external is not None:
+        return external, selection_note, "SOLD_AGGREGATE", legacy.DEFAULT_MIN_DISCOUNT
+
+    # A material disagreement between stronger SOLD-derived providers remains
+    # blocking. A guide must never arbitrate away a real SOLD-provider conflict.
+    if selection_note.startswith("CORRELATED_PROVIDER_CONFLICT"):
+        return None, selection_note, "", legacy.DEFAULT_MIN_DISCOUNT
+
+    if _usable_pricecharting_guide(pricecharting):
+        return (
+            pricecharting,
+            "PRICECHARTING_GUIDE_FALLBACK",
+            "PRICE_GUIDE",
+            PRICECHARTING_MIN_DISCOUNT_PCT,
+        )
+    return None, selection_note, "", legacy.DEFAULT_MIN_DISCOUNT
+
+
 def evaluate_marketplace_card(
     card: Mapping[str, object],
     *,
     ppt: legacy.ExternalAggregate,
     poketrace: legacy.ExternalAggregate,
+    pricecharting: Optional[legacy.ExternalAggregate] = None,
     min_discount: float = legacy.DEFAULT_MIN_DISCOUNT,
 ) -> MarketplaceDecision:
-    """Marketplace-first valuation.
+    """Evaluate one marketplace opportunity against valuation providers only.
 
-    GCC SOLD fair is optional. When present it remains a conservative independent
-    anchor and conflicts can block. When absent, a strong exact external aggregate
-    (PPT/PokeTrace correlation family, >=3 sales) may establish the fair value on
-    its own. This implements the project rule that strong external evidence can
-    rescue listings with weak/absent GCC history.
+    GCC/Fanatics/COMC/Cardova/Magi and future Mercari/SNKRDUNK/eBay active
+    listings are opportunity sources. Their listing prices are candidate costs,
+    never fair value and never confirmation evidence for another marketplace.
+
+    Historical GCC fair may remain attached to the report for diagnostics/Robot
+    KB compatibility, but it cannot create, anchor, confirm, cap or conflict-block
+    an economic decision.
+
+    SOLD-derived PPT/PokeTrace evidence keeps priority when available. A compatible
+    PriceCharting GUIDE can stand alone when stronger evidence is unavailable and
+    uses the normal V4 discount threshold rather than a special 40% penalty. The
+    mandatory policy layer supplies PSA 8/9/10-compatible guide mappings while
+    preserving GUIDE semantics and never fabricating item-level SOLD rows.
     """
 
     identity = legacy.identity_from_card(card)
@@ -76,8 +129,10 @@ def evaluate_marketplace_card(
     if offer is None or all_in is None:
         return MarketplaceDecision("NO_ACTIONABLE_ALL_IN_OFFER", False)
 
-    external, selection_note = legacy.select_correlated_external(ppt, poketrace)
-    gcc_fair = _optional_positive(card.get("fair_value_eur"))
+    diagnostic_gcc_fair = _optional_positive(card.get("fair_value_eur"))
+    external, selection_note, evidence_type, source_floor = _select_valuation_provider(
+        ppt, poketrace, pricecharting
+    )
     if external is None or external.fair_eur is None:
         status = (
             "MARKET_CONFLICT_BLOCKED"
@@ -90,52 +145,51 @@ def evaluate_marketplace_card(
             best_market=str(offer.get("market") or ""),
             source_url=str(offer.get("source_url") or ""),
             offer_all_in_eur=round(all_in, 2),
-            gcc_fair_eur=round(gcc_fair, 2) if gcc_fair is not None else None,
+            gcc_fair_eur=(
+                round(diagnostic_gcc_fair, 2)
+                if diagnostic_gcc_fair is not None
+                else None
+            ),
+            valuation_basis="EXTERNAL_ONLY",
+            valuation_evidence_type=evidence_type,
+            required_discount_pct=max(float(min_discount), float(source_floor)),
             note=selection_note,
         )
 
-    ext = float(external.fair_eur)
-    ratio = None
-    if gcc_fair is not None:
-        ratio = max(gcc_fair, ext) / min(gcc_fair, ext)
-        if ratio > legacy.EXTERNAL_CONFIRM_RATIO:
-            return MarketplaceDecision(
-                "MARKET_CONFLICT_BLOCKED",
-                False,
-                best_market=str(offer.get("market") or ""),
-                source_url=str(offer.get("source_url") or ""),
-                offer_all_in_eur=round(all_in, 2),
-                gcc_fair_eur=round(gcc_fair, 2),
-                external_fair_eur=round(ext, 2),
-                market_ratio=round(ratio, 3),
-                external_provider=external.provider,
-                external_sales_count=external.sold_count,
-                valuation_basis="GCC_PLUS_EXTERNAL",
-                note=f"GCC/external ratio exceeds {legacy.EXTERNAL_CONFIRM_RATIO:.2f}; {selection_note}",
-            )
-        confirmed_fair = min(gcc_fair, ext)
-        valuation_basis = "GCC_PLUS_EXTERNAL"
-    else:
-        confirmed_fair = ext
-        valuation_basis = "EXTERNAL_ONLY"
-
+    confirmed_fair = float(external.fair_eur)
+    required_discount = max(float(min_discount), float(source_floor))
     discount = (confirmed_fair - all_in) / confirmed_fair * 100.0
-    would_notify = discount + 1e-9 >= max(0.0, float(min_discount))
+    would_notify = discount + 1e-9 >= required_discount
+    valuation_basis = (
+        "PRICECHARTING_GUIDE_ONLY"
+        if evidence_type == "PRICE_GUIDE"
+        else "EXTERNAL_ONLY"
+    )
     return MarketplaceDecision(
         "MULTIMARKET_CONFIRMED" if would_notify else "NO_GLOBAL_EDGE",
         would_notify,
         best_market=str(offer.get("market") or ""),
         source_url=str(offer.get("source_url") or ""),
         offer_all_in_eur=round(all_in, 2),
-        gcc_fair_eur=round(gcc_fair, 2) if gcc_fair is not None else None,
-        external_fair_eur=round(ext, 2),
+        gcc_fair_eur=(
+            round(diagnostic_gcc_fair, 2)
+            if diagnostic_gcc_fair is not None
+            else None
+        ),
+        external_fair_eur=round(confirmed_fair, 2),
         confirmed_fair_eur=round(confirmed_fair, 2),
         discount_pct=round(discount, 1),
-        market_ratio=round(ratio, 3) if ratio is not None else None,
+        market_ratio=None,
         external_provider=external.provider,
         external_sales_count=external.sold_count,
         valuation_basis=valuation_basis,
-        note=selection_note,
+        valuation_evidence_type=evidence_type,
+        required_discount_pct=round(required_discount, 1),
+        note=(
+            f"{selection_note}; GCC history diagnostic-only"
+            if diagnostic_gcc_fair is not None
+            else selection_note
+        ),
     )
 
 
@@ -168,6 +222,9 @@ def decision_payload(decision: MarketplaceDecision) -> dict[str, object]:
         {
             "external_family": legacy.EBAY_GRADED_AGGREGATE,
             "independent_market_increment": 1 if decision.external_provider else 0,
+            "marketplace_listing_is_valuation": False,
+            "marketplace_sources_are_opportunity_only": True,
+            "gcc_history_economic_authority": False,
             "ask_is_sold": False,
             "automatic_purchase": False,
             "automatic_bid": False,

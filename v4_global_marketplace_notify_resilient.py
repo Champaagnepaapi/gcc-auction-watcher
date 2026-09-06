@@ -71,6 +71,10 @@ from v4_global_marketplace_unicode_identity import (
 )
 from v4_global_provider_exact_bridge import install_global_provider_exact_bridge
 from v4_global_tcgdex_resilience import install_global_tcgdex_resilience
+from v4_pricecharting_mandatory_policy import (
+    install_global_pricecharting_mandatory_guide_policy,
+    install_v4_pricecharting_mandatory_guide_policy,
+)
 from v4_tcgdex_detailed_variants import install_v4_tcgdex_detailed_variants
 
 
@@ -86,6 +90,10 @@ def _install_stack_with_global_bridges() -> None:
     # returned by an optional recall still reaches the same final exact gate.
     install_v4_tcgdex_detailed_variants()
     install_global_marketplace_poketrace_recall()
+    # Provider installers above may replace the underlying PokeTrace function.
+    # Re-run the re-entrant policy now so PriceCharting wraps the final hardened
+    # implementation instead of an earlier bootstrap function.
+    install_v4_pricecharting_mandatory_guide_policy()
 
 
 def main() -> int:
@@ -161,6 +169,10 @@ def main() -> int:
     install_global_marketplace_identity_dimension_hardening()
     install_marketplace_queue_hardening()
     confirmed.install_global_external_market_stack = _install_stack_with_global_bridges
+    # Install before marketplace.main() so the evaluator always requests the
+    # PriceCharting guide, even when PPT/PokeTrace already supplies strong SOLD-
+    # derived evidence. The stronger evidence still wins economically.
+    install_global_pricecharting_mandatory_guide_policy()
     return marketplace.main()
 
 

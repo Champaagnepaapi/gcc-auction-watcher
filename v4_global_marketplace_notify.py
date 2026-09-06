@@ -12,10 +12,12 @@ from typing import Any, Mapping, Optional
 import requests
 
 from ecb_fx import ECBCurrencyConverter
+import watcher
 import v4_global_live_confirmed as confirmed
 import v4_global_live_shadow as base
 import v4_global_marketplace_economic as marketplace_economic
 import v4_global_notify as legacy_notify
+import v4_pricecharting_valuation as pricecharting_valuation
 from v4_global_marketplace_discovery import (
     MarketplaceListing,
     acknowledge_evaluated,
@@ -45,6 +47,7 @@ TERMINAL_EXTERNAL = {
     "CLEAN_INSUFFICIENT",
     "STALE_OR_UNDATED",
     "BLOCKED_IDENTITY",
+    "NOT_NEEDED",
 }
 RETRY_EXTERNAL = {
     "PROVIDER_ERROR",
@@ -52,6 +55,12 @@ RETRY_EXTERNAL = {
     "RATE_LIMIT",
     "PENDING_BUDGET",
     "UNAVAILABLE",
+}
+TERMINAL_DECISIONS = {
+    "MULTIMARKET_CONFIRMED",
+    "NO_GLOBAL_EDGE",
+    "MARKET_CONFLICT_BLOCKED",
+    "BLOCKED_IDENTITY",
 }
 
 
@@ -137,19 +146,121 @@ def _scan(args: argparse.Namespace, *, observed_at: datetime):
     return list(deduped.values()), statuses, gcc_fair, catalog_status
 
 
+def _pricecharting_aggregate(
+    card: Mapping[str, Any], *, now: datetime
+) -> marketplace_economic.legacy.ExternalAggregate:
+    identity = marketplace_economic.legacy.identity_from_card(card)
+    if identity is None:
+        return marketplace_economic.legacy.ExternalAggregate(
+            "PriceCharting guide", "BLOCKED_IDENTITY"
+        )
+    lot = marketplace_economic.legacy._lot_for_identity(identity)
+    evidence = pricecharting_valuation.pricecharting_evidence_for_lot(lot, now=now)
+    estimate = evidence.estimate
+    if (
+        evidence.status == watcher.EXTERNAL_MATCHED
+        and evidence.strength == watcher.EVIDENCE_STRONG
+        and estimate is not None
+        and estimate.central > 0
+    ):
+        return marketplace_economic.legacy.ExternalAggregate(
+            provider="PriceCharting guide",
+            status="MATCHED",
+            fair_eur=round(float(estimate.central), 2),
+            sold_count=0,
+            evidence_strength=marketplace_economic.PRICECHARTING_GUIDE_STRENGTH,
+            note=(evidence.note or "") + "; GUIDE only; not item-level SOLD",
+        )
+    return marketplace_economic.legacy.ExternalAggregate(
+        provider="PriceCharting guide",
+        status=evidence.status or "UNAVAILABLE",
+        fair_eur=(
+            round(float(estimate.central), 2)
+            if estimate is not None and estimate.central > 0
+            else None
+        ),
+        sold_count=0,
+        evidence_strength=evidence.strength or "UNAVAILABLE",
+        note=evidence.note or "",
+    )
+
+
 def _with_marketplace_evaluator(report: Mapping[str, Any]) -> dict[str, Any]:
     old_eval = confirmed.evaluate_card
     old_payload = confirmed.decision_payload
-    confirmed.evaluate_card = marketplace_economic.evaluate_marketplace_card
+    observed_raw = report.get("observed_at")
+    try:
+        observed_at = datetime.fromisoformat(str(observed_raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        observed_at = datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    observed_at = observed_at.astimezone(timezone.utc)
+
+    pricecharting_by_identity: dict[str, dict[str, Any]] = {}
+
+    def marketplace_eval(
+        card: Mapping[str, object],
+        *,
+        ppt: marketplace_economic.legacy.ExternalAggregate,
+        poketrace: marketplace_economic.legacy.ExternalAggregate,
+        min_discount: float = marketplace_economic.legacy.DEFAULT_MIN_DISCOUNT,
+    ) -> marketplace_economic.MarketplaceDecision:
+        correlated, note = marketplace_economic.legacy.select_correlated_external(
+            ppt, poketrace
+        )
+        pc = marketplace_economic.legacy.ExternalAggregate(
+            "PriceCharting guide", "NOT_NEEDED"
+        )
+        if correlated is None and not note.startswith("CORRELATED_PROVIDER_CONFLICT"):
+            pc = _pricecharting_aggregate(card, now=observed_at)
+        identity = marketplace_economic.legacy.identity_from_card(card)
+        if identity is not None:
+            pricecharting_by_identity[identity.strict_key] = asdict(pc)
+        return marketplace_economic.evaluate_marketplace_card(
+            card,
+            ppt=ppt,
+            poketrace=poketrace,
+            pricecharting=pc,
+            min_discount=min_discount,
+        )
+
+    confirmed.evaluate_card = marketplace_eval
     confirmed.decision_payload = marketplace_economic.decision_payload
     try:
         enriched = confirmed.enrich_confirmation(report)
     finally:
         confirmed.evaluate_card = old_eval
         confirmed.decision_payload = old_payload
+
+    for raw_card in enriched.get("cards", []):
+        if not isinstance(raw_card, dict):
+            continue
+        identity = marketplace_economic.legacy.identity_from_card(raw_card)
+        confirmation = raw_card.get("economic_confirmation")
+        if (
+            identity is not None
+            and isinstance(confirmation, dict)
+            and identity.strict_key in pricecharting_by_identity
+        ):
+            confirmation["pricecharting"] = pricecharting_by_identity[identity.strict_key]
+
+    pc_payloads = list(pricecharting_by_identity.values())
     enriched["mode"] = MODE_ACTIVE if _enabled() else MODE_DRY
     enriched["economic_confirmation"]["marketplace_first"] = True
     enriched["economic_confirmation"]["gcc_fair_optional"] = True
+    enriched["economic_confirmation"]["gcc_history_economic_authority"] = False
+    enriched["economic_confirmation"]["marketplace_sources_are_opportunity_only"] = True
+    enriched["economic_confirmation"]["pricecharting_matched"] = sum(
+        payload.get("status") == "MATCHED" for payload in pc_payloads
+    )
+    enriched["economic_confirmation"]["pricecharting_attempted"] = sum(
+        payload.get("status") != "NOT_NEEDED" for payload in pc_payloads
+    )
+    enriched["economic_confirmation"]["valuation_source_priority"] = [
+        "PokemonPriceTracker/PokeTrace SOLD-derived aggregate",
+        "PriceCharting exact PSA10 guide fallback",
+    ]
     return enriched
 
 
@@ -174,13 +285,30 @@ def _evaluation_complete(card: Mapping[str, Any]) -> bool:
         return False
     if canonical_status in {"NO_MATCH", "AMBIGUOUS"}:
         return True
+
+    decision = confirmation.get("decision")
+    decision_status = (
+        str(decision.get("status") or "") if isinstance(decision, Mapping) else ""
+    )
+    if decision_status in TERMINAL_DECISIONS:
+        return True
+
     ppt = confirmation.get("ppt")
     poketrace = confirmation.get("poketrace")
-    ppt_status = str(ppt.get("status") or "UNAVAILABLE") if isinstance(ppt, Mapping) else "UNAVAILABLE"
-    pt_status = str(poketrace.get("status") or "UNAVAILABLE") if isinstance(poketrace, Mapping) else "UNAVAILABLE"
-    if ppt_status in RETRY_EXTERNAL and pt_status in RETRY_EXTERNAL:
+    pricecharting = confirmation.get("pricecharting")
+    statuses = (
+        str(ppt.get("status") or "UNAVAILABLE") if isinstance(ppt, Mapping) else "UNAVAILABLE",
+        str(poketrace.get("status") or "UNAVAILABLE") if isinstance(poketrace, Mapping) else "UNAVAILABLE",
+        (
+            str(pricecharting.get("status") or "UNAVAILABLE")
+            if isinstance(pricecharting, Mapping)
+            else "UNAVAILABLE"
+        ),
+    )
+    # A clean negative from one provider must never hide a retryable sibling.
+    if any(status in RETRY_EXTERNAL for status in statuses):
         return False
-    return ppt_status in TERMINAL_EXTERNAL or pt_status in TERMINAL_EXTERNAL
+    return all(status in TERMINAL_EXTERNAL for status in statuses)
 
 
 def marketplace_notification_candidates(report: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]]:
@@ -198,18 +326,34 @@ def marketplace_notification_candidates(report: Mapping[str, Any]) -> list[tuple
             continue
         if decision.get("ask_is_sold") is not False:
             continue
-        if str(decision.get("valuation_basis") or "") not in {"EXTERNAL_ONLY", "GCC_PLUS_EXTERNAL"}:
+        if decision.get("marketplace_listing_is_valuation") is not False:
+            continue
+        basis = str(decision.get("valuation_basis") or "")
+        if basis not in {"EXTERNAL_ONLY", "PRICECHARTING_GUIDE_ONLY"}:
             continue
         try:
             offer_all_in = float(decision.get("offer_all_in_eur"))
             external_fair = float(decision.get("external_fair_eur"))
             confirmed_fair = float(decision.get("confirmed_fair_eur"))
             discount = float(decision.get("discount_pct"))
+            required_discount = float(decision.get("required_discount_pct"))
             sales = int(decision.get("external_sales_count"))
         except (TypeError, ValueError):
             continue
-        if min(offer_all_in, external_fair, confirmed_fair) <= 0 or discount < 0 or sales < 3:
+        if min(offer_all_in, external_fair, confirmed_fair) <= 0:
             continue
+        if discount < 0 or discount + 1e-9 < required_discount:
+            continue
+        evidence_type = str(decision.get("valuation_evidence_type") or "")
+        if basis == "EXTERNAL_ONLY" and (sales < 3 or evidence_type != "SOLD_AGGREGATE"):
+            continue
+        if basis == "PRICECHARTING_GUIDE_ONLY":
+            if evidence_type != "PRICE_GUIDE":
+                continue
+            if str(decision.get("external_provider") or "") != "PriceCharting guide":
+                continue
+            if required_discount < marketplace_economic.PRICECHARTING_MIN_DISCOUNT_PCT:
+                continue
         offer = legacy_notify._matching_offer(card, decision)
         if offer is None or offer.get("evidence_type") not in {FIXED_ASK, AUCTION_SNAPSHOT_LE5}:
             continue
@@ -226,15 +370,19 @@ def _format_notification(card: Mapping[str, Any], decision: Mapping[str, Any], o
     language = str(identity.get("language") or "")
     evidence = str(offer.get("evidence_type") or "")
     evidence_label = "ASK FIXE" if evidence == FIXED_ASK else "SNAPSHOT ENCHÈRE ≤5 MIN"
-    gcc = decision.get("gcc_fair_eur")
-    gcc_line = f"€{float(gcc):.2f}" if gcc not in {None, ""} else "absent"
+    valuation_type = str(decision.get("valuation_evidence_type") or "")
+    if valuation_type == "PRICE_GUIDE":
+        proof_line = "PriceCharting: guide PSA 10 exact (pas un SOLD item-level)"
+    else:
+        proof_line = f"{int(decision.get('external_sales_count') or 0)} ventes agrégées"
     body = "\n".join(
         (
             f"{name} {number} | {grader} {grade} | {language}",
             f"{decision.get('best_market')}: {evidence_label} rendu €{float(decision.get('offer_all_in_eur')):.2f}",
-            f"Fair confirmé: €{float(decision.get('confirmed_fair_eur')):.2f} | décote {float(decision.get('discount_pct')):.1f}%",
-            f"GCC SOLD fair: {gcc_line} | externe: €{float(decision.get('external_fair_eur')):.2f}",
-            f"Base: {decision.get('valuation_basis')} | {decision.get('external_provider')} ({int(decision.get('external_sales_count'))} ventes agrégées)",
+            f"Fair externe: €{float(decision.get('confirmed_fair_eur')):.2f} | décote {float(decision.get('discount_pct')):.1f}%",
+            f"Valorisation: {decision.get('external_provider')} | {proof_line}",
+            f"Seuil requis: {float(decision.get('required_discount_pct')):.1f}% | base {decision.get('valuation_basis')}",
+            "Le prix du vault est uniquement le prix d'achat potentiel, jamais la fair value.",
             "PAS UNE VENTE. Vérification manuelle uniquement.",
             str(decision.get("source_url") or ""),
         )
@@ -377,11 +525,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "seed_rotation_used_for_discovery": False,
         "known_gcc_history_identities_are_retrieval_catalog_only": True,
         "provider_disappearance_is_sold": False,
+        "marketplace_adapters_independent": True,
+        "opportunity_sources": ["gcc", "fanatics", "comc", "magi", "cardova"],
+        "marketplace_sources_have_valuation_authority": False,
+        "valuation_sources": [
+            "PokemonPriceTracker/PokeTrace SOLD-derived aggregate",
+            "PriceCharting exact PSA10 guide fallback",
+        ],
+        "direct_ebay_sold_is_valuation_source": False,
     }
     report["notification_delivery"] = delivery
     report["safety"] = {
         "identity_gate_relaxed": False,
         "marketplace_ask_is_sold": False,
+        "marketplace_listing_is_valuation": False,
+        "gcc_history_economic_authority": False,
         "automatic_purchase": False,
         "automatic_bid": False,
         "automatic_checkout": False,

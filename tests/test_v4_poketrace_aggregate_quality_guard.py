@@ -160,12 +160,14 @@ class PokeTraceAggregateQualityGuardTests(unittest.TestCase):
         self.assertIs(retrieval._ORIGINAL_EVIDENCE, first)
         self.assertIs(first, quality._quality_guarded_original_evidence)
 
-    def test_production_bootstrap_installs_guard_before_canonical_runner(self):
+    def test_production_bootstrap_does_not_install_degenerate_guard(self):
         source = Path("run_watcher_multimarket_resilient.py").read_text(
             encoding="utf-8"
         )
+        self.assertNotIn("install_v4_poketrace_aggregate_quality_guard()", source)
+        self.assertIn("install_v4_recall_policy()", source)
         self.assertLess(
-            source.index("install_v4_poketrace_aggregate_quality_guard()"),
+            source.index("install_v4_recall_policy()"),
             source.index('runpy.run_module("run_watcher_multimarket"'),
         )
 
