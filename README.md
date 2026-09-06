@@ -11,11 +11,10 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 ```text
 V4 production branch                 : main
 V4 production HEAD                   : dfc548021c561479cc8758e2949d2c4629388d9d
-V4 external fair-value authority     : #255 MERGED
-PR #255 merge commit                 : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
-Source-role / PriceCharting phase    : PR #257 OPEN / DRAFT / NON MERGED
+V4 external fair-value authority     : #255 MERGED / production
+Vault/source-role separation         : PR #257 DRAFT / NON MERGED
 PR #257 branch                        : fix/v4-source-role-pricecharting-20260906
-Japan vault providers                : PR #256 OPEN / DRAFT / NON MERGED
+Japan Edge Mercari/SNKRDUNK          : PR #256 DRAFT / NON MERGED
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -27,7 +26,7 @@ TCGdex transport resilience          : #216/#217 MERGED
 TCGdex outage fallback               : #222/#224 MERGED
 External pending throughput          : #214 MERGED
 Magi deterministic identity          : #174/#177 MERGED
-Magi recovery budget                 : #178 MERGED / recovery 36 / broad max 28
+Magi recovery budget                 : #178 MERGED
 Global schedule watchdog             : #179 MERGED
 Robot KB local cutover               : #166 / PostgreSQL Mac ACTIF
 Robot KB multisource                 : #180 MERGED
@@ -37,66 +36,46 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Production actuelle — #255 : GCC n'est plus une autorité de fair value
+### Phase active — PR #257 : vaults indépendants + PriceCharting systématique
 
-Depuis #255, GCC reste une source de **listing/opportunité** et d'identité live, mais son historique ne peut plus créer, ancrer, confirmer ou plafonner la fair value V4.
-
-Exemple canonique :
+Architecture cible : **un seul orchestrateur**, avec adapters d'opportunités indépendants et providers de valorisation séparés.
 
 ```text
-GCC historique visible            : 18 / 20 / 25 EUR
-GCC prix live                     : 30 EUR
-preuve externe forte             : ~45–50 EUR
-interprétation correcte           : opportunité potentielle forte
-interprétation interdite          : "30 EUR est cher car GCC a vendu 20–25 EUR"
+GCC / Fanatics / COMC / Magi / Cardova
+        ↓
+listing exact + coût all-in uniquement
+        ↓
+CommercialIdentity stricte
+        ↓
+TCGdex exact / microvariante
+        ↓
+providers de valorisation externes
+        ↓
+décision économique
 ```
 
-Les ventes historiques GCC restent observables pour diagnostics / Robot KB. `PENDING`, `WEAK`, provider error ou `UNAVAILABLE` externe restent fail-closed. Les rejets terminaux de sécurité restent terminaux.
+Règles #257 :
 
-### Phase active — PR #257 : séparer complètement opportunités et valorisation
+- un vault/marketplace découvre une offre ; son prix ne devient jamais la fair value ;
+- l'historique GCC reste diagnostic / Robot KB uniquement et ne peut créer, ancrer, confirmer, plafonner ou conflict-block la fair value ;
+- PriceCharting est **consulté systématiquement comme guide de référence** pour chaque identité PSA compatible évaluée ;
+- PriceCharting reste `GUIDE`, jamais faux `SOLD` item-level ; aucune `ComparableSale` synthétique ;
+- `PSA 10` PriceCharting -> guide PSA 10 ;
+- `Grade 9` PriceCharting -> accepté comme **guide PSA 9** lorsque le listing est déjà prouvé PSA 9 exact ;
+- `Grade 8` PriceCharting -> accepté comme **guide PSA 8** lorsque le listing est déjà prouvé PSA 8 exact ;
+- PSA 8.5 reste distinct : aucun rabattement automatique sur Grade 8 ;
+- un guide PriceCharting compatible peut suffire seul à établir une estimation quand de meilleures preuves SOLD-derived sont indisponibles ;
+- les SOLD exacts/récents et preuves SOLD-derived plus fortes gardent la priorité économique ;
+- **pas de marge spéciale 40 %** : le seuil économique normal V4 s'applique, actuellement 30 % ;
+- une panne PriceCharting reste visible mais ne détruit pas une preuve SOLD forte déjà établie ;
+- direct eBay SOLD scraping n'a plus d'autorité de fair value dans cette phase ; eBay actif futur devra être un adapter d'opportunités séparé ;
+- Mercari/SNKRDUNK restent séparés dans PR #256.
 
-Objectif : chaque marketplace/vault est un **scanner d'offres indépendant**, tandis que la fair value vient d'une couche de providers de valorisation séparée.
+Exemple : PriceCharting guide `100 EUR`, aucune meilleure preuve externe, seuil V4 `30 %` => une offre `<=70 EUR all-in` peut passer le gate économique si tous les autres gates sont satisfaits. L'ancien floor spécifique `40 %` (`<=60 EUR`) est supprimé.
 
-Architecture cible :
+La PR #257 est toujours **DRAFT / NON MERGED**. Sa validation finale doit prouver suite V4 + Global + tests ciblés + compile/YAML/diff-check + bootstrap Global live read-only avant tout merge.
 
-```text
-GCC ───────┐
-Fanatics ──┤
-COMC ──────┤
-Magi ──────┤──> offres normalisées / identité stricte ──┐
-Cardova ───┘                                             │
-                                                        ├──> edge par offre ──> notification
-providers de valorisation séparés ──────────────────────┘
-```
-
-Règles de #257 :
-
-- un seul orchestrateur Global, mais **un adapter indépendant par marketplace** ;
-- le prix d'un vault est uniquement un **prix d'achat potentiel** ;
-- une offre Fanatics/COMC/Cardova/Magi/GCC ne peut jamais devenir la fair value d'une autre offre ;
-- historique GCC = diagnostic/Robot KB uniquement ;
-- direct eBay SOLD scraping = retiré de l'autorité de valorisation dans cette phase ;
-- eBay actif, lorsqu'il sera ajouté, devra être un **adapter d'opportunités** séparé ;
-- PR #256 ajoute Mercari/SNKRDUNK dans une phase Japan Edge séparée : ne pas dupliquer ni merger indépendamment sans validation ;
-- aucune transaction automatique.
-
-### PriceCharting dans #257
-
-PriceCharting est ajouté à la **couche de valorisation**, pas à la couche marketplace.
-
-Point important : PriceCharting expose un **guide de prix**. Le robot peut utiliser ce guide comme estimation secondaire, mais il ne doit jamais le présenter comme une liste de ventes `SOLD` individuelles prouvées.
-
-Politique proposée :
-
-- PokeTrace / PokemonPriceTracker et PSA APR gardent la priorité lorsqu'une preuve forte compatible existe ;
-- PriceCharting = fallback borné ;
-- seul le bucket **PSA 10 explicitement identifiable** peut produire une preuve automatique ;
-- guide PriceCharting seul => seuil économique plus conservateur, **décote minimale 40 %** ;
-- buckets grade 9/8 génériques = `WEAK` / contexte seulement, car ils ne prouvent pas le grader exact ;
-- un guide PriceCharting ne peut jamais résoudre/écraser un conflit entre preuves SOLD fortes ;
-- aucune valeur PriceCharting n'est transformée en faux comparable item-level.
-
-PR #257 reste **DRAFT / NON MERGED** jusqu'à suite V4 + suite Global + compile/YAML/diff-check + bootstrap live read-only verts, puis autorisation explicite avant merge.
+Ledger : `docs/v4-source-role-pricecharting-20260906.md`.
 
 ---
 
@@ -153,55 +132,34 @@ priority                         ≤5 min -> ≤12 min -> ≤60 min
 
 ## Future-start auction guard — #220 + #243
 
-Une auction prouvée non démarrée est exclue avant interprétation du prix/countdown :
-
-- `startTime > observed_at` avec row id stable => exclusion structurée ;
-- `startTime <= observed_at` => démarrage structuré prouvé ;
-- timestamp absent/malformé => aucune supposition ;
-- si timer API sans preuve de démarrage => vérification fiche GCC rendue avant valorisation ;
-- `Enchères à venir` / `Programmer une enchère` / start explicite => exclusion ;
-- vraie auction live rendue => action de bid + fin explicite ;
-- page ambiguë/erreur => fail-closed ;
-- starting price et countdown-to-start ne deviennent jamais bid courant / temps avant fin.
+Une auction prouvée non démarrée est exclue avant interprétation du prix/countdown : start future explicite => exclusion structurée ; preuve de démarrage explicite => admissible ; ambiguïté/erreur => fail-closed. Starting price et countdown-to-start ne deviennent jamais bid courant / temps avant fin.
 
 ## Marché externe V4
 
-Production `main` contient #255 : l'historique GCC n'a plus d'autorité économique. Avant #257, le transport externe historique reste encore présent dans le code production.
+Production #255 : GCC n'a plus d'autorité économique de fair value. L'historique GCC est observationnel ; une opportunité économique doit venir d'une preuve externe compatible.
 
-PR #257 propose l'ordre de rôle suivant :
+PR #257 ajoute, sans être encore déployée, la séparation de rôles suivante :
 
 ```text
-PokeTrace / PokemonPriceTracker   -> valorisation SOLD-derived quand preuve forte
-PSA APR                           -> valorisation exacte PSA fallback
-PriceCharting                     -> guide de valorisation fallback, PSA10 auto seulement
-Direct eBay SOLD scraper          -> aucune autorité de fair value
-Marketplace ask/current price     -> aucune autorité de fair value
+opportunity sources    GCC / Fanatics / COMC / Magi / Cardova
+valuation references   SOLD-derived compatibles + PSA APR/PokeTrace/PPT + PriceCharting GUIDE
 ```
 
-Les erreurs provider restent fail-visible. Ne pas augmenter les caps uniquement pour masquer les timeouts/403 ou forcer un résultat.
+PriceCharting est une estimation/guide issue de l'historique de marché selon PriceCharting, pas une liste de ventes item-level. Cette distinction reste visible dans le payload et les notifications.
 
 ### PokeTrace aggregate quality — #247
 
-PokeTrace reste une source **agrégée** et corrélée à la famille eBay. Après identité TCGdex exacte, une preuve PokeTrace `STRONG` dont l'enveloppe est invalide, non positive ou `<= 0.01 EUR` est rétrogradée `CLEAN_INSUFFICIENT / WEAK` et son estimate est retiré du chemin économique.
+PokeTrace reste une source agrégée et corrélée à la famille eBay. Une preuve PokeTrace `STRONG` dont l'enveloppe est invalide/non positive/dégénérée est rétrogradée `CLEAN_INSUFFICIENT / WEAK` et son estimate est retiré du chemin économique. Aucun agrégat n'est transformé artificiellement en vente item-level.
 
-Un agrégat n'est jamais transformé artificiellement en vente item-level.
+### eBay / PSA APR
 
-### PSA APR / PriceCharting / eBay
-
-- PSA APR peut renvoyer HTTP 403 : erreur visible, fail-closed, aucun contournement WAF ;
-- PriceCharting #257 : guide secondaire borné, jamais `SOLD` item-level ;
-- eBay actif n'est **pas encore** un scanner d'opportunités Global dans #257 ; c'est une phase suivante ;
-- les anciens modules de transport eBay restent dans le repo mais #257 les retire du rôle de fair-value authority.
+Les protections #238/#239/#242/#253 bornent les opérations eBay. PSA APR peut encore renvoyer HTTP 403 et eBay peut encore timeout. Ces erreurs restent visibles/fail-closed ; aucun contournement anti-bot/WAF.
 
 ## TCGdex — identité et microvariantes
 
-TCGdex reste la couche d'identité exacte. `variants_detailed` peut prouver après identité exacte : normal/holo/reverse, First Edition/Unlimited/Shadowless quand explicites, Poké Ball/Master Ball/Cosmos/Galaxy/Cracked Ice et langue exacte.
-
-Axes inconnus, multiples, malformés ou contradictoires => blocage. `pricing` / `thirdParty` TCGdex n'est pas une fair value slab.
+TCGdex reste la couche d'identité exacte. `variants_detailed` peut prouver les axes matériels après identité exacte. Axes inconnus, multiples, malformés ou contradictoires => blocage. `pricing` / `thirdParty` TCGdex n'est pas une fair value slab.
 
 Transport : retry borné sur timeout/connexion/HTTP 502/503/504, breaker run-wide après échecs répétés, jamais de panne convertie en clean no-match.
-
-Fallback outage source-pinned uniquement après erreur transport retryable et preuve japonaise exacte via la source immuable `af33c9ac...`. `NO_MATCH`, `AMBIGUOUS`, autre langue ou preuve incomplète restent bloqués.
 
 ## Fast Lane
 
@@ -216,52 +174,36 @@ Aucun bid automatique. PSA scope économique : `8`, `8.5`, `9`, `10`; jamais de 
 
 ---
 
-# Global Multi-Vault
-
-Production actuelle : `.github/workflows/v4-global-notify.yml` reste l'unique lane Global.
-
-PR #257 conserve **un seul robot/orchestrateur Global** plutôt qu'un bot complet par vault. Le découpage est fait au niveau des adapters : chaque vault peut tomber en panne, changer son HTML ou être durci indépendamment, sans dupliquer la logique d'identité, de valorisation, de déduplication et de notification.
+# Global Multi-Vault — production marketplace-first
 
 ```text
-opportunity adapters
-  GCC / Fanatics / COMC / Magi / Cardova
+GCC / Fanatics / COMC / Magi / Cardova
         ↓
-CommercialIdentity stricte
+identité commerciale exacte
         ↓
 TCGdex exact + microvariante déterministe
         ↓
-valuation providers indépendants
-  PPT/PokeTrace -> PriceCharting fallback
+preuves marché externes compatibles
         ↓
-décision par offre
+décision économique
         ↓
 notification seulement si gate complet
 ```
 
-Règles :
+Actionnable seulement si identité exacte + `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5` + all-in EUR prouvé + TCGdex exact + preuve de valorisation assez forte + décote requise + aucun conflit matériel.
 
-- `FIXED_ASK` = offre actionnable potentielle, jamais vente ;
-- `AUCTION_SNAPSHOT_LE5` = offre potentielle bornée, jamais vente finale ;
 - `ACTIVE_AUCTION` non actionnable ;
 - disparition != SOLD ;
-- une marketplace ne confirme jamais la fair value d'une autre ;
-- aucun provider d'opportunité n'obtient une autorité économique simplement parce qu'il est dans le même processus.
+- `.github/workflows/v4-global-notify.yml` reste l'unique lane Global production ;
+- PR #257 conserve un seul orchestrateur mais isole économiquement chaque adapter marketplace.
 
-Scale production avant #257 : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTrace 60, cadence 20 min (`1,21,41`), inner timeout 17 min, job timeout 25 min.
-
----
-
-# Japan Edge / Mercari / SNKRDUNK
-
-PR #256 est **OPEN / DRAFT / NON MERGED**. Elle traite Mercari et SNKRDUNK comme sources d'ASK/opportunités dans la lane Japan Edge. Elle reste séparée de #257 et ne doit pas être mergée indépendamment sans validation explicite.
+Scale production : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTrace 60, cadence 20 min (`1,21,41`), inner timeout 17 min, job timeout 25 min.
 
 ---
 
 # Magi — identité native japonaise
 
-#174 + #177 = récupération déterministe. #178 protège le budget : recovery total 36, broad/nonpriority 28 max, réserve exact card-search/detail 8.
-
-Pas de fallback name-only ni d'alias carte-par-carte pour les cas non prouvés.
+#174 + #177 = récupération déterministe. #178 protège le budget : recovery total 36, broad/nonpriority 28 max, réserve exact card-search/detail 8. Pas de fallback name-only ni d'alias carte-par-carte pour les cas non prouvés.
 
 ---
 
@@ -328,20 +270,17 @@ Documents de reprise :
 
 ```text
 PR #257
-  -> terminer CI + bootstrap Global live read-only
-  -> aucun merge avant autorisation explicite
-  -> après validation : source roles marketplace/valuation deviennent canoniques
+  -> PriceCharting guide systématique PSA 8/9/10 compatibles
+  -> Grade 8/9 acceptés comme guides PSA 8/9 sur listing PSA exact
+  -> seuil normal V4 30 %, pas floor spécial 40 %
+  -> SOLD exact/récent reste prioritaire
+  -> finir CI + live read-only
+  -> NE PAS MERGER sans autorisation explicite
 
-Opportunity adapters
-  -> conserver GCC/Fanatics/COMC/Magi/Cardova indépendants
-  -> #256 couvre Mercari/SNKRDUNK séparément
-  -> ajouter eBay ACTIF plus tard comme adapter d'opportunités, pas comme fair value
-
-Valuation providers
-  -> priorité aux preuves SOLD fortes compatibles
-  -> PSA APR exact quand disponible
-  -> PriceCharting guide = fallback secondaire, pas faux SOLD
-  -> generic grade buckets ne deviennent jamais grader exact
+V4 providers
+  -> priorité aux SOLD exacts récents lorsqu'ils existent
+  -> PriceCharting = référence guide systématique, jamais faux SOLD
+  -> aucun secret ni contournement anti-bot/WAF
 
 Robot KB
   -> rester séparé de V4 / V4_USE=false
