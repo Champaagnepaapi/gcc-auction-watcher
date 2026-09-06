@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire workflows GitHub Actions
 
-Audit re-vérifié le **6 septembre 2026** sur `main@9d3bb1b84d22c1534c24d7c58c5897ecce4b817f`.
+Audit re-vérifié le **6 septembre 2026** sur le runtime tree #255. `main` live est `dfc548021c561479cc8758e2949d2c4629388d9d`; la comparaison depuis `9d3bb1b84d22c1534c24d7c58c5897ecce4b817f` contient 0 fichier modifié.
 
 Le tree Git courant est l'autorité pour l'existence des workflows. L'API Actions peut conserver des records historiques de workflows supprimés ou de triggers anciens.
 
@@ -35,7 +35,7 @@ Le tree Git courant est l'autorité pour l'existence des workflows. L'API Action
 | `japan-edge-hunter.yml` | lane Japan Edge ; vérifier son trigger live avant modification. |
 | `japan-edge-offline-validation.yml` | CI/offline Japan Edge. |
 | `v5-gcc-catalog-refresh.yml` | support V5 legacy ; séparé de V4. |
-| `v5-live-raw-pipeline-diagnostic.yml` | diagnostic V5 manuel ; PR #8 reste non-mergeable/non-production. |
+| `v5-live-raw-pipeline-diagnostic.yml` | diagnostic V5 manuel ; PR #8 reste non-production. |
 
 ## Main Scanner / Fast Lane
 
@@ -51,9 +51,28 @@ Cron-job.org ~3 min
   -> Fast Lane
 ```
 
-Le run Main Scanner naturel exact post-#255 observé est `34037829669` sur `9d3bb1...`. Ne pas lancer un deuxième scanner manuel pour fabriquer une preuve post-merge.
+### First exact post-#255 proof
 
-Fast Lane exact post-#255 : `34037049703` SUCCESS.
+```text
+Main Scanner                       34037313029 / #3936 / SUCCESS
+head                               9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
+fixed discovery                    3259 / 33 pages / COMPLETE
+auction rows/timers                100 / 100
+auction scope                      COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+eBay                               16 / 0 / 11 / 5 / 5
+PSA APR                            HTTP 403 -> breaker
+PokeTrace                          0 STRONG / 9 WEAK
+final opportunities                0
+Fast Lane                          34037049703 SUCCESS
+```
+
+#254 bounded salvage est live-proven dans ce run : après timeout body + #251 fallback, les probes structurés sont bornés à max 4 × `inner_text(timeout=600)`, sans nouveau hard-timeout 30 s du salvage #253.
+
+#255 est live-proven pour le fail-closed sans external STRONG. Le label `GCC_ONLY` peut rester visible dans la télémétrie, mais il ne crée plus de fair value/opportunité. Aucun sample STRONG n'a permis de live-prouver positivement `EXTERNAL_RESCUE`.
+
+Le run `34037829669` a été CANCELLED ; ne pas l'utiliser comme preuve.
+
+Aucun Main Scanner manuel n'a été lancé par cette phase de closeout.
 
 ## Robot KB — état après cutover Mac
 
