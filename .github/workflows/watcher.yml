@@ -122,14 +122,23 @@ jobs:
           V4_POKETRACE_MIN_SALES: "3"
           V4_RAW_REVIEW_TTL_HOURS: "24"
 
+          # PriceCharting is a valuation-provider fallback only. No token is
+          # required for the bounded public guide path; no secret is stored here.
+          # Only exact PSA 10 guide buckets may become automatic evidence and
+          # they require the stricter economic margin enforced in code.
+          PRICECHARTING_ENABLED: "true"
+          PRICECHARTING_MAX_CARDS_PER_RUN: "8"
+          PRICECHARTING_TIMEOUT_SECONDS: "10"
+          PRICECHARTING_PUBLIC_INTERVAL_SECONDS: "0.35"
+
           # Mislisted Slab / image OCR notification lane is disabled by V4
           # production policy in run_watcher_multimarket.py. No workflow env can
           # re-enable it, and no Tesseract runtime is installed for this lane.
 
-          # Public eBay SOLD/Completed pages: bounded runtime/anti-bot budgets,
-          # not eBay API quotas. Keep auctions at <=4 cards/run while allowing
-          # the large fixed EXTERNAL_PENDING backlog to drain at up to 16/run.
-          # The eBay run breaker still stops network work after 2 hard timeouts.
+          # Legacy direct eBay SOLD/Completed transport settings remain present
+          # for compatibility, but the V4 source-role layer disables direct eBay
+          # scraping for fair-value authority. eBay active-listing opportunity
+          # discovery is a separate future adapter.
           EBAY_ENABLED: "true"
           EBAY_MAX_QUERIES_PER_CARD: "2"
           EBAY_MAX_CARDS_PER_RUN: "16"
