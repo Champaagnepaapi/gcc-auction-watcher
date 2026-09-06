@@ -89,6 +89,7 @@ jobs:
       - name: Scan GCC auctions
         id: scan
         env:
+          # Historical/default contract used MAX_PRICE_EUR: "100".
           # Recall-first production scope: the user manually rechecks alerts, so
           # reduce false negatives while keeping identity and evidence classes strict.
           MAX_PRICE_EUR: "250"
