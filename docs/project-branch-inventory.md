@@ -3,14 +3,17 @@
 État pertinent re-vérifié le **6 septembre 2026** après les merges production #254/#255. GitHub live reste l'autorité.
 
 ```text
-V4 production                     main / 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
-#255 source                        v4-external-fair-value-authority-20260906 / MERGED
-#254 source                        fix/v4-ebay-bounded-structured-salvage-20260906 / MERGED
-#253 source                        fix/v4-ebay-body-timeout-structured-items-20260905 / MERGED
-Closeout courant                   docs/post-255-external-fv-closeout-20260906 / DOCS ONLY
-P3 durable                         agent/p3-postgres-durable-shadow / séparé de main
-V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / PR #8 OPEN DRAFT
+V4 live production                  main / dfc548021c561479cc8758e2949d2c4629388d9d
+V4 runtime tree baseline            9d3bb1b84d22c1534c24d7c58c5897ecce4b817f / #255
+#255 source                         v4-external-fair-value-authority-20260906 / MERGED
+#254 source                         fix/v4-ebay-bounded-structured-salvage-20260906 / MERGED
+#253 source                         fix/v4-ebay-body-timeout-structured-items-20260905 / MERGED
+Closeout courant                    docs/post-255-external-fv-closeout-20260906 / DOCS ONLY
+P3 durable                          agent/p3-postgres-durable-shadow / séparé de main
+V5 expérimentale                    agent/v5-poketrace-cardmarket-market-data / PR #8 OPEN DRAFT
 ```
+
+`main` a avancé de deux commits placeholder/revert après #255. GitHub compare `9d3bb1... → dfc548...` avec **0 changed files** ; aucune nouvelle capacité runtime n'est associée à ces deux commits.
 
 ## Autorités production récentes
 
@@ -22,7 +25,9 @@ V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / P
 
 ## Branche de closeout actuelle
 
-`docs/post-255-external-fv-closeout-20260906` est créée depuis l'exact production `9d3bb1...`. Elle ne doit contenir que documentation/handoff ; aucun runtime, workflow économique, provider, Robot KB durable ou V5 change.
+`docs/post-255-external-fv-closeout-20260906` a été créée depuis l'exact merge #255 `9d3bb1...`. Elle ne contient que documentation/handoff ; aucun runtime, workflow économique, provider, Robot KB durable ou V5 change.
+
+Le closeout doit être mergé contre le `main` courant uniquement après vérification que les deux commits net-zero post-#255 ne créent aucun conflit de contenu.
 
 ## Anciennes branches eBay — provenance, ne pas réactiver directement
 
