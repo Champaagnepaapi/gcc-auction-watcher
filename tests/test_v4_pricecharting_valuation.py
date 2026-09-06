@@ -7,22 +7,24 @@ import v4_pricecharting_valuation as pc
 
 
 class _Response:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload=None, status_code=200, text=None):
         self._payload = payload
         self.status_code = status_code
+        self.text = text
 
     def json(self):
         return self._payload
 
 
 class _Session:
-    def __init__(self, payloads):
-        self.payloads = list(payloads)
+    def __init__(self, responses):
+        self.responses = list(responses)
         self.calls = []
 
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
-        return _Response(self.payloads.pop(0))
+        response = self.responses.pop(0)
+        return response if isinstance(response, _Response) else _Response(response)
 
 
 def _lot(*, grade="10"):
@@ -52,7 +54,7 @@ def _candidate(lot=None):
     return watcher.ValuationCandidate(gcc)
 
 
-def _provider(*, grade="10", value_key="manual-only-price", value=5000):
+def _provider(*, value_key="manual-only-price", value=5000):
     product = {
         "status": "success",
         "id": "pc-208",
@@ -101,9 +103,7 @@ def test_pricecharting_psa10_is_strong_guide_not_fake_sold(monkeypatch):
 
 
 def test_pricecharting_generic_grade9_stays_weak(monkeypatch):
-    provider, _session = _provider(
-        grade="9", value_key="graded-price", value=8000
-    )
+    provider, _session = _provider(value_key="graded-price", value=8000)
     monkeypatch.setattr(watcher, "get_psa_apr_usd_per_eur", lambda: 1.0)
 
     evidence = pc.pricecharting_evidence_for_lot(
@@ -117,23 +117,51 @@ def test_pricecharting_generic_grade9_stays_weak(monkeypatch):
     assert "générique" in evidence.estimate.rationale
 
 
-def test_missing_token_is_fail_visible_without_network():
-    session = _Session([])
+def test_public_pricecharting_fallback_works_without_paid_token(monkeypatch):
+    search_html = """
+    <html><body>
+      <a href="/game/pokemon-japanese-vstar-universe/poochyena-208">Poochyena #208</a>
+    </body></html>
+    """
+    product_html = """
+    <html><body>
+      <h1>Poochyena #208 Pokemon Japanese VSTAR Universe</h1>
+      <div>Card Number: #208</div>
+      <h2>Full Price Guide</h2>
+      <div>Grade 9 $13.87</div>
+      <div>PSA 10 $47.71</div>
+    </body></html>
+    """
+    session = _Session(
+        [
+            _Response(text=search_html),
+            _Response(text=product_html),
+        ]
+    )
     provider = pc.PriceChartingProvider(
         config=pc.PriceChartingConfig(
             enabled=True,
             token=None,
-            minimum_request_interval_seconds=0.0,
+            max_cards_per_run=8,
+            public_request_interval_seconds=0.0,
         ),
         session=session,
     )
+    monkeypatch.setattr(watcher, "get_psa_apr_usd_per_eur", lambda: 1.0)
 
     evidence = pc.pricecharting_evidence_for_lot(_lot(), provider=provider)
 
-    assert evidence.status == watcher.EXTERNAL_TRANSIENT_UNAVAILABLE
-    assert evidence.source == "pricecharting"
-    assert "token absent" in evidence.note
-    assert session.calls == []
+    assert evidence.status == watcher.EXTERNAL_MATCHED
+    assert evidence.strength == watcher.EVIDENCE_STRONG
+    assert evidence.estimate is not None
+    assert evidence.estimate.central == 47.71
+    assert evidence.comparables == []
+    assert "public price guide" in evidence.note
+    assert len(session.calls) == 2
+    assert session.calls[0][0].endswith("/search-products")
+    assert session.calls[1][0].endswith(
+        "/game/pokemon-japanese-vstar-universe/poochyena-208"
+    )
 
 
 def test_source_role_installer_never_allows_direct_ebay_valuation(monkeypatch):
