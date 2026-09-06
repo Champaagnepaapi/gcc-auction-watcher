@@ -25,21 +25,19 @@ import v4_pricecharting_valuation as pricecharting
 
 
 _POLICY_MARKER = "_v4_pricecharting_mandatory_guide_policy_installed"
+_POKETRACE_MARKER = "_v4_pricecharting_mandatory_poketrace_reference"
 _GLOBAL_MARKER = "_v4_global_pricecharting_mandatory_guide_policy_installed"
 _DEFAULT_MIN_RUN_BUDGET = 50
 _CACHE: dict[str, watcher.ExternalMarketEvidence] = {}
-_BASE_PRICECHARTING_EVIDENCE = pricecharting.pricecharting_evidence_for_lot
-_BASE_POKETRACE_EVIDENCE = multimarket._poketrace_evidence
 
 
 def _psa_grade(lot: watcher.Lot) -> Optional[float]:
     if str(lot.grader or "").strip().upper() != "PSA":
         return None
     try:
-        grade = float(lot.grade) if lot.grade is not None else None
+        return float(lot.grade) if lot.grade is not None else None
     except (TypeError, ValueError):
         return None
-    return grade
 
 
 def _accepted_guide_label(lot: watcher.Lot) -> str:
@@ -82,15 +80,14 @@ def _upgrade_guide_evidence(
         exact_grade_count=0,
         same_grader_count=0,
     )
-    note = (
-        f"{evidence.note}; policy={label}; guide obligatoire de référence; "
-        "pas un SOLD item-level"
-    ).strip("; ")
     return replace(
         evidence,
         strength=watcher.EVIDENCE_STRONG,
         estimate=upgraded_estimate,
-        note=note,
+        note=(
+            f"{evidence.note}; policy={label}; guide obligatoire de référence; "
+            "pas un SOLD item-level"
+        ).strip("; "),
     )
 
 
@@ -115,52 +112,20 @@ def _mandatory_budget_floor() -> int:
 
 def _ensure_provider_budget() -> None:
     """Keep the guide bounded but large enough to be a systematic reference."""
+    floor = _mandatory_budget_floor()
     current = pricecharting._PROVIDER
     if current is not None:
-        if current.config.max_cards_per_run >= _mandatory_budget_floor():
+        if current.config.max_cards_per_run >= floor:
             return
-        config = replace(
-            current.config,
-            max_cards_per_run=_mandatory_budget_floor(),
+        pricecharting._PROVIDER = pricecharting.PriceChartingProvider(
+            config=replace(current.config, max_cards_per_run=floor)
         )
-        pricecharting._PROVIDER = pricecharting.PriceChartingProvider(config=config)
         return
 
     config = pricecharting.PriceChartingConfig.from_env()
-    if config.max_cards_per_run < _mandatory_budget_floor():
-        config = replace(
-            config,
-            max_cards_per_run=_mandatory_budget_floor(),
-        )
+    if config.max_cards_per_run < floor:
+        config = replace(config, max_cards_per_run=floor)
     pricecharting._PROVIDER = pricecharting.PriceChartingProvider(config=config)
-
-
-def _mandatory_pricecharting_evidence(
-    lot: watcher.Lot,
-    *,
-    now: Optional[datetime] = None,
-    provider: Optional[pricecharting.PriceChartingProvider] = None,
-) -> watcher.ExternalMarketEvidence:
-    """Fetch once per exact commercial identity and upgrade accepted PSA guides."""
-    effective_now = now or datetime.now(timezone.utc)
-    if provider is not None:
-        return _upgrade_guide_evidence(
-            lot,
-            _BASE_PRICECHARTING_EVIDENCE(
-                lot, now=effective_now, provider=provider
-            ),
-        )
-
-    key = _cache_key(lot)
-    cached = _CACHE.get(key)
-    if cached is not None:
-        return cached
-    evidence = _upgrade_guide_evidence(
-        lot,
-        _BASE_PRICECHARTING_EVIDENCE(lot, now=effective_now),
-    )
-    _CACHE[key] = evidence
-    return evidence
 
 
 def _guide_summary(evidence: watcher.ExternalMarketEvidence) -> str:
@@ -177,36 +142,74 @@ def _guide_summary(evidence: watcher.ExternalMarketEvidence) -> str:
     return f"PriceCharting={evidence.status} ({evidence.note or 'no guide'})"
 
 
-def _poketrace_with_mandatory_pricecharting(
-    lot: watcher.Lot,
-    canonical: multimarket.CanonicalCard,
-    budget: multimarket.RequestBudget,
-    now: datetime,
-) -> watcher.ExternalMarketEvidence:
-    """Consult the guide even when PokeTrace itself is already strong."""
-    poketrace_result = _BASE_POKETRACE_EVIDENCE(lot, canonical, budget, now)
-    try:
-        guide = pricecharting.pricecharting_evidence_for_lot(lot, now=now)
-        summary = _guide_summary(guide)
-    except Exception as error:  # provider failure must not erase stronger SOLD evidence
-        summary = f"PriceCharting=PROVIDER_ERROR ({type(error).__name__})"
-    return replace(
-        poketrace_result,
-        note=f"{poketrace_result.note}; {summary}".strip("; "),
-    )
-
-
 def install_v4_pricecharting_mandatory_guide_policy() -> None:
-    """Install systematic PriceCharting guide use in the canonical V4 lane."""
-    current = pricecharting.pricecharting_evidence_for_lot
-    if getattr(current, _POLICY_MARKER, False):
-        return
+    """Install systematic PriceCharting guide use in the canonical V4 lane.
 
+    This installer is intentionally re-entrant. Provider hardening can replace
+    the PokeTrace function later in bootstrap order; if that happens, calling the
+    installer again wraps the then-current hardened implementation rather than
+    reviving an older function captured at import time.
+    """
     _ensure_provider_budget()
-    _CACHE.clear()
-    setattr(_mandatory_pricecharting_evidence, _POLICY_MARKER, True)
-    pricecharting.pricecharting_evidence_for_lot = _mandatory_pricecharting_evidence
-    multimarket._poketrace_evidence = _poketrace_with_mandatory_pricecharting
+
+    current_pc = pricecharting.pricecharting_evidence_for_lot
+    if not getattr(current_pc, _POLICY_MARKER, False):
+        _CACHE.clear()
+
+        def mandatory_pricecharting_evidence(
+            lot: watcher.Lot,
+            *,
+            now: Optional[datetime] = None,
+            provider: Optional[pricecharting.PriceChartingProvider] = None,
+        ) -> watcher.ExternalMarketEvidence:
+            effective_now = now or datetime.now(timezone.utc)
+            if provider is not None:
+                return _upgrade_guide_evidence(
+                    lot,
+                    current_pc(lot, now=effective_now, provider=provider),
+                )
+
+            key = _cache_key(lot)
+            cached = _CACHE.get(key)
+            if cached is not None:
+                return cached
+            evidence = _upgrade_guide_evidence(
+                lot,
+                current_pc(lot, now=effective_now),
+            )
+            _CACHE[key] = evidence
+            return evidence
+
+        setattr(mandatory_pricecharting_evidence, _POLICY_MARKER, True)
+        setattr(mandatory_pricecharting_evidence, "_wrapped_fetch", current_pc)
+        pricecharting.pricecharting_evidence_for_lot = mandatory_pricecharting_evidence
+
+    current_poketrace = multimarket._poketrace_evidence
+    if not getattr(current_poketrace, _POKETRACE_MARKER, False):
+
+        def poketrace_with_mandatory_pricecharting(
+            lot: watcher.Lot,
+            canonical: multimarket.CanonicalCard,
+            budget: multimarket.RequestBudget,
+            now: datetime,
+        ) -> watcher.ExternalMarketEvidence:
+            result = current_poketrace(lot, canonical, budget, now)
+            try:
+                guide = pricecharting.pricecharting_evidence_for_lot(lot, now=now)
+                summary = _guide_summary(guide)
+            except Exception as error:
+                # A guide outage must remain visible, but must not erase stronger
+                # already-proved SOLD-derived evidence.
+                summary = f"PriceCharting=PROVIDER_ERROR ({type(error).__name__})"
+            return replace(
+                result,
+                note=f"{result.note}; {summary}".strip("; "),
+            )
+
+        setattr(poketrace_with_mandatory_pricecharting, _POKETRACE_MARKER, True)
+        setattr(poketrace_with_mandatory_pricecharting, "_wrapped_fetch", current_poketrace)
+        multimarket._poketrace_evidence = poketrace_with_mandatory_pricecharting
+
     watcher.log(
         "PriceCharting policy: mandatory guide reference for exact PSA 8/9/10; "
         "normal V4 discount threshold; SOLD-derived evidence remains primary"
@@ -229,13 +232,13 @@ def install_global_pricecharting_mandatory_guide_policy() -> None:
     import v4_global_live_confirmed as confirmed
     import v4_global_marketplace_notify as marketplace
 
-    if getattr(marketplace._with_marketplace_evaluator, _GLOBAL_MARKER, False):
-        return
-
     install_v4_pricecharting_mandatory_guide_policy()
     global_economic.PRICECHARTING_MIN_DISCOUNT_PCT = float(
         global_economic.legacy.DEFAULT_MIN_DISCOUNT
     )
+
+    if getattr(marketplace._with_marketplace_evaluator, _GLOBAL_MARKER, False):
+        return
 
     old_formatter = marketplace._format_notification
 
@@ -252,9 +255,8 @@ def install_global_pricecharting_mandatory_guide_policy() -> None:
             poketrace: global_economic.legacy.ExternalAggregate,
             min_discount: float = global_economic.legacy.DEFAULT_MIN_DISCOUNT,
         ) -> global_economic.MarketplaceDecision:
-            # Mandatory reference: always query PriceCharting for a supported
-            # exact PSA identity. The economic selector still prefers stronger
-            # SOLD-derived evidence when available.
+            # Always consult PriceCharting for the exact card. The economic
+            # selector still prefers stronger SOLD-derived evidence.
             pc = marketplace._pricecharting_aggregate(card, now=observed_at)
             identity = global_economic.legacy.identity_from_card(card)
             if identity is not None:
@@ -311,8 +313,7 @@ def install_global_pricecharting_mandatory_guide_policy() -> None:
         title, body = old_formatter(card, decision, offer)
         identity = card.get("identity") if isinstance(card.get("identity"), Mapping) else {}
         grade = str(identity.get("grade") or "")
-        valuation_type = str(decision.get("valuation_evidence_type") or "")
-        if valuation_type == "PRICE_GUIDE":
+        if str(decision.get("valuation_evidence_type") or "") == "PRICE_GUIDE":
             label = (
                 "PSA 10"
                 if grade in {"10", "10.0"}
@@ -322,6 +323,7 @@ def install_global_pricecharting_mandatory_guide_policy() -> None:
                 "PriceCharting: guide PSA 10 exact (pas un SOLD item-level)",
                 f"PriceCharting: guide {label} (pas un SOLD item-level)",
             )
+
         confirmation = card.get("economic_confirmation")
         pc_payload = (
             confirmation.get("pricecharting")
