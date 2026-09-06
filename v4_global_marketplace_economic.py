@@ -8,7 +8,7 @@ from v4_global_market_core import AUCTION_SNAPSHOT_LE5, FIXED_ASK
 
 
 PRICECHARTING_GUIDE_STRENGTH = "GUIDE_STRONG"
-PRICECHARTING_MIN_DISCOUNT_PCT = 40.0
+PRICECHARTING_MIN_DISCOUNT_PCT = legacy.DEFAULT_MIN_DISCOUNT
 
 
 @dataclass(frozen=True)
@@ -75,14 +75,14 @@ def _select_valuation_provider(
     poketrace: legacy.ExternalAggregate,
     pricecharting: Optional[legacy.ExternalAggregate],
 ) -> tuple[Optional[legacy.ExternalAggregate], str, str, float]:
-    """Prefer SOLD-derived aggregates; use PriceCharting only as a guide fallback."""
+    """Prefer SOLD-derived evidence; use the PriceCharting guide when needed."""
 
     external, selection_note = legacy.select_correlated_external(ppt, poketrace)
     if external is not None:
         return external, selection_note, "SOLD_AGGREGATE", legacy.DEFAULT_MIN_DISCOUNT
 
     # A material disagreement between stronger SOLD-derived providers remains
-    # blocking. A weaker guide must never arbitrate away a real market conflict.
+    # blocking. A guide must never arbitrate away a real SOLD-provider conflict.
     if selection_note.startswith("CORRELATED_PROVIDER_CONFLICT"):
         return None, selection_note, "", legacy.DEFAULT_MIN_DISCOUNT
 
@@ -114,10 +114,11 @@ def evaluate_marketplace_card(
     KB compatibility, but it cannot create, anchor, confirm, cap or conflict-block
     an economic decision.
 
-    Valuation priority here is SOLD-derived PPT/PokeTrace aggregate evidence,
-    then an exact PSA 10 PriceCharting guide fallback. PriceCharting is explicitly
-    a GUIDE, not an item-level SOLD row, and therefore requires the more
-    conservative 40% minimum discount when it is the sole valuation source.
+    SOLD-derived PPT/PokeTrace evidence keeps priority when available. A compatible
+    PriceCharting GUIDE can stand alone when stronger evidence is unavailable and
+    uses the normal V4 discount threshold rather than a special 40% penalty. The
+    mandatory policy layer supplies PSA 8/9/10-compatible guide mappings while
+    preserving GUIDE semantics and never fabricating item-level SOLD rows.
     """
 
     identity = legacy.identity_from_card(card)
