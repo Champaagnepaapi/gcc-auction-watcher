@@ -89,8 +89,12 @@ jobs:
       - name: Scan GCC auctions
         id: scan
         env:
-          MAX_PRICE_EUR: "100"
-          MIN_DISCOUNT_PCT: "30"
+          # Recall-first production scope. Identity/provider budgets stay unchanged.
+          # Historical no-switch/default contract remains MAX_PRICE_EUR: "100";
+          # the explicit recall production override below widens discovery to 250 EUR.
+          MAX_PRICE_EUR: "250"
+          MIN_DISCOUNT_PCT: "20"
+          V4_RECALL_MIN_DISCOUNT_PCT: "20"
           MAX_AUCTION_MINUTES: "60"
           V4_AUCTION_EVALUATION_CAP: "360"
           FIXED_REEVALUATION_TTL_HOURS: "24"
@@ -152,9 +156,8 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           scan_exit_code=$?
           if [ "$scan_exit_code" -eq 0 ]; then
-            # Bootstrap the unchanged canonical runner with PR #145's proven
-            # bounded TCGdex retry policy plus a Main-only process-local outage
-            # circuit. Identity/economics remain canonical V4 and fail-closed.
+            # Bootstrap the canonical runner with bounded provider resilience and
+            # recall-first economics. Identity/SOLD semantics remain fail-closed.
             python run_watcher_multimarket_resilient.py
             scan_exit_code=$?
           fi
