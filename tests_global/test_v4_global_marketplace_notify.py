@@ -12,16 +12,16 @@ def _report(evidence=FIXED_ASK, *, guide=False):
         "would_notify": True,
         "best_market": "fanatics",
         "source_url": "https://market.invalid/1",
-        "offer_all_in_eur": 55.0 if guide else 60.0,
+        "offer_all_in_eur": 65.0 if guide else 60.0,
         "gcc_fair_eur": 25.0,
         "external_fair_eur": 100.0,
         "confirmed_fair_eur": 100.0,
-        "discount_pct": 45.0 if guide else 40.0,
+        "discount_pct": 35.0 if guide else 40.0,
         "external_provider": "PriceCharting guide" if guide else "PokemonPriceTracker",
         "external_sales_count": 0 if guide else 20,
         "valuation_basis": "PRICECHARTING_GUIDE_ONLY" if guide else "EXTERNAL_ONLY",
         "valuation_evidence_type": "PRICE_GUIDE" if guide else "SOLD_AGGREGATE",
-        "required_discount_pct": 40.0 if guide else 30.0,
+        "required_discount_pct": 30.0,
         "marketplace_listing_is_valuation": False,
         "marketplace_sources_are_opportunity_only": True,
         "gcc_history_economic_authority": False,
@@ -63,11 +63,16 @@ class MarketplaceNotifyTests(unittest.TestCase):
         _card, decision, _offer = candidates[0]
         self.assertEqual(decision["external_sales_count"], 0)
         self.assertEqual(decision["valuation_evidence_type"], "PRICE_GUIDE")
+        self.assertEqual(decision["required_discount_pct"], 30.0)
 
-    def test_pricecharting_guide_requires_40_percent_threshold(self):
+    def test_pricecharting_guide_uses_normal_30_percent_threshold(self):
         report = _report(guide=True)
+        self.assertEqual(len(runner.marketplace_notification_candidates(report)), 1)
+
         decision = report["cards"][0]["economic_confirmation"]["decision"]
-        decision["required_discount_pct"] = 30.0
+        decision["discount_pct"] = 25.0
+        decision["offer_all_in_eur"] = 75.0
+        report["cards"][0]["offers"][0]["all_in_eur"] = 75.0
         self.assertEqual(runner.marketplace_notification_candidates(report), [])
 
     def test_active_auction_is_never_candidate(self):
