@@ -12,6 +12,7 @@ from typing import Any, Mapping, Optional
 import requests
 
 from ecb_fx import ECBCurrencyConverter
+import watcher
 import v4_global_live_confirmed as confirmed
 import v4_global_live_shadow as base
 import v4_global_marketplace_economic as marketplace_economic
@@ -54,6 +55,12 @@ RETRY_EXTERNAL = {
     "RATE_LIMIT",
     "PENDING_BUDGET",
     "UNAVAILABLE",
+}
+TERMINAL_DECISIONS = {
+    "MULTIMARKET_CONFIRMED",
+    "NO_GLOBAL_EDGE",
+    "MARKET_CONFLICT_BLOCKED",
+    "BLOCKED_IDENTITY",
 }
 
 
@@ -151,8 +158,8 @@ def _pricecharting_aggregate(
     evidence = pricecharting_valuation.pricecharting_evidence_for_lot(lot, now=now)
     estimate = evidence.estimate
     if (
-        evidence.status == marketplace_economic.legacy.watcher.EXTERNAL_MATCHED
-        and evidence.strength == marketplace_economic.legacy.watcher.EVIDENCE_STRONG
+        evidence.status == watcher.EXTERNAL_MATCHED
+        and evidence.strength == watcher.EVIDENCE_STRONG
         and estimate is not None
         and estimate.central > 0
     ):
@@ -278,23 +285,30 @@ def _evaluation_complete(card: Mapping[str, Any]) -> bool:
         return False
     if canonical_status in {"NO_MATCH", "AMBIGUOUS"}:
         return True
+
+    decision = confirmation.get("decision")
+    decision_status = (
+        str(decision.get("status") or "") if isinstance(decision, Mapping) else ""
+    )
+    if decision_status in TERMINAL_DECISIONS:
+        return True
+
     ppt = confirmation.get("ppt")
     poketrace = confirmation.get("poketrace")
     pricecharting = confirmation.get("pricecharting")
-    ppt_status = str(ppt.get("status") or "UNAVAILABLE") if isinstance(ppt, Mapping) else "UNAVAILABLE"
-    pt_status = str(poketrace.get("status") or "UNAVAILABLE") if isinstance(poketrace, Mapping) else "UNAVAILABLE"
-    pc_status = (
-        str(pricecharting.get("status") or "UNAVAILABLE")
-        if isinstance(pricecharting, Mapping)
-        else "UNAVAILABLE"
+    statuses = (
+        str(ppt.get("status") or "UNAVAILABLE") if isinstance(ppt, Mapping) else "UNAVAILABLE",
+        str(poketrace.get("status") or "UNAVAILABLE") if isinstance(poketrace, Mapping) else "UNAVAILABLE",
+        (
+            str(pricecharting.get("status") or "UNAVAILABLE")
+            if isinstance(pricecharting, Mapping)
+            else "UNAVAILABLE"
+        ),
     )
-    if ppt_status in RETRY_EXTERNAL and pt_status in RETRY_EXTERNAL and pc_status in RETRY_EXTERNAL:
+    # A clean negative from one provider must never hide a retryable sibling.
+    if any(status in RETRY_EXTERNAL for status in statuses):
         return False
-    return (
-        ppt_status in TERMINAL_EXTERNAL
-        or pt_status in TERMINAL_EXTERNAL
-        or pc_status in TERMINAL_EXTERNAL
-    )
+    return all(status in TERMINAL_EXTERNAL for status in statuses)
 
 
 def marketplace_notification_candidates(report: Mapping[str, Any]) -> list[tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]]:
