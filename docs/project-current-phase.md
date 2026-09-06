@@ -1,101 +1,82 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État re-vérifié le **6 septembre 2026**. Le code/Git/GitHub live reste l'autorité.
+État re-vérifié le **6 septembre 2026**. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
 
 ## Autorité
 
 ```text
 V4 production branch             main
 V4 production HEAD               dfc548021c561479cc8758e2949d2c4629388d9d
-External fair-value authority    #255 MERGED / 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
-Phase active                     #257 OPEN / DRAFT / NON MERGED
+#255 external FV authority       MERGED / production
+#257 source-role separation      OPEN / DRAFT / NON MERGED
 #257 branch                      fix/v4-source-role-pricecharting-20260906
-Japan vault phase                #256 OPEN / DRAFT / NON MERGED
-V5                               #8 OPEN / DRAFT / NON MERGED
-Robot KB                         PostgreSQL local Mac / V4_USE=false
+#256 Japan providers             OPEN / DRAFT / NON MERGED
+V5                               PR #8 / OPEN / DRAFT / NON MERGED
+Robot KB durable                 PostgreSQL local Mac / séparé de V4 / V4_USE=false
+Neon                             writers automatiques OFF / rollback manuel
 ```
 
 ## Phase active — #257
 
-### Problème
-
-Le Global Multi-Vault savait déjà scanner plusieurs marketplaces, mais le chemin économique pouvait encore réutiliser une fair value GCC/historique dans la décision. Cela violait le rôle souhaité : **les vaults servent à trouver des offres, pas à valoriser les cartes**.
-
-Direct eBay SOLD scraping était également encore présent comme fallback économique alors que la cible utilisateur est : eBay, lorsqu'il est scanné, doit servir à trouver des offres actives ; la fair value doit venir des providers de valorisation dédiés.
-
-### Architecture retenue
-
-Conserver **un seul orchestrateur Global** avec des adapters indépendants par marketplace :
+Objectif : conserver **un seul orchestrateur** tout en rendant les vaults/marketplaces économiquement indépendants.
 
 ```text
 GCC / Fanatics / COMC / Magi / Cardova
-        -> offre normalisée
-        -> identité stricte
-        -> valuation providers séparés
-        -> décision par offre
-        -> notification
+        -> listing / coût potentiel uniquement
+        -> identité exacte
+        -> providers externes de valorisation
+        -> décision
 ```
 
-Pas un bot complet par vault : cela dupliquerait TCGdex, identité, FX, déduplication, providers de valorisation et règles économiques, avec risque de drift.
+Un prix de vault n'est jamais une fair value. L'historique GCC est diagnostic/Robot KB seulement et ne peut pas plafonner ou conflict-block une valorisation externe.
+
+### PriceCharting — décision produit mise à jour
+
+PriceCharting doit être **consulté systématiquement comme guide de référence** pour chaque identité PSA compatible évaluée.
+
+- PriceCharting reste `GUIDE`, pas `SOLD` item-level ;
+- `PSA 10` -> guide PSA 10 ;
+- `Grade 9` -> guide de valorisation PSA 9 lorsque le listing est déjà prouvé PSA 9 exact ;
+- `Grade 8` -> guide de valorisation PSA 8 lorsque le listing est déjà prouvé PSA 8 exact ;
+- PSA 8.5 reste distinct ;
+- le guide peut suffire seul si aucune meilleure preuve SOLD-derived n'est disponible ;
+- SOLD exact/récent plus fort garde la priorité ;
+- pas de floor spécial 40 % : seuil normal V4 = 30 % actuellement ;
+- panne PriceCharting visible, sans effacer une preuve SOLD forte déjà établie.
+
+Exemple : guide 100 EUR -> seuil économique normal 30 % -> offre <=70 EUR potentiellement admissible si tous les autres gates sont satisfaits.
 
 ### Source roles
 
-Opportunity-only :
+Opportunity-only : GCC, Fanatics, COMC, Magi, Cardova, futur eBay actif ; Mercari/SNKRDUNK restent dans #256 séparée.
 
-- GCC ;
-- Fanatics ;
-- COMC ;
-- Magi ;
-- Cardova ;
-- futur eBay actif ;
-- Mercari/SNKRDUNK dans #256 séparée.
-
-Valuation-only dans #257 :
-
-- PokeTrace / PokemonPriceTracker quand preuve forte compatible ;
-- PSA APR exact ;
-- PriceCharting guide fallback borné.
-
-GCC historique reste diagnostic/Robot KB uniquement. Direct eBay SOLD scraper perd son autorité de fair value.
-
-### PriceCharting
-
-PriceCharting est explicitement un **guide**, pas une collection de `SOLD` item-level :
-
-- aucune vente synthétique ;
-- aucune fausse quantité de SOLD ;
-- PSA 10 explicite uniquement pour preuve automatique ;
-- grade 9/8 générique = WEAK/contexte ;
-- guide seul => décote minimale 40 % ;
-- preuve SOLD forte prioritaire ;
-- guide incapable de résoudre un conflit entre providers SOLD forts ;
-- public read-only fallback borné sans secret.
-
-### Sécurité
-
-Inchangée : identité exacte, ASK/current auction/disappearance != SOLD, aucune transaction automatique, aucun secret, PR #8 intacte.
+Valuation : preuves SOLD-derived compatibles + PSA APR/PokeTrace/PPT + PriceCharting guide systématique. Direct eBay SOLD scraper perd son autorité de fair value dans #257.
 
 ## Validation en cours
 
-PR #257 a été créée en DRAFT. Les workflows automatiques doivent prouver :
+La première CI après le changement de politique a détecté :
 
-1. suite V4 complète ;
-2. suite Global ;
-3. tests ciblés source-role / PriceCharting ;
-4. compile Python ;
-5. workflow YAML parse ;
-6. `git diff --check` ;
-7. comparaison auction read-only ;
-8. bootstrap Global live read-only avec `notifications=false`, `transactions=false` ;
-9. assertions live : `marketplace_listing_is_valuation=false`, `marketplace_sources_have_valuation_authority=false`, `gcc_history_economic_authority=false`, `direct_ebay_sold_is_valuation_source=false`.
+1. un matching public PriceCharting qui normalisait trop tôt le label et supprimait `#208`, empêchant la preuve du numéro ; corrigé sur la branche ;
+2. des marqueurs historiques retirés du capability ledger lors du closeout ; restaurés sans changer le runtime.
 
-Aucun merge tant que ces preuves ne sont pas vertes et sans autorisation explicite utilisateur.
+Les workflows sont relancés sur le nouveau head. Ne pas annoncer la phase validée tant que suite V4 + Global + tests ciblés + compile/YAML/diff-check + live read-only ne sont pas verts sur un SHA exact.
 
-## Séparations à préserver
+## Invariants
 
-- #256 Mercari/SNKRDUNK reste une phase Japan Edge séparée ;
-- eBay actif Global n'est pas ajouté dans #257 ; phase suivante après stabilisation ;
-- Robot KB ne participe pas à la décision V4/Global ;
-- V5/PR #8 ne doit jamais être mergée sans autorisation explicite.
+- ASK/current auction/disparition != SOLD ;
+- aucune identité/langue/grader/grade/microvariante incompatible mélangée ;
+- aucun achat, bid, checkout ou paiement automatique ;
+- PR #8 reste protégée ;
+- Robot KB reste séparé ;
+- aucun durable write Cardova sans autorisation explicite ;
+- #257 reste DRAFT/NON MERGED sans autorisation explicite utilisateur.
+
+## Prochaine étape
+
+1. attendre/analyser CI sur le head exact ;
+2. corriger uniquement les régressions prouvées ;
+3. obtenir le bootstrap Global live read-only avec `notifications=false`, `transactions=false`, `marketplace_listing_is_valuation=false`, `gcc_history_economic_authority=false` ;
+4. inscrire SHA/runs finaux dans README + ledger ;
+5. ne pas merger #257 sans autorisation explicite.
 
 Ledger : `docs/v4-source-role-pricecharting-20260906.md`.
