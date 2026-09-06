@@ -59,7 +59,7 @@ jobs:
               try {
                 const data = await github.graphql(`
                   query($owner: String!, $repo: String!, $number: Int!) {
-                    repository(owner: $owner, name: $name) {
+                    repository(owner: $owner, name: $repo) {
                       issue(number: $number) {
                         comments(last: 50) {
                           nodes { body createdAt }
@@ -69,7 +69,7 @@ jobs:
                   }
                 `, {
                   owner: context.repo.owner,
-                  name: context.repo.repo,
+                  repo: context.repo.repo,
                   number: 150,
                 });
                 const comments = data.repository?.issue?.comments?.nodes || [];
