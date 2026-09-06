@@ -106,6 +106,7 @@ def _install_final_recall_hooks() -> None:
     if _FINAL_HOOKS_INSTALLED:
         return
     from v4_ask_fallback_review import install_v4_ask_fallback_review
+    from v4_crossmarket_recall_review import install_v4_crossmarket_recall_review
     from v4_tcgdex_name_filtered_coordinate_recovery import (
         install_v4_tcgdex_name_filtered_coordinate_recovery,
     )
@@ -114,9 +115,11 @@ def _install_final_recall_hooks() -> None:
     # unique-coordinate stack so it can narrow only the known denominator
     # ambiguity with exact card-name proof.
     install_v4_tcgdex_name_filtered_coordinate_recovery()
-    # Process wrapper is also intentionally last so it sees the final canonical
-    # opportunity stack and can emit review-only exact-ASK fallback alerts.
+    # Exact ASK fallback stays review-only. The cross-market layer then wraps it
+    # and may add conservative cross-grader/cross-language review signals; neither
+    # path rewrites its reference into an exact target-grader SOLD.
     install_v4_ask_fallback_review()
+    install_v4_crossmarket_recall_review()
     _FINAL_HOOKS_INSTALLED = True
 
 
