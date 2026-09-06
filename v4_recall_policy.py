@@ -30,7 +30,9 @@ PSA_RECALL_GRADES = frozenset(
 )
 
 _INSTALLED = False
+_FINAL_HOOKS_INSTALLED = False
 _ORIGINAL_ADAPTIVE_DISCOUNT = None
+_ORIGINAL_MAIN = None
 
 
 def _recall_floor() -> float:
@@ -98,8 +100,24 @@ def recall_adaptive_discount_threshold(
     return max(_recall_floor(), min(45.0, threshold))
 
 
+def _install_final_recall_hooks() -> None:
+    """Run after run_watcher_multimarket has installed its final process stack."""
+    global _FINAL_HOOKS_INSTALLED
+    if _FINAL_HOOKS_INSTALLED:
+        return
+    from v4_ask_fallback_review import install_v4_ask_fallback_review
+
+    install_v4_ask_fallback_review()
+    _FINAL_HOOKS_INSTALLED = True
+
+
+def _main_with_final_recall_hooks(*args, **kwargs):
+    _install_final_recall_hooks()
+    return _ORIGINAL_MAIN(*args, **kwargs)
+
+
 def install_v4_recall_policy() -> None:
-    global _INSTALLED, _ORIGINAL_ADAPTIVE_DISCOUNT
+    global _INSTALLED, _ORIGINAL_ADAPTIVE_DISCOUNT, _ORIGINAL_MAIN
     if _INSTALLED:
         return
 
@@ -112,6 +130,12 @@ def install_v4_recall_policy() -> None:
 
     # Keep user-facing diagnostics aligned with the effective recall floor.
     watcher.MIN_DISCOUNT = _recall_floor()
+
+    # Delay the process wrapper until watcher.main() is invoked: the canonical
+    # runner installs/replaces process_external_market_candidates after this
+    # bootstrap module, so installing the ASK fallback earlier would be lost.
+    _ORIGINAL_MAIN = watcher.main
+    watcher.main = _main_with_final_recall_hooks
 
     _INSTALLED = True
     watcher.log(
