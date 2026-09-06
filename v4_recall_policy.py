@@ -106,7 +106,16 @@ def _install_final_recall_hooks() -> None:
     if _FINAL_HOOKS_INSTALLED:
         return
     from v4_ask_fallback_review import install_v4_ask_fallback_review
+    from v4_tcgdex_name_filtered_coordinate_recovery import (
+        install_v4_tcgdex_name_filtered_coordinate_recovery,
+    )
 
+    # Resolver wrapper must run after the existing exact/alias/two-of-three/
+    # unique-coordinate stack so it can narrow only the known denominator
+    # ambiguity with exact card-name proof.
+    install_v4_tcgdex_name_filtered_coordinate_recovery()
+    # Process wrapper is also intentionally last so it sees the final canonical
+    # opportunity stack and can emit review-only exact-ASK fallback alerts.
     install_v4_ask_fallback_review()
     _FINAL_HOOKS_INSTALLED = True
 
@@ -131,9 +140,8 @@ def install_v4_recall_policy() -> None:
     # Keep user-facing diagnostics aligned with the effective recall floor.
     watcher.MIN_DISCOUNT = _recall_floor()
 
-    # Delay the process wrapper until watcher.main() is invoked: the canonical
-    # runner installs/replaces process_external_market_candidates after this
-    # bootstrap module, so installing the ASK fallback earlier would be lost.
+    # Delay final resolver/process wrappers until watcher.main() is invoked: the
+    # canonical runner installs/replaces those entrypoints after this bootstrap.
     _ORIGINAL_MAIN = watcher.main
     watcher.main = _main_with_final_recall_hooks
 
