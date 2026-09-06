@@ -1,162 +1,105 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-État re-vérifié le **4 septembre 2026** après les merges production #245 et #247 et leurs premières preuves naturelles Main Scanner. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
+État re-vérifié le **6 septembre 2026** après les merges production #253, #254 et #255. Le code/Git/GitHub live reste l'autorité ; re-vérifier `main` avant toute action importante.
 
 ## Autorité
 
 ```text
-V4 production branch             main
-V4 production HEAD               a7666faf4b0ef2fab74295a45ebcf75d9832f284 / #247 MERGED
-#247 validated head              03ce93ae08eedf3301813f030b67f120b7abd4a4
-#247 validation run              33799908680 SUCCESS
-#247 Main Scanner post-merge      33844655319 SUCCESS / exact a7666faf...
-#245 production merge            a39c693d629b003f69f66ba20753303b197737af
-#245 validated head              c553796d8829e5f6dd615acfc7177ddb60f4bf91
-#245 validation run              33796972288 SUCCESS / 898 PASS / 2 skipped
-#245 Main Scanner post-merge      33799767652 SUCCESS / exact a39c693d...
-V4 run registry                  issue #235 ACTIVE / issue #1 archive / #237 MERGED
-PokeTrace aggregate guard        #247 MERGED / degenerate STRONG -> WEAK/INSUFFICIENT
-Auction pagination preservation  #245 MERGED / stable default 100 rows/page preserved
-Auction recovery capacity        #229/#231 MERGED / adaptive sizing / hard cap 250
-Auction order hardening          #211/#212 MERGED
-Future-start auction guard       #220 + #243 MERGED / validated head 20e1a12e35464840952cdb9079e6063f014e3bef
-eBay bulk text                   #238/#239 MERGED / validated head 90741ac0eaca42f90a6bc7fca816d347aaccafeb
-eBay result before teardown      #242 MERGED / validated head 7c97d73a9caf93871d918a8dabc5a7be72375697
-TCGdex transport resilience      #216/#217 MERGED / 03824158ac899cf142199c42d4525386a573bc15
-TCGdex outage fallback           #222/#224 MERGED / 0be4dca95513e36f4e407ef7bac361fe488c1d36
-V5                               PR #8 / OPEN / DRAFT / NON MERGED
-Robot KB durable                 PostgreSQL local Mac / séparé de V4 / V4_USE=false
-Neon                             writers automatiques OFF / rollback manuel
+V4 production branch                 main
+V4 production HEAD                   9d3bb1b84d22c1534c24d7c58c5897ecce4b817f / #255 MERGED
+#255 validated head                  e886c649eea8633d39585aabca8fff0b58be4324
+#255 CI                              34036063564 / 34036063610 / 34036063594 SUCCESS
+#254 production merge                00e5502fb15c9a89d67a55b70cd566099911bcdb
+#254 validated head                  fbb7041f9fc44c338b102ec7325a6d6316f1e529
+#254 validation                      34031695933 attempt 2 SUCCESS / 920 PASS / 2 skipped
+#253 production merge                23e8e9904072d986e24d2a8fbccaa87568851f69
+Fast Lane exact post-#255            34037049703 SUCCESS
+Premier Main Scanner post-#255       34037829669 / exact 9d3bb1... / lancé naturellement
+V4 run registry                      issue #235 ACTIVE
+V5                                   PR #8 OPEN / DRAFT / NON MERGED
+Robot KB durable                     PostgreSQL local Mac / V4_USE=false
+Neon                                 writers automatiques OFF / recovery manuel
 ```
 
-## Phase runtime #247 — qualité des agrégats PokeTrace
+## Ce qui vient de changer
 
-### Problème
+### #254 — eBay salvage borné
 
-Une surface PokeTrace eBay gradée agrégée pouvait produire une enveloppe sans dispersion informative, par exemple `124.83–124.83 EUR / PSA 9 / 29 ventes`. Une telle forme ne prouve pas une distribution de marché et ne doit pas devenir seule une ancre `STRONG` / `EXTERNAL_RESCUE`.
+Deux Main Scanner naturels post-#253 ont montré le chemin pathologique suivant : body timeout -> `body_text_content` timeout -> `items_bulk_text` -> absence de fin de stage -> hard deadline 30 s.
 
-### Correctif
+#254 remplace ce salvage pathologique par un probe same-DOM strictement borné : maximum 4 `li.s-item`, `inner_text(timeout=600)` par ligne, exigence EUR/€, re-raise fail-closed si la preuve structurée est insuffisante. Aucun nouveau réseau, retry, budget ou changement SOLD/identité/économie.
 
-#247 installe un guard dans le bootstrap V4 avant le runner canonique. Pour une preuve PokeTrace `MATCHED + STRONG` :
+### #255 — autorité économique externe uniquement
+
+L'historique GCC n'est plus une fair-value authority. GCC reste l'autorité du listing courant et de son identité/timing, mais ne peut plus créer, confirmer, ancrer ou plafonner la fair value.
 
 ```text
-prix invalide / non positif      -> CLEAN_INSUFFICIENT / WEAK
-range total <= 0.01 EUR          -> CLEAN_INSUFFICIENT / WEAK
-estimate économique              -> retiré
-suite                             -> fallback PSA APR / eBay requis
-range réellement informatif      -> comportement historique conservé
+external STRONG                   -> chemin économique existant possible
+external PENDING / WEAK           -> fail-closed
+provider ERROR / UNAVAILABLE      -> fail-closed
+fallback GCC_ONLY                 -> interdit
+rejet GCC terminal de sécurité    -> reste terminal
 ```
 
-Aucune définition SOLD, identité, langue, grader, grade, microvariante, discovery GCC, seuil de décote, cap ou budget n'est relâché.
+Aucune définition SOLD, identité, langue, grader, grade, microvariante, limite provider ou transaction automatique n'est relâchée.
 
-Validation exacte :
+## Preuve production en cours
+
+Le premier Main Scanner observé sur l'exact SHA post-#255 est :
 
 ```text
-base                             a39c693d629b003f69f66ba20753303b197737af
-validated head                   03ce93ae08eedf3301813f030b67f120b7abd4a4
-validation run                   33799908680 SUCCESS
-suite V4                         PASS
-compile / YAML / diff-check      PASS
-focused aggregate guard tests    PASS
-read-only auction compare        PASS
-production merge                 a7666faf4b0ef2fab74295a45ebcf75d9832f284
+run      34037829669
+workflow GCC Auction Watcher
+head     9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
+event    workflow_dispatch externe / cadence naturelle
 ```
 
-### Preuve naturelle post-merge
+Tant qu'il n'est pas terminé et que ses logs ne sont pas audités, ne pas revendiquer de preuve live complète #254/#255 sur le Main Scanner. Ne pas lancer un scanner manuel en parallèle.
 
-Premier Main Scanner exact :
+À auditer dès completion :
+- eBay `body_text_content` / structured salvage / hard-timeout ;
+- attempted / sufficient / insufficient / unavailable / errors ;
+- PSA APR 403 et breaker ;
+- TCGdex / PokeTrace ;
+- fixed/external backlog et auction scope ;
+- absence de `GCC_ONLY` economics ;
+- external weak/pending/error bien fail-closed ;
+- strong externe encore capable de rescue si rencontré.
 
-```text
-run                              33844655319
-head                             a7666faf4b0ef2fab74295a45ebcf75d9832f284
-workflow                         SUCCESS
-scan_exit_code                   0
-duration                         175 s
-final opportunities              0
-fixed discovery                  3259 / 33 pages / COMPLETE
-auction scope                    COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
-auction rows / timers            100 / 100
-auction fallback                 false
-PokeTrace attempted              1
-PokeTrace strong / weak / errors 0 / 0 / 0
-```
+## Nouvelle phase : couverture SOLD externe
 
-**Limite de preuve :** ce run n'a pas rencontré un nouvel agrégat PokeTrace dégénéré STRONG. Il prouve le déploiement et la non-régression du runtime ; le déclenchement positif du guard est prouvé par les tests ciblés #247. Plusieurs Main Scanner naturels suivants sur `a7666...` sont également SUCCESS, discovery auction complète et fallback `false`.
+Le scanner GCC/discovery est désormais suffisamment durci pour que le principal rendement marginal vienne de la **qualité et couverture des preuves marché externes**.
 
-Ledger : `docs/v4-poketrace-aggregate-quality-guard-20260904.md`.
+Priorité canonique :
 
-## Phase runtime #245 — préserver le default de pagination durci
+1. SOLD exacts récents item-level ;
+2. SOLD exacts anciens ajustés temporellement si défendable ;
+3. ASK fixes compatibles ;
+4. auction snapshot ≤5 min seulement si aucun SOLD ;
+5. active auction = signal faible.
 
-### Incident naturel pré-fix
+### Reuse audit du 6 septembre
 
-Run `33795854886` sur `main@a93cd862...` :
+- **eBay V4** : source SOLD immédiate la plus utile ; conserver #137/#175/#189/#238/#239/#241/#242/#250/#251/#252/#253/#254. Améliorer la couverture seulement après preuve du bottleneck live ; ne pas augmenter les caps pour masquer des erreurs.
+- **eBay RapidAPI Robot KB** : shadow existant. Les rows restent `genuine_sale_evidence=false` tant que finalité/prix exacts ne sont pas corroborés indépendamment.
+- **Fanatics #197** : provider-level `PAID + isComplete=true` prouvé sur des cartes individuelles PSA. La devise n'était pas prouvée dans le contrat validé ; conserver en pending evidence jusqu'à fermeture explicite devise + identité + microvariante.
+- **COMC #198** : anonymous headless bloqué HTTP 403 ; pas de bypass.
+- **Cardova** : chemin strict de ventes finales prouvées dans le stack Robot KB/P3 ; durable write séparé et gardé par #210.
+- **PriceCharting V5** : guide values uniquement, pas item-level SOLD ; ne pas substituer à des ventes exactes.
 
-```text
-ENDING_SOON order drift          YES
-provider count hint              16264
-recovery capacity                100 -> 250 pages
-failure                          auction API safety limit 250 pages reached
-result                           fail-closed vers legacy fallback
-```
+## Invariants
 
-### Cause exacte
-
-Le wrapper future-start introduit par la lignée #220/#243 transmettait implicitement `page_size=24` même lorsque son caller n'avait demandé aucun override. La couche `v4_auction_pagination_stability` est volontairement durcie avec un default de **100 rows/page**.
-
-Pour ~16.2k rows, `100/page` nécessite environ 163 pages alors que `24/page` en nécessite environ 678. Le plafond 250 était donc atteint artificiellement.
-
-### Correctif et validation
-
-#245 rend le wrapper transparent quand `page_size` / `max_pages` ne sont pas explicitement fournis. Les overrides explicites restent respectés. **Le hard ceiling 250 pages n'est pas augmenté.**
-
-```text
-base                             a93cd8628b7ff8648d88b84f86a87406fb3ba7fd
-validated head                   c553796d8829e5f6dd615acfc7177ddb60f4bf91
-validation run                   33796972288 SUCCESS
-V4 suite                         898 PASS / 2 skipped
-compile / YAML / diff-check      PASS
-focused pagination tests         PASS
-read-only live auction compare   PASS
-effective / legacy               36 / 32
-legacy_only / unresolved         0 / 0
-production merge                 a39c693d629b003f69f66ba20753303b197737af
-```
-
-Premier Main Scanner exact post-merge `33799767652` : SUCCESS, `100/100` auction rows/timers, scope COMPLETE, fallback false, API page size 100. Ce run prouve le fast path normal ; la preuve du chemin pathologique reste la reproduction pré-fix `33795854886` + le test ciblé #245.
-
-Ledger : `docs/v4-auction-pagination-default-preservation-20260903.md`.
-
-## Future-start #243
-
-#243 ferme le bypass où une row API avec `minutes_to_end` pouvait éviter la vérification de la fiche GCC rendue. Sans preuve structurée de démarrage, la fiche est vérifiée avant toute économie : upcoming explicite => exclusion ; page ambiguë/erreur => fail-closed ; live rendu exige sémantique de bid + fin explicite.
-
-Incident déclencheur : Braixen #069/068 PSA 9 et Altaria #194/172 PSA 10 interprétées auparavant comme live alors que GCC affichait un starting price et un countdown-to-start. Validation `33794118816` SUCCESS, `896 PASS / 2 skipped`, merge runtime `3ada7785d3fbef8050a7712bc773a52fd569716d`.
-
-## eBay / PSA — état actuel
-
-#238/#239 réduit la lecture DOM via `all_inner_texts()` ; #242 conserve un résultat validé avant teardown Chromium bloqué. Les logs #247 montrent toujours des erreurs eBay et PSA APR HTTP 403 : ces problèmes provider restent séparés du guard PokeTrace et ne doivent pas être masqués par une hausse de caps.
-
-Le prochain travail eBay reste un diagnostic borné/read-only des phases worker. Aucun contournement anti-bot/WAF et aucune relaxation matching/SOLD/économie.
-
-## Invariants inchangés
-
-- #247 ne transforme aucune ASK/enchère courante en SOLD ;
-- #211/#212 + #229/#231 + #245 restent l'autorité discovery/recovery auction ;
-- hard ceiling recovery = `250`, pas de hausse opportuniste ;
-- cap économique auction `360` et priorité `≤5m` → `≤12m` → `≤60m` inchangés ;
-- #220/#243 future-start reste actif ;
-- TCGdex #216/#217 + #222/#224 restent stricts/fail-closed ;
-- eBay/PSA/provider errors restent fail-visible ;
-- `EXTERNAL_PENDING` ne doit pas être forcé par hausse opportuniste de caps ;
-- identité/grade/langue/microvariante incompatibles ne sont jamais mélangés ;
-- Robot KB reste séparé ; aucun durable write Cardova sans autorisation explicite ;
-- PR #8 / V5 reste expérimentale et non mergée ;
+- ASK, active auction, disparition et provider outage ne deviennent jamais SOLD ;
+- identité incertaine ou microvariante non prouvée reste bloquée ;
+- V4 et Robot KB restent séparés (`V4_USE=false`) ;
+- aucun durable Cardova write sans autorisation explicite ;
+- PR #8 ne doit pas être mergée sans autorisation explicite ;
 - aucun achat, bid, checkout ou paiement automatique.
 
 ## Prochaine étape
 
-1. Fermer le closeout docs #246 après nouvelle validation docs-only sur l'état `main@a7666...` et autorisation explicite de merge.
-2. Continuer d'observer naturellement le premier cas où le guard PokeTrace #247 se déclenche ; ne pas fabriquer un live positif par dispatch manuel.
-3. Continuer d'observer la pagination auction ; si `250 pages reached` réapparaît, inspecter avant toute modification et ne pas relever le hard cap par réflexe.
-4. Reprendre séparément l'investigation eBay stage-timed/read-only.
-5. Garder Robot KB/Cardova durable et V5 strictement séparés.
+1. Auditer le run naturel `34037829669` dès qu'il termine.
+2. Finaliser ce closeout docs avec la preuve exacte du run.
+3. Ouvrir la phase current-main **External SOLD Coverage** en réutilisant les lanes existantes, d'abord read-only/Robot KB, sans modifier l'économie V4 tant qu'une source n'a pas finalité + devise + identité + microvariante prouvées.
+4. Ne pas contourner COMC/PSA/eBay anti-bot et ne pas augmenter les caps par réflexe.
+5. Garder V5 #8 et Cardova durable séparés.
