@@ -89,8 +89,11 @@ jobs:
       - name: Scan GCC auctions
         id: scan
         env:
-          MAX_PRICE_EUR: "100"
-          MIN_DISCOUNT_PCT: "30"
+          # Recall-first production scope: the user manually rechecks alerts, so
+          # reduce false negatives while keeping identity and evidence classes strict.
+          MAX_PRICE_EUR: "250"
+          MIN_DISCOUNT_PCT: "20"
+          V4_RECALL_MIN_DISCOUNT_PCT: "20"
           MAX_AUCTION_MINUTES: "60"
           V4_AUCTION_EVALUATION_CAP: "360"
           FIXED_REEVALUATION_TTL_HOURS: "24"
@@ -124,12 +127,18 @@ jobs:
 
           # PriceCharting is a valuation-provider fallback only. No token is
           # required for the bounded public guide path; no secret is stored here.
-          # Only exact PSA 10 guide buckets may become automatic evidence and
-          # they require the stricter economic margin enforced in code.
+          # GUIDE remains GUIDE (never SOLD) and is used only when higher-priority
+          # exact SOLD evidence is unavailable.
           PRICECHARTING_ENABLED: "true"
           PRICECHARTING_MAX_CARDS_PER_RUN: "8"
           PRICECHARTING_TIMEOUT_SECONDS: "10"
           PRICECHARTING_PUBLIC_INTERVAL_SECONDS: "0.35"
+
+          # Exact active eBay BIN can also create a review-only ASK signal through
+          # the recall layer. ASK remains ASK and is never promoted to SOLD/FV proof.
+          V4_ASK_FALLBACK_MAX_CARDS_PER_RUN: "4"
+          V4_ASK_FALLBACK_HAIRCUT_PCT: "10"
+          V4_ASK_FALLBACK_MIN_DISCOUNT_PCT: "20"
 
           # Mislisted Slab / image OCR notification lane is disabled by V4
           # production policy in run_watcher_multimarket.py. No workflow env can
@@ -137,8 +146,8 @@ jobs:
 
           # Legacy direct eBay SOLD/Completed transport settings remain present
           # for compatibility, but the V4 source-role layer disables direct eBay
-          # scraping for fair-value authority. eBay active-listing opportunity
-          # discovery is a separate future adapter.
+          # scraping for fair-value authority. The active-BIN ASK review above is
+          # a distinct secondary signal and does not alter that source-role rule.
           EBAY_ENABLED: "true"
           EBAY_MAX_QUERIES_PER_CARD: "2"
           EBAY_MAX_CARDS_PER_RUN: "16"
@@ -161,9 +170,9 @@ jobs:
           printf '%s' "$GCC_SESSION_B64" | base64 --decode > gcc_session.json
           scan_exit_code=$?
           if [ "$scan_exit_code" -eq 0 ]; then
-            # Bootstrap the unchanged canonical runner with PR #145's proven
-            # bounded TCGdex retry policy plus a Main-only process-local outage
-            # circuit. Identity/economics remain canonical V4 and fail-closed.
+            # Bootstrap canonical V4 with bounded provider resilience, source-role
+            # PriceCharting fallback and recall-first economics. Identity and
+            # SOLD/ASK semantics remain strict/fail-closed.
             python run_watcher_multimarket_resilient.py
             scan_exit_code=$?
           fi
