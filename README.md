@@ -14,6 +14,9 @@ V4 production HEAD                   : 23e8e9904072d986e24d2a8fbccaa87568851f69
 V4 external fair-value authority     : PR #255 DRAFT / NON MERGED
 PR #255 branch                        : v4-external-fair-value-authority-20260906
 PR #255 base                          : 23e8e9904072d986e24d2a8fbccaa87568851f69
+Japan Edge external-first            : PR #256 DRAFT / STACKED ON #255 / NON MERGED
+PR #256 branch                        : v4-jp-market-providers-20260906
+PR #256 validated runtime head        : c49ef9342c5494ada178f1bdac882d31d82d3081
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -74,6 +77,32 @@ Implémentation #255 : `v4_external_fair_value_authority.py` neutralise uniqueme
 Ledger : `docs/v4-external-fair-value-authority-20260906.md`.
 
 **Sécurité déploiement :** #255 a été préparée sur branche dédiée pendant les enchères Weekly Auction du 6 septembre. **Ne pas merger/déployer pendant les enchères actives.** Aucun achat, bid, checkout ou paiement automatique n'est introduit.
+
+### Phase active — PR #256 : Japan Edge external-first + Mercari/SNKRDUNK
+
+#256 est stackée sur #255 et reste DRAFT/NON-MERGED. Elle corrige la lane Japan Edge pour respecter la même philosophie économique :
+
+- GCC fournit uniquement des **identités strictes Japanese PSA 10** à explorer ; ses prix historiques ne participent plus à la fair value Japan Edge ;
+- PokeTrace exact gradé sert de préfiltre externe borné ; les asks prometteurs sont confirmés via l'arbre externe existant eBay SOLD family + PSA APR lorsque disponible ;
+- Mercari était déjà un provider Japan Edge, mais une fiche explicitement vendue/fulfillée est désormais rejetée et une preuve positive d'achat actif est requise ;
+- SNKRDUNK est ajouté comme provider **ASK read-only** ; sold page ou disponibilité ambiguë => fail-closed ;
+- SNKRDUNK ne doit pas être présenté comme livrable directement en Suisse : la route japonaise/forwarder éventuelle reste une vérification opérateur ;
+- aucune ASK n'est transformée en SOLD et aucune transaction automatique n'est ajoutée.
+
+Validation exacte du runtime #256 :
+
+```text
+validated runtime head           : c49ef9342c5494ada178f1bdac882d31d82d3081
+workflow                         : Japan Edge Offline Validation
+run                              : 34037590449
+job                              : 101498384043
+unit tests                       : 31 PASS
+compile                          : PASS
+YAML                             : PASS
+diff-check                       : PASS
+```
+
+**Limite de preuve :** l'extraction live actuelle Mercari/SNKRDUNK n'est pas encore revendiquée comme prouvée ; #256 reste fail-closed et non déployée tant qu'une preuve read-only dédiée n'a pas été obtenue. Ledger : `docs/japan-edge-external-first-mercari-snkrdunk-20260906.md`.
 
 ---
 
@@ -283,6 +312,7 @@ Documents de reprise :
 - `docs/project-issue-inventory.md`
 - `docs/project-repository-snapshot.md`
 - `docs/v4-external-fair-value-authority-20260906.md`
+- `docs/japan-edge-external-first-mercari-snkrdunk-20260906.md`
 
 ---
 
@@ -295,6 +325,14 @@ V4 external fair value
   -> valider suite + live read-only sur le head exact
   -> vérifier un cas Poochyena-like avec strong external SOLD evidence
   -> ne pas merger pendant les enchères actives
+
+Japan Edge external-first
+  -> PR #256 DRAFT / STACKED ON #255 / NON MERGED
+  -> Mercari = ASK actif seulement; sold/fulfilled explicitement rejeté
+  -> SNKRDUNK = ASK read-only; Suisse direct non revendiquée
+  -> fair value = external exact graded SOLD, jamais GCC history
+  -> validation offline 34037590449 SUCCESS / 31 PASS
+  -> prochaine preuve = live read-only Mercari/SNKRDUNK sans notification
 
 V4 providers
   -> priorité aux SOLD exacts récents
