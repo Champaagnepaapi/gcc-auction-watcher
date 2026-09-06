@@ -19,6 +19,7 @@ from v4_cert_problem_notifications import install_v4_cert_problem_notifications
 from v4_edge_hunter_safety import install_v4_edge_hunter_safety
 from v4_exact_active_ask_position import install_v4_exact_active_ask_position
 from v4_external_coverage_drain import install_v4_external_coverage_drain
+from v4_external_fair_value_authority import install_v4_external_fair_value_authority
 from v4_external_provider_navigation_resilience import (
     install_v4_external_provider_navigation_resilience,
 )
@@ -152,6 +153,11 @@ if __name__ == "__main__":
     # fixed cards, and treat provider-budget exhaustion as scheduling pressure
     # rather than a six-hour provider failure backoff.
     install_v4_external_coverage_drain()
+    # GCC is now discovery/identity/current-price context only for economics.
+    # Historical GCC sales remain observable for KB/diagnostics but cannot create
+    # or anchor fair value. Strong external market evidence is required before a
+    # buy opportunity exists; pending/weak/unavailable external evidence fails closed.
+    install_v4_external_fair_value_authority()
     if _mislisted_slab_hunter_enabled():
         # Generic official-cert coverage stays available for supported graders.
         # PSA/PCA/CCC then receive the hardened browser/direct routes, followed
