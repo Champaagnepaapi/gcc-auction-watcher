@@ -84,8 +84,9 @@ class PriceChartingProvider:
     PriceCharting states that its current market prices are calculated from
     historic completed sales, while the official Prices API itself does not
     return historic item-level rows. Accordingly, V4 labels this evidence GUIDE,
-    never SOLD. Only the documented PSA 10 bucket is grader+grade exact enough to
-    become automatic evidence; generic Grade 8/9 buckets remain weak/context-only.
+    never SOLD. The low-level adapter keeps generic Grade 8/9 buckets distinct;
+    the explicit V4 policy layer may map them to PSA 8/9 valuation guides only
+    after the listing itself is already proven as an exact PSA card.
     """
 
     def __init__(
@@ -442,8 +443,11 @@ def _public_search_candidates(raw: str) -> tuple[Mapping[str, object], ...]:
     )
     for match in pattern.finditer(raw or ""):
         href = html.unescape(match.group("href"))
-        label = _normalize(_html_text(match.group("label")))
-        if not label:
+        # Keep the raw visible label for exact printed-number checks (#208 etc.).
+        # Normalization is performed separately by _score_candidate; removing
+        # punctuation here previously erased the '#' needed by _number_matches.
+        label = _html_text(match.group("label")).strip()
+        if not _normalize(label):
             continue
         url = urljoin(PRICECHARTING_BASE_URL, href)
         candidates.setdefault(
@@ -626,8 +630,8 @@ def install_v4_pricecharting_valuation_source_roles() -> None:
     layer. Here PSA APR remains the first exact fallback. Direct eBay SOLD scraping
     is deliberately disabled for economic valuation: eBay is reserved for a
     future active-listing opportunity scanner. PriceCharting then supplies a
-    bounded valuation fallback. Only its documented PSA 10 bucket can become
-    automatic strong evidence; generic grade buckets remain weak.
+    bounded valuation fallback. The explicit mandatory policy layer upgrades the
+    accepted exact-PSA Grade 8/9/10 guide mappings without fabricating SOLD rows.
     """
 
     current = watcher.fetch_external_market_evidence
