@@ -2,7 +2,7 @@
 
 Snapshot GitHub pertinent re-vérifié le **6 septembre 2026** après les merges #254 et #255. GitHub live reste l'autorité ; ce fichier classe les PR importantes, pas nécessairement chaque PR historique.
 
-> V4 production : `main@9d3bb1b84d22c1534c24d7c58c5897ecce4b817f`. #253, #254 et #255 sont **MERGED**.
+> V4 live `main@dfc548021c561479cc8758e2949d2c4629388d9d`. Le tree est identique au runtime #255 `9d3bb1b84d22c1534c24d7c58c5897ecce4b817f` après deux commits placeholder/revert net-zero. #253, #254 et #255 sont **MERGED**.
 
 ## Surface ouverte pertinente
 
