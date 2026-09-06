@@ -21,7 +21,7 @@ import v4_tcgdex_unique_coordinate_fallback as unique
 
 
 _TARGET_REASON = "TCGdex unique-coordinate printed number/denominator is not unique"
-_MIN_SINGLE_TOKEN_RATIO = 0.94
+_MIN_SINGLE_TOKEN_RATIO = 0.85
 _MIN_MULTI_TOKEN_RATIO = 0.90
 _MAX_LENGTH_DELTA = 2
 _ORIGINAL_RESOLVER = None
@@ -71,7 +71,8 @@ def _approximate_name_equivalent(listing_name: object, provider_name: object) ->
     # For multi-token names, require at least one substantial token to match
     # exactly. This catches tiny spelling noise around a proven coordinate while
     # avoiding broad semantic substitutions such as Brock's Ninetales -> Brock's
-    # Rhydon. Single-token Pokemon names use a stricter global ratio.
+    # Rhydon. Single-token Pokemon names can tolerate one small typo because the
+    # exact coordinate/language and unique-candidate gates already anchor identity.
     if len(left_tokens) > 1:
         exact_substantial = any(
             a == b and len(a) >= 3 for a, b in zip(left_tokens, right_tokens)
