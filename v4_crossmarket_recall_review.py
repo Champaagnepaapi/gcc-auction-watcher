@@ -14,7 +14,7 @@ import os
 from dataclasses import replace
 from datetime import datetime
 from email.header import Header
-from typing import Any, Mapping, Optional
+from typing import Mapping, Optional
 
 import watcher
 import v4_canonical_multimarket as multimarket
@@ -29,16 +29,18 @@ _INSTALLED = False
 
 def _max_cards() -> int:
     try:
-        return max(0, min(5, int(os.getenv("V4_CROSSMARKET_REVIEW_MAX_CARDS_PER_RUN", "3"))))
+        value = int(os.getenv("V4_CROSSMARKET_REVIEW_MAX_CARDS_PER_RUN", "3"))
     except ValueError:
-        return 3
+        value = 3
+    return max(0, min(5, value))
 
 
 def _min_discount() -> float:
     try:
-        return max(15.0, min(45.0, float(os.getenv("V4_CROSSMARKET_REVIEW_MIN_DISCOUNT_PCT", "20"))))
+        value = float(os.getenv("V4_CROSSMARKET_REVIEW_MIN_DISCOUNT_PCT", "20"))
     except ValueError:
-        return 20.0
+        value = 20.0
+    return max(15.0, min(45.0, value))
 
 
 def _state_key(lot: watcher.Lot) -> str:
@@ -69,8 +71,14 @@ def _mark_sent(state: dict, lot: watcher.Lot, now: datetime, reference: float) -
 def _priority(candidate: watcher.ValuationCandidate) -> tuple[int, float, float]:
     lot = candidate.lot
     if lot.source_type == "auction":
-        minutes = float(lot.minutes_to_end if lot.minutes_to_end is not None else 9999)
-        return (0 if minutes <= 12 else 1, minutes, float(lot.current_price or 0.0))
+        minutes = float(
+            lot.minutes_to_end if lot.minutes_to_end is not None else 9999
+        )
+        return (
+            0 if minutes <= 12 else 1,
+            minutes,
+            float(lot.current_price or 0.0),
+        )
     return (2, float(lot.current_price or 0.0), 0.0)
 
 
@@ -105,7 +113,9 @@ def _english_bridge(
     if not canonical.card_id or not canonical.set_id or not canonical.local_id:
         return None
     try:
-        status, detail = multimarket._fetch_tcgdex_card_detail("en", canonical.card_id)
+        status, detail = multimarket._fetch_tcgdex_card_detail(
+            "en", canonical.card_id
+        )
     except Exception:
         return None
     if status != 200 or not isinstance(detail, Mapping):
@@ -133,8 +143,16 @@ def _english_bridge(
         full_number=canonical.full_number,
         name=name,
         language_code="en",
-        pricing=detail.get("pricing") if isinstance(detail.get("pricing"), Mapping) else {},
-        variants=detail.get("variants") if isinstance(detail.get("variants"), Mapping) else canonical.variants,
+        pricing=(
+            detail.get("pricing")
+            if isinstance(detail.get("pricing"), Mapping)
+            else {}
+        ),
+        variants=(
+            detail.get("variants")
+            if isinstance(detail.get("variants"), Mapping)
+            else canonical.variants
+        ),
         reason=canonical.reason,
         unique_name_number=canonical.unique_name_number,
     )
@@ -167,7 +185,11 @@ def _reference_evidence(
     if not cross_grader and not cross_language:
         return None
 
-    grade_text = str(int(reference_grade)) if reference_grade.is_integer() else str(reference_grade)
+    grade_text = (
+        str(int(reference_grade))
+        if reference_grade.is_integer()
+        else str(reference_grade)
+    )
     proxy_lot = replace(proxy_lot, grader="PSA", grade=grade_text)
     evidence = _ORIGINAL_POKETRACE(proxy_lot, proxy_canonical, budget, now)
     if (
@@ -197,11 +219,13 @@ def _notify(
     if cross_language:
         flags.append("CROSS-LANGUAGE")
     flags_text = " + ".join(flags)
-    target_grade = watcher.format_grade_label(lot.grader, lot.grade) or "grade inconnu"
+    target_grade = (
+        watcher.format_grade_label(lot.grader, lot.grade) or "grade inconnu"
+    )
     ref_grade = f"PSA {reference_grade:g}"
     timing = ""
-    if lot.source_type == "auction":
-        timing = f"Fin: {lot.minutes_to_end} min\n" if lot.minutes_to_end is not None else ""
+    if lot.source_type == "auction" and lot.minutes_to_end is not None:
+        timing = f"Fin: {lot.minutes_to_end} min\n"
     sales = evidence.estimate.exact_grade_count if evidence.estimate is not None else 0
     msg = (
         f"GCC REVIEW — {flags_text}\n\n"
@@ -213,7 +237,8 @@ def _notify(
         f"Haircut incertitude {haircut_pct:.0f}%: {reference_eur:.2f} €\n"
         f"Décote vs référence haircutée: {discount_pct:.1f}%\n"
         f"{timing}"
-        "SIGNAL DE REVUE: le grader/langue de référence n'est PAS traité comme un comparable exact.\n"
+        "SIGNAL DE REVUE: le grader/langue de référence n'est PAS traité comme "
+        "un comparable exact.\n"
         "Vérifier manuellement les SOLD exacts de la cible avant décision.\n\n"
         f"{lot.url}"
     )
@@ -226,7 +251,9 @@ def _notify(
             f"{watcher.NTFY_SERVER}/{watcher.NTFY_TOPIC}",
             data=msg.encode("utf-8"),
             headers={
-                "Title": Header(f"GCC REVIEW — {flags_text}", "utf-8").encode(),
+                "Title": Header(
+                    f"GCC REVIEW — {flags_text}", "utf-8"
+                ).encode(),
                 "Priority": "4",
                 "Tags": "mag,card_index",
             },
@@ -236,29 +263,15 @@ def _notify(
         watcher.log(f"Cross-market review ntfy échouée: {type(exc).__name__}")
 
 
-def process_with_crossmarket_review(
-    page,
-    candidates,
-    state,
-    budgets,
-    diagnostics,
-    run_now,
-):
-    del page  # provider work below is HTTP/TCGdex/PokeTrace, not Playwright
-    opportunities = _ORIGINAL_PROCESS(
-        page if False else None, candidates, state, budgets, diagnostics, run_now
-    )
-    # The delegate above must receive its original page. The intentionally dead
-    # expression is replaced below by the installer wrapper closure in tests;
-    # production uses `_process_delegate` to preserve the actual page.
-    return opportunities
-
-
 def _process_delegate(page, candidates, state, budgets, diagnostics, run_now):
     opportunities = _ORIGINAL_PROCESS(
         page, candidates, state, budgets, diagnostics, run_now
     )
-    if _max_cards() <= 0 or not multimarket.POKETRACE_ENABLED or not multimarket.POKETRACE_API_KEY:
+    if (
+        _max_cards() <= 0
+        or not multimarket.POKETRACE_ENABLED
+        or not multimarket.POKETRACE_API_KEY
+    ):
         return opportunities
 
     actionable = {str(op.lot.url or "") for op in opportunities}
@@ -313,7 +326,8 @@ def _process_delegate(page, candidates, state, budgets, diagnostics, run_now):
 
     watcher.log(
         "Cross-market recall review: "
-        f"probed={reviewed}/{_max_cards()} | poketrace_requests={budget.poketrace_requests} | "
+        f"probed={reviewed}/{_max_cards()} | "
+        f"poketrace_requests={budget.poketrace_requests} | "
         f"min_discount={_min_discount():.0f}%"
     )
     return opportunities
