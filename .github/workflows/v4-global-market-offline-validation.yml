@@ -25,6 +25,7 @@ on:
       - "v4_tcgdex_japanese_set_registry.py"
       - "v4_tcgdex_japanese_set_aliases.py"
       - "v4_poketrace_market_retrieval.py"
+      - "v4_pricecharting_valuation.py"
       - "v4_global_rejection_diagnostics.py"
       - "v4_global_retrieval_hardening.py"
       - "v4_global_retrieval_hardening_v2.py"
@@ -71,6 +72,9 @@ jobs:
       - name: Run existing V4 multimarket regression tests
         run: python -m unittest discover -s tests -p "test_v4_*multimarket*.py" -v
 
+      - name: Run PriceCharting source-role tests
+        run: python -m unittest tests.test_v4_pricecharting_valuation -v
+
       - name: Compile changed Python files
         run: |
           python -m py_compile v4_global_market_core.py
@@ -93,6 +97,7 @@ jobs:
           python -m py_compile v4_tcgdex_japanese_set_registry.py
           python -m py_compile v4_tcgdex_japanese_set_aliases.py
           python -m py_compile v4_poketrace_market_retrieval.py
+          python -m py_compile v4_pricecharting_valuation.py
           python -m py_compile v4_global_rejection_diagnostics.py
           python -m py_compile v4_global_retrieval_hardening.py
           python -m py_compile v4_global_retrieval_hardening_v2.py
@@ -105,6 +110,7 @@ jobs:
           python -m py_compile v4_market_fanatics_bridge.py
           python -m py_compile v4_market_comc_bridge.py
           python -m py_compile v4_market_verified_offer.py
+          python -m py_compile tests/test_v4_pricecharting_valuation.py
           python -m py_compile tests_global/test_v4_global_market_core.py
           python -m py_compile tests_global/test_v4_global_live_shadow.py
           python -m py_compile tests_global/test_v4_global_comc_hardening.py
@@ -161,6 +167,10 @@ jobs:
       GLOBAL_PPT_MAX_CREDITS: "180"
       GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
       V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"
+      PRICECHARTING_ENABLED: "true"
+      PRICECHARTING_MAX_CARDS_PER_RUN: "8"
+      PRICECHARTING_TIMEOUT_SECONDS: "10"
+      PRICECHARTING_PUBLIC_INTERVAL_SECONDS: "0.35"
       GLOBAL_POKETRACE_CANDIDATE_DIAGNOSTICS: "true"
       GLOBAL_MAGI_REJECTION_DIAGNOSTICS: "true"
       GLOBAL_MAGI_REJECTION_DIAGNOSTICS_MAX_TOTAL: "30"
@@ -234,9 +244,15 @@ jobs:
           assert report.get('mode') == 'READ_ONLY_MARKETPLACE_DISCOVERY_VALIDATION'
           assert report.get('notifications') is False
           assert report.get('transactions') is False
+          discovery = report.get('marketplace_discovery') or {}
+          assert discovery.get('marketplace_adapters_independent') is True
+          assert discovery.get('marketplace_sources_have_valuation_authority') is False
+          assert discovery.get('direct_ebay_sold_is_valuation_source') is False
           safety = report.get('safety') or {}
           assert safety.get('identity_gate_relaxed') is False
           assert safety.get('marketplace_ask_is_sold') is False
+          assert safety.get('marketplace_listing_is_valuation') is False
+          assert safety.get('gcc_history_economic_authority') is False
           for key in ('automatic_purchase','automatic_bid','automatic_checkout','automatic_payment'):
               assert safety.get(key) is False
           delivery = report.get('notification_delivery') or {}
@@ -244,7 +260,7 @@ jobs:
           assert delivery.get('sent') == 0
           print(json.dumps({
               'mode': report.get('mode'),
-              'marketplace_discovery': report.get('marketplace_discovery'),
+              'marketplace_discovery': discovery,
               'economic_confirmation': report.get('economic_confirmation', {}),
               'notification_delivery': delivery,
               'safety': safety,
