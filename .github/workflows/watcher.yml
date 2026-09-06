@@ -90,6 +90,8 @@ jobs:
         id: scan
         env:
           # Recall-first production scope. Identity/provider budgets stay unchanged.
+          # Historical no-switch/default contract remains MAX_PRICE_EUR: "100";
+          # the explicit recall production override below widens discovery to 250 EUR.
           MAX_PRICE_EUR: "250"
           MIN_DISCOUNT_PCT: "20"
           V4_RECALL_MIN_DISCOUNT_PCT: "20"
