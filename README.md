@@ -10,46 +10,68 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production HEAD                   : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
-V4 external fair-value authority     : #255 MERGED / validated head e886c649eea8633d39585aabca8fff0b58be4324
-eBay bounded structured salvage      : #254 MERGED / validated head fbb7041f9fc44c338b102ec7325a6d6316f1e529
-eBay structured salvage              : #253 MERGED / validated head 4ced75070cc274abf99ea59f7995d356cbb6dd77
-PokeTrace aggregate guard            : #247 MERGED
-Auction pagination preservation      : #245 MERGED
-Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
-Auction order-drift hardening        : #211/#212 MERGED
-Future-start auction guard           : #220 + #243 MERGED
-V4 run registry                      : issue #235 ACTIVE / issue #1 archive saturée
-TCGdex transport resilience          : #216/#217 MERGED
-TCGdex outage fallback               : #222/#224 MERGED
-External pending throughput          : #214 MERGED / P4 16 + eBay 16 / auctions eBay max 4
-Magi deterministic identity          : #174/#177 MERGED
-Magi recovery budget                 : #178 MERGED / recovery 36 / broad max 28
-Global schedule watchdog             : #179 MERGED
-Robot KB local cutover               : #166 / PostgreSQL Mac ACTIF
-Robot KB multisource                 : #180 MERGED
-Robot KB durable                     : PostgreSQL local Mac / V4_USE=false
-Neon                                 : writers automatiques OFF / rollback manuel
-V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
-TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
+V4 live GitHub HEAD                   : dfc548021c561479cc8758e2949d2c4629388d9d
+V4 runtime tree baseline              : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f / #255
+V4 external fair-value authority      : #255 MERGED / validated head e886c649eea8633d39585aabca8fff0b58be4324
+eBay bounded structured salvage       : #254 MERGED / validated head fbb7041f9fc44c338b102ec7325a6d6316f1e529
+eBay structured salvage               : #253 MERGED / validated head 4ced75070cc274abf99ea59f7995d356cbb6dd77
+PokeTrace aggregate guard             : #247 MERGED
+Auction pagination preservation       : #245 MERGED
+Auction recovery capacity             : #229/#231 MERGED / adaptive sizing / hard cap 250
+Auction order-drift hardening         : #211/#212 MERGED
+Future-start auction guard            : #220 + #243 MERGED
+V4 run registry                       : issue #235 ACTIVE / issue #1 archive saturée
+TCGdex transport resilience           : #216/#217 MERGED
+TCGdex outage fallback                : #222/#224 MERGED
+External pending throughput           : #214 MERGED / P4 16 + eBay 16 / auctions eBay max 4
+Magi deterministic identity           : #174/#177 MERGED
+Magi recovery budget                  : #178 MERGED / recovery 36 / broad max 28
+Global schedule watchdog              : #179 MERGED
+Robot KB local cutover                : #166 / PostgreSQL Mac ACTIF
+Robot KB multisource                  : #180 MERGED
+Robot KB durable                      : PostgreSQL local Mac / V4_USE=false
+Neon                                  : writers automatiques OFF / rollback manuel
+V5 expérimentale                      : PR #8 / OPEN / DRAFT / NON MERGED
+TCGdex source pin                     : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
+
+Après le merge #255, `main` a avancé de deux commits de placeholder/revert jusqu'à `dfc548...`. La comparaison GitHub `9d3bb1... → dfc548...` retourne **0 fichier modifié** : le tree runtime reste identique à celui de #255. Ne pas interpréter ces deux commits net-zero comme une nouvelle capacité V4.
 
 ### Phase closeout — #253 / #254 / #255
 
 La production V4 a désormais deux propriétés importantes : le chemin eBay de récupération après timeout est borné, et l'historique GCC n'est plus une autorité économique de fair value.
 
 ```text
-#253 production merge                : 23e8e9904072d986e24d2a8fbccaa87568851f69
-#254 production merge                : 00e5502fb15c9a89d67a55b70cd566099911bcdb
-#255 production merge                : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
-#254 validation                      : run 34031695933 attempt 2 SUCCESS
-#254 V4 suite                        : 920 PASS / 2 skipped
-#255 validation                      : 34036063564 / 34036063610 / 34036063594 SUCCESS
-Fast Lane exact post-#255            : run 34037049703 SUCCESS
-Premier Main Scanner exact post-#255 : run 34037829669 lancé naturellement / workflow_dispatch externe
+#253 production merge                 : 23e8e9904072d986e24d2a8fbccaa87568851f69
+#254 production merge                 : 00e5502fb15c9a89d67a55b70cd566099911bcdb
+#255 production merge                 : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
+#254 validation                       : run 34031695933 attempt 2 SUCCESS
+#254 V4 suite                         : 920 PASS / 2 skipped
+#255 validation                       : 34036063564 / 34036063610 / 34036063594 SUCCESS
+Fast Lane exact post-#255             : run 34037049703 SUCCESS
+Premier Main Scanner exact post-#255  : run 34037313029 / #3936 / SUCCESS
+Second run exact observé              : 34037829669 / CANCELLED / ne pas utiliser comme preuve
 ```
 
-Le Main Scanner `34037829669` est le premier run observé sur l'exact SHA `9d3bb1...` après le merge #255. Tant qu'il n'est pas terminé et audité, ne pas présenter #254/#255 comme live-proven sur le chemin Main Scanner complet ; les tests/CI et le Fast Lane post-merge sont déjà verts.
+### Premier Main Scanner post-#255 — preuve production
+
+Le premier Main Scanner naturel sur l'exact SHA de merge #255 est **`34037313029`**, run #3936, `workflow_dispatch` externe, terminé **SUCCESS**.
+
+```text
+fixed discovery                       : 3259 listings / 33 pages / COMPLETE
+auction rows / timers                 : 100 / 100
+auction scope                         : COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+external deterministic candidates     : 9
+external usable strong                : 0 / 9
+PokeTrace                             : 0 STRONG / 9 WEAK
+PSA APR                               : HTTP 403 -> breaker fail-closed
+eBay                                  : attempted 16 / sufficient 0 / insufficient 11 / unavailable 5 / errors 5
+final opportunities                   : 0
+```
+
+**#254 live-proven :** sur les pages pathologiques, `body_inner_text` atteint ~2500 ms puis #251 `body_text_content` ~700 ms et échoue ; #254 exécute ensuite au plus **4** lectures structurées `items_item_text` avec `inner_text(timeout=600)`. Les workers concernés terminent/preservent leur résultat vers ~7.6–7.9 s au lieu de rester dans le `all_inner_texts()` non borné jusqu'au hard deadline 30 s. Aucun nouveau circuit-open 30 s du salvage #253 n'a été observé.
+
+**#255 live-proven pour le fail-closed :** aucune des 9 preuves externes du run n'était STRONG ; aucune opportunité n'a donc été créée par l'historique GCC. Le label/télémétrie historique `GCC_ONLY` peut encore apparaître dans les compteurs internes, mais **il ne crée plus de fair value ni d'opportunité économique**. Ce run ne prouve pas positivement `EXTERNAL_RESCUE`, faute de sample STRONG ; ce chemin reste couvert par les tests ciblés #255.
 
 ### Politique économique production — GCC n'est plus une fair value
 
@@ -271,7 +293,7 @@ Migration Neon → Mac historiquement vérifiée : 1 087 015 lignes, 35 tables, 
 - #210 reste OPEN/DRAFT/NON-MERGED et prépare seulement un commit durable Cardova gardé par autorisation explicite + backup + locks.
 - Aucun write durable Cardova sans autorisation explicite opérateur.
 
-## Couverture SOLD externe — prochaine phase
+## Couverture SOLD externe — phase courante
 
 Le reuse audit du 6 septembre conclut :
 
@@ -283,6 +305,8 @@ Le reuse audit du 6 septembre conclut :
 - PriceCharting V5 = guide values, pas historique item-level SOLD ; ne pas le substituer aux ventes exactes.
 
 La prochaine capacité doit donc **augmenter la couverture de SOLD exacts sans baisser les gates** : mesurer les trous de couverture, réutiliser les preuves provider existantes, puis fermer explicitement finalité + devise + identité + microvariante avant toute promotion `SALE_TRANSACTION` ou tout usage économique V4.
+
+Matrice et plan détaillés : `docs/external-sold-coverage-phase-20260906.md`.
 
 ---
 
@@ -323,6 +347,7 @@ Documents de reprise :
 - `docs/project-issue-inventory.md`
 - `docs/project-repository-snapshot.md`
 - `docs/v4-external-fair-value-authority-20260906.md`
+- `docs/external-sold-coverage-phase-20260906.md`
 
 ---
 
@@ -330,15 +355,16 @@ Documents de reprise :
 
 ```text
 V4 production proof
-  -> attendre et auditer le premier Main Scanner naturel exact sur 9d3bb1...
-  -> run observé : 34037829669
-  -> vérifier #254 eBay bounded salvage + #255 fail-closed external-FV policy
+  -> #254 bounded eBay salvage live-proven sur 34037313029
+  -> #255 fail-closed external-FV live-proven sur 34037313029
+  -> positive EXTERNAL_RESCUE non observé dans ce sample, tests ciblés restent la preuve
   -> ne pas déclencher un Main Scanner manuel en parallèle
 
 External SOLD coverage
   -> priorité aux SOLD exacts récents et item-level
-  -> commencer par mesurer les trous et réutiliser eBay/Fanatics/Cardova existants
-  -> Fanatics : PAID+complete prouvé, devise/identité exacte encore à fermer avant SALE_TRANSACTION
+  -> commencer par un port current-main read-only des preuves Fanatics #197
+  -> PAID+complete prouvé, currency/identité exacte doivent rester explicitement fermées avant SALE_TRANSACTION
+  -> eBay V4 reste priorité live ; analyser les provider failures réels sans hausse réflexe de caps
   -> COMC anonymous headless : 403, pas de bypass
   -> PriceCharting : guide value seulement, jamais substitut à un SOLD exact
 
