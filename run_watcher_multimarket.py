@@ -39,6 +39,7 @@ from v4_notification_signal_quality_guard import (
     install_v4_notification_signal_quality_guard,
 )
 from v4_poketrace_market_retrieval import install_v4_poketrace_market_retrieval
+from v4_pricecharting_valuation import install_v4_pricecharting_valuation_source_roles
 from v4_private_auction_coverage import install_v4_private_auction_coverage
 from v4_provider_rejection_observability import (
     install_v4_provider_rejection_observability,
@@ -158,6 +159,11 @@ if __name__ == "__main__":
     # or anchor fair value. Strong external market evidence is required before a
     # buy opportunity exists; pending/weak/unavailable external evidence fails closed.
     install_v4_external_fair_value_authority()
+    # Opportunity marketplaces and fair-value providers are separate roles.
+    # Direct eBay scraping is removed from valuation; PokeTrace remains first,
+    # PSA APR stays the exact fallback, then bounded PriceCharting valuation is
+    # allowed (public guide without token, official API if a token is configured).
+    install_v4_pricecharting_valuation_source_roles()
     if _mislisted_slab_hunter_enabled():
         # Generic official-cert coverage stays available for supported graders.
         # PSA/PCA/CCC then receive the hardened browser/direct routes, followed
