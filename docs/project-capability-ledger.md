@@ -60,22 +60,26 @@ Contrat :
 #257 propose :
 
 ```text
-preuve forte PPT/PokeTrace SOLD-derived
-        -> PSA APR exact si applicable
-        -> PriceCharting guide fallback borné
+preuves exactes/récentes SOLD-derived quand disponibles
+        + PriceCharting consulté systématiquement comme guide de référence
+        + PSA APR / PokeTrace selon disponibilité et identité exacte
 ```
 
 Direct eBay SOLD page scraping perd son autorité de fair value dans #257.
 
 PriceCharting :
 
-- guide de prix, jamais faux SOLD item-level ;
-- aucune `ComparableSale` synthétique ;
-- PSA 10 explicite seulement pour usage automatique ;
-- grade 9/8 générique = WEAK/contexte ;
-- guide seul => décote minimale 40 % ;
-- guide ne peut pas écraser une preuve SOLD forte ni résoudre un conflit de providers SOLD ;
-- public read-only fallback borné sans secret ; API officielle facultative si token injecté par environnement.
+- **guide de prix obligatoire comme référence** pour chaque identité PSA compatible évaluée ;
+- jamais présenté comme un faux SOLD item-level ; aucune `ComparableSale` synthétique ;
+- `PSA 10` PriceCharting -> guide PSA 10 ;
+- `Grade 9` PriceCharting -> accepté comme **guide de valorisation PSA 9** lorsque le listing est déjà prouvé PSA 9 exact ;
+- `Grade 8` PriceCharting -> accepté comme **guide de valorisation PSA 8** lorsque le listing est déjà prouvé PSA 8 exact ;
+- PSA 8.5 n'est pas automatiquement rabattue sur Grade 8 ;
+- un guide PriceCharting compatible peut suffire seul à établir une estimation si les preuves SOLD-derived sont indisponibles ;
+- **pas de pénalité spéciale 40 %** : le seuil économique normal V4 s'applique (30 % actuellement) ;
+- des SOLD exacts/récents plus forts gardent la priorité économique et ne sont pas écrasés par le guide ;
+- une panne PriceCharting reste visible mais n'efface pas une preuve SOLD forte déjà établie ;
+- public read-only fallback sans secret ; API officielle facultative si token injecté par environnement.
 
 Architecture retenue : **un orchestrateur Global + adapters indépendants**, pas un bot complet par vault. Cela conserve une seule implémentation des gates d'identité, FX, valorisation, déduplication, économie et notifications.
 
@@ -113,6 +117,8 @@ Après dérive d'ordre prouvée uniquement : budget adaptatif borné, `api_total
 
 Fixed `/on-sale-items`, auctions `AUCTION + ON_SALE + ENDING_SOON`, horizon principal <=60 min + safety-net legacy, dérive d'ordre récupérée de manière exhaustive bornée. Main Scanner cadencé extérieurement ; pas de cron GitHub parallèle.
 
+Capacités structurantes : #9, #50, #52, #104, #211/#212, #220, #229/#231, #243, #245.
+
 ## #238/#239 + #242 + #253 — eBay worker resilience — `PROD_V4`
 
 Résilience transport historique sans changement de matching/SOLD/identité. #257 est distinct : il change le **rôle économique** du direct eBay scraper, pas ses anciens mécanismes de transport.
@@ -135,13 +141,15 @@ Budgets/cooldowns historiques restent bornés ; provider failures restent fail-v
 
 ## TCGdex / PokeTrace #119→#135 — `PROD_V4`
 
-Exact-coordinate, catalogue uniqueness, source-pinned finish/set et PokeTrace market-only après identité TCGdex. Aucun alias treadmill.
+Exact-coordinate, catalogue uniqueness, source-pinned finish/set et PokeTrace market-only après identité TCGdex. Le fallback générique catalogue immuable reste une fondation récupérée ; aucun alias treadmill. PR #126 = `SUPERSEDED` par #127→#135.
 
 ---
 
 # Global Multi-Vault
 
-Production actuelle : GCC/Cardova/Magi/Fanatics/COMC → identité commerciale exacte → TCGdex exact + microvariante → preuves externes → décision. Disappearance != SOLD ; ACTIVE_AUCTION non actionnable ; aucune transaction.
+#139 a réintégré/revalidé le stack historique #108/#109/#110/#113/#114/#115/#138.
+
+Production actuelle : GCC/Cardova/Magi/Fanatics/COMC → identité commerciale exacte → TCGdex exact + microvariante → preuves externes → décision. Disappearance != SOLD ; ACTIVE_AUCTION non actionnable ; aucune transaction. PPT = `SOLD_AGGREGATED`, jamais item-level SOLD.
 
 PR #257 remplace le couplage économique restant par une séparation explicite : marketplace adapters = opportunités uniquement ; valuation providers = fair value uniquement.
 
