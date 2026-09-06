@@ -37,10 +37,12 @@ def _gcc(*, terminal: bool = False) -> watcher.GccMarketEvidence:
     )
 
 
-def _external() -> watcher.ExternalMarketEvidence:
+def _external(
+    status: str = watcher.EXTERNAL_TRANSIENT_UNAVAILABLE,
+) -> watcher.ExternalMarketEvidence:
     return watcher.ExternalMarketEvidence(
         identity_key="poochyena|208/172|ja|psa|10",
-        status=watcher.EXTERNAL_TRANSIENT_UNAVAILABLE,
+        status=status,
         note="provider unavailable",
     )
 
@@ -62,6 +64,27 @@ def test_nonterminal_gcc_history_loses_economic_authority() -> None:
 def test_terminal_gcc_rejection_is_preserved() -> None:
     terminal = _gcc(terminal=True)
     assert gcc_without_economic_authority(terminal) is terminal
+
+
+def test_unavailable_external_cannot_fallback_to_gcc_economics() -> None:
+    result = watcher.arbitrate_market_evidence(
+        gcc_without_economic_authority(_gcc()),
+        _external(watcher.EXTERNAL_TRANSIENT_UNAVAILABLE),
+    )
+
+    assert result.opportunity is None
+    assert result.external_decision == "UNAVAILABLE"
+
+
+def test_pending_external_cannot_fallback_to_gcc_economics() -> None:
+    result = watcher.arbitrate_market_evidence(
+        gcc_without_economic_authority(_gcc()),
+        _external(watcher.EXTERNAL_PENDING),
+    )
+
+    assert result.opportunity is None
+    assert result.path == watcher.PATH_EXTERNAL_PENDING
+    assert result.external_decision == "PENDING"
 
 
 def test_installer_passes_neutralized_gcc_to_existing_arbitration(monkeypatch) -> None:
