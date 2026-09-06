@@ -2,80 +2,72 @@
 
 ## Scope
 
-PR #257, branch `fix/v4-source-role-pricecharting-20260906`.
+PR #257, branch `fix/v4-source-role-pricecharting-20260906` — `DRAFT_VALIDATION`, non mergée.
 
-This phase separates **where the robot can buy** from **how the robot values a card**.
+Cette phase sépare **où le robot peut acheter** de **comment le robot valorise une carte**.
 
 ## Opportunity sources
 
-Current Global adapters:
+Adapters Global actuels : GCC, Fanatics, COMC, Magi, Cardova.
 
-- GCC
-- Fanatics
-- COMC
-- Magi
-- Cardova
+Leur prix est uniquement un coût d'acquisition potentiel. `FIXED_ASK` et `AUCTION_SNAPSHOT_LE5` peuvent être évalués comme offres ; aucun ne devient un SOLD. Un listing marketplace ne peut créer, ancrer, confirmer, plafonner ou conflict-block la fair value.
 
-Their listing price is only a candidate acquisition cost. `FIXED_ASK` and `AUCTION_SNAPSHOT_LE5` may be evaluated as offers; neither is a SOLD record. A marketplace listing cannot create, anchor, confirm, cap or conflict-block fair value.
-
-Mercari/SNKRDUNK remain in separate draft PR #256. Active eBay opportunity discovery is not implemented in #257 and must be added later as another independent adapter.
+Mercari/SNKRDUNK restent dans la PR #256 séparée. eBay actif n'est pas implémenté dans #257 et devra être un adapter d'opportunités indépendant.
 
 ## Valuation sources
 
-Priority in #257:
+Politique #257 :
 
-1. strong compatible SOLD-derived aggregate evidence from the existing PokeTrace / PokemonPriceTracker path;
-2. PSA APR exact PSA evidence where applicable;
-3. bounded PriceCharting guide fallback.
+1. SOLD exacts/récents et preuves SOLD-derived compatibles gardent la priorité économique lorsqu'ils existent ;
+2. PSA APR / PokeTrace / PokemonPriceTracker restent utilisables selon leurs preuves et gates ;
+3. **PriceCharting est consulté systématiquement comme guide de référence** pour toute identité PSA compatible évaluée ;
+4. un guide PriceCharting compatible peut suffire seul si une meilleure preuve SOLD-derived n'est pas disponible.
 
-Direct eBay SOLD page scraping loses fair-value authority in #257. Existing legacy transport code may remain in the repository for compatibility, but the source-role wrapper disables it during economic valuation.
+Le direct eBay SOLD page scraper perd son autorité de fair value dans #257. Son ancien code transport peut rester pour compatibilité/provenance, mais il n'est pas une source économique dans cette phase.
 
 ## GCC history
 
-PR #255 is already merged on `main`. GCC historical sales are diagnostic/Robot-KB context only for economics. They cannot create, anchor, confirm or cap fair value.
+PR #255 est déjà mergée sur `main`. Les ventes historiques GCC sont contexte diagnostic/Robot KB uniquement pour l'économie. Elles ne peuvent créer, ancrer, confirmer ou plafonner la fair value.
 
-Global #257 extends the same rule explicitly: `gcc_fair_eur` may remain in diagnostic payloads but is not used in the marketplace decision.
+Global #257 applique explicitement la même règle : `gcc_fair_eur` peut rester dans les payloads diagnostiques mais n'intervient pas dans la décision marketplace.
 
 ## PriceCharting semantics
 
-PriceCharting is treated as a **price guide**, not as item-level SOLD evidence.
+PriceCharting reste un **price guide**, jamais une preuve SOLD item-level.
 
-- no synthetic `ComparableSale` rows;
-- no synthetic SOLD count;
-- exact PSA 10 guide bucket only may be automatic evidence;
-- generic grade 9/8 buckets remain WEAK/context-only because grader identity is not proven by those buckets;
-- PriceCharting-only economic path requires at least 40% discount;
-- a PriceCharting guide cannot override a strong SOLD-derived provider or resolve a material conflict between strong correlated SOLD providers;
-- public read-only guide retrieval is bounded and does not require a stored token; official Prices API remains optional if a token is supplied through environment only.
+- aucune `ComparableSale` synthétique ;
+- aucun faux nombre de ventes ;
+- `PSA 10` PriceCharting -> guide PSA 10 ;
+- `Grade 9` PriceCharting -> accepté comme **guide PSA 9** lorsque le listing est déjà prouvé PSA 9 exact ;
+- `Grade 8` PriceCharting -> accepté comme **guide PSA 8** lorsque le listing est déjà prouvé PSA 8 exact ;
+- PSA 8.5 reste distinct et n'est pas automatiquement ramené à Grade 8 ;
+- PriceCharting est recherché même si une preuve SOLD-derived forte existe déjà, afin de conserver une référence systématique ;
+- la preuve SOLD-derived forte garde cependant la priorité économique et le guide ne peut pas réparer un conflit matériel entre providers SOLD ;
+- **aucune marge spéciale de 40 %** : le seuil économique normal V4 s'applique, actuellement 30 % ;
+- une panne PriceCharting reste visible mais ne supprime pas une preuve SOLD forte déjà établie ;
+- fallback public read-only, sans secret ; API officielle facultative si un token est fourni uniquement par l'environnement.
+
+Exemple : guide PriceCharting `100 EUR`, pas de meilleure preuve externe, seuil V4 `30 %` -> une offre all-in `<=70 EUR` peut passer le gate économique si tous les autres gates sont satisfaits. L'ancien floor spécial à `40 %` (`<=60 EUR`) est supprimé.
 
 ## Architecture decision
 
-Keep **one Global orchestrator with independent marketplace adapters**, rather than one complete bot per vault.
+Conserver **un orchestrateur Global avec adapters marketplace indépendants**, plutôt qu'un bot complet par vault.
 
-Reason: adapters remain isolated at retrieval/normalization level, while strict identity, valuation providers, FX, deduplication, economic gates and notification semantics stay single-source-of-truth. Separate complete bots would duplicate these safety-critical rules and create drift.
+Les adapters restent isolés au niveau retrieval/normalisation, tandis que l'identité stricte, les providers de valorisation, FX, déduplication, économie et notifications restent single-source-of-truth. Plusieurs bots complets dupliqueraient ces règles critiques et créeraient de la dérive.
 
 ## Safety
 
-Unchanged:
+Inchangé :
 
-- Pokémon single cards only;
-- strict commercial identity / microvariant fail-closed;
-- ASK/current auction/disappearance != SOLD;
-- no automatic purchase, bid, checkout or payment;
-- no secrets in repository/logs;
-- PR #8/V5 remains experimental and non-merged.
+- Pokémon cartes individuelles uniquement ;
+- identité commerciale / microvariante stricte et fail-closed ;
+- ASK/current auction/disparition != SOLD ;
+- aucun achat, bid, checkout ou paiement automatique ;
+- aucun secret dans repo/logs ;
+- PR #8/V5 reste expérimentale et non mergée.
 
 ## Validation gate
 
-Before merge:
+Avant merge : suite V4 complète, suite Global, tests ciblés PriceCharting/source-role, compile Python, workflow YAML, `git diff --check`, bootstrap Global live read-only avec notifications/transactions désactivées, et assertions explicites `marketplace_listing_is_valuation=false` / `gcc_history_economic_authority=false`.
 
-- full V4 suite;
-- focused Global suite;
-- targeted PriceCharting/source-role tests;
-- Python compile;
-- workflow YAML parse;
-- `git diff --check`;
-- Global marketplace bootstrap live read-only with notifications and transactions disabled;
-- explicit live assertions that marketplace listings have no valuation authority and GCC history has no economic authority.
-
-Do not merge PR #257 without explicit user authorization.
+Le head exact et les run IDs de validation finale sont ajoutés seulement après CI verte. Ne pas merger PR #257 sans autorisation explicite utilisateur.
