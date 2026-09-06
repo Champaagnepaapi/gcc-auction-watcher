@@ -10,16 +10,15 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production HEAD                   : 23e8e9904072d986e24d2a8fbccaa87568851f69
-V4 external fair-value authority     : PR #255 DRAFT / NON MERGED
-PR #255 branch                        : v4-external-fair-value-authority-20260906
-PR #255 base                          : 23e8e9904072d986e24d2a8fbccaa87568851f69
+V4 production HEAD                   : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
+V4 external fair-value authority     : #255 MERGED / validated head e886c649eea8633d39585aabca8fff0b58be4324
+eBay bounded structured salvage      : #254 MERGED / validated head fbb7041f9fc44c338b102ec7325a6d6316f1e529
+eBay structured salvage              : #253 MERGED / validated head 4ced75070cc274abf99ea59f7995d356cbb6dd77
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
 Auction order-drift hardening        : #211/#212 MERGED
 Future-start auction guard           : #220 + #243 MERGED
-eBay worker resilience               : #238/#239 + #242 + #253 MERGED
 V4 run registry                      : issue #235 ACTIVE / issue #1 archive saturée
 TCGdex transport resilience          : #216/#217 MERGED
 TCGdex outage fallback               : #222/#224 MERGED
@@ -35,11 +34,26 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase active — PR #255 : GCC n'est plus une autorité de fair value
+### Phase closeout — #253 / #254 / #255
 
-Objectif économique : exploiter les cartes GCC sous-évaluées lorsque les acheteurs restent ancrés sur un historique GCC ancien, rare ou peu représentatif du marché global actuel.
+La production V4 a désormais deux propriétés importantes : le chemin eBay de récupération après timeout est borné, et l'historique GCC n'est plus une autorité économique de fair value.
 
-Exemple canonique :
+```text
+#253 production merge                : 23e8e9904072d986e24d2a8fbccaa87568851f69
+#254 production merge                : 00e5502fb15c9a89d67a55b70cd566099911bcdb
+#255 production merge                : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
+#254 validation                      : run 34031695933 attempt 2 SUCCESS
+#254 V4 suite                        : 920 PASS / 2 skipped
+#255 validation                      : 34036063564 / 34036063610 / 34036063594 SUCCESS
+Fast Lane exact post-#255            : run 34037049703 SUCCESS
+Premier Main Scanner exact post-#255 : run 34037829669 lancé naturellement / workflow_dispatch externe
+```
+
+Le Main Scanner `34037829669` est le premier run observé sur l'exact SHA `9d3bb1...` après le merge #255. Tant qu'il n'est pas terminé et audité, ne pas présenter #254/#255 comme live-proven sur le chemin Main Scanner complet ; les tests/CI et le Fast Lane post-merge sont déjà verts.
+
+### Politique économique production — GCC n'est plus une fair value
+
+Objectif : exploiter les cartes GCC sous-évaluées lorsque le marché global fournit une preuve externe forte, sans laisser un historique GCC ancien, rare ou peu représentatif écraser cette information.
 
 ```text
 GCC historique visible            : 18 / 20 / 25 EUR
@@ -49,7 +63,7 @@ interprétation correcte           : opportunité potentielle forte
 interprétation interdite          : "30 EUR est cher car GCC a vendu 20–25 EUR"
 ```
 
-Politique V4 cible de #255 :
+Politique V4 en production depuis #255 :
 
 - GCC reste la source du **listing live** : URL, carte exacte, set/numéro, langue, grader, grade, prix courant et timing ;
 - les ventes historiques GCC restent observables pour diagnostics / Robot KB ;
@@ -67,13 +81,26 @@ Ordre de preuve prix canonique :
 4. snapshot d'enchère observé à `≤5 min` uniquement si aucun SOLD n'est disponible ;
 5. enchère en cours = signal faible seulement.
 
-**PriceCharting / agrégateurs :** utiles pour localiser et résumer le marché global, mais un guide price agrégé ne doit jamais surclasser des SOLD item-level exacts et récents. La V5 possède une intégration API PriceCharting expérimentale qui retourne des guide values et exige un token ; elle n'est pas backportée automatiquement et PR #8 reste strictement non mergée.
+**PriceCharting / agrégateurs :** utiles comme guide/diagnostic, mais un guide price agrégé ne surclasse jamais des SOLD item-level exacts et récents. La V5 possède une intégration API PriceCharting expérimentale qui retourne des guide values et exige un token ; elle n'est pas promue en V4 et PR #8 reste strictement non mergée.
 
 Implémentation #255 : `v4_external_fair_value_authority.py` neutralise uniquement l'autorité économique de l'historique GCC avant l'arbitrage existant. Le provider tree externe, les gates d'identité et la sémantique SOLD restent inchangés.
 
 Ledger : `docs/v4-external-fair-value-authority-20260906.md`.
 
-**Sécurité déploiement :** #255 a été préparée sur branche dédiée pendant les enchères Weekly Auction du 6 septembre. **Ne pas merger/déployer pendant les enchères actives.** Aucun achat, bid, checkout ou paiement automatique n'est introduit.
+### Résilience eBay #253 / #254
+
+#253 a ajouté une récupération same-DOM depuis les lignes structurées `li.s-item` lorsque le chemin body échoue. Deux Main Scanner naturels post-#253 ont ensuite prouvé que `all_inner_texts()` pouvait rester bloqué jusqu'au hard deadline de 30 s.
+
+#254 corrige ce point sans nouveau réseau :
+
+- salvage uniquement après exact `TimeoutError` du body ;
+- maximum 4 lignes déjà chargées ;
+- chaque probe utilise `inner_text(timeout=600)` ;
+- au moins une ligne non vide avec `EUR`/`€` reste nécessaire ;
+- échec/ligne faible => re-raise de l'erreur originale, fail-closed ;
+- après salvage, parsing canonique par lignes bornées ;
+- aucun `goto`, reload, wait, retry provider ou changement de budget ;
+- aucune modification SOLD, identité, fair value, notification ou transaction.
 
 ---
 
@@ -166,7 +193,7 @@ Un agrégat n'est jamais transformé artificiellement en vente item-level.
 
 ### eBay / PSA APR
 
-Les protections #238/#239/#242/#253 bornent les opérations eBay et préservent un résultat déjà prouvé avant certains timeouts/teardown. PSA APR peut encore renvoyer HTTP 403 et eBay peut encore timeout. Ces erreurs doivent rester visibles et fail-closed ; aucun contournement anti-bot/WAF.
+Les protections #238/#239/#242/#250/#251/#252/#253/#254 bornent les opérations eBay, exposent les étapes de timeout sans données sensibles et préservent un résultat déjà prouvé avant certains timeouts/teardown. PSA APR peut encore renvoyer HTTP 403 et eBay peut encore timeout. Ces erreurs doivent rester visibles et fail-closed ; aucun contournement anti-bot/WAF.
 
 ## TCGdex — identité et microvariantes
 
@@ -244,6 +271,19 @@ Migration Neon → Mac historiquement vérifiée : 1 087 015 lignes, 35 tables, 
 - #210 reste OPEN/DRAFT/NON-MERGED et prépare seulement un commit durable Cardova gardé par autorisation explicite + backup + locks.
 - Aucun write durable Cardova sans autorisation explicite opérateur.
 
+## Couverture SOLD externe — prochaine phase
+
+Le reuse audit du 6 septembre conclut :
+
+- eBay V4 = meilleure source item-level immédiate mais disponibilité encore variable ; conserver les protections #137/#175/#189/#238/#239/#241/#242/#250/#251/#252/#253/#254 ;
+- Robot KB eBay RapidAPI existe déjà en shadow mais ne doit pas être promu en SOLD sans preuve indépendante de finalité/prix ;
+- Fanatics #197 a prouvé des rows `PAID + isComplete=true`, mais la devise reste non prouvée dans le contrat historique : conserver ces rows au statut evidence pending tant que currency + identité/microvariante exactes ne sont pas fermées ;
+- COMC #198 est bloqué en anonymous headless par HTTP 403 ; ne pas contourner ;
+- Cardova possède un chemin strict de ventes finales prouvées dans le stack Robot KB/P3 ; durable write séparé et gardé ;
+- PriceCharting V5 = guide values, pas historique item-level SOLD ; ne pas le substituer aux ventes exactes.
+
+La prochaine capacité doit donc **augmenter la couverture de SOLD exacts sans baisser les gates** : mesurer les trous de couverture, réutiliser les preuves provider existantes, puis fermer explicitement finalité + devise + identité + microvariante avant toute promotion `SALE_TRANSACTION` ou tout usage économique V4.
+
 ---
 
 # V5 — EXPÉRIMENTALE
@@ -289,19 +329,18 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
-V4 external fair value
-  -> PR #255 DRAFT / NON MERGED
-  -> GCC = listing identity/current price/timing, pas fair-value authority
-  -> valider suite + live read-only sur le head exact
-  -> vérifier un cas Poochyena-like avec strong external SOLD evidence
-  -> ne pas merger pendant les enchères actives
+V4 production proof
+  -> attendre et auditer le premier Main Scanner naturel exact sur 9d3bb1...
+  -> run observé : 34037829669
+  -> vérifier #254 eBay bounded salvage + #255 fail-closed external-FV policy
+  -> ne pas déclencher un Main Scanner manuel en parallèle
 
-V4 providers
-  -> priorité aux SOLD exacts récents
-  -> investigation eBay/PSA APR read-only si timeout/403
-  -> PriceCharting peut compléter la couverture dans une phase dédiée
-  -> un guide value agrégé ne remplace jamais des SOLD exacts récents
-  -> aucun secret ni contournement anti-bot/WAF
+External SOLD coverage
+  -> priorité aux SOLD exacts récents et item-level
+  -> commencer par mesurer les trous et réutiliser eBay/Fanatics/Cardova existants
+  -> Fanatics : PAID+complete prouvé, devise/identité exacte encore à fermer avant SALE_TRANSACTION
+  -> COMC anonymous headless : 403, pas de bypass
+  -> PriceCharting : guide value seulement, jamais substitut à un SOLD exact
 
 V4 auction discovery
   -> default 100 rows/page et hard ceiling 250 inchangés
