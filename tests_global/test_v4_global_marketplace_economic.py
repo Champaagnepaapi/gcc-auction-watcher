@@ -128,15 +128,15 @@ class MarketplaceEconomicTests(unittest.TestCase):
             )
         self.assertEqual(len(set(results)), 1)
 
-    def test_pricecharting_guide_fallback_requires_40_percent_discount(self):
+    def test_pricecharting_guide_fallback_uses_normal_v4_discount(self):
         yes = economic.evaluate_marketplace_card(
-            _card(55),
+            _card(65),
             ppt=legacy.ExternalAggregate("PokemonPriceTracker", "UNAVAILABLE"),
             poketrace=legacy.ExternalAggregate("PokeTrace/eBay SOLD", "UNAVAILABLE"),
             pricecharting=_pricecharting(100),
         )
         no = economic.evaluate_marketplace_card(
-            _card(65),
+            _card(75),
             ppt=legacy.ExternalAggregate("PokemonPriceTracker", "UNAVAILABLE"),
             poketrace=legacy.ExternalAggregate("PokeTrace/eBay SOLD", "UNAVAILABLE"),
             pricecharting=_pricecharting(100),
@@ -144,7 +144,7 @@ class MarketplaceEconomicTests(unittest.TestCase):
         self.assertTrue(yes.would_notify)
         self.assertEqual(yes.valuation_basis, "PRICECHARTING_GUIDE_ONLY")
         self.assertEqual(yes.valuation_evidence_type, "PRICE_GUIDE")
-        self.assertEqual(yes.required_discount_pct, 40.0)
+        self.assertEqual(yes.required_discount_pct, legacy.DEFAULT_MIN_DISCOUNT)
         self.assertEqual(yes.external_sales_count, 0)
         self.assertFalse(no.would_notify)
         self.assertEqual(no.status, "NO_GLOBAL_EDGE")
