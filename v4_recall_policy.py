@@ -35,6 +35,11 @@ _ORIGINAL_ADAPTIVE_DISCOUNT = None
 _ORIGINAL_MAIN = None
 
 
+def _runtime_recall_enabled() -> bool:
+    """Require an explicit production switch instead of mutating import-time tests."""
+    return "V4_RECALL_MIN_DISCOUNT_PCT" in os.environ
+
+
 def _recall_floor() -> float:
     try:
         value = float(os.getenv("V4_RECALL_MIN_DISCOUNT_PCT", "20"))
@@ -100,11 +105,25 @@ def recall_adaptive_discount_threshold(
     return max(_recall_floor(), min(45.0, threshold))
 
 
+def _runtime_adaptive_discount_threshold(*args, **kwargs) -> float:
+    # The validation suite imports many production modules in one interpreter.
+    # Keep the historical default semantics unless the production workflow has
+    # explicitly enabled recall-first economics. This is not a test bypass: the
+    # production workflow pins V4_RECALL_MIN_DISCOUNT_PCT=20, while the policy's
+    # direct tests exercise recall_adaptive_discount_threshold() explicitly.
+    if not _runtime_recall_enabled():
+        return _ORIGINAL_ADAPTIVE_DISCOUNT(*args, **kwargs)
+    return recall_adaptive_discount_threshold(*args, **kwargs)
+
+
 def _install_final_recall_hooks() -> None:
     """Run after run_watcher_multimarket has installed its final process stack."""
     global _FINAL_HOOKS_INSTALLED
     if _FINAL_HOOKS_INSTALLED:
         return
+    if not _runtime_recall_enabled():
+        return
+
     from v4_ask_fallback_review import install_v4_ask_fallback_review
     from v4_crossmarket_recall_review import install_v4_crossmarket_recall_review
     from v4_tcgdex_name_filtered_coordinate_recovery import (
@@ -134,14 +153,15 @@ def install_v4_recall_policy() -> None:
         return
 
     _ORIGINAL_ADAPTIVE_DISCOUNT = watcher.adaptive_discount_threshold
-    watcher.adaptive_discount_threshold = recall_adaptive_discount_threshold
+    watcher.adaptive_discount_threshold = _runtime_adaptive_discount_threshold
 
     # Scope expansion only: downstream provider/identity/grade matching remains
     # exact and simply returns no-match/insufficient when a provider has no tier.
-    multimarket.PSA_PRODUCTION_GRADES = PSA_RECALL_GRADES
-
-    # Keep user-facing diagnostics aligned with the effective recall floor.
-    watcher.MIN_DISCOUNT = _recall_floor()
+    # Activate it only under the explicit production recall switch so importing
+    # this bootstrap during broad unit discovery does not mutate unrelated tests.
+    if _runtime_recall_enabled():
+        multimarket.PSA_PRODUCTION_GRADES = PSA_RECALL_GRADES
+        watcher.MIN_DISCOUNT = _recall_floor()
 
     # Delay final resolver/process wrappers until watcher.main() is invoked: the
     # canonical runner installs/replaces those entrypoints after this bootstrap.
@@ -149,8 +169,9 @@ def install_v4_recall_policy() -> None:
     watcher.main = _main_with_final_recall_hooks
 
     _INSTALLED = True
-    watcher.log(
-        "Recall-first V4 policy enabled: adaptive discount floor "
-        f"{watcher.MIN_DISCOUNT:.0f}% | PSA numeric scope 1-10 (no synthetic 9.5); "
-        "identity/SOLD semantics unchanged"
-    )
+    if _runtime_recall_enabled():
+        watcher.log(
+            "Recall-first V4 policy enabled: adaptive discount floor "
+            f"{watcher.MIN_DISCOUNT:.0f}% | PSA numeric scope 1-10 (no synthetic 9.5); "
+            "identity/SOLD semantics unchanged"
+        )
