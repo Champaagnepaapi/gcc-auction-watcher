@@ -59,7 +59,7 @@ jobs:
               try {
                 const data = await github.graphql(`
                   query($owner: String!, $repo: String!, $number: Int!) {
-                    repository(owner: $owner, name: $repo) {
+                    repository(owner: $owner, name: $name) {
                       issue(number: $number) {
                         comments(last: 50) {
                           nodes { body createdAt }
@@ -69,7 +69,7 @@ jobs:
                   }
                 `, {
                   owner: context.repo.owner,
-                  repo: context.repo.repo,
+                  name: context.repo.repo,
                   number: 150,
                 });
                 const comments = data.repository?.issue?.comments?.nodes || [];
@@ -187,6 +187,12 @@ jobs:
       GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
       V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"
       GLOBAL_MARKETPLACE_MAX_EVALUATIONS: ${{ inputs.max_evaluations || '50' }}
+      # PriceCharting is valuation-only. The public guide fallback needs no
+      # account token and never becomes an opportunity marketplace/SOLD row.
+      PRICECHARTING_ENABLED: "true"
+      PRICECHARTING_MAX_CARDS_PER_RUN: "8"
+      PRICECHARTING_TIMEOUT_SECONDS: "10"
+      PRICECHARTING_PUBLIC_INTERVAL_SECONDS: "0.35"
       # The marketplace subprocess must end before the job-level timeout so
       # state/report cleanup and the separate registry job can still execute.
       GLOBAL_MARKETPLACE_WALL_TIMEOUT_SECONDS: "1020"
@@ -405,10 +411,14 @@ jobs:
               `ppt_blocked_reason=${value(economic.ppt_blocked_reason)}`,
               `poketrace_matched=${value(economic.poketrace_matched)}`,
               `poketrace_requests=${value(economic.poketrace_requests)}`,
+              `pricecharting_attempted=${value(economic.pricecharting_attempted)}`,
+              `pricecharting_matched=${value(economic.pricecharting_matched)}`,
               `market_conflicts_blocked=${value(economic.market_conflicts_blocked)}`,
               `confirmed_would_notify=${value(economic.confirmed_would_notify)}`,
               `confirmed_candidates=${value(delivery.confirmed_candidates)}`,
               `notifications_sent=${value(delivery.sent)}`,
+              `marketplace_listing_is_valuation=${value(safety.marketplace_listing_is_valuation)}`,
+              `gcc_history_economic_authority=${value(safety.gcc_history_economic_authority)}`,
               `identity_gate_relaxed=${value(safety.identity_gate_relaxed)}`,
               `automatic_purchase=${value(safety.automatic_purchase)}`,
               `automatic_bid=${value(safety.automatic_bid)}`,
