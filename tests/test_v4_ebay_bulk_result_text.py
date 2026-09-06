@@ -4,18 +4,34 @@ from v4_ebay_bulk_result_text import BulkTextItemLocator, EbayBulkTextPageProxy
 
 
 class _Item:
-    def __init__(self, text):
+    def __init__(self, text, *, error=None):
         self.text = text
+        self.error = error
         self.inner_text_calls = 0
+        self.inner_text_kwargs = []
 
     def inner_text(self, *args, **kwargs):
         self.inner_text_calls += 1
+        self.inner_text_kwargs.append(dict(kwargs))
+        if self.error is not None:
+            raise self.error
         return self.text
 
 
 class _Items:
-    def __init__(self, texts, *, bulk_error=False, bulk_value=None):
-        self.items = [_Item(text) for text in texts]
+    def __init__(
+        self,
+        texts,
+        *,
+        bulk_error=False,
+        bulk_value=None,
+        item_errors=None,
+    ):
+        item_errors = item_errors or {}
+        self.items = [
+            _Item(text, error=item_errors.get(index))
+            for index, text in enumerate(texts)
+        ]
         self.bulk_error = bulk_error
         self.bulk_value = bulk_value
         self.bulk_calls = 0
@@ -111,6 +127,15 @@ class EbayBulkResultTextTests(unittest.TestCase):
         self.assertEqual(delegate.bulk_calls, 1)
         self.assertEqual(delegate.items[0].inner_text_calls, 1)
 
+    def test_bulk_can_be_disabled_without_changing_per_item_timeout(self):
+        delegate = _Items(["first"])
+        locator = BulkTextItemLocator(delegate, allow_bulk=False)
+
+        self.assertEqual(locator.nth(0).inner_text(timeout=600), "first")
+        self.assertEqual(delegate.bulk_calls, 0)
+        self.assertEqual(delegate.items[0].inner_text_calls, 1)
+        self.assertEqual(delegate.items[0].inner_text_kwargs, [{"timeout": 600}])
+
     def test_normal_body_text_passes_through_without_touching_items(self):
         delegate = _Items(["Pokemon card\n42,00 EUR"])
         body_delegate = _Body("normal body")
@@ -122,8 +147,9 @@ class EbayBulkResultTextTests(unittest.TestCase):
         self.assertEqual(body.inner_text(timeout=2500), "normal body")
         self.assertEqual(body_delegate.inner_text_calls, 1)
         self.assertEqual(delegate.bulk_calls, 0)
+        self.assertEqual(delegate.nth_calls, 0)
 
-    def test_body_timeout_recovers_from_readable_structured_eur_rows(self):
+    def test_body_timeout_recovers_from_bounded_structured_eur_rows(self):
         delegate = _Items(
             [
                 "Pokemon Pikachu PSA 10\n42,00 EUR\nVendu 1 sept. 2026",
@@ -138,8 +164,66 @@ class EbayBulkResultTextTests(unittest.TestCase):
         self.assertIn("42,00 EUR", recovered)
         self.assertIn("35,00 €", recovered)
         self.assertEqual(body_delegate.inner_text_calls, 1)
-        self.assertEqual(delegate.bulk_calls, 1)
-        self.assertEqual([item.inner_text_calls for item in delegate.items], [0, 0])
+        self.assertEqual(delegate.bulk_calls, 0)
+        self.assertEqual(delegate.nth_calls, 4)
+        self.assertEqual(
+            [item.inner_text_kwargs for item in delegate.items],
+            [[{"timeout": 600}], [{"timeout": 600}]],
+        )
+
+    def test_body_timeout_can_skip_one_timed_out_row_and_use_next_price_row(self):
+        delegate = _Items(
+            ["unreadable", "Pokemon Eevee PSA 9\n35,00 EUR"],
+            item_errors={0: TimeoutError("row timeout")},
+        )
+        body_delegate = _Body(error=TimeoutError("body timeout"))
+        proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
+
+        recovered = proxy.locator("body").inner_text(timeout=2500)
+
+        self.assertIn("35,00 EUR", recovered)
+        self.assertEqual(delegate.bulk_calls, 0)
+        self.assertEqual(delegate.items[0].inner_text_calls, 1)
+        self.assertEqual(delegate.items[1].inner_text_calls, 1)
+
+    def test_body_timeout_never_uses_bulk_even_if_bulk_would_fail(self):
+        delegate = _Items(
+            ["Pokemon Pikachu PSA 10\n42,00 EUR"],
+            bulk_error=True,
+        )
+        body_delegate = _Body(error=TimeoutError("body timeout"))
+        proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
+
+        recovered = proxy.locator("body").inner_text(timeout=2500)
+
+        self.assertIn("42,00 EUR", recovered)
+        self.assertEqual(delegate.bulk_calls, 0)
+
+    def test_after_body_salvage_canonical_result_reads_do_not_reenter_bulk(self):
+        delegate = _Items(
+            [
+                "Pokemon Pikachu PSA 10\n42,00 EUR",
+                "Pokemon Eevee PSA 9\n35,00 EUR",
+            ]
+        )
+        body_delegate = _Body(error=TimeoutError("body timeout"))
+        proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
+
+        proxy.locator("body").inner_text(timeout=2500)
+        cards = proxy.locator("li.s-item")
+        values = [cards.nth(i).inner_text(timeout=600) for i in range(2)]
+
+        self.assertEqual(
+            values,
+            [
+                "Pokemon Pikachu PSA 10\n42,00 EUR",
+                "Pokemon Eevee PSA 9\n35,00 EUR",
+            ],
+        )
+        self.assertEqual(delegate.bulk_calls, 0)
+        self.assertEqual([item.inner_text_calls for item in delegate.items], [2, 2])
+        self.assertEqual(delegate.items[0].inner_text_kwargs[-1], {"timeout": 600})
+        self.assertEqual(delegate.items[1].inner_text_kwargs[-1], {"timeout": 600})
 
     def test_body_timeout_with_empty_or_non_price_rows_stays_fail_closed(self):
         for texts in ([], ["Pardon our interruption"], ["Pokemon result without price"]):
@@ -151,17 +235,31 @@ class EbayBulkResultTextTests(unittest.TestCase):
                 with self.assertRaises(TimeoutError):
                     proxy.locator("body").inner_text(timeout=2500)
 
-                self.assertEqual(delegate.bulk_calls, 1)
+                self.assertEqual(delegate.bulk_calls, 0)
+                self.assertEqual(delegate.nth_calls, 4)
 
-    def test_body_timeout_with_bulk_failure_stays_fail_closed(self):
-        delegate = _Items(["Pokemon Pikachu\n42,00 EUR"], bulk_error=True)
+    def test_body_salvage_is_bounded_to_four_rows(self):
+        delegate = _Items(
+            [
+                "row one",
+                "row two",
+                "row three",
+                "row four",
+                "Pokemon Pikachu PSA 10\n42,00 EUR",
+            ]
+        )
         body_delegate = _Body(error=TimeoutError("body timeout"))
         proxy = EbayBulkTextPageProxy(_Page(delegate, body_delegate))
 
         with self.assertRaises(TimeoutError):
             proxy.locator("body").inner_text(timeout=2500)
 
-        self.assertEqual(delegate.bulk_calls, 1)
+        self.assertEqual(delegate.bulk_calls, 0)
+        self.assertEqual(delegate.nth_calls, 4)
+        self.assertEqual(
+            [item.inner_text_calls for item in delegate.items],
+            [1, 1, 1, 1, 0],
+        )
 
     def test_non_timeout_body_error_propagates_without_structured_salvage(self):
         delegate = _Items(["Pokemon Pikachu\n42,00 EUR"])
@@ -172,6 +270,7 @@ class EbayBulkResultTextTests(unittest.TestCase):
             proxy.locator("body").inner_text(timeout=2500)
 
         self.assertEqual(delegate.bulk_calls, 0)
+        self.assertEqual(delegate.nth_calls, 0)
 
     def test_page_proxy_keeps_result_locator_and_other_page_behavior(self):
         delegate = _Items(["first"])
