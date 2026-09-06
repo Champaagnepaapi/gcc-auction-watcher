@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import os
 import re
 import time
@@ -8,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Mapping, Optional, Sequence
+from urllib.parse import urljoin
 
 import requests
 
@@ -28,6 +30,7 @@ class PriceChartingConfig:
     minimum_match_score: Decimal = Decimal("0.72")
     minimum_match_margin: Decimal = Decimal("0.08")
     minimum_request_interval_seconds: float = 1.05
+    public_request_interval_seconds: float = 0.35
 
     @classmethod
     def from_env(cls) -> "PriceChartingConfig":
@@ -46,6 +49,10 @@ class PriceChartingConfig:
             ),
             minimum_match_margin=Decimal(
                 os.getenv("PRICECHARTING_MIN_MATCH_MARGIN", "0.08")
+            ),
+            public_request_interval_seconds=max(
+                0.0,
+                float(os.getenv("PRICECHARTING_PUBLIC_INTERVAL_SECONDS", "0.35")),
             ),
         )
 
@@ -67,16 +74,18 @@ class PriceChartingLookup:
 
 
 class PriceChartingProvider:
-    """Bounded read-only PriceCharting Prices API adapter for V4.
+    """Bounded read-only PriceCharting valuation adapter for V4.
 
-    This is a port of the already-reviewed V5 provider shape, kept physically
-    separate from V5. The official Prices API returns current guide values, not
-    historic item-level SOLD rows. V4 therefore never labels these values SOLD.
+    Reuses the already-reviewed V5 official Prices API matching rules when a
+    token is configured. When no paid API token is available, it uses only the
+    public PriceCharting search/product pages to read the displayed current guide
+    value. No login, anti-bot bypass or transaction endpoint is used.
 
-    PriceCharting documents `manual-only-price` for cards as PSA 10. Its grade-9
-    and grade-8 buckets are generic across grading companies, so only the PSA 10
-    bucket can become automatic V4 fair-value evidence. Other buckets remain
-    weak/context-only.
+    PriceCharting states that its current market prices are calculated from
+    historic completed sales, while the official Prices API itself does not
+    return historic item-level rows. Accordingly, V4 labels this evidence GUIDE,
+    never SOLD. Only the documented PSA 10 bucket is grader+grade exact enough to
+    become automatic evidence; generic Grade 8/9 buckets remain weak/context-only.
     """
 
     def __init__(
@@ -92,10 +101,6 @@ class PriceChartingProvider:
     def lookup(self, lot: watcher.Lot) -> PriceChartingLookup:
         if not self.config.enabled:
             return PriceChartingLookup("DISABLED", note="PriceCharting désactivé")
-        if not self.config.token:
-            return PriceChartingLookup(
-                "UNAVAILABLE", note="PriceCharting token absent"
-            )
         if self.cards_attempted >= self.config.max_cards_per_run:
             return PriceChartingLookup(
                 "PENDING_BUDGET", note="budget PriceCharting épuisé"
@@ -109,8 +114,13 @@ class PriceChartingProvider:
             )
 
         self.cards_attempted += 1
+        if self.config.token:
+            return self._lookup_api(lot, price_key, exact_grade_bucket)
+        return self._lookup_public(lot, price_key, exact_grade_bucket)
+
+    def _query(self, lot: watcher.Lot) -> str:
         identity = watcher.extract_card_identity(lot)
-        query = " ".join(
+        return " ".join(
             part
             for part in (
                 str(identity.get("core") or lot.title or "").strip(),
@@ -119,13 +129,20 @@ class PriceChartingProvider:
             )
             if part
         )
+
+    def _lookup_api(
+        self,
+        lot: watcher.Lot,
+        price_key: str,
+        exact_grade_bucket: bool,
+    ) -> PriceChartingLookup:
+        query = self._query(lot)
         if not query:
             return PriceChartingLookup(
                 "CLEAN_NO_MATCH", note="identité PriceCharting insuffisante"
             )
-
         try:
-            search = self._request("/api/products", {"q": query})
+            search = self._request_api("/api/products", {"q": query})
         except RuntimeError as error:
             return PriceChartingLookup("PROVIDER_ERROR", note=str(error))
 
@@ -136,28 +153,11 @@ class PriceChartingProvider:
             and not isinstance(raw_candidates, (str, bytes))
             else ()
         )
-        matches = tuple(
-            sorted(
-                (_score_candidate(lot, item) for item in candidates),
-                key=lambda item: item.score,
-                reverse=True,
-            )
-        )
-        if not matches or matches[0].score < self.config.minimum_match_score:
-            return PriceChartingLookup(
-                "CLEAN_NO_MATCH",
-                note="aucun produit PriceCharting assez exact",
-            )
-        if len(matches) > 1 and (
-            matches[0].score - matches[1].score < self.config.minimum_match_margin
-        ):
-            return PriceChartingLookup(
-                "AMBIGUOUS", note="résultats PriceCharting ambigus"
-            )
-
-        selected = matches[0]
+        selected = self._select_candidate(lot, candidates)
+        if isinstance(selected, PriceChartingLookup):
+            return selected
         try:
-            product = self._request("/api/product", {"id": selected.product_id})
+            product = self._request_api("/api/product", {"id": selected.product_id})
         except RuntimeError as error:
             return PriceChartingLookup("PROVIDER_ERROR", note=str(error))
         if str(product.get("id") or "") != selected.product_id:
@@ -184,13 +184,98 @@ class PriceChartingProvider:
             value_usd=value,
             exact_grade_bucket=exact_grade_bucket,
             note=(
-                f"PriceCharting Prices API {bucket}; guide courant dérivé du marché, "
+                f"PriceCharting official Prices API {bucket}; guide courant, "
                 "pas une vente item-level"
             ),
         )
 
-    def _request(self, path: str, parameters: Mapping[str, str]) -> Mapping[str, object]:
-        self._respect_rate_limit()
+    def _lookup_public(
+        self,
+        lot: watcher.Lot,
+        price_key: str,
+        exact_grade_bucket: bool,
+    ) -> PriceChartingLookup:
+        query = self._query(lot)
+        if not query:
+            return PriceChartingLookup(
+                "CLEAN_NO_MATCH", note="identité PriceCharting insuffisante"
+            )
+        try:
+            search_html = self._request_public(
+                "/search-products", {"type": "prices", "q": query}
+            )
+        except RuntimeError as error:
+            return PriceChartingLookup("PROVIDER_ERROR", note=str(error))
+
+        raw_candidates = _public_search_candidates(search_html)
+        selected = self._select_candidate(lot, raw_candidates)
+        if isinstance(selected, PriceChartingLookup):
+            return selected
+        product_url = selected.product_id
+        try:
+            product_html = self._request_public(product_url, {})
+        except RuntimeError as error:
+            return PriceChartingLookup("PROVIDER_ERROR", note=str(error))
+
+        body = _html_text(product_html)
+        pseudo_detail = {
+            "id": product_url,
+            "product-name": body[:400],
+            "console-name": f"{product_url} {body[:4000]}",
+        }
+        detail_match = _score_candidate(lot, pseudo_detail)
+        if detail_match.score < self.config.minimum_match_score:
+            return PriceChartingLookup(
+                "CLEAN_NO_MATCH",
+                product_id=product_url,
+                note="identité page publique PriceCharting non prouvée",
+            )
+
+        value = _public_guide_value(body, price_key)
+        if value is None or value <= 0:
+            return PriceChartingLookup(
+                "CLEAN_INSUFFICIENT",
+                product_id=product_url,
+                note=f"guide public {price_key} absent",
+            )
+        bucket = "PSA 10" if exact_grade_bucket else "grade générique"
+        return PriceChartingLookup(
+            "MATCHED",
+            product_id=product_url,
+            value_usd=value,
+            exact_grade_bucket=exact_grade_bucket,
+            note=(
+                f"PriceCharting public price guide {bucket}; valeur calculée à "
+                "partir de ventes historiques selon PriceCharting, pas une vente item-level"
+            ),
+        )
+
+    def _select_candidate(
+        self,
+        lot: watcher.Lot,
+        candidates: Sequence[Mapping[str, object]],
+    ) -> CandidateMatch | PriceChartingLookup:
+        matches = tuple(
+            sorted(
+                (_score_candidate(lot, item) for item in candidates),
+                key=lambda item: item.score,
+                reverse=True,
+            )
+        )
+        if not matches or matches[0].score < self.config.minimum_match_score:
+            return PriceChartingLookup(
+                "CLEAN_NO_MATCH", note="aucun produit PriceCharting assez exact"
+            )
+        if len(matches) > 1 and (
+            matches[0].score - matches[1].score < self.config.minimum_match_margin
+        ):
+            return PriceChartingLookup(
+                "AMBIGUOUS", note="résultats PriceCharting ambigus"
+            )
+        return matches[0]
+
+    def _request_api(self, path: str, parameters: Mapping[str, str]) -> Mapping[str, object]:
+        self._respect_rate_limit(self.config.minimum_request_interval_seconds)
         safe_parameters = dict(parameters)
         safe_parameters["t"] = self.config.token or ""
         try:
@@ -212,11 +297,38 @@ class PriceChartingProvider:
             raise RuntimeError("PriceCharting réponse en erreur")
         return payload
 
-    def _respect_rate_limit(self) -> None:
+    def _request_public(self, path_or_url: str, parameters: Mapping[str, str]) -> str:
+        self._respect_rate_limit(self.config.public_request_interval_seconds)
+        url = (
+            path_or_url
+            if str(path_or_url).startswith("https://")
+            else f"{PRICECHARTING_BASE_URL}{path_or_url}"
+        )
+        try:
+            response = self.session.get(
+                url,
+                params=dict(parameters) or None,
+                headers={"User-Agent": "Mozilla/5.0 GCC-Auction-Watcher/PriceResearch"},
+                timeout=self.config.timeout_seconds,
+            )
+        except Exception:
+            raise RuntimeError("PriceCharting public réseau indisponible") from None
+        status_code = getattr(response, "status_code", None)
+        if status_code != 200:
+            raise RuntimeError(f"PriceCharting public HTTP {status_code}")
+        text = getattr(response, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError("PriceCharting public HTML invalide")
+        lowered = text.casefold()
+        if any(marker in lowered for marker in ("captcha", "access denied", "verify you are human")):
+            raise RuntimeError("PriceCharting public accès refusé")
+        return text
+
+    def _respect_rate_limit(self, interval: float) -> None:
         now = time.monotonic()
         if self._last_request_started is not None:
             elapsed = now - self._last_request_started
-            remaining = self.config.minimum_request_interval_seconds - elapsed
+            remaining = interval - elapsed
             if remaining > 0:
                 time.sleep(remaining)
                 now = time.monotonic()
@@ -264,7 +376,6 @@ def _score_candidate(lot: watcher.Lot, candidate: Mapping[str, object]) -> Candi
 
     score = Decimal("0")
     possible = Decimal("0")
-    explanation: list[str] = []
     checks = (
         ("name", expected_name, Decimal("40"), _contains_words(expected_name, product_name)),
         ("set", expected_set, Decimal("20"), _contains_words(expected_set, combined)),
@@ -275,6 +386,7 @@ def _score_candidate(lot: watcher.Lot, candidate: Mapping[str, object]) -> Candi
             _number_matches(expected_number, product_name_raw) if expected_number else False,
         ),
     )
+    explanation: list[str] = []
     for label, expected, weight, matched in checks:
         if not expected:
             continue
@@ -314,6 +426,58 @@ def _score_candidate(lot: watcher.Lot, candidate: Mapping[str, object]) -> Candi
         normalized = Decimal("0")
         explanation.append("product_id:missing")
     return CandidateMatch(product_id, normalized, tuple(explanation))
+
+
+def _html_text(raw: str) -> str:
+    text = re.sub(r"(?is)<script\b.*?</script>|<style\b.*?</style>", " ", raw or "")
+    text = re.sub(r"(?is)<[^>]+>", "\n", text)
+    text = html.unescape(text)
+    return re.sub(r"[ \t]+", " ", text)
+
+
+def _public_search_candidates(raw: str) -> tuple[Mapping[str, object], ...]:
+    candidates: dict[str, Mapping[str, object]] = {}
+    pattern = re.compile(
+        r"(?is)<a\b[^>]*href=[\"'](?P<href>/game/[^\"']+)[\"'][^>]*>(?P<label>.*?)</a>"
+    )
+    for match in pattern.finditer(raw or ""):
+        href = html.unescape(match.group("href"))
+        label = _normalize(_html_text(match.group("label")))
+        if not label:
+            continue
+        url = urljoin(PRICECHARTING_BASE_URL, href)
+        candidates.setdefault(
+            url,
+            {
+                "id": url,
+                "product-name": label,
+                "console-name": href.replace("/", " ").replace("-", " "),
+            },
+        )
+        if len(candidates) >= 30:
+            break
+    return tuple(candidates.values())
+
+
+def _public_guide_value(body: str, price_key: str) -> Optional[float]:
+    labels = {
+        "manual-only-price": r"PSA\s*10",
+        "graded-price": r"Grade\s*9(?!\.5)",
+        "new-price": r"Grade\s*8(?!\.5)",
+    }
+    label = labels.get(price_key)
+    if not label:
+        return None
+    match = re.search(
+        rf"(?is)\b{label}\b\s*\$\s*([0-9][0-9,]*(?:\.\d{{1,2}})?)",
+        body or "",
+    )
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def _pennies(payload: Mapping[str, object], key: str) -> Optional[float]:
@@ -410,8 +574,8 @@ def _evidence_from_lookup(
         confidence="moyenne" if exact else "faible",
         adaptive_discount_pct=threshold,
         rationale=(
-            "PriceCharting official Prices API: guide courant PSA 10 exact; "
-            "aucune vente item-level fabriquée"
+            "PriceCharting guide PSA 10 exact: valeur courante calculée depuis "
+            "des ventes historiques; aucune vente item-level fabriquée"
             if exact
             else "PriceCharting guide générique de grade; contexte uniquement"
         ),
@@ -428,7 +592,11 @@ def _evidence_from_lookup(
         PRICECHARTING_SOURCE,
         estimate=estimate,
         comparables=[],
-        note=(f"{lookup.note}; product_id={lookup.product_id}" if lookup.product_id else lookup.note),
+        note=(
+            f"{lookup.note}; product={lookup.product_id}"
+            if lookup.product_id
+            else lookup.note
+        ),
         fetched_at=now,
     )
 
@@ -452,7 +620,7 @@ def pricecharting_evidence_for_lot(
 
 
 def install_v4_pricecharting_valuation_source_roles() -> None:
-    """Keep opportunity marketplaces separate from V4 fair-value providers.
+    """Separate opportunity marketplaces from fair-value providers in V4.
 
     PokeTrace is evaluated before this fallback by the canonical multimarket
     layer. Here PSA APR remains the first exact fallback. Direct eBay SOLD scraping
@@ -497,10 +665,7 @@ def install_v4_pricecharting_valuation_source_roles() -> None:
                 )
             return pc
 
-        if pc.status in {
-            watcher.EXTERNAL_PENDING,
-            *watcher.EXTERNAL_RETRY_STATUSES,
-        }:
+        if pc.status == watcher.EXTERNAL_PENDING or pc.status in watcher.EXTERNAL_RETRY_STATUSES:
             return replace(
                 apr_or_unavailable,
                 note=(
