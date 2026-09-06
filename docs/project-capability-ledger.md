@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **6 septembre 2026** après les merges production #253/#254/#255. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **6 septembre 2026** après les merges production #253/#254/#255 et le premier Main Scanner exact post-#255. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`.
 
@@ -8,32 +8,35 @@ Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`,
 
 ```text
 V4 production branch                 : main
-V4 production HEAD                   : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f
-External fair-value authority        : #255 / PROD_V4
-Bounded eBay structured salvage      : #254 / PROD_V4
-Structured eBay body-timeout salvage : #253 / PROD_V4
-PokeTrace aggregate quality          : #247 / PROD_V4
-Auction pagination preservation      : #245 / PROD_V4
-Auction recovery capacity            : #229/#231 / PROD_V4 / hard cap 250
-Auction order hardening              : #211/#212 / PROD_V4
-Future-start auction guard           : #220 + #243 / PROD_V4
-V4 run registry                      : issue #235 ACTIVE / #237 MAIN_SUPPORT
-eBay normal bulk result text         : #238/#239 / PROD_V4
-eBay result before teardown          : #242 / PROD_V4
-eBay timeout diagnostics             : #241/#250/#252 / PROD_V4
-eBay same-DOM body fallback          : #251 / PROD_V4
-TCGdex transport resilience          : #216/#217 / PROD_V4
-TCGdex outage fallback               : #222/#224 / PROD_V4
-External pending throughput          : #214 / PROD_V4
-Magi native identity                 : #174/#177/#178 / PROD_V4
-Global schedule watchdog             : #179 / PROD_V4
-Robot KB local cutover               : #166 / ROBOT_KB / PostgreSQL Mac
-Robot KB multisource                 : #180 / ROBOT_KB
-P3 rarity-symbol print_run           : #207 / P3_ONLY
-Cardova durable commit guard         : #210 / OPEN DRAFT / P3_ONLY
-V5 expérimentale                     : PR #8 / V5_ONLY / OPEN DRAFT NON-MERGED
-TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
+V4 live GitHub HEAD                   : dfc548021c561479cc8758e2949d2c4629388d9d
+V4 runtime tree baseline              : 9d3bb1b84d22c1534c24d7c58c5897ecce4b817f / #255
+External fair-value authority         : #255 / PROD_V4 / live fail-closed proven
+Bounded eBay structured salvage       : #254 / PROD_V4 / live proven
+Structured eBay body-timeout salvage  : #253 / PROD_V4
+PokeTrace aggregate quality           : #247 / PROD_V4
+Auction pagination preservation       : #245 / PROD_V4
+Auction recovery capacity             : #229/#231 / PROD_V4 / hard cap 250
+Auction order hardening               : #211/#212 / PROD_V4
+Future-start auction guard            : #220 + #243 / PROD_V4
+V4 run registry                       : issue #235 ACTIVE / #237 MAIN_SUPPORT
+eBay normal bulk result text          : #238/#239 / PROD_V4
+eBay result before teardown           : #242 / PROD_V4
+eBay timeout diagnostics              : #241/#250/#252 / PROD_V4
+eBay same-DOM body fallback           : #251 / PROD_V4
+TCGdex transport resilience           : #216/#217 / PROD_V4
+TCGdex outage fallback                : #222/#224 / PROD_V4
+External pending throughput           : #214 / PROD_V4
+Magi native identity                  : #174/#177/#178 / PROD_V4
+Global schedule watchdog              : #179 / PROD_V4
+Robot KB local cutover                : #166 / ROBOT_KB / PostgreSQL Mac
+Robot KB multisource                  : #180 / ROBOT_KB
+P3 rarity-symbol print_run            : #207 / P3_ONLY
+Cardova durable commit guard          : #210 / OPEN DRAFT / P3_ONLY
+V5 expérimentale                      : PR #8 / V5_ONLY / OPEN DRAFT NON-MERGED
+TCGdex source pin                     : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
+
+`main` a avancé de deux commits net-zero après #255 jusqu'à `dfc548...`; la comparaison depuis `9d3bb1...` contient **0 fichier modifié**. Le runtime tree est inchangé.
 
 ## #255 — external market evidence sole fair-value authority — `PROD_V4`
 
@@ -43,18 +46,45 @@ Contract:
 - GCC = listing identity/current price/timing, not fair-value authority ;
 - GCC history remains observable for diagnostics/Robot KB only ;
 - external `PENDING`, `WEAK`, error or unavailable => fail-closed ;
-- no fallback economic `GCC_ONLY` ;
+- no economic fallback from historical `GCC_ONLY` evidence ;
 - strong external evidence may still use the existing rescue path ;
 - terminal GCC safety rejection remains terminal ;
 - SOLD semantics, identity, provider budgets, thresholds and transaction prohibition unchanged.
 
-First exact post-merge Fast Lane `34037049703` SUCCESS. First exact Main Scanner observed: `34037829669` on `9d3bb1...`; audit required after completion before claiming full live Main Scanner proof.
+### Live proof
+
+First exact natural Main Scanner: `34037313029` / #3936 / exact `9d3bb1...` / SUCCESS.
+
+```text
+fixed discovery                   3259 / 33 pages / COMPLETE
+auction rows/timers               100 / 100
+auction scope                     COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS
+external deterministic candidates 9
+usable STRONG                     0 / 9
+PokeTrace                         0 STRONG / 9 WEAK
+PSA APR                           HTTP 403 -> breaker
+ eBay                              16 attempted / 0 sufficient / 11 insufficient / 5 unavailable / 5 errors
+final opportunities               0
+```
+
+The historical/internal `GCC_ONLY` label can still occur in telemetry, but it no longer creates fair value or an opportunity. With no STRONG external sample, the run remained fail-closed. Positive `EXTERNAL_RESCUE` was not observed live in this sample and remains proven by focused tests rather than by this run.
+
+Run `34037829669` was CANCELLED and is not live evidence.
 
 ## #254 — bounded structured eBay salvage — `PROD_V4`
 
 Validated head `fbb7041f9fc44c338b102ec7325a6d6316f1e529`; run `34031695933` attempt 2 SUCCESS; `920 PASS / 2 skipped`; production merge `00e5502fb15c9a89d67a55b70cd566099911bcdb`.
 
 After exact body `TimeoutError`, probe max 4 already-loaded `li.s-item` rows using `inner_text(timeout=600)`. Require non-empty EUR/€ evidence. Failure re-raises original timeout. No goto/reload/wait/provider retry. After successful salvage, canonical per-item bounded parsing remains authority.
+
+### Live proof
+
+Run `34037313029` exercised the real timeout path multiple times:
+- `body_inner_text` ~2500 ms timeout ;
+- #251 `body_text_content` ~700 ms timeout/error ;
+- exactly bounded `items_item_text` probes, max 4 × ~600 ms ;
+- worker result preserved around 7.6–7.9 s ;
+- no new 30 s hard-timeout regression from the #253 salvage path.
 
 This supersedes only the **unbounded salvage path** introduced by #253; it does not remove the normal #238/#239 bulk fast path.
 
@@ -166,6 +196,8 @@ commercial microvariant
 ```
 
 Only then may an observation become an exact `SALE_TRANSACTION` in Robot KB or be considered for future V4 economic use.
+
+Detailed phase matrix: `docs/external-sold-coverage-phase-20260906.md`.
 
 ## Invariants de reprise
 
