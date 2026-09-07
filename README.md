@@ -10,12 +10,11 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production HEAD avant PR #261     : db4954f5b223817fe14ccfeb9dcac80c960d5dd9
+V4 production HEAD code #261         : 24230552d52574e2769c21dcfa84ba11320da2cf
 V4 external fair-value authority     : #255 MERGED / production
 Vault/source-role + PriceCharting    : #257 + #259 MERGED / production
 Global/Japan integration             : #259 MERGED / production
-Cross-grader calibration             : PR #261 DRAFT / NON MERGED
-PR #261 branch                        : fix/v4-crossgrader-proxy-calibration-20260907
+Cross-grader calibration             : #261 MERGED / production
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -37,7 +36,7 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase active — PR #261 : calibration des alertes CROSS-GRADER
+### Phase closeout — #261 : calibration des alertes CROSS-GRADER
 
 Objectif : conserver une lane de rappel utile pour les graders secondaires sans transformer PSA en comparable exact ni produire des faux positifs comme les cas opérateur CA10 Glaceon / PCA9.5 Eevee / CA10 Riolu.
 
@@ -54,7 +53,7 @@ Règles #261 :
 - le grader/langue proxy reste explicitement affiché comme proxy de revue, jamais comparable exact ;
 - schéma de déduplication cross-market v2 afin de réévaluer les anciennes alertes sous la nouvelle calibration.
 
-Validation code/tests avant documentation : head `c58aa4c75768144946f858267a13eb493bf7a420`, workflow `V4 Auction Discovery Validation` run `34092254431` SUCCESS, 742 tests OK, compile/YAML/diff-check/comparaison live read-only PASS. Toujours revalider le head exact après les commits de documentation avant merge.
+Validation code/tests : head `c58aa4c75768144946f858267a13eb493bf7a420`, workflow `V4 Auction Discovery Validation` run `34092254431` SUCCESS, suite V4 complète + tests ciblés cross-grader + compile/YAML/diff-check/comparaison live read-only PASS. Head final PR `c5e61d1b5377508ccf1a720959e0f7e09d570fbc`. Merge production #261 : `24230552d52574e2769c21dcfa84ba11320da2cf`.
 
 Ledger : `docs/v4-crossgrader-proxy-calibration-20260907.md`.
 
@@ -132,7 +131,7 @@ PriceCharting est consulté comme guide de référence pour les identités compa
 
 Le seuil économique normal reste celui de V4 ; aucun floor spécial 40 % n'est imposé uniquement parce que la référence est PriceCharting.
 
-### Cross-grader manual review — PR #261
+### Cross-grader manual review — #261
 
 La lane cross-grader est une **lane de revue manuelle**, pas une fair-value conversion automatique entre graders. Les demi-grades non-PSA exigent un proxy secondaire de même grade numérique ; les grades entiers préfèrent CGC même grade avant tout fallback PSA. PriceCharting peut plafonner une référence compatible mais reste un guide. Une alerte cross-grader exige au moins 30 % de décote après haircut.
 
@@ -260,13 +259,11 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
-PR #261
-  -> cross-grader fractional: même grade CGC/BGS, jamais PCA9.5 -> PSA9
-  -> whole grade secondaire: CGC même grade préféré, PSA fallback conservateur
-  -> PriceCharting = cap GUIDE compatible, jamais SOLD
-  -> floor revue cross-grader 30 % après haircut
-  -> revalider CI sur le head exact après docs
-  -> NE PAS MERGER sans autorisation explicite
+Post-#261
+  -> observer le bruit réel de la lane CROSS-GRADER
+  -> conserver PCA9.5 -> même grade CGC/BGS uniquement
+  -> réévaluer les haircuts (notamment CA->PSA 45 %) uniquement sur données empiriques
+  -> ne pas relâcher l'identité ni transformer un proxy en comparable exact
 
 V4 providers
   -> priorité aux SOLD exacts récents lorsqu'ils existent
