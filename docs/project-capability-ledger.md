@@ -8,7 +8,7 @@ Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`,
 
 ```text
 V4 production branch             : main
-V4 main HEAD docs                : 22303a34f7414769a04f4c587338def005b8a5c6
+V4 main HEAD docs                : 85f429e2eec6f810e53f7fcbc00d77f2da525c75
 V4 production code HEAD #261     : 24230552d52574e2769c21dcfa84ba11320da2cf
 External fair-value authority    : #255 / PROD_V4
 Integrated recall/source roles   : #259 / PROD_V4
@@ -67,7 +67,7 @@ Validation : workflow `34053317112`, job `101541221319`, suite V4 958 PASS / 2 s
 
 ## #261 — cross-grader review calibration — `PROD_V4`
 
-Merge runtime `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs main `22303a34...`.
+Merge runtime `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs main `22303a34...` puis consolidation #262 `85f429e2...`.
 
 - non-PSA fractionnaire : proxy secondaire **même grade numérique** CGC/BGS, pas de rabattement PCA9.5→PSA9 ;
 - non-PSA entier : CGC même grade préféré ; PSA même grade fallback conservateur ;
@@ -132,6 +132,14 @@ Fondations à réutiliser avant tout nouveau resolver :
 
 Résiduel live post-#260 : plusieurs ambiguïtés portent des suffixes de présentation GCC (`Reverse`, `Rainbow`, `Gold`, `Holo`). Le code #260 impose actuellement le même nombre de tokens entre nom listing et nom TCGdex ; toute évolution doit donc distinguer explicitement **qualifier de variante** et **nom canonique** sans jeter un token au hasard.
 
+## Fondations historiques récupérées — provenance à conserver
+
+Ces marqueurs restent volontairement explicites : ils sont des points d'entrée de réutilisation et empêchent qu'un closeout récent efface la provenance d'anciennes capacités validées.
+
+**Capacités structurantes : #9, #50, #52, #104**, puis #211/#212, #220, #229/#231, #243 et #245.
+
+**TCGdex / PokeTrace #119→#135** : exact-coordinate, catalogue uniqueness, source-pinned finish/set et PokeTrace market-only après identité TCGdex. Le **fallback générique catalogue immuable** reste une fondation récupérée ; aucun alias treadmill. **PR #126 = `SUPERSEDED`** par #127→#135.
+
 ---
 
 # Auction discovery — `PROD_V4`
@@ -166,7 +174,9 @@ Ne pas créer une nouvelle couche timeout/breaker avant de prouver l'insuffisanc
 
 # Global Multi-Vault / Japan — `PROD_V4`
 
-#139 a réintégré la pile historique #108/#109/#110/#113/#114/#115/#138. #259 est désormais l'intégration canonique récente des rôles de sources, du recall et des providers Japan.
+#139 a réintégré/revalidé le stack historique #108/#109/#110/#113/#114/#115/#138. #259 est désormais l'intégration canonique récente des rôles de sources, du recall et des providers Japan.
+
+Production actuelle : **GCC/Cardova/Magi/Fanatics/COMC** → identité commerciale exacte → TCGdex exact + microvariante → preuves externes → décision. `PPT = `SOLD_AGGREGATED`` est conservé comme sémantique historique : agrégé SOLD, jamais item-level SOLD.
 
 Architecture : GCC/Fanatics/COMC/Magi/Cardova/Mercari/SNKRDUNK découvrent des offres ; TCGdex prouve l'identité ; les providers externes établissent la valorisation ; une marketplace ne devient jamais sa propre fair value.
 
