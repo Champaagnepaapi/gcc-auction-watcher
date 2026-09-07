@@ -54,6 +54,9 @@ from v4_tcgdex_generalized_coordinate_recovery import (
 )
 from v4_tcgdex_japanese_set_aliases import install_v4_tcgdex_japanese_set_aliases
 from v4_tcgdex_observability import install_v4_tcgdex_observability
+from v4_tcgdex_rainbow_variant_recovery import (
+    install_v4_tcgdex_rainbow_variant_recovery,
+)
 from v4_tcgdex_run1054_set_aliases import install_v4_tcgdex_run1054_set_aliases
 from v4_tcgdex_source_pinned_finish import install_v4_tcgdex_source_pinned_finish
 from v4_tcgdex_two_of_three_backport import (
@@ -140,6 +143,11 @@ if __name__ == "__main__":
     # bypassing the source-pinned Japanese finish fallback. Missing detail keeps
     # legacy behavior; malformed/conflicting material detail fails closed.
     install_v4_tcgdex_detailed_variants()
+    # GCC may append Rainbow to the display name while TCGdex stores that exact
+    # material foil in variants_detailed. Recover only exact set/localId/card-name
+    # coordinates with explicit type=holo + foil=rainbow proof, and carry the
+    # sanitized microvariant into every downstream provider gate.
+    install_v4_tcgdex_rainbow_variant_recovery()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
