@@ -16,6 +16,7 @@ Vault/source-role + PriceCharting    : #257 + #259 MERGED / production
 Global/Japan integration             : #259 MERGED / production
 Cross-grader calibration             : #261 MERGED / production
 CA -> PSA recall tuning              : #263 / haircut 35 %
+TCGdex Rainbow microvariant          : #266 / VALIDATED / deployment pending
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -36,6 +37,23 @@ Neon                                 : writers automatiques OFF / rollback manue
 V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
+
+### Phase #266 — TCGdex Rainbow microvariant
+
+Objectif : récupérer le résiduel `Fille en Kimono Rainbow #205/195` uniquement lorsque TCGdex prouve la microvariante matérielle, sans transformer `Rainbow` en simple alias `Holo`.
+
+Règles #266 :
+
+- `Rainbow` est accepté uniquement comme suffixe GCC borné en fin de nom ;
+- set exact dans la langue du listing, localId exact, dénominateur exact lorsqu'il existe et nom de base exact ;
+- preuve TCGdex obligatoire dans `variants_detailed` : `type=holo` **et** `foil=rainbow` ;
+- `special_finish=rainbow` est propagé aux parsers et gates provider ;
+- Holo ordinaire, autre foil, conflit de special finish, détail absent/malformé ou ambiguïté restent fail-closed ;
+- aucune modification SOLD/ASK, fair value, seuil, budget ou cap P4.
+
+Validation initiale code/tests sur head `a5c8db4bdcd79af535ab24a3c0d9f301e3f5fa8c`, workflow `V4 Auction Discovery Validation` run `34114172479` SUCCESS : **980 tests PASS (2 skipped)**, compile/YAML/`diff --check` PASS, comparaison live read-only **58/58**, `effective_only=0`, `legacy_only=0`, timers unresolved `0/0`. Un commit README ultérieur exige une nouvelle validation du head final avant merge.
+
+PR #8/V5, Robot KB/Neon et toute logique d'achat/bid/checkout/paiement restent inchangés.
 
 ### Phase closeout — #261 + tuning #263 : calibration des alertes CROSS-GRADER
 
