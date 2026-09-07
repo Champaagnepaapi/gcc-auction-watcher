@@ -64,6 +64,53 @@ class TcgdexNameFilteredCoordinateRecoveryTests(unittest.TestCase):
             )
         )
 
+    def test_reverse_suffix_requires_listing_and_card_finish_proof(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/elektek-reverse",
+            title="PSA 9 Elektek Reverse",
+            current_price=50.0,
+            source_type="fixed",
+            grader="PSA",
+            grade="9",
+            card_set="Evolutions",
+            card_number="#41/108",
+            language="French",
+            year=2016,
+        )
+        reverse_card = {"name": "Elektek", "variants": {"reverse": True, "holo": False}}
+        holo_card = {"name": "Elektek", "variants": {"reverse": False, "holo": True}}
+
+        self.assertEqual(
+            recovery._proven_finish_display_suffix(lot, "Elektek Reverse"),
+            ("reverse", "elektek"),
+        )
+        self.assertTrue(
+            recovery._candidate_name_compatible(lot, "Elektek Reverse", reverse_card)
+        )
+        self.assertFalse(
+            recovery._candidate_name_compatible(lot, "Elektek Reverse", holo_card)
+        )
+
+    def test_rainbow_and_gold_are_not_stripped_without_supported_schema(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/rainbow",
+            title="PSA 9 Darumacho de Galar VMAX Rainbow",
+            current_price=50.0,
+            source_type="fixed",
+            grader="PSA",
+            grade="9",
+            card_set="Voltage Eclatant",
+            card_number="#187/185",
+            language="French",
+            year=2020,
+        )
+        self.assertIsNone(
+            recovery._proven_finish_display_suffix(lot, "Darumacho de Galar VMAX Rainbow")
+        )
+        self.assertIsNone(
+            recovery._proven_finish_display_suffix(lot, "Origin Dialga VStar Gold")
+        )
+
     def test_filters_shared_denominator_coordinates_by_exact_name_before_ambiguity(self):
         lot = self._lot()
         sets = (
@@ -156,6 +203,66 @@ class TcgdexNameFilteredCoordinateRecoveryTests(unittest.TestCase):
         self.assertEqual(result.status, "EXACT")
         self.assertEqual(result.card_id, "gym2-3")
         self.assertEqual(result.language_code, "en")
+
+    def test_reverse_finish_narrows_two_same_name_coordinate_candidates(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/elektek-reverse",
+            title="PSA 9 Elektek Reverse",
+            current_price=50.0,
+            source_type="fixed",
+            grader="PSA",
+            grade="9",
+            card_set="Evolutions",
+            card_number="#41/108",
+            language="French",
+            year=2016,
+        )
+        sets = (
+            {"id": "reverse-set", "cardCount": {"official": 108}},
+            {"id": "holo-set", "cardCount": {"official": 108}},
+        )
+        cards = {
+            "reverse-set": {
+                "id": "reverse-set-41",
+                "localId": "41",
+                "name": "Elektek",
+                "variants": {"reverse": True, "holo": False},
+                "set": {"id": "reverse-set", "name": "Evolutions", "cardCount": {"official": 108}},
+            },
+            "holo-set": {
+                "id": "holo-set-41",
+                "localId": "41",
+                "name": "Elektek",
+                "variants": {"reverse": False, "holo": True},
+                "set": {"id": "holo-set", "name": "Other", "cardCount": {"official": 108}},
+            },
+        }
+
+        def canonicalize(_lot, card, **kwargs):
+            del _lot, kwargs
+            return canonical.CanonicalCard(
+                status="EXACT",
+                card_id=card["id"],
+                set_id=card["set"]["id"],
+                set_name=str(card["set"].get("name") or ""),
+                local_id="41",
+                full_number="41/108",
+                name="Elektek",
+                language_code="fr",
+            )
+
+        with mock.patch.object(unique, "_set_index", return_value=sets), \
+             mock.patch.object(
+                 unique,
+                 "_probe_exact_set_coordinate",
+                 side_effect=lambda _lot, **kw: cards[kw["set_id"]],
+             ), \
+             mock.patch.object(unique, "_canonicalize_unique_card", side_effect=canonicalize):
+            result = recovery._recover_exact_name_from_ambiguous_coordinate(lot)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.card_id, "reverse-set-41")
 
     def test_two_fuzzy_compatible_matches_remain_ambiguous(self):
         lot = watcher.Lot(
