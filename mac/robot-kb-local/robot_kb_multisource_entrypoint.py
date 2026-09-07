@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Optional, Sequence
 
+import robot_kb_magi_sold_marked as magi_sold_marked
 import robot_kb_multisource_harvest as harvest
 import robot_kb_multisource_p3_compat as p3_compat
 import robot_kb_multisource_provider_bounds as provider_bounds
@@ -10,6 +11,7 @@ import robot_kb_multisource_paid_fairness as paid_fairness
 
 
 _ORIGINAL_FINGERPRINT = harvest.fingerprint
+_ORIGINAL_HARVEST_MARKETS = harvest.harvest_markets
 
 
 def semantic_marketplace_fingerprint(value: object) -> str:
@@ -28,8 +30,22 @@ def semantic_marketplace_fingerprint(value: object) -> str:
     return _ORIGINAL_FINGERPRINT(value)
 
 
+def harvest_markets_with_magi_sold_marked(kb: Any, state: dict[str, Any], diag: Any) -> None:
+    """Keep the existing public harvest, then optionally add non-sale Magi history."""
+    _ORIGINAL_HARVEST_MARKETS(kb, state, diag)
+    magi_sold_marked.harvest(
+        kb,
+        state,
+        diag,
+        now_fn=harvest.now,
+        runtime=harvest.runtime,
+        fingerprint_fn=harvest.fingerprint,
+    )
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     harvest.fingerprint = semantic_marketplace_fingerprint
+    harvest.harvest_markets = harvest_markets_with_magi_sold_marked
     p3_compat.install(harvest)
     provider_bounds.install(harvest)
     paid_fairness.install(harvest)
