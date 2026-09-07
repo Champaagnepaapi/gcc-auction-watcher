@@ -76,6 +76,7 @@ def _scan_with_public_cardova(args, *, observed_at):
         "public anonymous GET-only browser capture; no login/session/cookies; "
         f"json={capture.json_responses}; raw={capture.raw_listing_rows}; "
         f"scope={capture.accepted_rows}; rejects={dict(capture.rejected_rows)}; "
+        f"provider_pagination_complete={bool(capture.complete)}; "
         "fixed buyer fee=0 per public fee schedule; auction buyer premium unproven"
     )
     status = ScanStatus(
@@ -85,8 +86,9 @@ def _scan_with_public_cardova(args, *, observed_at):
         candidates=capture.raw_listing_rows,
         exact=len(cardova_rows),
         detail=detail,
-        # Intentionally false until exhaustive public pagination is proven.
-        complete=False,
+        # True only when the capture layer has explicit provider pagination proof
+        # for both auction and fixed lanes. Local page caps/duplicate rows stay false.
+        complete=bool(capture.complete),
     )
     statuses = [row for row in statuses if row.market != "cardova"] + [status]
     return list(merged.values()), statuses, gcc_fair, catalog_status
