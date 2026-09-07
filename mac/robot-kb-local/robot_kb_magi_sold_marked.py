@@ -7,8 +7,9 @@ A detail-page explicit SOLD marker is still mandatory before persistence.
 
 A SOLD marker is *not* proof of a completed transaction, final sale price, or
 sale date. Stored observations therefore remain ``LISTING_SNAPSHOT`` with
-``snapshot_status=SOLD_MARKED``, ``provider_sale_evidence=False`` and
-``genuine_sale_evidence=False``. The displayed price is preserved only as the
+``snapshot_status=SOLD_MARKED`` and ``genuine_sale_evidence=False``. The raw
+payload also carries ``sale_evidence=False``, ``final_transaction_price_proven``
+and ``sale_date_proven`` flags. The displayed price is preserved only as the
 listing price observed on that page.
 
 No network or database work happens on import. Runtime activation is opt-in via
@@ -17,11 +18,10 @@ No network or database work happens on import. Runtime activation is opt-in via
 from __future__ import annotations
 
 import os
-import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any
 
 
 _PRESENTED_STATUS_PARAMETER = "forms_search_items%5Bstatus%5D=presented"
@@ -209,11 +209,13 @@ def persist(kb: Any, snapshot: MagiSoldMarkedSnapshot, *, runtime: Any) -> None:
         observation_type=ObservationType.LISTING_SNAPSHOT,
         source_native_record_id=native,
         observed_at=snapshot.observed_at.isoformat(),
+        # P3's normalized LISTING_SNAPSHOT schema accepts only these three
+        # fields. The stricter non-sale semantics remain in raw payload plus
+        # genuine_sale_evidence=False below.
         fact={
             "listing_started_at": None,
             "snapshot_status": "SOLD_MARKED",
             "quantity": 1,
-            "provider_sale_evidence": False,
         },
         prices=prices,
         identity_subject_type="MAGI_SOLD_MARKED_LISTING",
