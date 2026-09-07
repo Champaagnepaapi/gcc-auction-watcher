@@ -59,9 +59,61 @@ class FanaticsProviderLanguageTests(unittest.TestCase):
     def test_explicit_language_field_is_allowed(self):
         self.assertEqual(target._provider_language("Card Language: English"), ("en", "English"))
 
+    def test_fanatics_en_h1_code_is_explicit_english_and_is_normalized_for_v3(self):
+        title = "2025 Pokemon SV Destined Rivals - DRI EN #193/182 Misty's Psyduck PSA 10"
+        calls = []
+
+        def fake(candidate, *, proof_text="", resolver=None):
+            calls.append(candidate)
+            if " English " in candidate and " DRI EN " not in candidate:
+                return _exact("en")
+            return v1.FanaticsNativeResolution("NO_MATCH", "explicit_language_unproven")
+
+        old = target._ORIGINAL_RESOLVER
+        target._ORIGINAL_RESOLVER = fake
+        try:
+            result = target.resolve_fanatics_native_identity_with_provider_language(title)
+        finally:
+            target._ORIGINAL_RESOLVER = old
+
+        self.assertEqual(target._provider_language("", title=title), ("en", "English"))
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.identity.language, "en")
+        self.assertEqual(len(calls), 2)
+
+    def test_fanatics_jp_h1_code_is_explicit_japanese_and_is_normalized_for_v3(self):
+        title = "2023 Pokemon SV Black Star Promos JP #098/SV-P Detective Pikachu PSA 10"
+        calls = []
+
+        def fake(candidate, *, proof_text="", resolver=None):
+            calls.append(candidate)
+            if " Japanese " in candidate and " Promos JP " not in candidate:
+                return _exact("ja")
+            return v1.FanaticsNativeResolution("NO_MATCH", "explicit_language_unproven")
+
+        old = target._ORIGINAL_RESOLVER
+        target._ORIGINAL_RESOLVER = fake
+        try:
+            result = target.resolve_fanatics_native_identity_with_provider_language(title)
+        finally:
+            target._ORIGINAL_RESOLVER = old
+
+        self.assertEqual(target._provider_language("", title=title), ("ja", "Japanese"))
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.identity.language, "ja")
+        self.assertEqual(len(calls), 2)
+
+    def test_short_language_token_requires_pokemon_psa_h1_context(self):
+        self.assertIsNone(target._provider_language("", title="Marketplace EN locale"))
+        self.assertIsNone(target._provider_language("", title="2025 Pokemon EN product without grade"))
+
     def test_competing_provider_languages_remain_unproven(self):
         proof = "Pokemon Japanese\nRelated: Pokemon English"
         self.assertIsNone(target._provider_language(proof))
+
+    def test_short_title_and_conflicting_long_provider_language_fail_closed(self):
+        title = "2025 Pokemon DRI EN #193/182 Misty's Psyduck PSA 10"
+        self.assertIsNone(target._provider_language("Pokemon Japanese", title=title))
 
     def test_no_provider_language_never_defaults_to_english_or_japanese(self):
         calls = []
