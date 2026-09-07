@@ -14,6 +14,7 @@ External fair-value authority    : #255 / PROD_V4
 Integrated recall/source roles   : #259 / PROD_V4
 TCGdex constrained name recovery : #260 / PROD_V4
 Cross-grader calibration         : #261 / PROD_V4
+CA -> PSA recall tuning          : #263 / haircut 35 %
 Auction pagination preservation  : #245 / PROD_V4
 Auction recovery capacity        : #229/#231 / PROD_V4 / adaptive sizing / hard cap 250
 Auction order hardening          : #211/#212 / PROD_V4
@@ -33,7 +34,7 @@ TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 
 ---
 
-# Production actuelle — #255 + #259 + #260 + #261
+# Production actuelle — #255 + #259 + #260 + #261 + tuning #263
 
 ## #255 — external fair-value authority — `PROD_V4`
 
@@ -65,18 +66,19 @@ Le recovery n'est pas un fuzzy global. Il intervient uniquement après la ligné
 
 Validation : workflow `34053317112`, job `101541221319`, suite V4 958 PASS / 2 skipped, compile/YAML/diff-check PASS, comparaison live read-only PASS. Premier Main naturel post-merge `34091885754` SUCCESS sur le SHA exact.
 
-## #261 — cross-grader review calibration — `PROD_V4`
+## #261 + #263 — cross-grader review calibration — `PROD_V4`
 
-Merge runtime `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs main `22303a34...` puis consolidation #262 `85f429e2...`.
+Merge runtime #261 `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs main `22303a34...` puis consolidation #262 `85f429e2...`.
 
 - non-PSA fractionnaire : proxy secondaire **même grade numérique** CGC/BGS, pas de rabattement PCA9.5→PSA9 ;
 - non-PSA entier : CGC même grade préféré ; PSA même grade fallback conservateur ;
 - haircuts spécifiques au grader cible ;
+- #263 ramène uniquement le fallback `CA -> PSA_FALLBACK_CONSERVATIVE` de 45 % à **35 %** ;
 - PriceCharting compatible peut plafonner la référence brute mais reste `GUIDE` ;
 - revue cross-grader seulement si décote >=30 % après haircut ;
 - déduplication cross-market v2.
 
-Validation code `c58aa4c...`, run `34092254431` SUCCESS, tests ciblés + suite V4 + compile/YAML/diff-check + comparaison live read-only PASS.
+Validation #261 code `c58aa4c...`, run `34092254431` SUCCESS, tests ciblés + suite V4 + compile/YAML/diff-check + comparaison live read-only PASS. #263 conserve des régressions dédiées Glaceon/Riolu et un cas de recall à la frontière ; le head exact doit rester CI-vert avant merge.
 
 ---
 
@@ -225,7 +227,8 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié historiquement `bc6
 - #258 : `STALE_OPEN/SUPERSEDED_BY_259` pour le runtime recall intégré ;
 - #259 : intégration production canonique recall/source-role/Global/Japan ;
 - #260 : recovery TCGdex contraint production ;
-- #261 : calibration cross-grader production.
+- #261 : calibration cross-grader production ;
+- #263 : tuning CA→PSA 35 % de la lane de revue cross-grader, sans changement du floor 30 % ni des règles d'identité.
 
 ---
 

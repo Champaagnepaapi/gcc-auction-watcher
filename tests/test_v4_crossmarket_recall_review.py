@@ -234,7 +234,7 @@ class CrossMarketRecallReviewTests(unittest.TestCase):
         self.assertEqual(calls, [("CGC", "10")])
         self.assertNotIn(("PSA", "10"), calls)
 
-    def test_ca10_psa_fallback_is_pricecharting_capped_and_haircut_45(self):
+    def test_ca10_psa_fallback_is_pricecharting_capped_and_haircut_35(self):
         lot = self._lot(grader="CA", grade="10", price=18.0)
         canonical = self._canonical()
 
@@ -262,7 +262,7 @@ class CrossMarketRecallReviewTests(unittest.TestCase):
         self.assertEqual(result.pricecharting_guide_eur, 34.0)
         self.assertEqual(
             review._cross_grader_haircut("CA", result.basis),
-            45.0,
+            35.0,
         )
 
     def test_cross_grader_review_floor_is_30_but_cross_language_only_keeps_base(self):
@@ -351,6 +351,37 @@ class CrossMarketRecallReviewTests(unittest.TestCase):
 
         notify.assert_not_called()
         self.assertNotIn(review._STATE_KEY, state)
+
+    def test_ca10_psa_35_recall_can_emit_when_45_would_have_missed(self):
+        lot = self._lot(grader="CA", grade="10", price=16.0, title="Recall edge")
+        candidate = SimpleNamespace(lot=lot)
+        result = review.ReferenceResult(
+            evidence=_evidence(40.0, count=40),
+            reference_grader="PSA",
+            reference_grade=10.0,
+            cross_grader=True,
+            cross_language=False,
+            basis="PSA_FALLBACK_CONSERVATIVE",
+            raw_reference_eur=40.0,
+        )
+        state = {}
+        now = datetime.now(timezone.utc)
+
+        with mock.patch.object(multimarket, "POKETRACE_ENABLED", True), \
+             mock.patch.object(multimarket, "POKETRACE_API_KEY", "test"), \
+             mock.patch.object(
+                 multimarket, "_canonical_from_lot", return_value=self._canonical()
+             ), \
+             mock.patch.object(review, "_reference_evidence", return_value=result), \
+             mock.patch.object(review, "_notify") as notify:
+            review._process_delegate(
+                object(), [candidate], state, object(), object(), now
+            )
+
+        # 35% haircut => reference 26 EUR => 38.5% discount: review emits.
+        # 45% haircut would yield 22 EUR => 27.3%: below the 30% review floor.
+        notify.assert_called_once()
+        self.assertIn(review._STATE_KEY, state)
 
     def test_strong_same_grade_proxy_edge_can_still_emit_review_and_store_v2_state(self):
         lot = self._lot(grader="PCA", grade="9.5", price=10.0)
