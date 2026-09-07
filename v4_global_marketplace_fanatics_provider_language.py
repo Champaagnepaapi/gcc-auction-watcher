@@ -1,20 +1,20 @@
 """Recover Fanatics language only from explicit provider evidence.
 
-Some current Fanatics Buy Now H1 projections omit the language token even when
-that same public product surface exposes it in breadcrumb/body text or in the
-provider URL slug.  This layer accepts only explicit ``Pokemon Japanese`` /
-``Pokemon English`` or ``Language: ...`` evidence.  It never infers language
-from absence, card names, sets or TCGdex translations.
+Some current Fanatics Buy Now H1 projections omit the long language token even
+when that same public product surface exposes it in breadcrumb/body text, in the
+provider URL slug, or as the short H1 language codes ``EN`` / ``JP``. This layer
+accepts only explicit provider evidence. It never infers language from absence,
+card names, sets or TCGdex translations.
 
 After that explicit provider proof, the existing Fanatics v3 resolver must still
-return one exact TCGdex-compatible commercial identity.  All set/name/number,
+return one exact TCGdex-compatible commercial identity. All set/name/number,
 grade and microvariant gates therefore remain unchanged.
 """
 from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Callable, Optional, Sequence, Any
+from typing import Any, Callable, Optional, Sequence
 
 import v4_canonical_multimarket as multimarket
 import v4_global_fanatics_native_identity as v1
@@ -29,12 +29,46 @@ _LANGUAGE_PATTERNS = (
     re.compile(r"\b(?:Card\s+)?Language\s*:?\s*(?P<language>Japanese|English|JPN|ENG)\b", re.I),
 )
 
+# Current Fanatics H1s also use PSA-style short language fields, for example
+# ``... DRI EN #193/182 ... PSA 10`` and ``... Promos JP #098/SV-P ... PSA 10``.
+# EN/JP are accepted only inside an H1-like Pokemon+PSA title. A generic page
+# token such as a locale selector therefore cannot prove language.
+_SHORT_TITLE_LANGUAGE_RE = re.compile(
+    r"^(?=.*\bPok[eé]mon\b)(?=.*\bPSA\s*(?:GEM\s*MT\s*)?"
+    r"(?:10(?:\.0)?|9(?:\.0)?|8\.5|8(?:\.0)?)\b)"
+    r".*?\b(?P<language>EN|JP)\b",
+    re.I,
+)
 
-def _provider_language(proof_text: str) -> tuple[str, str] | None:
+
+def _normalize_provider_language(value: object) -> tuple[str, str] | None:
+    key = str(value or "").strip().casefold()
+    if key == "en":
+        return "en", "English"
+    if key == "jp":
+        return "ja", "Japanese"
+    return v3._normalize_lang(str(value or ""))
+
+
+def _short_title_language(title: str) -> tuple[str, str] | None:
+    match = _SHORT_TITLE_LANGUAGE_RE.search(str(title or ""))
+    if match is None:
+        return None
+    return _normalize_provider_language(match.group("language"))
+
+
+def _provider_language(
+    proof_text: str,
+    *,
+    title: str = "",
+) -> tuple[str, str] | None:
     found: set[tuple[str, str]] = set()
+    short = _short_title_language(title)
+    if short is not None:
+        found.add(short)
     for pattern in _LANGUAGE_PATTERNS:
         for match in pattern.finditer(str(proof_text or "")):
-            normalized = v3._normalize_lang(match.group("language"))
+            normalized = _normalize_provider_language(match.group("language"))
             if normalized is not None:
                 found.add(normalized)
     if len(found) != 1:
@@ -44,6 +78,26 @@ def _provider_language(proof_text: str) -> tuple[str, str] | None:
 
 def _probe_title(title: str, label: str) -> str:
     return f"{str(title or '').strip()} {label}".strip()
+
+
+def _title_with_provider_language(
+    title: str,
+    language: tuple[str, str],
+) -> str:
+    """Replace one explicit EN/JP H1 field with the long parser label.
+
+    The replacement is retrieval normalization only. The short token itself is
+    provider evidence; final acceptance still requires the unchanged exact
+    Fanatics/TCGdex resolver.
+    """
+    raw = str(title or "")
+    match = _SHORT_TITLE_LANGUAGE_RE.search(raw)
+    if match is not None:
+        observed = _normalize_provider_language(match.group("language"))
+        if observed == language:
+            start, end = match.span("language")
+            return f"{raw[:start]}{language[1]}{raw[end:]}"
+    return _probe_title(raw, language[1])
 
 
 def resolve_fanatics_native_identity_with_provider_language(
@@ -57,12 +111,12 @@ def resolve_fanatics_native_identity_with_provider_language(
     if original.status != "NO_MATCH" or original.reason != "explicit_language_unproven":
         return original
 
-    language = _provider_language(proof_text)
+    language = _provider_language(proof_text, title=title)
     if language is None:
         return original
 
     recovered = _ORIGINAL_RESOLVER(
-        _probe_title(title, language[1]),
+        _title_with_provider_language(title, language),
         proof_text=proof_text,
         resolver=resolver,
     )
@@ -120,9 +174,9 @@ def scan_fanatics_native_inventory_with_provider_language(
         if price is None:
             rejects["price_unproven"] += 1
             continue
-        # The URL slug is public provider text and often preserves the exact
-        # language even when a dynamic H1 projection drops it. It is evidence,
-        # not an inferred default, and conflicting language tokens still block.
+        # The URL slug and H1 are public provider text. Explicit EN/JP fields are
+        # accepted only in the bounded H1 schema above; conflicting evidence
+        # remains fail-closed.
         proof_text = f"{before_guide}\nProvider URL: {url}"
         resolution = v3.resolve_fanatics_native_identity_v3(
             title,
