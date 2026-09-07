@@ -65,8 +65,9 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         </head><body>
           <h1>Charmander #168 Pokemon Japanese Scarlet &amp; Violet 151</h1>
           <div>Card Number: #168</div>
-          <h2>Full Price Guide</h2>
+          <h2>Full Price Guide: Charmander #168 (Pokemon Japanese Scarlet &amp; Violet 151)</h2>
           <div>PSA 10 $110.17</div>
+          <div>All prices are the current market price.</div>
         </body></html>
         """
         provider = _provider([_Response(product), _Response(product)])
@@ -84,10 +85,16 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         product = """
         <h1>Mischievous Pichu #214/S-P Pokemon Japanese Promo</h1>
         <div>Card Number: #214/S-P</div>
+        <h2>Full Price Guide: Mischievous Pichu #214/S-P (Pokemon Japanese Promo)</h2>
         <div>PSA 10 $114.99</div>
+        <div>All prices are the current market price.</div>
         """
         provider = _provider([_Response(search), _Response(product)])
-        lot = _lot(number="214/S-P", set_name="S-P Promotional", name="Mischievous Pichu")
+        lot = _lot(
+            number="214/S-P",
+            set_name="S-P Promotional",
+            name="Mischievous Pichu",
+        )
         with patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0):
             evidence = pc.pricecharting_evidence_for_lot(lot, provider=provider)
         self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
@@ -101,9 +108,13 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         product = """
         <h1>Charmander #168 Pokemon Japanese Scarlet &amp; Violet 151</h1>
         <div>Card Number: #168</div>
+        <h2>Full Price Guide: Charmander #168 (Pokemon Japanese Scarlet &amp; Violet 151)</h2>
         <div>PSA 10 $110.17</div>
+        <div>All prices are the current market price.</div>
         """
-        provider = _provider([_Response(first_search), _Response(second_search), _Response(product)])
+        provider = _provider(
+            [_Response(first_search), _Response(second_search), _Response(product)]
+        )
         with patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0):
             evidence = pc.pricecharting_evidence_for_lot(_lot(), provider=provider)
         self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
@@ -119,6 +130,67 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         provider = _provider([_Response(first_search), _Response(second_search)])
         result = provider.lookup(_lot(set_name="Unknown Set"))
         self.assertNotEqual(result.status, "MATCHED")
+
+    def test_full_price_guide_psa10_does_not_read_ungraded_compare_price(self):
+        body = """
+        Compare vs Other Items
+        Ungraded | Grade 7 | Grade 8 | Grade 9 | Grade 9.5 | PSA 10
+        $10.99 | $13.51 | $25.00 | $27.65 | $30.00 | $56.00
+
+        Full Price Guide: Bulbasaur #64 (Pokemon Japanese Mega Brave)
+        Ungraded | $10.99
+        Grade 8 | $25.00
+        Grade 9 | $27.65
+        Grade 9.5 | $30.00
+        PSA 10 | $56.00
+        BGS 10 | $60.00
+
+        All prices are the current market price.
+        """
+        self.assertEqual(pc._public_guide_value(body, "manual-only-price"), 56.0)
+        self.assertEqual(pc._public_guide_value(body, "graded-price"), 27.65)
+        self.assertEqual(pc._public_guide_value(body, "new-price"), 25.0)
+
+    def test_explicit_promo_coordinate_conflict_is_rejected_before_numerator_scoring(self):
+        wrong = {
+            "id": "https://www.pricecharting.com/game/pokemon-japanese-promo/pikachu-daiichi-pan-291sm-p",
+            "product-name": "Pikachu #291/SM-P",
+            "console-name": "Pokemon Japanese Promo",
+        }
+        lot = _lot(number="291/SV-P", set_name="SV-P", name="Pikachu")
+        self.assertTrue(recovery._candidate_has_number_conflict(lot, wrong))
+        self.assertEqual(recovery._safe_candidates(lot, (wrong,)), ())
+
+    def test_promo_coordinate_requires_exact_full_code_not_numerator_only(self):
+        numerator_only = {
+            "id": "https://www.pricecharting.com/game/pokemon-japanese-promo/pikachu-291",
+            "product-name": "Pikachu #291",
+            "console-name": "Pokemon Japanese Promo",
+        }
+        lot = _lot(number="291/SV-P", set_name="SV-P", name="Pikachu")
+        self.assertTrue(recovery._candidate_has_number_conflict(lot, numerator_only))
+
+    def test_one_http_429_is_retried_once_then_success(self):
+        search = """
+        <a href="/game/pokemon-japanese-scarlet-%26-violet-151/charmander-168">Charmander #168</a>
+        """
+        product = """
+        <h1>Charmander #168 Pokemon Japanese Scarlet &amp; Violet 151</h1>
+        <div>Card Number: #168</div>
+        <h2>Full Price Guide: Charmander #168 (Pokemon Japanese Scarlet &amp; Violet 151)</h2>
+        <div>PSA 10 $110.17</div>
+        <div>All prices are the current market price.</div>
+        """
+        provider = _provider(
+            [_Response("rate limited", 429), _Response(search), _Response(product)]
+        )
+        with (
+            patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0),
+            patch.object(recovery.time, "sleep", return_value=None),
+        ):
+            evidence = pc.pricecharting_evidence_for_lot(_lot(), provider=provider)
+        self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
+        self.assertEqual(len(provider.session.calls), 3)
 
 
 if __name__ == "__main__":
