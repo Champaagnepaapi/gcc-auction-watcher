@@ -12,6 +12,7 @@ grade and microvariant gates therefore remain unchanged.
 """
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from typing import Any, Callable, Optional, Sequence
@@ -23,6 +24,8 @@ import v4_global_marketplace_fanatics_native_v3 as v3
 
 _INSTALLED = False
 _ORIGINAL_RESOLVER: Optional[Callable[..., v1.FanaticsNativeResolution]] = None
+_FANATICS_DIAGNOSTICS_MAX = 60
+_fanatics_diagnostics_count = 0
 
 _LANGUAGE_PATTERNS = (
     re.compile(r"\bPok[eé]mon[\s_-]+(?P<language>Japanese|English|JPN|ENG)\b", re.I),
@@ -74,6 +77,49 @@ def _provider_language(
     if len(found) != 1:
         return None
     return next(iter(found))
+
+
+def _diagnostics_enabled() -> bool:
+    value = os.getenv("GLOBAL_FANATICS_REJECTION_DIAGNOSTICS", "").strip().casefold()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    return os.getenv("GITHUB_EVENT_NAME", "").strip().casefold() == "pull_request"
+
+
+def _diagnostic_language(value: tuple[str, str] | None) -> str:
+    return value[0] if value is not None else "none"
+
+
+def _emit_fanatics_diagnostic(
+    *,
+    title: str,
+    url: str,
+    proof_text: str,
+    resolution: v1.FanaticsNativeResolution,
+) -> None:
+    """Emit bounded public listing diagnostics without changing resolution.
+
+    No additional provider or TCGdex request is made here. Production schedules
+    remain inert unless explicitly opted in; pull-request live validation enables
+    the probe automatically so rejection causes can be audited listing by listing.
+    """
+    global _fanatics_diagnostics_count
+    if not _diagnostics_enabled() or _fanatics_diagnostics_count >= _FANATICS_DIAGNOSTICS_MAX:
+        return
+    _fanatics_diagnostics_count += 1
+    provider_language = _provider_language(proof_text, title=title)
+    short_language = _short_title_language(title)
+    candidates, parse_reason = v3._flexible_candidates(title)
+    print(
+        "[FANATICS_DIAG] "
+        f"status={resolution.status or 'UNKNOWN'} "
+        f"reason={resolution.reason or 'unknown'} "
+        f"provider_language={_diagnostic_language(provider_language)} "
+        f"short_h1_language={_diagnostic_language(short_language)} "
+        f"candidate_count={len(candidates)} "
+        f"parse_reason={parse_reason or 'unknown'} "
+        f"url={url} | title={str(title or '').replace(chr(10), ' ')[:500]}"
+    )
 
 
 def _probe_title(title: str, label: str) -> str:
@@ -183,6 +229,12 @@ def scan_fanatics_native_inventory_with_provider_language(
             proof_text=proof_text,
             resolver=multimarket.resolve_tcgdex_card,
         )
+        _emit_fanatics_diagnostic(
+            title=title,
+            url=url,
+            proof_text=proof_text,
+            resolution=resolution,
+        )
         if resolution.status != "EXACT" or resolution.identity is None:
             rejects[resolution.reason or resolution.status or "identity_unproven"] += 1
             continue
@@ -215,10 +267,11 @@ def scan_fanatics_native_inventory_with_provider_language(
 
 
 def install_global_marketplace_fanatics_provider_language() -> None:
-    global _INSTALLED, _ORIGINAL_RESOLVER
+    global _INSTALLED, _ORIGINAL_RESOLVER, _fanatics_diagnostics_count
     if _INSTALLED:
         return
     _ORIGINAL_RESOLVER = v3.resolve_fanatics_native_identity_v3
     v3.resolve_fanatics_native_identity_v3 = resolve_fanatics_native_identity_with_provider_language
     v3.scan_fanatics_native_inventory_v3 = scan_fanatics_native_inventory_with_provider_language
+    _fanatics_diagnostics_count = 0
     _INSTALLED = True
