@@ -5,9 +5,12 @@ from __future__ import annotations
 The exact coordinate remains the authority: listing language + printed localId +
 printed denominator must already resolve to a bounded set of TCGdex cards, and
 exactly one compatible card may remain. Card-name spelling is allowed to differ
-only narrowly (punctuation/possessive spelling or a very small typo). This layer
-never translates names, never uses substring containment, and never relaxes the
-downstream grader, grade, language, variant or microvariant gates.
+only narrowly (punctuation/possessive spelling or a very small typo). Reviewed
+Holo/Reverse display suffixes may additionally narrow candidates, but only when
+the listing parser independently expects that finish and the TCGdex card payload
+explicitly exposes the same legacy finish boolean. This layer never translates
+names, never uses substring containment, and never relaxes the downstream grader,
+grade, language, variant or microvariant gates.
 """
 
 from difflib import SequenceMatcher
@@ -24,6 +27,10 @@ _TARGET_REASON = "TCGdex unique-coordinate printed number/denominator is not uni
 _MIN_SINGLE_TOKEN_RATIO = 0.85
 _MIN_MULTI_TOKEN_RATIO = 0.90
 _MAX_LENGTH_DELTA = 2
+_FINISH_DISPLAY_SUFFIXES = {
+    "holo": "holo",
+    "reverse": "reverse",
+}
 _ORIGINAL_RESOLVER = None
 _ORIGINAL_CLEAR_CACHE = None
 _RESULT_CACHE: dict[tuple[str, str, str, str, int], canonical.CanonicalCard] = {}
@@ -88,6 +95,55 @@ def _approximate_name_equivalent(listing_name: object, provider_name: object) ->
     return SequenceMatcher(None, left, right, autojunk=False).ratio() >= threshold
 
 
+def _proven_finish_display_suffix(
+    lot: watcher.Lot,
+    listing_name: object,
+) -> tuple[str, str] | None:
+    """Return (finish, base name) only for an independently parsed finish suffix.
+
+    The suffix is never discarded merely because it looks familiar. The listing
+    parser must already classify the same material finish. Gold/Rainbow are not
+    included because current V4 commercial-dimension schemas do not prove those
+    as supported special-finish values in this resolver.
+    """
+    tokens = _relaxed_name_tokens(listing_name)
+    if len(tokens) < 2:
+        return None
+    finish = _FINISH_DISPLAY_SUFFIXES.get(tokens[-1])
+    if not finish:
+        return None
+    expected = watcher.expected_commercial_dimensions(lot)
+    if str(expected.get("finish") or "") != finish:
+        return None
+    base = " ".join(tokens[:-1]).strip()
+    return (finish, base) if base else None
+
+
+def _raw_card_supports_finish(card: Mapping[str, Any], finish: str) -> bool:
+    """Require explicit legacy TCGdex finish proof on this exact card payload."""
+    variants = card.get("variants")
+    return bool(isinstance(variants, Mapping) and variants.get(finish) is True)
+
+
+def _candidate_name_compatible(
+    lot: watcher.Lot,
+    listing_name: object,
+    card: Mapping[str, Any],
+) -> bool:
+    provider_name = str(card.get("name") or "").strip()
+    if not provider_name:
+        return False
+
+    qualified = _proven_finish_display_suffix(lot, listing_name)
+    if qualified is not None:
+        finish, base_name = qualified
+        if not _raw_card_supports_finish(card, finish):
+            return False
+        return _approximate_name_equivalent(base_name, provider_name)
+
+    return _approximate_name_equivalent(listing_name, provider_name)
+
+
 def _canonicalize_name_compatible_candidate(
     lot: watcher.Lot,
     card: Mapping[str, Any],
@@ -98,7 +154,16 @@ def _canonicalize_name_compatible_candidate(
     expected_set_id: str,
     expected_count: int,
 ) -> canonical.CanonicalCard | None:
-    """Preserve exact-name/localized behavior, then allow one constrained bridge."""
+    """Preserve exact behavior, with finish-aware narrowing when explicitly proven."""
+    qualified = _proven_finish_display_suffix(lot, listing_name)
+    if qualified is not None:
+        finish, _ = qualified
+        # Existing exact-name recovery did not distinguish two same-name cards by
+        # finish. For an explicit Holo/Reverse listing, reject a candidate unless
+        # this exact TCGdex payload proves that same finish before name matching.
+        if not _raw_card_supports_finish(card, finish):
+            return None
+
     exact = unique._canonicalize_unique_card(
         lot,
         card,
@@ -111,8 +176,7 @@ def _canonicalize_name_compatible_candidate(
     if exact is not None:
         return exact
 
-    provider_name = str(card.get("name") or "").strip()
-    if not _approximate_name_equivalent(listing_name, provider_name):
+    if not _candidate_name_compatible(lot, listing_name, card):
         return None
 
     # Name equivalence was established above. All material coordinate checks are
@@ -191,7 +255,7 @@ def _recover_exact_name_from_ambiguous_coordinate(
         )
         if resolved is not None and resolved.status == "EXACT":
             compatible_by_card_id[resolved.card_id] = resolved
-            # Fuzzy/exact name may narrow candidates, but it may never choose
+            # Name/finish narrowing may reduce candidates, but it may never choose
             # between two still-compatible TCGdex cards.
             if len(compatible_by_card_id) > 1:
                 return None
