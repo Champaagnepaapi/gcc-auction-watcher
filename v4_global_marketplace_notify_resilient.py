@@ -77,6 +77,9 @@ from v4_global_marketplace_magi_user_scope import (
 from v4_global_marketplace_poketrace_recall import (
     install_global_marketplace_poketrace_recall,
 )
+from v4_global_marketplace_pricecharting_diagnostics import (
+    install_global_marketplace_pricecharting_diagnostics,
+)
 from v4_global_marketplace_pricecharting_public_recovery import (
     install_global_marketplace_pricecharting_public_recovery,
 )
@@ -118,6 +121,9 @@ def main() -> int:
     # Recover current public PriceCharting search shapes before any mandatory
     # guide policy captures the provider. Identity scoring remains unchanged.
     install_global_marketplace_pricecharting_public_recovery()
+    # PR-only bounded diagnostics observe already-returned PriceCharting outcomes;
+    # no request, matching gate or economic decision is added by this wrapper.
+    install_global_marketplace_pricecharting_diagnostics()
     install_marketplace_first_hardening()
     # Provider URL/body language is accepted only when Fanatics states exactly
     # one supported language explicitly. Install before the two-language probe so
@@ -129,7 +135,8 @@ def main() -> int:
     # complete commercial identities without translation.
     install_global_marketplace_unicode_identity()
     # Exact operator exclusions are applied to broad Magi rows before detail or
-    # identity work. This is not a generic Trainer/supporter exclusion.
+    # identity work. The provider-native `presented` status also removes SOLD
+    # listings at search time; detail-page SOLD guards remain defense in depth.
     install_global_marketplace_magi_user_scope()
     # Restore the native Japanese proof lane to the TCGdex resolver's existing
     # bounded 60-request baseline. The separate recovery budget is unchanged.
