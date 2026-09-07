@@ -25,6 +25,45 @@ class TcgdexNameFilteredCoordinateRecoveryTests(unittest.TestCase):
             year=1999,
         )
 
+    def test_possessive_punctuation_is_equivalent(self):
+        self.assertTrue(
+            recovery._approximate_name_equivalent(
+                "Brock Ninetales", "Brock’s Ninetales"
+            )
+        )
+        self.assertTrue(
+            recovery._approximate_name_equivalent(
+                "Brock Ninetales", "Brock's Ninetales"
+            )
+        )
+
+    def test_small_typo_is_equivalent_after_exact_coordinate_anchor(self):
+        self.assertTrue(
+            recovery._approximate_name_equivalent(
+                "Brock Ninetales", "Brock Ninetalez"
+            )
+        )
+        self.assertTrue(
+            recovery._approximate_name_equivalent("Pikachu", "Pikachh")
+        )
+
+    def test_material_name_change_is_not_equivalent(self):
+        self.assertFalse(
+            recovery._approximate_name_equivalent(
+                "Brock Ninetales", "Brock Rhydon"
+            )
+        )
+        self.assertFalse(
+            recovery._approximate_name_equivalent("Pikachu", "Raichu")
+        )
+
+    def test_numeric_name_tokens_must_match_exactly(self):
+        self.assertFalse(
+            recovery._approximate_name_equivalent(
+                "Charizard ex 151", "Charizard ex 150"
+            )
+        )
+
     def test_filters_shared_denominator_coordinates_by_exact_name_before_ambiguity(self):
         lot = self._lot()
         sets = (
@@ -71,6 +110,95 @@ class TcgdexNameFilteredCoordinateRecoveryTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.status, "EXACT")
         self.assertEqual(result.card_id, "base1-53")
+
+    def test_fuzzy_name_recovers_one_unique_exact_coordinate_candidate(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/brocks-ninetales",
+            title="PSA 9 Brock Ninetales",
+            current_price=50.0,
+            source_type="fixed",
+            grader="PSA",
+            grade="9",
+            card_set="Gym Challenge",
+            card_number="#3/132",
+            language="English",
+            year=2000,
+        )
+        sets = (
+            {"id": "gym2", "cardCount": {"official": 132}},
+            {"id": "other132", "cardCount": {"official": 132}},
+        )
+        cards = {
+            "gym2": {
+                "id": "gym2-3",
+                "localId": "3",
+                "name": "Brock's Ninetales",
+                "set": {"id": "gym2", "name": "Gym Challenge", "cardCount": {"official": 132}},
+            },
+            "other132": {
+                "id": "other132-3",
+                "localId": "3",
+                "name": "Unrelated Pokemon",
+                "set": {"id": "other132", "name": "Other", "cardCount": {"official": 132}},
+            },
+        }
+
+        with mock.patch.object(unique, "_set_index", return_value=sets), \
+             mock.patch.object(
+                 unique,
+                 "_probe_exact_set_coordinate",
+                 side_effect=lambda _lot, **kw: cards[kw["set_id"]],
+             ), \
+             mock.patch.object(unique, "_canonicalize_unique_card", return_value=None):
+            result = recovery._recover_exact_name_from_ambiguous_coordinate(lot)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.card_id, "gym2-3")
+        self.assertEqual(result.language_code, "en")
+
+    def test_two_fuzzy_compatible_matches_remain_ambiguous(self):
+        lot = watcher.Lot(
+            url="https://gradedcardcenter.com/item/brocks-ninetales",
+            title="PSA 9 Brock Ninetales",
+            current_price=50.0,
+            source_type="fixed",
+            grader="PSA",
+            grade="9",
+            card_set="Gym Challenge",
+            card_number="#3/132",
+            language="English",
+            year=2000,
+        )
+        sets = (
+            {"id": "one", "cardCount": {"official": 132}},
+            {"id": "two", "cardCount": {"official": 132}},
+        )
+        cards = {
+            "one": {
+                "id": "one-3",
+                "localId": "3",
+                "name": "Brock's Ninetales",
+                "set": {"id": "one", "cardCount": {"official": 132}},
+            },
+            "two": {
+                "id": "two-3",
+                "localId": "3",
+                "name": "Brock Ninetalez",
+                "set": {"id": "two", "cardCount": {"official": 132}},
+            },
+        }
+
+        with mock.patch.object(unique, "_set_index", return_value=sets), \
+             mock.patch.object(
+                 unique,
+                 "_probe_exact_set_coordinate",
+                 side_effect=lambda _lot, **kw: cards[kw["set_id"]],
+             ), \
+             mock.patch.object(unique, "_canonicalize_unique_card", return_value=None):
+            result = recovery._recover_exact_name_from_ambiguous_coordinate(lot)
+
+        self.assertIsNone(result)
 
     def test_two_exact_name_matches_remain_ambiguous(self):
         lot = self._lot()
