@@ -1,16 +1,17 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-Snapshot pertinent re-vérifié le **6 septembre 2026**. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
+Snapshot pertinent re-vérifié le **7 septembre 2026**. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
-> V4 production : `main@dfc548021c561479cc8758e2949d2c4629388d9d`. PR #255 est MERGED. PR #257 est OPEN/DRAFT/NON-MERGED et porte la phase active de séparation des rôles/PriceCharting. PR #256 reste Japan Edge séparée. PR #8 reste protégée.
+> V4 production code : `24230552d52574e2769c21dcfa84ba11320da2cf` (#261). `main` a ensuite avancé docs-only à `22303a34f7414769a04f4c587338def005b8a5c6`. PR #259/#260/#261 sont MERGED. PR #258 et #256 restent OPEN/DRAFT mais leur capacité pertinente est absorbée par #259. PR #8 reste protégée.
 
 ## PR ouvertes pertinentes pour la gouvernance courante
 
 | PR | Classification / instruction |
 |---|---|
-| #257 | `V4_SOURCE_ROLE_PRICECHARTING / OPEN_DRAFT / DO_NOT_MERGE_WITHOUT_AUTH`. Un orchestrateur, adapters opportunity indépendants, GCC history sans autorité économique, PriceCharting guide systématique PSA 8/9/10 compatibles, seuil normal V4 30 %, aucune transaction. Validation en cours. |
-| #256 | `JAPAN_EDGE_EXTERNAL_FIRST / OPEN_DRAFT / SEPARATE`. Mercari + SNKRDUNK opportunity adapters. Reste séparée de #257 ; revalider sa base après évolution de #257/#255 avant toute décision. |
-| #246 | `DOCS_ONLY / OPEN_DRAFT`. Ancien closeout #245/#247 ; revalider supersession avant tout merge. |
+| #258 | `STALE_OPEN/SUPERSEDED_BY_259`. Recall-first, scope 250 EUR, PSA 1–10 et ASK-review ont été intégrés par #259. Ne pas merger cette branche empilée sur l'ancienne #257. |
+| #256 | `STALE_OPEN/SUPERSEDED_BY_259`. Les capacités Japan Mercari/SNKRDUNK pertinentes ont été intégrées par #259. Ne pas merger indépendamment. |
+| #248 | `STALE_OPEN/SUPERSEDED_DIAGNOSTIC`. Diagnostic navigation eBay ancien ; la lignée actuelle a été portée puis prolongée par #250→#254. Ne pas merger. |
+| #246 | `STALE_OPEN / DOCS_ONLY`. Ancien closeout #245/#247 désormais dépassé par les closeouts ultérieurs. Ne pas merger sans re-audit. |
 | #234 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Benchmark eBay public borné/inconclusif. |
 | #233 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ne pas merger. |
 | #230 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Capacité historique déjà en production. |
@@ -48,9 +49,13 @@ Snapshot pertinent re-vérifié le **6 septembre 2026**. Le contrôle GitHub liv
 
 ## Merges récents pertinents
 
+- #261 : cross-grader proxy calibration **MERGED / PROD_V4** ; merge runtime `24230552...` ;
+- #260 : constrained fuzzy/name TCGdex recovery **MERGED / PROD_V4** ; merge runtime `db4954f5...` ;
+- #259 : recall + source roles + PriceCharting + Global + Japan **MERGED / PROD_V4** ;
+- #257 : source-role/PriceCharting foundation **MERGED**, puis intégrée avec la pile #259 ;
 - #255 : external fair-value authority **MERGED / PROD_V4** ; historique GCC observationnel économiquement ;
-- #253 : eBay worker resilience **MERGED** ;
-- #247 : PokeTrace aggregate quality guard **MERGED / PROD_V4** ;
+- #254/#253/#252/#251/#250 : lignée de résilience/diagnostic eBay **MERGED** ;
+- #247 : PokeTrace aggregate quality historique **MERGED** ; politique recall ultérieure modifiée par #259 ;
 - #245 : auction pagination default preservation **MERGED / PROD_V4** ;
 - #243/#244 : future-start runtime + docs closeout **MERGED** ;
 - #238/#239/#242 : eBay worker lineage **MERGED** ;
@@ -67,7 +72,8 @@ Snapshot pertinent re-vérifié le **6 septembre 2026**. Le contrôle GitHub liv
 - `open` ne veut pas dire `à merger` ;
 - draft/non-draft ne vaut pas autorisation ;
 - vérifier patch + ancestry + supersession avant toute décision ;
-- ne jamais merger un child stacké directement si son parent n'est pas résolu ;
+- une PR encore ouverte peut être `STALE_OPEN` après absorption par un merge ultérieur ;
+- ne jamais merger un child stacké directement si son parent/successeur n'est pas résolu ;
 - ne jamais exécuter une migration/écriture durable Robot KB par simple merge de code préparatoire ;
 - aucune fermeture housekeeping destructive sans autorisation utilisateur ;
 - **PR #8 reste explicitement protégée** et non mergée.
