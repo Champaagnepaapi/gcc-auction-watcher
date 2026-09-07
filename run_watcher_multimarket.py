@@ -47,12 +47,18 @@ from v4_provider_rejection_observability import (
 from v4_roi_efficiency import install_v4_roi_efficiency
 from v4_smart_external_priority import install_v4_smart_external_priority
 from v4_structural_edge_hunter import install_v4_structural_edge_hunter
+from v4_tcgdex_coordinate_authoritative_name import (
+    install_v4_tcgdex_coordinate_authoritative_name,
+)
 from v4_tcgdex_detailed_variants import install_v4_tcgdex_detailed_variants
 from v4_tcgdex_exact_coordinate_recovery import install_v4_tcgdex_exact_coordinate_recovery
 from v4_tcgdex_generalized_coordinate_recovery import (
     install_v4_tcgdex_generalized_coordinate_recovery,
 )
 from v4_tcgdex_japanese_set_aliases import install_v4_tcgdex_japanese_set_aliases
+from v4_tcgdex_name_filtered_coordinate_recovery import (
+    install_v4_tcgdex_name_filtered_coordinate_recovery,
+)
 from v4_tcgdex_observability import install_v4_tcgdex_observability
 from v4_tcgdex_rainbow_variant_recovery import (
     install_v4_tcgdex_rainbow_variant_recovery,
@@ -126,9 +132,14 @@ if __name__ == "__main__":
     # one set, and exact set+name may recover one printed number. Two exact
     # coordinates are mandatory and ambiguity remains fail-closed.
     install_v4_tcgdex_two_of_three_backport()
-    # Last TCGdex identity fallback: after every existing exact path says
+    # Last broad TCGdex identity fallback: after every existing exact path says
     # NO_MATCH, prove a globally unique printed coordinate without adding aliases.
     install_v4_tcgdex_unique_coordinate_fallback()
+    # #260 was merged as the constrained typo/possessive recovery but its installer
+    # was never wired into this production entrypoint. Install it only after the
+    # unique-coordinate layer whose specific AMBIGUOUS result it is designed to
+    # narrow; uniqueness remains mandatory.
+    install_v4_tcgdex_name_filtered_coordinate_recovery()
     # Correct only immutable, source-pinned finish metadata when the exact same
     # TCGdex card's REST projection is known to disagree with cards-database.
     # This runs after identity is fully proven and before any market provider.
@@ -148,6 +159,11 @@ if __name__ == "__main__":
     # coordinates with explicit type=holo + foil=rainbow proof, and carry the
     # sanitized microvariant into every downstream provider gate.
     install_v4_tcgdex_rainbow_variant_recovery()
+    # Coordinate-authoritative name recovery is last in the identity stack. It
+    # permits an omitted GX/V/ex or presentation suffix only after exact
+    # language+set+localId proof. Explicit form conflicts and unresolved
+    # same-coordinate material variants remain blocking.
+    install_v4_tcgdex_coordinate_authoritative_name()
     # Install after the canonical/multimarket pipeline so these guards wrap the
     # final Edge Hunter functions rather than being overwritten by an installer.
     install_v4_edge_hunter_safety()
