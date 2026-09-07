@@ -10,13 +10,13 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production HEAD code #261         : 24230552d52574e2769c21dcfa84ba11320da2cf
+V4 production HEAD code #266         : 761b5e980aeaf63833f574127fbe1ff4728f86b4
 V4 external fair-value authority     : #255 MERGED / production
 Vault/source-role + PriceCharting    : #257 + #259 MERGED / production
 Global/Japan integration             : #259 MERGED / production
 Cross-grader calibration             : #261 MERGED / production
 CA -> PSA recall tuning              : #263 / haircut 35 %
-TCGdex Rainbow microvariant          : #266 / VALIDATED / deployment pending
+TCGdex Rainbow microvariant          : #266 MERGED / production
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -38,7 +38,7 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase #266 — TCGdex Rainbow microvariant
+### Phase closeout — #266 : TCGdex Rainbow microvariant
 
 Objectif : récupérer le résiduel `Fille en Kimono Rainbow #205/195` uniquement lorsque TCGdex prouve la microvariante matérielle, sans transformer `Rainbow` en simple alias `Holo`.
 
@@ -51,9 +51,9 @@ Règles #266 :
 - Holo ordinaire, autre foil, conflit de special finish, détail absent/malformé ou ambiguïté restent fail-closed ;
 - aucune modification SOLD/ASK, fair value, seuil, budget ou cap P4.
 
-Validation initiale code/tests sur head `a5c8db4bdcd79af535ab24a3c0d9f301e3f5fa8c`, workflow `V4 Auction Discovery Validation` run `34114172479` SUCCESS : **980 tests PASS (2 skipped)**, compile/YAML/`diff --check` PASS, comparaison live read-only **58/58**, `effective_only=0`, `legacy_only=0`, timers unresolved `0/0`. Un commit README ultérieur exige une nouvelle validation du head final avant merge.
+Head final validé : `b5c0679e181c7fb33d9f54335bbfa6320a923626`. Validation V4 `34114793147` SUCCESS : **980 tests PASS (2 skipped)**, compile/YAML/`diff --check` PASS, comparaison live read-only **58/58**, `effective_only=0`, `legacy_only=0`, timers unresolved `0/0`. Validation Global `34114793169` SUCCESS, y compris bootstrap live read-only, safety contract et absence de mutation runtime. Robot KB Local `34114793170` SUCCESS. Merge production #266 : `761b5e980aeaf63833f574127fbe1ff4728f86b4`.
 
-PR #8/V5, Robot KB/Neon et toute logique d'achat/bid/checkout/paiement restent inchangés.
+PR #8/V5, Robot KB/Neon, le cap P4 et toute logique d'achat/bid/checkout/paiement restent inchangés.
 
 ### Phase closeout — #261 + tuning #263 : calibration des alertes CROSS-GRADER
 
@@ -74,7 +74,7 @@ Règles #261, avec tuning borné #263 :
 
 Validation #261 : code `c58aa4c75768144946f858267a13eb493bf7a420`, workflow `V4 Auction Discovery Validation` run `34092254431` SUCCESS, suite V4 complète + tests ciblés cross-grader + compile/YAML/diff-check/comparaison live read-only PASS. Head final PR `c5e61d1b5377508ccf1a720959e0f7e09d570fbc`. Merge production #261 : `24230552d52574e2769c21dcfa84ba11320da2cf`.
 
-#263 est un tuning limité de recall CA→PSA : **45 % -> 35 %**. Il conserve le floor 30 %, CGC même grade prioritaire, les régressions Glaceon/Riolu et toutes les barrières d'identité ; son head exact doit être validé par CI avant merge.
+#263 est un tuning limité de recall CA→PSA : **45 % -> 35 %**. Il conserve le floor 30 %, CGC même grade prioritaire, les régressions Glaceon/Riolu et toutes les barrières d'identité.
 
 Ledgers : `docs/v4-crossgrader-proxy-calibration-20260907.md` et `docs/v4-ca-psa-haircut-35-20260907.md`.
 
@@ -167,6 +167,8 @@ Les protections #238/#239/#242/#253 bornent les opérations eBay. PSA APR peut e
 ## TCGdex — identité et microvariantes
 
 TCGdex reste la couche d'identité exacte. `variants_detailed` peut prouver les axes matériels après identité exacte. Axes inconnus, multiples, malformés ou contradictoires => blocage. `pricing` / `thirdParty` TCGdex n'est pas une fair value slab.
+
+Depuis #266, `Rainbow` est une microvariante explicite `special_finish=rainbow`, prouvable uniquement par `variants_detailed` compatible (`type=holo`, `foil=rainbow`) après identité exacte ; elle n'est jamais assimilée à un Holo ordinaire.
 
 Transport : retry borné sur timeout/connexion/HTTP 502/503/504, breaker run-wide après échecs répétés, jamais de panne convertie en clean no-match.
 
@@ -281,11 +283,11 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
-Post-#263
-  -> observer le bruit réel de la lane CROSS-GRADER avec CA->PSA à 35 %
-  -> conserver PCA9.5 -> même grade CGC/BGS uniquement
-  -> si le 35 % produit trop de bruit, recalibrer sur les alertes réelles sans toucher au floor 30 % par défaut
-  -> ne pas relâcher l'identité ni transformer un proxy en comparable exact
+Post-#266
+  -> observer les prochains runs naturels V4 pour confirmer la disparition du NO_MATCH Rainbow ciblé
+  -> continuer à réduire les NO_MATCH/AMBIGUOUS uniquement avec preuve d'identité ou microvariante déterministe
+  -> conserver Raichu #074/071 en ambiguïté tant qu'aucune preuve suffisante ne le rend unique
+  -> ne pas augmenter le cap P4 uniquement pour vider le backlog ; conserver le scheduling borné
 
 V4 providers
   -> priorité aux SOLD exacts récents lorsqu'ils existent
