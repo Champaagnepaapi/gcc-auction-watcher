@@ -83,9 +83,14 @@ def resolve_reviewed_classic_identity(ask: japan.Ask) -> native.MagiNativeResolu
         return native.MagiNativeResolution("NO_MATCH", "single_quantity_unproven")
     if not retrieval_v3.PSA10_RE.search(unicodedata.normalize("NFKC", current)):
         return native.MagiNativeResolution("NO_MATCH", "psa10_unproven")
-    if native._EXPLICIT_ENGLISH_RE.search(current):
+
+    # Keep these gates title-scoped, matching the native Magi preflight. The
+    # detail body can contain unrelated marketplace/UI English or variant words;
+    # letting those reject an otherwise exact Japanese product created false
+    # negatives for every Classic listing in the live diagnostic.
+    if native._EXPLICIT_ENGLISH_RE.search(title):
         return native.MagiNativeResolution("NO_MATCH", "explicit_non_japanese_language")
-    if native._SENSITIVE_RE.search(current):
+    if native._SENSITIVE_RE.search(title):
         return native.MagiNativeResolution("NO_MATCH", "sensitive_variant_unproven")
 
     codes = _model_codes(current)
