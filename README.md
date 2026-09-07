@@ -10,13 +10,13 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production HEAD code #261         : 24230552d52574e2769c21dcfa84ba11320da2cf
+V4 production code HEAD #266         : 761b5e980aeaf63833f574127fbe1ff4728f86b4
 V4 external fair-value authority     : #255 MERGED / production
 Vault/source-role + PriceCharting    : #257 + #259 MERGED / production
 Global/Japan integration             : #259 MERGED / production
 Cross-grader calibration             : #261 MERGED / production
 CA -> PSA recall tuning              : #263 / haircut 35 %
-TCGdex Rainbow microvariant          : #266 / VALIDATED / deployment pending
+TCGdex Rainbow microvariant          : #266 MERGED / production
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -38,7 +38,7 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase #266 — TCGdex Rainbow microvariant
+### Phase closeout — #266 : TCGdex Rainbow microvariant
 
 Objectif : récupérer le résiduel `Fille en Kimono Rainbow #205/195` uniquement lorsque TCGdex prouve la microvariante matérielle, sans transformer `Rainbow` en simple alias `Holo`.
 
@@ -51,7 +51,9 @@ Règles #266 :
 - Holo ordinaire, autre foil, conflit de special finish, détail absent/malformé ou ambiguïté restent fail-closed ;
 - aucune modification SOLD/ASK, fair value, seuil, budget ou cap P4.
 
-Validation initiale code/tests sur head `a5c8db4bdcd79af535ab24a3c0d9f301e3f5fa8c`, workflow `V4 Auction Discovery Validation` run `34114172479` SUCCESS : **980 tests PASS (2 skipped)**, compile/YAML/`diff --check` PASS, comparaison live read-only **58/58**, `effective_only=0`, `legacy_only=0`, timers unresolved `0/0`. Un commit README ultérieur exige une nouvelle validation du head final avant merge.
+Validation finale sur head `b5c0679e181c7fb33d9f54335bbfa6320a923626` : `V4 Auction Discovery Validation` run `34114793147` SUCCESS avec **980 tests PASS (2 skipped)**, compile/YAML/`diff --check` PASS et comparaison live read-only **58/58**, `effective_only=0`, `legacy_only=0`, timers unresolved `0/0`. `V4 Global Market Offline Validation` run `34114793169` SUCCESS, y compris le job live read-only avec assertions de sécurité et absence de mutation. `Robot KB local PostgreSQL validation` run `34114793170` SUCCESS.
+
+Merge production #266 : `761b5e980aeaf63833f574127fbe1ff4728f86b4`. Smoke post-merge naturel : Fast Lane `GCC Final Auction Check` run `34115675851` SUCCESS sur ce SHA ; Main Scanner `GCC Auction Watcher` run `34116112617` SUCCESS, exit `0`, `AUCTION_API_PLUS_LEGACY_SAFETY_NET`, scope `COMPLETE_FOR_DISCOVERED_AUCTION_LISTINGS`, 100/100 timers parsés, fallback `false`, 0 opportunité finale.
 
 PR #8/V5, Robot KB/Neon et toute logique d'achat/bid/checkout/paiement restent inchangés.
 
@@ -74,7 +76,7 @@ Règles #261, avec tuning borné #263 :
 
 Validation #261 : code `c58aa4c75768144946f858267a13eb493bf7a420`, workflow `V4 Auction Discovery Validation` run `34092254431` SUCCESS, suite V4 complète + tests ciblés cross-grader + compile/YAML/diff-check/comparaison live read-only PASS. Head final PR `c5e61d1b5377508ccf1a720959e0f7e09d570fbc`. Merge production #261 : `24230552d52574e2769c21dcfa84ba11320da2cf`.
 
-#263 est un tuning limité de recall CA→PSA : **45 % -> 35 %**. Il conserve le floor 30 %, CGC même grade prioritaire, les régressions Glaceon/Riolu et toutes les barrières d'identité ; son head exact doit être validé par CI avant merge.
+#263 est un tuning limité de recall CA→PSA : **45 % -> 35 %**. Il conserve le floor 30 %, CGC même grade prioritaire, les régressions Glaceon/Riolu et toutes les barrières d'identité. Merge production #263 : `85470b3183ff282aacbc39cb1d3ba45cb94cabe3`.
 
 Ledgers : `docs/v4-crossgrader-proxy-calibration-20260907.md` et `docs/v4-ca-psa-haircut-35-20260907.md`.
 
@@ -281,6 +283,12 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
+Post-#266
+  -> observer en production le recall Rainbow réellement source-proven
+  -> conserver suffixe Rainbow + set/langue/localId/dénominateur/nom exacts
+  -> exiger variants_detailed type=holo + foil=rainbow ; sinon fail-closed
+  -> ne jamais confondre Rainbow, Holo ordinaire ou autre special finish
+
 Post-#263
   -> observer le bruit réel de la lane CROSS-GRADER avec CA->PSA à 35 %
   -> conserver PCA9.5 -> même grade CGC/BGS uniquement
