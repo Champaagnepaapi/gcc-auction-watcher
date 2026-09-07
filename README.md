@@ -2,80 +2,27 @@
 
 > **Source de reprise technique canonique — lire ce fichier en premier dans toute nouvelle conversation.**
 >
-> Le code/Git/GitHub live reste l'autorité. Les SHA et états ci-dessous sont des ancres de reprise ; toujours re-vérifier `main`, les PR et les workflows live avant une action importante.
+> Le code/Git/GitHub live reste l'autorité. Les SHA ci-dessous sont des ancres de reprise : toujours re-vérifier `main`, les PR et les workflows live avant une action importante.
 
-## État canonique — 6 septembre 2026
+## État canonique — 7 septembre 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production HEAD                   : dfc548021c561479cc8758e2949d2c4629388d9d
-V4 external fair-value authority     : #255 MERGED / production
-Vault/source-role separation         : PR #257 DRAFT / NON MERGED
-PR #257 branch                        : fix/v4-source-role-pricecharting-20260906
-Japan Edge Mercari/SNKRDUNK          : PR #256 DRAFT / NON MERGED
-PokeTrace aggregate guard            : #247 MERGED
-Auction pagination preservation      : #245 MERGED
-Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
-Auction order-drift hardening        : #211/#212 MERGED
-Future-start auction guard           : #220 + #243 MERGED
-eBay worker resilience               : #238/#239 + #242 + #253 MERGED
-V4 run registry                      : issue #235 ACTIVE / issue #1 archive saturée
-TCGdex transport resilience          : #216/#217 MERGED
-TCGdex outage fallback               : #222/#224 MERGED
-External pending throughput          : #214 MERGED
-Magi deterministic identity          : #174/#177 MERGED
-Magi recovery budget                 : #178 MERGED
-Global schedule watchdog             : #179 MERGED
-Robot KB local cutover               : #166 / PostgreSQL Mac ACTIF
-Robot KB multisource                 : #180 MERGED
-Robot KB durable                     : PostgreSQL local Mac / V4_USE=false
-Neon                                 : writers automatiques OFF / rollback manuel
-V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
-TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
+V4 production logic HEAD             : db4954f5b223817fe14ccfeb9dcac80c960d5dd9
+#255 external fair-value authority    : MERGED / PROD_V4
+#259 recall/PriceCharting/Global/Japan: MERGED / PROD_V4
+#260 TCGdex constrained recovery      : MERGED / PROD_V4
+#261 cross-grader calibration         : OPEN / DRAFT / base pré-#260 / NON MERGED
+Robot KB durable                      : PostgreSQL local Mac / V4_USE=false
+Neon                                  : writers automatiques OFF / rollback manuel
+P3/Cardova durable                    : #210 OPEN / DRAFT / autorisation explicite requise
+V5 expérimentale                      : PR #8 / OPEN / DRAFT / NON MERGED
+TCGdex source pin                     : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase active — PR #257 : vaults indépendants + PriceCharting systématique
-
-Architecture cible : **un seul orchestrateur**, avec adapters d'opportunités indépendants et providers de valorisation séparés.
-
-```text
-GCC / Fanatics / COMC / Magi / Cardova
-        ↓
-listing exact + coût all-in uniquement
-        ↓
-CommercialIdentity stricte
-        ↓
-TCGdex exact / microvariante
-        ↓
-providers de valorisation externes
-        ↓
-décision économique
-```
-
-Règles #257 :
-
-- un vault/marketplace découvre une offre ; son prix ne devient jamais la fair value ;
-- l'historique GCC reste diagnostic / Robot KB uniquement et ne peut créer, ancrer, confirmer, plafonner ou conflict-block la fair value ;
-- PriceCharting est **consulté systématiquement comme guide de référence** pour chaque identité PSA compatible évaluée ;
-- PriceCharting reste `GUIDE`, jamais faux `SOLD` item-level ; aucune `ComparableSale` synthétique ;
-- `PSA 10` PriceCharting -> guide PSA 10 ;
-- `Grade 9` PriceCharting -> accepté comme **guide PSA 9** lorsque le listing est déjà prouvé PSA 9 exact ;
-- `Grade 8` PriceCharting -> accepté comme **guide PSA 8** lorsque le listing est déjà prouvé PSA 8 exact ;
-- PSA 8.5 reste distinct : aucun rabattement automatique sur Grade 8 ;
-- un guide PriceCharting compatible peut suffire seul à établir une estimation quand de meilleures preuves SOLD-derived sont indisponibles ;
-- les SOLD exacts/récents et preuves SOLD-derived plus fortes gardent la priorité économique ;
-- **pas de marge spéciale 40 %** : le seuil économique normal V4 s'applique, actuellement 30 % ;
-- une panne PriceCharting reste visible mais ne détruit pas une preuve SOLD forte déjà établie ;
-- direct eBay SOLD scraping n'a plus d'autorité de fair value dans cette phase ; eBay actif futur devra être un adapter d'opportunités séparé ;
-- Mercari/SNKRDUNK restent séparés dans PR #256.
-
-Exemple : PriceCharting guide `100 EUR`, aucune meilleure preuve externe, seuil V4 `30 %` => une offre `<=70 EUR all-in` peut passer le gate économique si tous les autres gates sont satisfaits. L'ancien floor spécifique `40 %` (`<=60 EUR`) est supprimé.
-
-La PR #257 est toujours **DRAFT / NON MERGED**. Sa validation finale doit prouver suite V4 + Global + tests ciblés + compile/YAML/diff-check + bootstrap Global live read-only avant tout merge.
-
-Ledger : `docs/v4-source-role-pricecharting-20260906.md`.
+Le SHA `db4954f5...` est le **SHA logique production post-#260**. Un futur commit docs-only peut faire avancer `main` sans modifier ce runtime ; toujours distinguer HEAD documentaire et SHA logique runtime.
 
 ---
 
@@ -85,11 +32,22 @@ Ledger : `docs/v4-source-role-pricecharting-20260906.md`.
 - **PR #8 / V5 ne doit jamais être mergée dans `main` sans autorisation explicite utilisateur.**
 - Pokémon **cartes individuelles uniquement** ; sealed/lots hors scope.
 - Aucun achat, bid, checkout, paiement ou grading payant automatique.
-- Aucun secret, token, cookie, session ou mot de passe dans le repo/logs.
+- Aucun secret, token, cookie, session ou mot de passe dans le repo ou les logs.
 - Identité incertaine, contradictoire ou microvariante non prouvée = fail-closed / revue manuelle.
-- Ne jamais mélanger langue, grader, grade ou microvariante incompatibles.
-- Aucun fuzzy, substring, token overlap, traduction supposée ou Levenshtein comme preuve exacte.
+- Ne jamais mélanger langue, set, numéro, grader, grade, édition, finish ou microvariante incompatible.
 - ASK, enchère live et disparition d'annonce ne deviennent jamais des ventes.
+- Une panne provider, un 403/429 ou un timeout ne devient jamais un clean no-match.
+- Robot KB/Neon restent séparés de la décision commerciale V4 tant que `V4_USE=false`.
+
+## Hiérarchie de preuve prix
+
+1. SOLD exacts et récents ;
+2. SOLD exacts plus anciens avec ajustement temporel prouvé ;
+3. fixed ASK compatibles, explicitement marqués ASK ;
+4. snapshot d'enchère observé à `<=5 min` de la fin si aucun SOLD exploitable n'existe ;
+5. enchère en cours = signal faible seulement.
+
+Aucun ASK, guide agrégé ou snapshot live n'est présenté comme un item-level SOLD.
 
 ---
 
@@ -107,6 +65,77 @@ Cron-job.org ~toutes les 10 min
 
 Le Main Scanner est cadencé extérieurement. **Ne jamais ajouter un cron GitHub parallèle.** Son registre actif est l'issue #235.
 
+## Politique économique production post-#259
+
+```text
+MAX_PRICE_EUR                    250
+MIN_DISCOUNT_PCT                 20
+V4_RECALL_MIN_DISCOUNT_PCT       20
+PSA numeric scope                1-10
+synthetic PSA 9.5                interdit
+```
+
+Le seuil réel reste adaptatif : une preuve plus faible/ancienne/sparse peut exiger davantage que 20 %. Le plancher 20 % n'autorise jamais à relâcher l'identité.
+
+### Autorité de fair value
+
+#255 reste l'invariant : **l'historique GCC est observationnel**, il ne peut ni créer, ancrer, confirmer, plafonner ni conflict-block une fair value.
+
+#259 sépare les rôles :
+
+```text
+opportunity/listing sources
+  GCC / Fanatics / COMC / Magi / Cardova / Japan adapters
+        ↓
+identité commerciale stricte + TCGdex
+        ↓
+valuation providers externes
+  SOLD-derived exacts lorsqu'ils existent
+  PokeTrace / PSA APR
+  PriceCharting GUIDE
+        ↓
+décision économique
+```
+
+- direct eBay SOLD scraping n'a plus d'autorité de fair value dans cette phase ;
+- PriceCharting est consulté comme **GUIDE**, jamais item-level SOLD ;
+- `Grade 8/9/PSA 10` PriceCharting n'est utilisé que lorsque le grade cible exact est déjà prouvé ; PSA 8.5 reste distinct ;
+- une panne PriceCharting ne détruit pas une preuve SOLD plus forte déjà établie ;
+- PokeTrace reste agrégé : son centre peut être utile si identité/langue/grader/grade exacts sont prouvés, mais aucun item-level SOLD ni distribution artificielle n'est fabriqué ;
+- ASK eBay actif exact = revue secondaire seulement, `ASK` explicite, haircut production 10 %, max 4 lookups/run, seuil de revue 20 % ; jamais SOLD.
+
+## TCGdex — identité exacte et #260
+
+TCGdex reste l'autorité d'identité. `variants_detailed` peut prouver les axes matériels après résolution exacte. Axes inconnus, multiples, malformés ou contradictoires => blocage.
+
+#260 ajoute un **recovery de nom très contraint**, sans transformer le fuzzy en preuve autonome :
+
+1. set + numéro imprimé + dénominateur doivent déjà être exacts ;
+2. les contraintes de langue/coordonnée/microvariante restent actives ;
+3. il doit rester **exactement un** candidat compatible après comparaison de nom ;
+4. une différence matérielle de nom reste bloquante ;
+5. deux candidats compatibles ou plus => `AMBIGUOUS` ;
+6. grader/grade et économie ne sont jamais déduits par ce recovery.
+
+Ce recovery ne remplace pas les couches exact-coordinate/source-pinned existantes et ne crée aucun alias carte-par-carte.
+
+### Validation #260
+
+```text
+validated head                   d809f4aacce0cbfb362546a65de351be2451dcf6
+CI run                           34053317112
+CI job                           101541221319
+V4 suite                         958 PASS / 2 skipped
+compile                          PASS
+YAML                             PASS
+git diff --check                 PASS
+read-only auction compare        PASS
+merge/runtime SHA                db4954f5b223817fe14ccfeb9dcac80c960d5dd9
+first natural Main post-merge    run 34091885754 / job 101646924190 / SUCCESS
+```
+
+Le premier Main Scanner naturel post-merge a checkout exactement `db4954f5...`, avec TCGdex `errors=0` et plusieurs ambiguïtés conservées fail-closed. Le chemin spécifique de recovery fuzzy unique n'a pas été observé naturellement dans cet échantillon : **déploiement + smoke production prouvés, branche fonctionnelle spécifique prouvée par CI mais pas encore live-observée.**
+
 ## Auction discovery
 
 Chemin normal : `AUCTION + ON_SALE + ENDING_SOON` avec `endTime` individuel.
@@ -114,52 +143,30 @@ Chemin normal : `AUCTION + ON_SALE + ENDING_SOON` avec `endTime` individuel.
 - ordre GCC valide : fast path ;
 - dérive d'ordre prouvée : récupération exhaustive bornée puis horizon appliqué localement ;
 - erreurs requête/pagination/endTime/repeated-page/no-progress : fail-closed vers le fallback legacy existant ;
-- `api_total` sert uniquement au sizing, jamais à prouver la complétude ;
-- statut `COMPLETE` uniquement après preuve d'épuisement réel de l'API ou horizon correctement franchi dans un ordre vérifié.
+- `api_total` sert au sizing seulement, jamais à prouver la complétude ;
+- statut `COMPLETE` uniquement après preuve d'épuisement réel ou horizon correctement franchi dans un ordre vérifié.
 
-Recovery :
+Recovery : page size 100, budget adaptatif `ceil(api_total/page_size)+2`, hard ceiling 250, economic cap 360, priorité `<=5 min -> <=12 min -> <=60 min`.
 
-```text
-stable page_size default          100 rows/page
-budget                            ceil(api_total / page_size) + 2
-minimum                           ancien bound
-hard ceiling                     250 pages
-auction economic cap             360
-priority                         ≤5 min -> ≤12 min -> ≤60 min
-```
+Protections production à préserver : #211/#212, #220/#243, #229/#231, #245.
 
-#245 garantit qu'un wrapper future-start sans override explicite ne remplace plus silencieusement `100` par `24`.
+## Queue fixed / external pending — interprétation correcte du « 21/120 »
 
-## Future-start auction guard — #220 + #243
+`processing budget: 120` est un **plafond global d'évaluations**, pas une cible à remplir.
 
-Une auction prouvée non démarrée est exclue avant interprétation du prix/countdown : start future explicite => exclusion structurée ; preuve de démarrage explicite => admissible ; ambiguïté/erreur => fail-closed. Starting price et countdown-to-start ne deviennent jamais bid courant / temps avant fin.
+`V4_EXTERNAL_PENDING_MAX_PER_RUN=16` est un second plafond indépendant pour les anciens `pending retry`. Donc un run sain peut traiter 17, 20, 27, etc. sans anomalie.
 
-## Marché externe V4
-
-Production #255 : GCC n'a plus d'autorité économique de fair value. L'historique GCC est observationnel ; une opportunité économique doit venir d'une preuve externe compatible.
-
-PR #257 ajoute, sans être encore déployée, la séparation de rôles suivante :
+Preuves auditées :
 
 ```text
-opportunity sources    GCC / Fanatics / COMC / Magi / Cardova
-valuation references   SOLD-derived compatibles + PSA APR/PokeTrace/PPT + PriceCharting GUIDE
+run 34085196093 (#4027)   processed 17 = stale 1 + pending retry 16
+run 34085768066 (#4028)   processed 27 = stale 11 + pending retry 16
+                          External queue selected 21
 ```
 
-PriceCharting est une estimation/guide issue de l'historique de marché selon PriceCharting, pas une liste de ventes item-level. Cette distinction reste visible dans le payload et les notifications.
+Le « 21/120 » provenait d'un mélange de métriques : `selected 21` = identités retenues pour l'arbitrage provider, **pas** `processed this run: 21`.
 
-### PokeTrace aggregate quality — #247
-
-PokeTrace reste une source agrégée et corrélée à la famille eBay. Une preuve PokeTrace `STRONG` dont l'enveloppe est invalide/non positive/dégénérée est rétrogradée `CLEAN_INSUFFICIENT / WEAK` et son estimate est retiré du chemin économique. Aucun agrégat n'est transformé artificiellement en vente item-level.
-
-### eBay / PSA APR
-
-Les protections #238/#239/#242/#253 bornent les opérations eBay. PSA APR peut encore renvoyer HTTP 403 et eBay peut encore timeout. Ces erreurs restent visibles/fail-closed ; aucun contournement anti-bot/WAF.
-
-## TCGdex — identité et microvariantes
-
-TCGdex reste la couche d'identité exacte. `variants_detailed` peut prouver les axes matériels après identité exacte. Axes inconnus, multiples, malformés ou contradictoires => blocage. `pricing` / `thirdParty` TCGdex n'est pas une fair value slab.
-
-Transport : retry borné sur timeout/connexion/HTTP 502/503/504, breaker run-wide après échecs répétés, jamais de panne convertie en clean no-match.
+Ne pas augmenter les caps uniquement pour « atteindre 120 ». Le backlog externe est réel mais doit être réduit par meilleure efficacité/couverture provider, pas en supprimant les bornes de sécurité.
 
 ## Fast Lane
 
@@ -167,61 +174,36 @@ Transport : retry borné sur timeout/connexion/HTTP 502/503/504, breaker run-wid
 Cron-job.org ~toutes les 3 min
   -> workflow_dispatch
   -> .github/workflows/v4-final-auction-check.yml
-  -> recheck ciblé des auctions déjà armées à ≤5 min
+  -> recheck ciblé des auctions déjà armées à <=5 min
 ```
 
-Aucun bid automatique. PSA scope économique : `8`, `8.5`, `9`, `10`; jamais de PSA 9.5 synthétique.
+Aucun bid automatique.
 
 ---
 
-# Global Multi-Vault — production marketplace-first
+# Global Multi-Vault / Japan
 
-```text
-GCC / Fanatics / COMC / Magi / Cardova
-        ↓
-identité commerciale exacte
-        ↓
-TCGdex exact + microvariante déterministe
-        ↓
-preuves marché externes compatibles
-        ↓
-décision économique
-        ↓
-notification seulement si gate complet
-```
+#259 a intégré la séparation économique des sources et les capacités pertinentes des travaux #257/#258/#256. Les anciennes PR encore ouvertes correspondantes ne doivent **pas** être mergées directement : elles sont à auditer comme provenance/superseded.
 
-Actionnable seulement si identité exacte + `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5` + all-in EUR prouvé + TCGdex exact + preuve de valorisation assez forte + décote requise + aucun conflit matériel.
+Architecture : un orchestrateur, adapters indépendants, identité exacte commune, valuation externe commune. Une marketplace découvre une offre ; son propre prix ne devient jamais sa fair value.
 
-- `ACTIVE_AUCTION` non actionnable ;
-- disparition != SOLD ;
-- `.github/workflows/v4-global-notify.yml` reste l'unique lane Global production ;
-- PR #257 conserve un seul orchestrateur mais isole économiquement chaque adapter marketplace.
-
-Scale production : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTrace 60, cadence 20 min (`1,21,41`), inner timeout 17 min, job timeout 25 min.
-
----
-
-# Magi — identité native japonaise
-
-#174 + #177 = récupération déterministe. #178 protège le budget : recovery total 36, broad/nonpriority 28 max, réserve exact card-search/detail 8. Pas de fallback name-only ni d'alias carte-par-carte pour les cas non prouvés.
+Mercari/SNKRDUNK restent des sources ASK/opportunités read-only dans leur lane ; aucune disponibilité ambiguë ou page explicitement vendue ne devient une offre active, et aucune ASK ne devient SOLD.
 
 ---
 
 # Robot KB — PostgreSQL local Mac
 
-Robot KB reste séparé de la décision commerciale V4/Global. `V4_USE=false`.
+Robot KB reste séparé de V4 : `V4_USE=false`.
 
-Contrat : observations append-only datées, payload brut + provenance, priorité aux SOLD finaux prouvés, fixed baseline + changements utiles, auctions SOLD final prioritaire, snapshot ≤5 min seulement fallback identifié. ASK/live/disparition/`WAITING_FOR_PAYMENT` != SOLD.
+Contrat durable : observations append-only datées, payload brut + provenance, priorité aux SOLD finaux prouvés, fixed baseline puis changements utiles, auctions SOLD final prioritaire, snapshot `<=5 min` seulement fallback identifié. ASK/live/disparition/`WAITING_FOR_PAYMENT` != SOLD.
 
-Migration Neon → Mac historiquement vérifiée : 1 087 015 lignes, 35 tables, `MIGRATION_VERIFIED`, health OK. Writers Neon automatiques OFF ; Neon = rollback/recovery manuel.
-
-#180 ajoute les collectors multisource locaux avec séparation stricte des sémantiques. Les clés provider restent uniquement dans le Trousseau macOS.
+Neon : writers automatiques OFF ; rollback/recovery manuel seulement.
 
 ## P3 / Cardova durable
 
-- #207 est mergée **uniquement dans `agent/p3-postgres-durable-shadow`** ; aucune migration durable utilisateur exécutée.
-- #210 reste OPEN/DRAFT/NON-MERGED et prépare seulement un commit durable Cardova gardé par autorisation explicite + backup + locks.
-- Aucun write durable Cardova sans autorisation explicite opérateur.
+- #207 est mergée uniquement dans `agent/p3-postgres-durable-shadow` ;
+- #210 reste OPEN/DRAFT/NON-MERGED et prépare seulement un commit durable Cardova gardé par autorisation explicite + backup + locks ;
+- aucun write durable Cardova sans autorisation explicite opérateur.
 
 ---
 
@@ -244,14 +226,14 @@ branch       agent/v5-poketrace-cardmarket-market-data
 4. lire capability ledger + inventaires pertinents ;
 5. vérifier Git local seulement si le worktree est réellement accessible ;
 6. vérifier `main`, SHA, PRs, branches et workflows live ;
-7. rechercher une capacité existante avant de réimplémenter ;
+7. faire le REUSE AUDIT avant de réimplémenter ;
 8. branche/PR dédiée pour changement non trivial ;
 9. SHA précis + tests ciblés + suite pertinente ;
 10. compile/YAML/`git diff --check` ;
 11. live read-only lorsque pertinent ;
 12. aucune transaction/secret ;
 13. merge seulement avec l'autorisation requise ;
-14. mettre à jour ce README / le handoff après une phase importante.
+14. mettre à jour README/handoff après une phase importante.
 
 Documents de reprise :
 - `docs/project-current-phase.md`
@@ -268,26 +250,10 @@ Documents de reprise :
 
 # Prochaine direction canonique
 
-```text
-PR #257
-  -> PriceCharting guide systématique PSA 8/9/10 compatibles
-  -> Grade 8/9 acceptés comme guides PSA 8/9 sur listing PSA exact
-  -> seuil normal V4 30 %, pas floor spécial 40 %
-  -> SOLD exact/récent reste prioritaire
-  -> finir CI + live read-only
-  -> NE PAS MERGER sans autorisation explicite
-
-V4 providers
-  -> priorité aux SOLD exacts récents lorsqu'ils existent
-  -> PriceCharting = référence guide systématique, jamais faux SOLD
-  -> aucun secret ni contournement anti-bot/WAF
-
-Robot KB
-  -> rester séparé de V4 / V4_USE=false
-  -> aucune écriture durable Cardova sans autorisation explicite
-
-V5
-  -> PR #8 reste expérimentale/draft/non mergée
-```
+- Le principal résiduel production est la **couverture marché externe incomplète**, pas la découverte GCC.
+- Ne pas augmenter mécaniquement les caps pour vider le backlog.
+- PR #261 est OPEN/DRAFT mais part d'une base pré-#260 : avant toute action, rebase/port propre + REUSE AUDIT + validation complète.
+- PR #258/#256 encore ouvertes doivent être traitées comme provenance/superseded par #259 avant toute décision.
+- PR #8 reste protégée.
 
 Aucun achat, bid, checkout ou paiement automatique.
