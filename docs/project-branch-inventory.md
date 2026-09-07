@@ -1,22 +1,22 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-État pertinent re-vérifié le **7 septembre 2026** après les merges production #259/#260/#261.
+État pertinent re-vérifié le **7 septembre 2026** après les merges production #259/#260/#261 et le closeout #262.
 
-> `main` est actuellement à `22303a34f7414769a04f4c587338def005b8a5c6` ; dernier SHA runtime #261 `24230552d52574e2769c21dcfa84ba11320da2cf`. Toujours re-vérifier le HEAD GitHub live avant une action.
+> `main` est actuellement à `85f429e2eec6f810e53f7fcbc00d77f2da525c75` ; dernier SHA runtime #261 `24230552d52574e2769c21dcfa84ba11320da2cf`. Toujours re-vérifier le HEAD GitHub live avant une action.
 
 ## Autorités / branches récentes
 
 ```text
-V4 production main                main / 22303a34f7414769a04f4c587338def005b8a5c6
+V4 production main                main / 85f429e2eec6f810e53f7fcbc00d77f2da525c75
 V4 runtime #261                   24230552d52574e2769c21dcfa84ba11320da2cf
 #259 integration source           integration/v4-recall-pricecharting-global-japan-20260906 / 7b444a242723b66894e02114fc6c8f2c0710ba24 / MERGED
 #260 TCGdex recovery source       fix/v4-unique-fuzzy-name-recovery-20260906 / d809f4aacce0cbfb362546a65de351be2451dcf6 / MERGED
 #261 cross-grader source          fix/v4-crossgrader-proxy-calibration-20260907 / c5e61d1b5377508ccf1a720959e0f7e09d570fbc / MERGED
+#262 closeout docs                docs/post-260-261-closeout-20260907 / 1f4374c724c2a0397df6809a165283f51005ee4e / MERGED
 #257 source-role foundation       fix/v4-source-role-pricecharting-20260906 / 68d8dec2880583cb40a824f48bcf3dd8c6ea4843 / MERGED
 #258 recall source                tune/v4-recall-policy-20260906 / 85a72280876771feb5803df760b88fac105b591d / OPEN DRAFT / SUPERSEDED_BY_259
 #256 Japan source                 v4-jp-market-providers-20260906 / 2ebf7bc07e757f2f6b3bcb1a59578fdfda927df1 / OPEN DRAFT / SUPERSEDED_BY_259
 Old post-260 docs branch          docs/post-260-tcgdex-closeout-20260907 / b324ae538981eb99d6a91c15516c3db514e34b38 / HISTORICAL, DO NOT RESET/DELETE
-Current consolidated closeout     docs/post-260-261-closeout-20260907 / ACTIVE DOCS ONLY
 V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / #8 OPEN DRAFT
 ```
 
@@ -26,11 +26,11 @@ PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` s
 
 `docs/post-260-tcgdex-closeout-20260907` a été créée sur le `main` post-#260. Pendant son édition, #261 a été mergée puis un closeout docs #261 a fait avancer `main`. Rebaser cette branche par reset aurait été destructif et aurait risqué d'écraser les docs #261. Elle est donc conservée comme provenance historique.
 
-`docs/post-260-261-closeout-20260907` repart proprement du `main@22303a34...` et consolide seulement les documents de reprise. Aucune branche n'est supprimée.
+`docs/post-260-261-closeout-20260907` est repartie proprement du `main@22303a34...`, a consolidé seulement les documents de reprise, puis a été mergée via #262. Aucune branche n'a été supprimée.
 
 ## Comptage / provenance
 
-Le dernier audit exhaustif historique connu comptait 158 branches distantes au 18 août ; ce nombre n'est plus actuel : ne pas présenter `158` comme nombre actuel. Ne pas annoncer un total de branches sans nouvel audit exhaustif.
+Le dernier audit exhaustif historique connu, le 18 août, comptait **158 branches distantes**. Ce nombre n'est plus actuel : **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
 
 Toute suppression exige audit + autorisation explicite.
 
@@ -39,11 +39,11 @@ Toute suppression exige audit + autorisation explicite.
 - `integration/v4-recall-pricecharting-global-japan-20260906` — #259, intégration canonique des capacités #256/#257/#258, **MERGED** ;
 - `fix/v4-unique-fuzzy-name-recovery-20260906` — #260, base `7cb0e067...`, head validé `d809f4aac...`, validation `34053317112` SUCCESS, merge production `db4954f5...` ;
 - `fix/v4-crossgrader-proxy-calibration-20260907` — #261, base `db4954f5...`, code validé `c58aa4c...`, final head `c5e61d1...`, validation `34092254431` SUCCESS, merge runtime `24230552...` ;
+- `docs/post-260-261-closeout-20260907` — #262, closeout docs-only consolidé, **MERGED** à `85f429e2...` ;
 - `fix/v4-source-role-pricecharting-20260906` — #257, foundation source-role/PriceCharting, **MERGED** puis incluse dans #259 ;
 - `tune/v4-recall-policy-20260906` — #258, **OPEN/DRAFT/STALE_OPEN/SUPERSEDED_BY_259** ; ne pas merger ;
 - `v4-jp-market-providers-20260906` — #256, **OPEN/DRAFT/STALE_OPEN/SUPERSEDED_BY_259** ; ne pas merger ;
-- `docs/post-260-tcgdex-closeout-20260907` — ancienne branche docs-only post-#260, devenue provenance après merge concurrent #261 ; ne pas reset/delete sans autorisation ;
-- `docs/post-260-261-closeout-20260907` — branche docs-only courante, basée sur `main@22303a34...`.
+- `docs/post-260-tcgdex-closeout-20260907` — ancienne branche docs-only post-#260, devenue provenance après merge concurrent #261 ; ne pas reset/delete sans autorisation.
 
 ## Lignée eBay récente
 
