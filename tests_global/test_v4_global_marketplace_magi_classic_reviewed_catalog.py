@@ -7,8 +7,8 @@ import v4_global_marketplace_magi_classic_reviewed_catalog as classic
 
 
 class MagiClassicReviewedCatalogTests(unittest.TestCase):
-    def ask(self, title: str) -> japan.Ask:
-        return japan.Ask("magi", "https://magi.camp/items/1", title, 10000, title)
+    def ask(self, title: str, text: str | None = None) -> japan.Ask:
+        return japan.Ask("magi", "https://magi.camp/items/1", title, 10000, title if text is None else text)
 
     def test_exact_reviewed_pikachu_coordinate(self):
         result = classic.resolve_reviewed_classic_identity(
@@ -72,6 +72,21 @@ class MagiClassicReviewedCatalogTests(unittest.TestCase):
         )
         self.assertEqual(bundle.status, "NO_MATCH")
         self.assertEqual(bundle.reason, "multi_item_listing")
+
+    def test_unrelated_detail_body_english_does_not_reject_japanese_title(self):
+        title = "【PSA10】ポケモンカードゲーム Classic ピカチュウ (CLL) PROMO CLL008/032 1枚"
+        result = classic.resolve_reviewed_classic_identity(
+            self.ask(title, f"{title}\nMarketplace UI English")
+        )
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.reason, "MAGI_REVIEWED_CLASSIC_COORDINATE_EXACT")
+
+    def test_explicit_english_in_title_stays_blocked(self):
+        result = classic.resolve_reviewed_classic_identity(
+            self.ask("【PSA10】English ポケモンカードゲーム Classic ピカチュウ CLL008/032 1枚")
+        )
+        self.assertEqual(result.status, "NO_MATCH")
+        self.assertEqual(result.reason, "explicit_non_japanese_language")
 
     def test_non_classic_delegates_only_in_installed_wrapper(self):
         result = classic.resolve_reviewed_classic_identity(
