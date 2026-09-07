@@ -47,7 +47,7 @@ _SECONDARY_PROXY_HAIRCUT_PCT = {
 _PSA_FALLBACK_HAIRCUT_PCT = {
     "PCA": 30.0,
     "CCC": 35.0,
-    "CA": 45.0,
+    "CA": 35.0,
 }
 
 
