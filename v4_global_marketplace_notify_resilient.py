@@ -20,6 +20,9 @@ from v4_global_marketplace_hardening import install_marketplace_first_hardening
 from v4_global_marketplace_identity_dimension_hardening import (
     install_global_marketplace_identity_dimension_hardening,
 )
+from v4_global_marketplace_magi_classic_reviewed_catalog import (
+    install_global_marketplace_magi_classic_reviewed_catalog,
+)
 from v4_global_marketplace_magi_detail_coordinate import (
     install_global_marketplace_magi_detail_coordinate,
 )
@@ -67,6 +70,9 @@ from v4_global_marketplace_magi_unique_full_number import (
 )
 from v4_global_marketplace_magi_unique_name_among_full_number import (
     install_global_marketplace_magi_unique_name_among_full_number,
+)
+from v4_global_marketplace_magi_user_scope import (
+    install_global_marketplace_magi_user_scope,
 )
 from v4_global_marketplace_poketrace_recall import (
     install_global_marketplace_poketrace_recall,
@@ -122,6 +128,9 @@ def main() -> int:
     # contract while allowing already-proved Japanese names/sets to remain
     # complete commercial identities without translation.
     install_global_marketplace_unicode_identity()
+    # Exact operator exclusions are applied to broad Magi rows before detail or
+    # identity work. This is not a generic Trainer/supporter exclusion.
+    install_global_marketplace_magi_user_scope()
     # Restore the native Japanese proof lane to the TCGdex resolver's existing
     # bounded 60-request baseline. The separate recovery budget is unchanged.
     install_global_marketplace_magi_native_budget()
@@ -129,6 +138,10 @@ def main() -> int:
     # single-card coordinates natively through TCGdex; GCC history is no longer
     # an identity prerequisite for this vault.
     install_global_marketplace_magi_native_identity()
+    # Pokemon Card Game Classic CLL/CLK/CLF is absent from the current TCGdex
+    # projection. A tiny independently reviewed coordinate table may recover
+    # only exact supported model codes; unknown Classic coordinates stay blocked.
+    install_global_marketplace_magi_classic_reviewed_catalog()
     # Exact coordinate evidence may live in the current Magi detail body even
     # when page.title() omits it. Related-item/footer text remains excluded.
     install_global_marketplace_magi_detail_coordinate()
