@@ -72,11 +72,12 @@ Merge runtime `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs main `2
 - non-PSA fractionnaire : proxy secondaire **même grade numérique** CGC/BGS, pas de rabattement PCA9.5→PSA9 ;
 - non-PSA entier : CGC même grade préféré ; PSA même grade fallback conservateur ;
 - haircuts spécifiques au grader cible ;
+- tuning #263 : fallback CA→PSA ramené de 45 % à **35 %**, sans modifier le floor cross-grader de 30 % ;
 - PriceCharting compatible peut plafonner la référence brute mais reste `GUIDE` ;
 - revue cross-grader seulement si décote >=30 % après haircut ;
 - déduplication cross-market v2.
 
-Validation code `c58aa4c...`, run `34092254431` SUCCESS, tests ciblés + suite V4 + compile/YAML/diff-check + comparaison live read-only PASS.
+Validation #261 code `c58aa4c...`, run `34092254431` SUCCESS, tests ciblés + suite V4 + compile/YAML/diff-check + comparaison live read-only PASS. Le tuning #263 possède ses propres régressions ciblées et doit conserver une CI verte avant merge.
 
 ---
 
@@ -193,6 +194,20 @@ PostgreSQL local Mac actif, `V4_USE=false`, Neon writers automatiques OFF. Obser
 # V5 / non-production
 
 PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié historiquement `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`. Ne jamais merger PR #8 dans `main` sans autorisation explicite.
+
+---
+
+# Recovery markers historiques conservés
+
+Ces libellés restent volontairement explicites pour préserver la provenance auditée et éviter qu'une simplification documentaire efface des capacités récupérables. Ils ne redéfinissent pas l'autorité production actuelle.
+
+- `TCGdex / PokeTrace #119→#135` — lignée historique de recovery/bridges à relire avant tout nouveau resolver ;
+- `fallback générique catalogue immuable` — provenance du fallback catalogue fail-closed, à ne pas remplacer par une panne transformée en clean no-match ;
+- `#139 a réintégré/revalidé le stack historique` #108/#109/#110/#113/#114/#115/#138 avant les intégrations plus récentes ;
+- `GCC/Cardova/Magi/Fanatics/COMC` — provenance des sources marketplace/vault, aujourd'hui étendue mais toujours séparée des providers de valorisation ;
+- `PPT = `SOLD_AGGREGATED`` — agrégat SOLD-derived, jamais item-level SOLD ;
+- `PR #126 = `SUPERSEDED`` par #127→#135 ;
+- `Capacités structurantes : #9, #50, #52, #104` — provenance historique `SHADOW`/recovery, pas une déclaration de production courante.
 
 ---
 
