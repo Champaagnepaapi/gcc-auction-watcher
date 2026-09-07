@@ -30,7 +30,7 @@ PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` s
 
 ## Comptage / provenance
 
-Le dernier audit exhaustif historique connu comptait 158 branches distantes au 18 août ; ce nombre n'est plus actuel. Ne pas annoncer un total de branches sans nouvel audit exhaustif.
+Le dernier audit exhaustif historique connu comptait 158 branches distantes au 18 août ; ce nombre n'est plus actuel : ne pas présenter `158` comme nombre actuel. Ne pas annoncer un total de branches sans nouvel audit exhaustif.
 
 Toute suppression exige audit + autorisation explicite.
 
@@ -103,4 +103,4 @@ Toute suppression exige audit + autorisation explicite.
 7. jamais de suppression V5/P3/branche active par simple housekeeping ;
 8. jamais de reset/force-push pour « remettre à jour » une branche de provenance.
 
-Aucune branche n'est supprimée par ce closeout.
+Aucune branche n'a été supprimée par ce closeout.
