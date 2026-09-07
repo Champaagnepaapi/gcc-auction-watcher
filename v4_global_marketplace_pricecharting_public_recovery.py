@@ -108,16 +108,21 @@ def _numerator_query(lot: watcher.Lot) -> str:
 def _lookup_public_with_numerator_recovery(
     self: pc.PriceChartingProvider,
     lot: watcher.Lot,
-    *,
     price_key: str,
     exact_grade_bucket: bool,
 ) -> pc.PriceChartingLookup:
+    """Match the wrapped method's positional call contract exactly.
+
+    ``PriceChartingProvider.lookup`` calls ``_lookup_public(lot, price_key,
+    exact_grade_bucket)`` positionally.  Keeping this wrapper positional avoids
+    turning a transport-recovery layer into a runtime TypeError.
+    """
     assert _ORIGINAL_LOOKUP_PUBLIC is not None
     first = _ORIGINAL_LOOKUP_PUBLIC(
         self,
         lot,
-        price_key=price_key,
-        exact_grade_bucket=exact_grade_bucket,
+        price_key,
+        exact_grade_bucket,
     )
     if first.status != "CLEAN_NO_MATCH":
         return first
