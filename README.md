@@ -4,17 +4,18 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Les SHA et états ci-dessous sont des ancres de reprise ; toujours re-vérifier `main`, les PR et les workflows live avant une action importante.
 
-## État canonique — 6 septembre 2026
+## État canonique — 7 septembre 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production HEAD                   : dfc548021c561479cc8758e2949d2c4629388d9d
+V4 production HEAD avant PR #261     : db4954f5b223817fe14ccfeb9dcac80c960d5dd9
 V4 external fair-value authority     : #255 MERGED / production
-Vault/source-role separation         : PR #257 DRAFT / NON MERGED
-PR #257 branch                        : fix/v4-source-role-pricecharting-20260906
-Japan Edge Mercari/SNKRDUNK          : PR #256 DRAFT / NON MERGED
+Vault/source-role + PriceCharting    : #257 + #259 MERGED / production
+Global/Japan integration             : #259 MERGED / production
+Cross-grader calibration             : PR #261 DRAFT / NON MERGED
+PR #261 branch                        : fix/v4-crossgrader-proxy-calibration-20260907
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -36,46 +37,26 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase active — PR #257 : vaults indépendants + PriceCharting systématique
+### Phase active — PR #261 : calibration des alertes CROSS-GRADER
 
-Architecture cible : **un seul orchestrateur**, avec adapters d'opportunités indépendants et providers de valorisation séparés.
+Objectif : conserver une lane de rappel utile pour les graders secondaires sans transformer PSA en comparable exact ni produire des faux positifs comme les cas opérateur CA10 Glaceon / PCA9.5 Eevee / CA10 Riolu.
 
-```text
-GCC / Fanatics / COMC / Magi / Cardova
-        ↓
-listing exact + coût all-in uniquement
-        ↓
-CommercialIdentity stricte
-        ↓
-TCGdex exact / microvariante
-        ↓
-providers de valorisation externes
-        ↓
-décision économique
-```
+Règles #261 :
 
-Règles #257 :
+- cible non-PSA à demi-grade (`9.5`, etc.) : proxy **même grade numérique** CGC puis BGS ; aucun fallback automatique `PCA 9.5 -> PSA 9` ;
+- cible non-PSA à grade entier : préférer CGC même grade ; PSA même grade seulement comme fallback conservateur ;
+- si plusieurs proxies secondaires exact-grade existent, retenir la référence centrale la plus basse ;
+- haircuts d'incertitude PSA fallback : PCA 30 %, CCC 35 %, CA 45 %, autre grader secondaire 40 % ;
+- haircuts proxy secondaire même grade : PCA 10 %, CCC 15 %, CA 20 %, défaut 20 % ;
+- cross-language ajoute 20 %, haircut combiné plafonné à 65 % ;
+- PriceCharting compatible peut seulement **plafonner** la référence brute : `min(PokeTrace proxy, PriceCharting GUIDE)` ; il reste `GUIDE`, jamais `SOLD` ;
+- toute alerte cross-grader exige au moins **30 % de décote après haircut** ;
+- le grader/langue proxy reste explicitement affiché comme proxy de revue, jamais comparable exact ;
+- schéma de déduplication cross-market v2 afin de réévaluer les anciennes alertes sous la nouvelle calibration.
 
-- un vault/marketplace découvre une offre ; son prix ne devient jamais la fair value ;
-- l'historique GCC reste diagnostic / Robot KB uniquement et ne peut créer, ancrer, confirmer, plafonner ou conflict-block la fair value ;
-- PriceCharting est **consulté systématiquement comme guide de référence** pour chaque identité PSA compatible évaluée ;
-- PriceCharting reste `GUIDE`, jamais faux `SOLD` item-level ; aucune `ComparableSale` synthétique ;
-- `PSA 10` PriceCharting -> guide PSA 10 ;
-- `Grade 9` PriceCharting -> accepté comme **guide PSA 9** lorsque le listing est déjà prouvé PSA 9 exact ;
-- `Grade 8` PriceCharting -> accepté comme **guide PSA 8** lorsque le listing est déjà prouvé PSA 8 exact ;
-- PSA 8.5 reste distinct : aucun rabattement automatique sur Grade 8 ;
-- un guide PriceCharting compatible peut suffire seul à établir une estimation quand de meilleures preuves SOLD-derived sont indisponibles ;
-- les SOLD exacts/récents et preuves SOLD-derived plus fortes gardent la priorité économique ;
-- **pas de marge spéciale 40 %** : le seuil économique normal V4 s'applique, actuellement 30 % ;
-- une panne PriceCharting reste visible mais ne détruit pas une preuve SOLD forte déjà établie ;
-- direct eBay SOLD scraping n'a plus d'autorité de fair value dans cette phase ; eBay actif futur devra être un adapter d'opportunités séparé ;
-- Mercari/SNKRDUNK restent séparés dans PR #256.
+Validation code/tests avant documentation : head `c58aa4c75768144946f858267a13eb493bf7a420`, workflow `V4 Auction Discovery Validation` run `34092254431` SUCCESS, 742 tests OK, compile/YAML/diff-check/comparaison live read-only PASS. Toujours revalider le head exact après les commits de documentation avant merge.
 
-Exemple : PriceCharting guide `100 EUR`, aucune meilleure preuve externe, seuil V4 `30 %` => une offre `<=70 EUR all-in` peut passer le gate économique si tous les autres gates sont satisfaits. L'ancien floor spécifique `40 %` (`<=60 EUR`) est supprimé.
-
-La PR #257 est toujours **DRAFT / NON MERGED**. Sa validation finale doit prouver suite V4 + Global + tests ciblés + compile/YAML/diff-check + bootstrap Global live read-only avant tout merge.
-
-Ledger : `docs/v4-source-role-pricecharting-20260906.md`.
+Ledger : `docs/v4-crossgrader-proxy-calibration-20260907.md`.
 
 ---
 
@@ -88,7 +69,7 @@ Ledger : `docs/v4-source-role-pricecharting-20260906.md`.
 - Aucun secret, token, cookie, session ou mot de passe dans le repo/logs.
 - Identité incertaine, contradictoire ou microvariante non prouvée = fail-closed / revue manuelle.
 - Ne jamais mélanger langue, grader, grade ou microvariante incompatibles.
-- Aucun fuzzy, substring, token overlap, traduction supposée ou Levenshtein comme preuve exacte.
+- Aucun fuzzy, substring, token overlap, traduction supposée ou Levenshtein comme preuve exacte hors lane explicitement bornée et non économique.
 - ASK, enchère live et disparition d'annonce ne deviennent jamais des ventes.
 
 ---
@@ -138,14 +119,22 @@ Une auction prouvée non démarrée est exclue avant interprétation du prix/cou
 
 Production #255 : GCC n'a plus d'autorité économique de fair value. L'historique GCC est observationnel ; une opportunité économique doit venir d'une preuve externe compatible.
 
-PR #257 ajoute, sans être encore déployée, la séparation de rôles suivante :
+Production #257/#259 sépare strictement les rôles :
 
 ```text
-opportunity sources    GCC / Fanatics / COMC / Magi / Cardova
+opportunity sources    GCC / Fanatics / COMC / Magi / Cardova / Mercari / SNKRDUNK / asks actifs compatibles
 valuation references   SOLD-derived compatibles + PSA APR/PokeTrace/PPT + PriceCharting GUIDE
 ```
 
-PriceCharting est une estimation/guide issue de l'historique de marché selon PriceCharting, pas une liste de ventes item-level. Cette distinction reste visible dans le payload et les notifications.
+Un marketplace/vault découvre un coût d'achat potentiel ; son ask ou enchère live ne devient jamais fair value. L'historique GCC reste diagnostic / Robot KB uniquement.
+
+PriceCharting est consulté comme guide de référence pour les identités compatibles. Il reste `GUIDE`, jamais faux `SOLD` item-level. Les SOLD exacts/récents et preuves SOLD-derived plus fortes gardent la priorité économique. Pour un listing PSA déjà prouvé exact, Grade 9/8 PriceCharting peut servir de guide PSA 9/8 ; PSA 8.5 reste distinct.
+
+Le seuil économique normal reste celui de V4 ; aucun floor spécial 40 % n'est imposé uniquement parce que la référence est PriceCharting.
+
+### Cross-grader manual review — PR #261
+
+La lane cross-grader est une **lane de revue manuelle**, pas une fair-value conversion automatique entre graders. Les demi-grades non-PSA exigent un proxy secondaire de même grade numérique ; les grades entiers préfèrent CGC même grade avant tout fallback PSA. PriceCharting peut plafonner une référence compatible mais reste un guide. Une alerte cross-grader exige au moins 30 % de décote après haircut.
 
 ### PokeTrace aggregate quality — #247
 
@@ -177,25 +166,26 @@ Aucun bid automatique. PSA scope économique : `8`, `8.5`, `9`, `10`; jamais de 
 # Global Multi-Vault — production marketplace-first
 
 ```text
-GCC / Fanatics / COMC / Magi / Cardova
+GCC / Fanatics / COMC / Magi / Cardova / Mercari / SNKRDUNK
         ↓
 identité commerciale exacte
         ↓
 TCGdex exact + microvariante déterministe
         ↓
-preuves marché externes compatibles
+providers de valorisation séparés
         ↓
 décision économique
         ↓
 notification seulement si gate complet
 ```
 
-Actionnable seulement si identité exacte + `FIXED_ASK` ou `AUCTION_SNAPSHOT_LE5` + all-in EUR prouvé + TCGdex exact + preuve de valorisation assez forte + décote requise + aucun conflit matériel.
+Actionnable seulement si identité exacte + offre admissible + all-in EUR prouvé + TCGdex exact + preuve de valorisation assez forte + décote requise + aucun conflit matériel.
 
-- `ACTIVE_AUCTION` non actionnable ;
+- marketplace/vault = opportunité uniquement ;
+- `ACTIVE_AUCTION` non actionnable hors règle explicitement bornée de snapshot final ;
 - disparition != SOLD ;
 - `.github/workflows/v4-global-notify.yml` reste l'unique lane Global production ;
-- PR #257 conserve un seul orchestrateur mais isole économiquement chaque adapter marketplace.
+- PriceCharting/PokeTrace/PPT/PSA APR restent séparés des adapters d'opportunités.
 
 Scale production : 50 listings/run, PPT 35 HTTP / 180 credits / floor 15000, PokeTrace 60, cadence 20 min (`1,21,41`), inner timeout 17 min, job timeout 25 min.
 
@@ -263,23 +253,24 @@ Documents de reprise :
 - `docs/project-repository-snapshot.md`
 - `docs/v4-external-fair-value-authority-20260906.md`
 - `docs/v4-source-role-pricecharting-20260906.md`
+- `docs/v4-crossgrader-proxy-calibration-20260907.md`
 
 ---
 
 # Prochaine direction canonique
 
 ```text
-PR #257
-  -> PriceCharting guide systématique PSA 8/9/10 compatibles
-  -> Grade 8/9 acceptés comme guides PSA 8/9 sur listing PSA exact
-  -> seuil normal V4 30 %, pas floor spécial 40 %
-  -> SOLD exact/récent reste prioritaire
-  -> finir CI + live read-only
+PR #261
+  -> cross-grader fractional: même grade CGC/BGS, jamais PCA9.5 -> PSA9
+  -> whole grade secondaire: CGC même grade préféré, PSA fallback conservateur
+  -> PriceCharting = cap GUIDE compatible, jamais SOLD
+  -> floor revue cross-grader 30 % après haircut
+  -> revalider CI sur le head exact après docs
   -> NE PAS MERGER sans autorisation explicite
 
 V4 providers
   -> priorité aux SOLD exacts récents lorsqu'ils existent
-  -> PriceCharting = référence guide systématique, jamais faux SOLD
+  -> PriceCharting = référence guide systématique compatible, jamais faux SOLD
   -> aucun secret ni contournement anti-bot/WAF
 
 Robot KB
