@@ -76,6 +76,13 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
         self.assertAlmostEqual(evidence.estimate.central, 110.17)
 
+    def test_html_entity_in_game_url_is_unescaped(self):
+        url = recovery._pricecharting_game_url(
+            "https://www.pricecharting.com/game/pokemon-japanese-scarlet-&amp;-violet-151/charmander-168"
+        )
+        self.assertIn("scarlet-&-violet-151", url)
+        self.assertNotIn("amp;", url)
+
     def test_absolute_game_anchor_is_accepted_but_existing_exact_scoring_remains_required(self):
         search = """
         <a href="https://www.pricecharting.com/game/pokemon-japanese-promo/mischievous-pichu-214s-p">
@@ -90,17 +97,13 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         <div>All prices are the current market price.</div>
         """
         provider = _provider([_Response(search), _Response(product)])
-        lot = _lot(
-            number="214/S-P",
-            set_name="S-P Promotional",
-            name="Mischievous Pichu",
-        )
+        lot = _lot(number="214/S-P", set_name="S-P Promotional", name="Mischievous Pichu")
         with patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0):
             evidence = pc.pricecharting_evidence_for_lot(lot, provider=provider)
         self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
         self.assertAlmostEqual(evidence.estimate.central, 114.99)
 
-    def test_full_fraction_no_match_gets_one_numerator_retry_without_lowering_match_threshold(self):
+    def test_full_fraction_no_match_gets_one_bounded_recovery_search(self):
         first_search = "<html><body>No exact result</body></html>"
         second_search = """
         <a href="/game/pokemon-japanese-scarlet-%26-violet-151/charmander-168">Charmander #168</a>
@@ -112,14 +115,69 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         <div>PSA 10 $110.17</div>
         <div>All prices are the current market price.</div>
         """
-        provider = _provider(
-            [_Response(first_search), _Response(second_search), _Response(product)]
-        )
+        provider = _provider([_Response(first_search), _Response(second_search), _Response(product)])
         with patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0):
             evidence = pc.pricecharting_evidence_for_lot(_lot(), provider=provider)
         self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
-        self.assertIn("numerator", evidence.note)
+        self.assertIn("récupération de recherche", evidence.note)
         self.assertEqual(len(provider.session.calls), 3)
+
+    def test_numeric_denominator_uses_provider_identity_surface_not_sold_title_noise(self):
+        search = """
+        <a href="/game/pokemon-japanese-mega-brave/bulbasaur-64">Bulbasaur #64</a>
+        """
+        product = """
+        <h1>Bulbasaur #64 Pokemon Japanese Mega Brave</h1>
+        <div>Card Number: #64</div>
+        <div>Sold Listing: Wrong card 64/999 should not redefine product identity</div>
+        <h2>Full Price Guide: Bulbasaur #64 (Pokemon Japanese Mega Brave)</h2>
+        <div>PSA 10 $59.99</div>
+        <div>All prices are the current market price.</div>
+        """
+        provider = _provider([_Response(search), _Response(product)])
+        lot = _lot(number="64/63", set_name="Mega Brave", name="Bulbasaur")
+        with patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0):
+            evidence = pc.pricecharting_evidence_for_lot(lot, provider=provider)
+        self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
+        self.assertAlmostEqual(evidence.estimate.central, 59.99)
+
+    def test_explicit_wrong_numeric_denominator_on_identity_surface_still_blocks(self):
+        search = """
+        <a href="/game/pokemon-japanese-mega-brave/bulbasaur-64">Bulbasaur #64</a>
+        """
+        product = """
+        <h1>Bulbasaur #64/999 Pokemon Japanese Mega Brave</h1>
+        <div>Card Number: #64/999</div>
+        <h2>Full Price Guide: Bulbasaur #64 (Pokemon Japanese Mega Brave)</h2>
+        <div>PSA 10 $59.99</div>
+        """
+        provider = _provider([_Response(search), _Response(product)])
+        result = provider.lookup(_lot(number="64/63", set_name="Mega Brave", name="Bulbasaur"))
+        self.assertEqual(result.status, "CLEAN_NO_MATCH")
+        self.assertIn("conflit", result.note)
+
+    def test_direct_provider_url_recovery_is_revalidated_for_magneton(self):
+        no_result = "<html><body>No result</body></html>"
+        product = """
+        <h1>Magneton #112 Pokemon Japanese Super Electric Breaker</h1>
+        <div>Card Number: #112</div>
+        <h2>Full Price Guide: Magneton #112 (Pokemon Japanese Super Electric Breaker)</h2>
+        <div>PSA 10 $53.20</div>
+        <div>All prices are the current market price.</div>
+        """
+        provider = _provider([_Response(no_result), _Response(no_result), _Response(product)])
+        lot = _lot(number="112/106", set_name="Super Electric Breaker", name="Magneton")
+        with patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0):
+            evidence = pc.pricecharting_evidence_for_lot(lot, provider=provider)
+        self.assertEqual(evidence.status, watcher.EXTERNAL_MATCHED)
+        self.assertIn("URL fournisseur", evidence.note)
+        self.assertTrue(provider.session.calls[-1][0].endswith("/pokemon-japanese-super-electric-breaker/magneton-112"))
+
+    def test_promo_recovery_query_keeps_full_code(self):
+        lot = _lot(number="242/SV-P", set_name="SV-P Promos", name="Pikachu")
+        query = recovery._recovery_query(lot)
+        self.assertIn("242/SV-P", query)
+        self.assertIn("Pokemon Japanese Promo", query)
 
     def test_ambiguous_second_search_never_becomes_matched(self):
         first_search = "<html><body>No exact result</body></html>"
@@ -181,9 +239,7 @@ class PriceChartingPublicRecoveryTests(unittest.TestCase):
         <div>PSA 10 $110.17</div>
         <div>All prices are the current market price.</div>
         """
-        provider = _provider(
-            [_Response("rate limited", 429), _Response(search), _Response(product)]
-        )
+        provider = _provider([_Response("rate limited", 429), _Response(search), _Response(product)])
         with (
             patch.object(watcher, "get_psa_apr_usd_per_eur", return_value=1.0),
             patch.object(recovery.time, "sleep", return_value=None),
