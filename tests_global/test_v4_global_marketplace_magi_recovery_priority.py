@@ -43,24 +43,24 @@ class MagiRecoveryPriorityTests(unittest.TestCase):
         self.assertEqual(resolver.reserved_breakdown, {"set_coordinate": 1})
         self.assertEqual(resolver.exhausted_breakdown, {})
 
-    def test_measured_live_shape_releases_one_final_broad_call_and_keeps_two_exact_slots(self):
-        """Regression for 033e live: 13 exact + 33 broad left one BUDGET row."""
+    def test_measured_live_shape_allows_final_broad_call_and_keeps_two_exact_slots(self):
+        """Regression for 9d8a live: 13 exact + 34 broad left one BUDGET row."""
         with mock.patch.object(
             budget.retrieval_v3.TCGdexJapaneseProofResolver,
             "_get",
             new=self._fake_parent_get,
         ):
-            resolver = budget.CachedRecoveryResolver(max_requests=49)
+            resolver = budget.CachedRecoveryResolver(max_requests=50)
             try:
-                for index in range(33):
+                for index in range(34):
                     self.assertEqual(resolver._get(f"sets/LIVE/{index}")[0], 200)
                 for index in range(6):
                     self.assertEqual(resolver._get("cards", params={"name": f"eq:existing-{index}"})[0], 200)
                     self.assertEqual(resolver._get(f"cards/CARD-existing-{index}")[0], 200)
                 self.assertEqual(resolver._get("cards", params={"name": "eq:search-only"})[0], 200)
 
-                # The one row reserved on the 48-call live now gets one bounded
-                # broad slot, while two exact-card calls still fit afterwards.
+                # The sole row reserved on the 49-call live now receives one
+                # bounded broad slot, while two exact-card calls still fit.
                 self.assertEqual(resolver._get("sets/LATE/final")[0], 200)
                 self.assertEqual(resolver._get("cards", params={"name": "eq:late"})[0], 200)
                 self.assertEqual(resolver._get("cards/CARD-late")[0], 200)
@@ -68,10 +68,10 @@ class MagiRecoveryPriorityTests(unittest.TestCase):
             finally:
                 resolver.close()
 
-        self.assertEqual(resolver.requests_used, 49)
+        self.assertEqual(resolver.requests_used, 50)
         self.assertEqual(resolver._card_identity_reserve, 15)
-        self.assertEqual(resolver._nonpriority_request_cap, 34)
-        self.assertEqual(resolver._nonpriority_requests_used, 34)
+        self.assertEqual(resolver._nonpriority_request_cap, 35)
+        self.assertEqual(resolver._nonpriority_requests_used, 35)
         self.assertEqual(reserved[0], 0)
         self.assertEqual(resolver.reserved_breakdown, {"set_coordinate": 1})
         self.assertEqual(resolver.exhausted_breakdown, {})
@@ -82,11 +82,11 @@ class MagiRecoveryPriorityTests(unittest.TestCase):
             "_get",
             new=self._fake_parent_get,
         ):
-            resolver = budget.CachedRecoveryResolver(max_requests=49)
+            resolver = budget.CachedRecoveryResolver(max_requests=50)
             try:
-                for index in range(34):
+                for index in range(35):
                     self.assertEqual(resolver._get(f"sets/SET/{index}")[0], 200)
-                reserved = resolver._get("sets/SET/34")
+                reserved = resolver._get("sets/SET/35")
                 for index in range(7):
                     self.assertEqual(resolver._get("cards", params={"name": f"eq:late-{index}"})[0], 200)
                     self.assertEqual(resolver._get(f"cards/CARD-late-{index}")[0], 200)
@@ -96,10 +96,10 @@ class MagiRecoveryPriorityTests(unittest.TestCase):
                 resolver.close()
 
         self.assertEqual(resolver._card_identity_reserve, 15)
-        self.assertEqual(resolver._nonpriority_request_cap, 34)
-        self.assertEqual(resolver._nonpriority_requests_used, 34)
+        self.assertEqual(resolver._nonpriority_request_cap, 35)
+        self.assertEqual(resolver._nonpriority_requests_used, 35)
         self.assertEqual(reserved[0], 0)
-        self.assertEqual(resolver.requests_used, 49)
+        self.assertEqual(resolver.requests_used, 50)
         self.assertEqual(exhausted[0], 0)
         self.assertEqual(resolver.exhausted_breakdown, {"card_detail": 1})
 
