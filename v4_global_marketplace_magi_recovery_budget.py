@@ -9,12 +9,13 @@ and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
 After the reviewed Classic/exclusion and exact-name recovery lanes were wired,
-the recovery surface received a measured, still-bounded 48-call ceiling. The
-first live run on that ceiling used 13 exact card-search/detail calls and 30
-broad calls, then blocked two deterministic set-coordinate reads behind an
-18-call exact reserve while five total calls were still unused. The reserve is
-therefore tuned to 15 exact-card calls: it still exceeds the observed exact-card
-load, allows at most 33 broad calls, and keeps the hard total ceiling at 48.
+the recovery surface received a measured, still-bounded ceiling. The live run
+on the 48-call ceiling used 13 exact card-search/detail calls and 33 broad calls,
+then blocked one deterministic set-coordinate read behind the 15-call exact
+reserve while two total calls were still unused. The ceiling is therefore moved
+by one call, from 48 to 49, while the 15-call exact-card reserve is preserved.
+This releases exactly one additional broad slot (34 max) and still leaves room
+for two subsequent exact-card calls after the measured 13-call exact workload.
 All identity/ambiguity gates remain unchanged.
 """
 from __future__ import annotations
@@ -27,7 +28,7 @@ import v4_global_marketplace_magi_native_identity as native
 import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
-_MAX_RECOVERY_REQUESTS = 48
+_MAX_RECOVERY_REQUESTS = 49
 _CARD_IDENTITY_RESERVE_REQUESTS = 15
 _LEGACY_SMALL_RESERVE_REQUESTS = 2
 _CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
@@ -71,9 +72,9 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         requested_budget = int(max_requests)
         # Small/direct test resolvers keep the historical two-call reserve so
         # existing cache/error semantics do not change accidentally. The real
-        # 48-call production resolver reserves 15 exact-card calls while
-        # capping broad recovery traffic at 33. This is sized from the measured
-        # post-Classic live workload rather than opening an unbounded retry path.
+        # production resolver reserves 15 exact-card calls while capping broad
+        # recovery traffic at 34 under the 49-call hard ceiling. This is sized
+        # from the measured live workload rather than opening an unbounded path.
         reserve_target = (
             _CARD_IDENTITY_RESERVE_REQUESTS
             if requested_budget >= _MAX_RECOVERY_REQUESTS
