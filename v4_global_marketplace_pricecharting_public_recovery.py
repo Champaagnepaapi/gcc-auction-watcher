@@ -6,12 +6,16 @@ retrieval shapes, parses the provider's dedicated Full Price Guide section, and
 uses one respectful retry on HTTP 429. A PriceCharting value remains GUIDE
 evidence, never an item-level SOLD.
 
-The recovery may use PriceCharting as the only valuation guide when no stronger
-SOLD-derived source is available, but PriceCharting must prove its own product
-identity. TCGdex is not a prerequisite for a PriceCharting GUIDE match.
+Numeric-denominator cards may use PriceCharting product pages whose own identity
+surface exposes only the printed numerator (for example ``Magneton #112`` while
+TCGdex proves ``112/106``). Such pages are accepted only when the provider H1,
+set/language and numerator all score exact and the provider identity surface does
+not expose a conflicting full coordinate. Promo denominators remain strict: the
+full code (for example ``242/SV-P``) must be explicitly present.
 """
 from __future__ import annotations
 
+import html
 import re
 import time
 from typing import Mapping, Optional, Sequence
@@ -28,15 +32,12 @@ _ORIGINAL_GUIDE_VALUE = None
 
 
 def _pricecharting_game_url(value: object) -> str:
-    raw = str(value or "").strip()
+    raw = html.unescape(str(value or "").strip())
     if not raw:
         return ""
     url = urljoin(pc.PRICECHARTING_BASE_URL, raw)
     parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname not in {
-        "pricecharting.com",
-        "www.pricecharting.com",
-    }:
+    if parsed.scheme != "https" or parsed.hostname not in {"pricecharting.com", "www.pricecharting.com"}:
         return ""
     path = parsed.path or ""
     if not re.search(r"/(?:[a-z]{2}/)?game/", path, re.IGNORECASE):
@@ -46,11 +47,7 @@ def _pricecharting_game_url(value: object) -> str:
 
 def _canonical_product_url(raw: str) -> str:
     for tag in re.findall(r"(?is)<link\b[^>]*>", raw or ""):
-        if not re.search(
-            r"\brel\s*=\s*[\"'][^\"']*\bcanonical\b[^\"']*[\"']",
-            tag,
-            re.I,
-        ):
+        if not re.search(r"\brel\s*=\s*[\"'][^\"']*\bcanonical\b[^\"']*[\"']", tag, re.I):
             continue
         match = re.search(r"\bhref\s*=\s*[\"']([^\"']+)[\"']", tag, re.I)
         if match:
@@ -67,7 +64,6 @@ def _expanded_public_search_candidates(raw: str) -> tuple[Mapping[str, object], 
         for item in _ORIGINAL_PUBLIC_CANDIDATES(raw)
         if str(item.get("id") or "")
     }
-
     anchor_pattern = re.compile(
         r"(?is)<a\b[^>]*href=[\"'](?P<href>[^\"']*(?:/[a-z]{2})?/game/[^\"']+)[\"'][^>]*>"
         r"(?P<label>.*?)</a>"
@@ -88,49 +84,32 @@ def _expanded_public_search_candidates(raw: str) -> tuple[Mapping[str, object], 
         if len(candidates) >= 40:
             break
 
-    # A sufficiently specific /search-products request may be redirected by
-    # PriceCharting directly to a product page. The canonical /game/ URL is an
-    # explicit provider locator; final identity scoring still decides acceptance.
     canonical = _canonical_product_url(raw)
     if canonical and canonical not in candidates:
         body = pc._html_text(raw)
         candidates[canonical] = {
             "id": canonical,
-            # Current PriceCharting pages put Card Number/Details below menu and
-            # comparison content. Keep enough bounded text for deterministic
-            # name/set/number/language scoring without parsing arbitrary size.
             "product-name": body[:8000],
-            "console-name": (
-                f"{urlsplit(canonical).path.replace('/', ' ').replace('-', ' ')} "
-                f"{body[:16000]}"
-            ),
+            "console-name": f"{urlsplit(canonical).path.replace('/', ' ').replace('-', ' ')} {body[:16000]}",
         }
-
     return tuple(candidates.values())
 
 
 def _price_guide_section(body: str) -> str:
-    """Return only the provider's dedicated Full Price Guide block when present."""
     text = str(body or "")
-    marker = re.search(
-        r"(?is)(?:Full\s+Price\s+Guide|Guide\s+Complet\s+des\s+Prix)\s*:",
-        text,
-    )
+    marker = re.search(r"(?is)(?:Full\s+Price\s+Guide|Guide\s+Complet\s+des\s+Prix)\s*:", text)
     if marker is None:
         return ""
     tail = text[marker.end() :]
     end = re.search(
         r"(?is)(?:All\s+prices\s+are\s+the\s+current\s+market\s+price|"
-        r"Les\s+prix\s+de\s+.+?\s+sont\s+actualis[eé]s|"
-        r"\n\s*Graded\s+Population\s+Report\b)",
+        r"Les\s+prix\s+de\s+.+?\s+sont\s+actualis[eé]s|\n\s*Graded\s+Population\s+Report\b)",
         tail,
     )
-    section = tail[: end.start()] if end is not None else tail
-    return section[:20000]
+    return (tail[: end.start()] if end is not None else tail)[:20000]
 
 
 def _structured_public_guide_value(body: str, price_key: str) -> Optional[float]:
-    """Read the requested grade from Full Price Guide, never the compare-table row."""
     labels = {
         "manual-only-price": r"PSA\s*10",
         "graded-price": r"Grade\s*9(?!\.5)",
@@ -139,12 +118,10 @@ def _structured_public_guide_value(body: str, price_key: str) -> Optional[float]
     label = labels.get(price_key)
     if not label:
         return None
-
     section = _price_guide_section(body)
     if section:
         match = re.search(
-            rf"(?is)(?:^|\n)\s*{label}\s*(?:\||:)?\s*\$\s*"
-            r"([0-9][0-9,]*(?:\.\d{1,2})?)",
+            rf"(?is)(?:^|\n)\s*{label}\s*(?:\||:)?\s*\$\s*([0-9][0-9,]*(?:\.\d{{1,2}})?)",
             section,
         )
         if not match:
@@ -153,9 +130,6 @@ def _structured_public_guide_value(body: str, price_key: str) -> Optional[float]
             return float(match.group(1).replace(",", ""))
         except ValueError:
             return None
-
-    # Backward-compatible fallback for small/simple fixtures or provider pages
-    # that genuinely lack a dedicated Full Price Guide heading.
     assert _ORIGINAL_GUIDE_VALUE is not None
     return _ORIGINAL_GUIDE_VALUE(body, price_key)
 
@@ -168,29 +142,15 @@ def _full_number_parts(value: object) -> tuple[str, str]:
     return left.strip().lstrip("0") or "0", right.strip().casefold()
 
 
-def _candidate_has_number_conflict(
-    lot: watcher.Lot,
-    candidate: Mapping[str, object],
-) -> bool:
-    """Reject explicit denominator/promo-code conflicts before fuzzy scoring."""
-    expected = str(
-        lot.card_number or watcher.extract_card_identity(lot).get("ref") or ""
-    ).strip()
+def _candidate_has_number_conflict(lot: watcher.Lot, candidate: Mapping[str, object]) -> bool:
+    expected = str(lot.card_number or watcher.extract_card_identity(lot).get("ref") or "").strip()
     expected_left, expected_right = _full_number_parts(expected)
     if not expected_left or not expected_right:
         return False
-
     text = " ".join(
-        (
-            str(candidate.get("product-name") or ""),
-            str(candidate.get("console-name") or ""),
-            str(candidate.get("id") or ""),
-        )
+        (str(candidate.get("product-name") or ""), str(candidate.get("console-name") or ""), str(candidate.get("id") or ""))
     )
-    full_tokens = re.findall(
-        r"(?i)#?\s*0*(\d{1,4})\s*/\s*([A-Za-z0-9][A-Za-z0-9.-]*)",
-        text,
-    )
+    full_tokens = re.findall(r"(?i)#?\s*0*(\d{1,4})\s*/\s*([A-Za-z0-9][A-Za-z0-9.-]*)", text)
     same_numerator = [
         (left.lstrip("0") or "0", right.casefold())
         for left, right in full_tokens
@@ -198,10 +158,6 @@ def _candidate_has_number_conflict(
     ]
     if same_numerator and not any(right == expected_right for _, right in same_numerator):
         return True
-
-    # Promo coordinates are set-code-bearing printed numbers. If the provider
-    # candidate does not expose the exact full coordinate, numerator-only is not
-    # enough (e.g. 291/SV-P must never match 291/SM-P).
     if not expected_right.isdigit():
         compact_expected = re.sub(r"[^a-z0-9]", "", expected.casefold())
         compact_text = re.sub(r"[^a-z0-9]", "", text.casefold())
@@ -209,28 +165,16 @@ def _candidate_has_number_conflict(
     return False
 
 
-def _safe_candidates(
-    lot: watcher.Lot,
-    candidates: Sequence[Mapping[str, object]],
-) -> tuple[Mapping[str, object], ...]:
-    return tuple(
-        candidate
-        for candidate in candidates
-        if not _candidate_has_number_conflict(lot, candidate)
-    )
+def _safe_candidates(lot: watcher.Lot, candidates: Sequence[Mapping[str, object]]) -> tuple[Mapping[str, object], ...]:
+    return tuple(candidate for candidate in candidates if not _candidate_has_number_conflict(lot, candidate))
 
 
-def _request_public_with_one_429_retry(
-    self: pc.PriceChartingProvider,
-    path_or_url: str,
-    parameters: Mapping[str, str],
-) -> str:
+def _request_public_with_one_429_retry(self: pc.PriceChartingProvider, path_or_url: str, parameters: Mapping[str, str]) -> str:
     try:
         return self._request_public(path_or_url, parameters)
     except RuntimeError as error:
         if "HTTP 429" not in str(error):
             raise
-        # Respect provider throttling: one bounded retry only, after a real wait.
         time.sleep(max(2.0, float(self.config.public_request_interval_seconds)))
         return self._request_public(path_or_url, parameters)
 
@@ -244,113 +188,132 @@ def _numerator_query(lot: watcher.Lot) -> str:
     return " ".join(part for part in (core, numerator, set_name) if part).strip()
 
 
+def _recovery_query(lot: watcher.Lot) -> str:
+    identity = watcher.extract_card_identity(lot)
+    core = str(identity.get("core") or lot.title or "").strip()
+    full_number = str(lot.card_number or identity.get("ref") or "").strip().lstrip("#")
+    _left, right = _full_number_parts(full_number)
+    if right and not right.isdigit():
+        return " ".join(part for part in (core, full_number, "Pokemon Japanese Promo") if part).strip()
+    return _numerator_query(lot)
+
+
+def _slug(value: object) -> str:
+    return "-".join(pc._normalize(value).split())
+
+
+def _direct_product_url(lot: watcher.Lot) -> str:
+    """Build one provider-convention candidate; page proof is still mandatory."""
+    identity = watcher.extract_card_identity(lot)
+    name = str(identity.get("core") or lot.title or "").strip()
+    set_name = str(lot.card_set or identity.get("series") or "").strip()
+    full_number = str(lot.card_number or identity.get("ref") or "").strip().lstrip("#")
+    left, right = _full_number_parts(full_number)
+    if not name or not set_name or not left or not right:
+        return ""
+    if not right.isdigit():
+        set_slug = "pokemon-japanese-promo"
+        number_slug = f"{left}{right}"
+    else:
+        set_slug = f"pokemon-japanese-{_slug(set_name)}"
+        number_slug = left
+    product_slug = f"{_slug(name)}-{_slug(number_slug)}"
+    if not set_slug or not product_slug:
+        return ""
+    return f"{pc.PRICECHARTING_BASE_URL}/game/{set_slug}/{product_slug}"
+
+
+def _product_identity_text(raw_html: str, body: str) -> str:
+    """Keep identity fields only; historical sold titles must not create conflicts."""
+    parts: list[str] = []
+    h1 = re.search(r"(?is)<h1\b[^>]*>(.*?)</h1>", raw_html or "")
+    if h1:
+        parts.append(pc._html_text(h1.group(1)).strip())
+    number = re.search(r"(?is)(?:Card\s+Number|Num[eé]ro\s+de\s+carte)\s*:\s*(#?\s*[A-Za-z0-9./-]+)", body or "")
+    if number:
+        parts.append(f"Card Number: {number.group(1).strip()}")
+    return " ".join(part for part in parts if part)[:2000]
+
+
 def _lookup_public_with_numerator_recovery(
     self: pc.PriceChartingProvider,
     lot: watcher.Lot,
     price_key: str,
     exact_grade_bucket: bool,
 ) -> pc.PriceChartingLookup:
-    """Public lookup with exact provider-page proof and one numerator retry."""
     query = self._query(lot)
     if not query:
-        return pc.PriceChartingLookup(
-            "CLEAN_NO_MATCH", note="identité PriceCharting insuffisante"
-        )
-
+        return pc.PriceChartingLookup("CLEAN_NO_MATCH", note="identité PriceCharting insuffisante")
     try:
-        search_html = _request_public_with_one_429_retry(
-            self,
-            "/search-products",
-            {"type": "prices", "q": query},
-        )
+        search_html = _request_public_with_one_429_retry(self, "/search-products", {"type": "prices", "q": query})
     except RuntimeError as error:
         return pc.PriceChartingLookup("PROVIDER_ERROR", note=str(error))
 
     candidates = _safe_candidates(lot, pc._public_search_candidates(search_html))
     selected = self._select_candidate(lot, candidates)
-
-    full_number = str(
-        lot.card_number or watcher.extract_card_identity(lot).get("ref") or ""
-    )
-    recovered_by_numerator = False
+    full_number = str(lot.card_number or watcher.extract_card_identity(lot).get("ref") or "")
+    recovered_by_search = False
     if isinstance(selected, pc.PriceChartingLookup) and selected.status == "CLEAN_NO_MATCH":
-        retry_query = _numerator_query(lot)
+        retry_query = _recovery_query(lot)
         if retry_query and "/" in full_number:
             try:
-                retry_html = _request_public_with_one_429_retry(
-                    self,
-                    "/search-products",
-                    {"type": "prices", "q": retry_query},
-                )
+                retry_html = _request_public_with_one_429_retry(self, "/search-products", {"type": "prices", "q": retry_query})
             except RuntimeError as error:
                 return pc.PriceChartingLookup("PROVIDER_ERROR", note=str(error))
-            retry_candidates = _safe_candidates(
-                lot, pc._public_search_candidates(retry_html)
-            )
-            retry_selected = self._select_candidate(lot, retry_candidates)
+            retry_selected = self._select_candidate(lot, _safe_candidates(lot, pc._public_search_candidates(retry_html)))
             if isinstance(retry_selected, pc.PriceChartingLookup):
-                # Ambiguity is stronger information than the initial no-match.
                 if retry_selected.status == "AMBIGUOUS":
                     return retry_selected
             else:
                 selected = retry_selected
-                recovered_by_numerator = True
+                recovered_by_search = True
 
+    direct_recovery = False
     if isinstance(selected, pc.PriceChartingLookup):
-        return selected
+        if selected.status != "CLEAN_NO_MATCH":
+            return selected
+        product_url = _direct_product_url(lot)
+        if not product_url:
+            return selected
+        direct_recovery = True
+    else:
+        product_url = selected.product_id
 
-    product_url = selected.product_id
     try:
         product_html = _request_public_with_one_429_retry(self, product_url, {})
     except RuntimeError as error:
-        return pc.PriceChartingLookup(
-            "PROVIDER_ERROR", product_id=product_url, note=str(error)
-        )
+        if direct_recovery and "HTTP 404" in str(error):
+            return selected if isinstance(selected, pc.PriceChartingLookup) else pc.PriceChartingLookup("CLEAN_NO_MATCH")
+        return pc.PriceChartingLookup("PROVIDER_ERROR", product_id=product_url, note=str(error))
 
     body = pc._html_text(product_html)
+    identity_text = _product_identity_text(product_html, body)
     pseudo_detail = {
         "id": product_url,
-        "product-name": body[:8000],
-        "console-name": f"{product_url} {body[:16000]}",
+        "product-name": identity_text,
+        "console-name": f"{urlsplit(product_url).path.replace('/', ' ').replace('-', ' ')} {identity_text}",
     }
     if _candidate_has_number_conflict(lot, pseudo_detail):
-        return pc.PriceChartingLookup(
-            "CLEAN_NO_MATCH",
-            product_id=product_url,
-            note="coordonnée imprimée PriceCharting en conflit",
-        )
-
+        return pc.PriceChartingLookup("CLEAN_NO_MATCH", product_id=product_url, note="coordonnée imprimée PriceCharting en conflit")
     detail_match = pc._score_candidate(lot, pseudo_detail)
     if detail_match.score < self.config.minimum_match_score:
-        return pc.PriceChartingLookup(
-            "CLEAN_NO_MATCH",
-            product_id=product_url,
-            note="identité page publique PriceCharting non prouvée",
-        )
-
+        return pc.PriceChartingLookup("CLEAN_NO_MATCH", product_id=product_url, note="identité page publique PriceCharting non prouvée")
     value = pc._public_guide_value(body, price_key)
     if value is None or value <= 0:
-        return pc.PriceChartingLookup(
-            "CLEAN_INSUFFICIENT",
-            product_id=product_url,
-            note=f"guide public {price_key} absent",
-        )
+        return pc.PriceChartingLookup("CLEAN_INSUFFICIENT", product_id=product_url, note=f"guide public {price_key} absent")
 
     bucket = "PSA 10" if exact_grade_bucket else "grade générique"
-    recovery_note = (
-        "; récupération de recherche bornée par numerator"
-        if recovered_by_numerator
-        else ""
-    )
+    recovery_note = ""
+    if recovered_by_search:
+        recovery_note = "; récupération de recherche bornée"
+    elif direct_recovery:
+        recovery_note = "; récupération URL fournisseur bornée + page revalidée"
     return pc.PriceChartingLookup(
         "MATCHED",
         product_id=product_url,
         value_usd=value,
         exact_grade_bucket=exact_grade_bucket,
-        note=(
-            f"PriceCharting public price guide {bucket}{recovery_note}; "
-            "guide calculé depuis l'historique PriceCharting, pas une vente item-level"
-        ),
+        note=(f"PriceCharting public price guide {bucket}{recovery_note}; guide calculé depuis l'historique PriceCharting, pas une vente item-level"),
     )
 
 
