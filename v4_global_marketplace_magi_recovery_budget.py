@@ -8,15 +8,12 @@ coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
-After the reviewed Classic/exclusion and exact-name recovery lanes were wired,
-the recovery surface received a measured, still-bounded ceiling. The live run
-on the 48-call ceiling used 13 exact card-search/detail calls and 33 broad calls,
-then blocked one deterministic set-coordinate read behind the 15-call exact
-reserve while two total calls were still unused. The ceiling is therefore moved
-by one call, from 48 to 49, while the 15-call exact-card reserve is preserved.
-This releases exactly one additional broad slot (34 max) and still leaves room
-for two subsequent exact-card calls after the measured 13-call exact workload.
-All identity/ambiguity gates remain unchanged.
+Measured PR live validation showed a stable 13 exact card-search/detail calls.
+The 49-call ceiling still used 34 broad calls and then reserved one deterministic
+set-coordinate read while two total calls were unused. Keep the 15-call exact
+reserve unchanged and move only the hard ceiling from 49 to 50: this permits a
+35th broad call while still leaving two subsequent exact-card calls after the
+measured 13-call exact workload. Identity/ambiguity gates remain unchanged.
 """
 from __future__ import annotations
 
@@ -28,7 +25,7 @@ import v4_global_marketplace_magi_native_identity as native
 import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
-_MAX_RECOVERY_REQUESTS = 49
+_MAX_RECOVERY_REQUESTS = 50
 _CARD_IDENTITY_RESERVE_REQUESTS = 15
 _LEGACY_SMALL_RESERVE_REQUESTS = 2
 _CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
@@ -73,8 +70,8 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         # Small/direct test resolvers keep the historical two-call reserve so
         # existing cache/error semantics do not change accidentally. The real
         # production resolver reserves 15 exact-card calls while capping broad
-        # recovery traffic at 34 under the 49-call hard ceiling. This is sized
-        # from the measured live workload rather than opening an unbounded path.
+        # recovery traffic at 35 under the 50-call hard ceiling. This is sized
+        # from measured live workload rather than opening an unbounded path.
         reserve_target = (
             _CARD_IDENTITY_RESERVE_REQUESTS
             if requested_budget >= _MAX_RECOVERY_REQUESTS
