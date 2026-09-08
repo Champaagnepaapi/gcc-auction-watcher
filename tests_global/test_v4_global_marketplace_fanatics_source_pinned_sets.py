@@ -51,25 +51,56 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
                     )
                 )
 
-    def test_current_h1_partitions_gain_only_reviewed_source_set_labels(self):
+    def test_reviewed_h1_collapses_to_one_deterministic_source_partition(self):
         titles = (
-            ("2001 Pokemon Japanese Web 1st Edition Holo Gengar #47 PSA 10 GEM MINT", "Web 1st Edition", "47"),
-            ("2023 Pokemon Japanese Scarlet & Violet 151 Master Ball Reverse Holo Pikachu #025 PSA 10 GEM", "Scarlet & Violet 151", "25"),
-            ("2025 Pokemon Japanese SV Glory Of The Rocket Gang Holo Rocket's Moltres ex #15 PSA 9 MINT", "SV Glory Of The Rocket Gang", "15"),
+            (
+                "2001 Pokemon Japanese Web 1st Edition Holo Gengar #47 PSA 10 GEM MINT",
+                "Web 1st Edition",
+                "47",
+                "Gengar",
+            ),
+            (
+                "2023 Pokemon Japanese Scarlet & Violet 151 Master Ball Reverse Holo Pikachu #025 PSA 10 GEM",
+                "Scarlet & Violet 151",
+                "25",
+                "Pikachu",
+            ),
+            (
+                "2025 Pokemon Japanese SV Glory Of The Rocket Gang Holo Rocket's Moltres ex #15 PSA 9 MINT",
+                "SV Glory Of The Rocket Gang",
+                "15",
+                "Rocket's Moltres ex",
+            ),
         )
-        for title, expected_set, expected_local in titles:
+        for title, expected_set, expected_local, expected_name in titles:
             with self.subTest(title=title):
                 base, reason = fanatics._flexible_candidates(title)
                 self.assertEqual(reason, "fanatics_flexible_exact_candidates")
                 candidates = source_sets._source_candidates(title, base)
-                matching = [
-                    candidate
-                    for candidate in candidates
-                    if generalized._norm_text(candidate.set_name)
-                    == generalized._norm_text(expected_set)
-                    and candidate.local_id == expected_local
-                ]
-                self.assertTrue(matching)
+                self.assertEqual(len(candidates), 1)
+                candidate = candidates[0]
+                self.assertEqual(
+                    generalized._norm_text(candidate.set_name),
+                    generalized._norm_text(expected_set),
+                )
+                self.assertEqual(candidate.local_id, expected_local)
+                self.assertEqual(candidate.name, expected_name)
+
+    def test_unreviewed_or_conflicting_source_phrase_does_not_collapse(self):
+        title = "2004 Pokemon Japanese Starter Deck Holo Charizard Ex #12 PSA 10 GEM MINT"
+        base, reason = fanatics._flexible_candidates(title)
+        self.assertEqual(reason, "fanatics_flexible_exact_candidates")
+        self.assertEqual(source_sets._source_candidates(title, base), base)
+
+        conflict = (
+            "2023 Pokemon Japanese Scarlet & Violet 151 Web 1st Edition "
+            "Holo Pikachu #025 PSA 10 GEM"
+        )
+        conflict_base, _ = fanatics._flexible_candidates(conflict)
+        self.assertEqual(
+            source_sets._source_candidates(conflict, conflict_base),
+            conflict_base,
+        )
 
     def test_scoped_alias_is_removed_with_all_fanatics_cache_effects(self):
         alias = self._alias("Scarlet & Violet 151")
