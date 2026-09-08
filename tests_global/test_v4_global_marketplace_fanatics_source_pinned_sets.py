@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+import v4_canonical_multimarket as canonical
 import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v3 as fanatics
 import v4_global_marketplace_fanatics_source_pinned_sets as source_sets
+from v4_global_market_core import CommercialIdentity
 import v4_tcgdex_generalized_coordinate_recovery as generalized
 import v4_tcgdex_japanese_set_aliases as shared_aliases
+import v4_tcgdex_source_pinned_finish as source_finish
 
 
 class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
@@ -18,6 +22,34 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
         ]
         self.assertEqual(len(matches), 1)
         return matches[0]
+
+    @staticmethod
+    def _pikachu_coordinate(*, finish: str = "Master Ball"):
+        return v1.FanaticsNativeCoordinate(
+            year=2023,
+            language_code="ja",
+            language_label="Japanese",
+            set_name="Scarlet & Violet 151",
+            name="Pikachu",
+            local_id="25",
+            grade="10",
+            finish=finish,
+        )
+
+    @staticmethod
+    def _pikachu_canonical():
+        return canonical.CanonicalCard(
+            status="EXACT",
+            card_id="SV2a-025",
+            set_id="SV2a",
+            set_name="Scarlet & Violet 151",
+            local_id="025",
+            full_number="25",
+            name="Pikachu",
+            language_code="ja",
+            variants={"normal": True, "reverse": True},
+            reason="TCGDEX_EXACT_SET_LOCALID",
+        )
 
     def test_fanatics_numerator_aliases_never_enter_shared_registry(self):
         shared_labels = {
@@ -104,16 +136,7 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
 
     def test_scoped_alias_is_removed_with_all_fanatics_cache_effects(self):
         alias = self._alias("Scarlet & Violet 151")
-        coordinate = v1.FanaticsNativeCoordinate(
-            year=2023,
-            language_code="ja",
-            language_label="Japanese",
-            set_name="Scarlet & Violet 151",
-            name="Pikachu",
-            local_id="25",
-            grade="10",
-            finish="Master Ball",
-        )
+        coordinate = self._pikachu_coordinate()
         lot = v1._lot_for_coordinate(coordinate)
         alias_key = generalized._alias_key("ja", alias.listing_set)
         *_, cache_key = generalized._lot_components(lot)
@@ -126,6 +149,83 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
         self.assertNotIn(alias_key, generalized._SET_ALIASES_BY_KEY)
         self.assertNotIn(cache_key, generalized._RECOVERY_CACHE)
         self.assertNotIn(cache_key, generalized._RECOVERY_NEGATIVE_CACHE)
+
+    def test_master_ball_recovery_requires_exact_source_foil_then_reuses_v3_gate(self):
+        alias = self._alias("Scarlet & Violet 151")
+        coordinate = self._pikachu_coordinate()
+        card = self._pikachu_canonical()
+        proof = source_finish.SourcePinnedFinishProof(
+            finishes=("normal", "reverse"),
+            source_path="data-asia/SV/SV2a/025.ts",
+            special_finishes=("master_ball",),
+        )
+        seen = {}
+
+        def resolver(lot):
+            self.assertNotIn("Master Ball", str(lot.variant or ""))
+            return card
+
+        def downstream(original_coordinate, *, title, proof_text, resolver):
+            seen["finish"] = original_coordinate.finish
+            self.assertEqual(title, "provider title")
+            self.assertEqual(proof_text, "provider proof")
+            self.assertIs(resolver(v1._lot_for_coordinate(original_coordinate)), card)
+            identity = CommercialIdentity(
+                name="Pikachu",
+                set_name="Scarlet & Violet 151",
+                number="25",
+                language="ja",
+                grader="PSA",
+                grade="10",
+                finish=original_coordinate.finish,
+            )
+            return identity, "FANATICS_TCGDEX_SET_EXACT"
+
+        with patch.object(
+            source_finish, "source_pinned_finish_proof", return_value=proof
+        ), patch.object(
+            source_sets, "_ORIGINAL_RESOLVE_COORDINATE", downstream
+        ):
+            recovered = source_sets._resolve_source_special_finish(
+                coordinate,
+                alias=alias,
+                title="provider title",
+                proof_text="provider proof",
+                resolver=resolver,
+            )
+
+        self.assertIsNotNone(recovered)
+        identity, reason = recovered
+        self.assertEqual(seen["finish"], "Master Ball")
+        self.assertEqual(identity.finish, "Master Ball")
+        self.assertEqual(
+            reason,
+            "FANATICS_TCGDEX_SET_EXACT_SOURCE_PINNED_MASTER_BALL",
+        )
+
+    def test_master_ball_recovery_fails_closed_on_wrong_source_foil(self):
+        alias = self._alias("Scarlet & Violet 151")
+        coordinate = self._pikachu_coordinate()
+        card = self._pikachu_canonical()
+        wrong_proof = source_finish.SourcePinnedFinishProof(
+            finishes=("normal", "reverse"),
+            source_path="data-asia/SV/SV2a/025.ts",
+            special_finishes=("poke_ball",),
+        )
+
+        with patch.object(
+            source_finish, "source_pinned_finish_proof", return_value=wrong_proof
+        ), patch.object(source_sets, "_ORIGINAL_RESOLVE_COORDINATE") as downstream:
+            recovered = source_sets._resolve_source_special_finish(
+                coordinate,
+                alias=alias,
+                title="provider title",
+                proof_text="provider proof",
+                resolver=lambda _lot: card,
+            )
+
+        self.assertIsNone(recovered)
+        downstream.assert_not_called()
 
 
 if __name__ == "__main__":
