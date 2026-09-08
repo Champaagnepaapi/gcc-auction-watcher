@@ -2,20 +2,30 @@ from __future__ import annotations
 
 import unittest
 
+import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v3 as fanatics
+import v4_global_marketplace_fanatics_source_pinned_sets as source_sets
 import v4_tcgdex_generalized_coordinate_recovery as generalized
-import v4_tcgdex_japanese_set_aliases as aliases
+import v4_tcgdex_japanese_set_aliases as shared_aliases
 
 
 class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
     def _alias(self, listing_set: str):
         matches = [
             alias
-            for alias in aliases._ALIASES
+            for alias in source_sets._SOURCE_ALIASES
             if alias.language_code == "ja" and alias.listing_set == listing_set
         ]
         self.assertEqual(len(matches), 1)
         return matches[0]
+
+    def test_fanatics_numerator_aliases_never_enter_shared_registry(self):
+        shared_labels = {
+            generalized._norm_text(alias.listing_set)
+            for alias in shared_aliases._ALIASES
+        }
+        for alias in source_sets._SOURCE_ALIASES:
+            self.assertNotIn(generalized._norm_text(alias.listing_set), shared_labels)
 
     def test_source_pinned_numerator_only_namespaces_still_verify_set_count(self):
         cases = (
@@ -41,7 +51,7 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
                     )
                 )
 
-    def test_current_fanatics_japanese_h1s_expose_matching_bounded_set_partitions(self):
+    def test_current_h1_partitions_gain_only_reviewed_source_set_labels(self):
         titles = (
             ("2001 Pokemon Japanese Web 1st Edition Holo Gengar #47 PSA 10 GEM MINT", "Web 1st Edition", "47"),
             ("2023 Pokemon Japanese Scarlet & Violet 151 Master Ball Reverse Holo Pikachu #025 PSA 10 GEM", "Scarlet & Violet 151", "25"),
@@ -49,8 +59,9 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
         )
         for title, expected_set, expected_local in titles:
             with self.subTest(title=title):
-                candidates, reason = fanatics._flexible_candidates(title)
+                base, reason = fanatics._flexible_candidates(title)
                 self.assertEqual(reason, "fanatics_flexible_exact_candidates")
+                candidates = source_sets._source_candidates(title, base)
                 matching = [
                     candidate
                     for candidate in candidates
@@ -59,6 +70,31 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
                     and candidate.local_id == expected_local
                 ]
                 self.assertTrue(matching)
+
+    def test_scoped_alias_is_removed_with_all_fanatics_cache_effects(self):
+        alias = self._alias("Scarlet & Violet 151")
+        coordinate = v1.FanaticsNativeCoordinate(
+            year=2023,
+            language_code="ja",
+            language_label="Japanese",
+            set_name="Scarlet & Violet 151",
+            name="Pikachu",
+            local_id="25",
+            grade="10",
+            finish="Master Ball",
+        )
+        lot = v1._lot_for_coordinate(coordinate)
+        alias_key = generalized._alias_key("ja", alias.listing_set)
+        *_, cache_key = generalized._lot_components(lot)
+        self.assertNotIn(alias_key, generalized._SET_ALIASES_BY_KEY)
+        with source_sets._scoped_alias(alias, lot) as installed:
+            self.assertTrue(installed)
+            self.assertEqual(generalized._SET_ALIASES_BY_KEY.get(alias_key), alias)
+            generalized._RECOVERY_CACHE[cache_key] = object()  # type: ignore[assignment]
+            generalized._RECOVERY_NEGATIVE_CACHE.add(cache_key)
+        self.assertNotIn(alias_key, generalized._SET_ALIASES_BY_KEY)
+        self.assertNotIn(cache_key, generalized._RECOVERY_CACHE)
+        self.assertNotIn(cache_key, generalized._RECOVERY_NEGATIVE_CACHE)
 
 
 if __name__ == "__main__":
