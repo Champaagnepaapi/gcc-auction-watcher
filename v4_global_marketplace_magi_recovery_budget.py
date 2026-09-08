@@ -8,10 +8,15 @@ coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
-The production recovery budget keeps at most 28 broad set/discovery requests,
-leaving capacity for up to eight exact card-search/card-detail requests. The
-broad cap is counted independently from exact-card calls, so request ordering
-cannot consume the reserve prematurely. The total ceiling remains 36.
+After the reviewed Classic/exclusion and exact-name recovery lanes were wired,
+the live PR scan consumed the previous 36-call ceiling with 27 broad requests
+and nine exact-card calls, leaving five otherwise eligible recovery attempts at
+``TCGDEX_BUDGET_EXHAUSTED`` (three exact card searches and two filtered-set
+reads). The expanded recovery surface therefore gets a measured, still-bounded
+48-call ceiling. At most 30 calls may be broad set/discovery traffic; 18 calls
+remain reserved for exact card-search/card-detail proof. Request ordering cannot
+consume that reserve prematurely and all identity/ambiguity gates remain
+unchanged.
 """
 from __future__ import annotations
 
@@ -23,8 +28,8 @@ import v4_global_marketplace_magi_native_identity as native
 import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
-_MAX_RECOVERY_REQUESTS = 36
-_CARD_IDENTITY_RESERVE_REQUESTS = 8
+_MAX_RECOVERY_REQUESTS = 48
+_CARD_IDENTITY_RESERVE_REQUESTS = 18
 _LEGACY_SMALL_RESERVE_REQUESTS = 2
 _CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
 _ACTIVE_RECOVERY_RESOLVER: Optional[retrieval_v3.TCGdexJapaneseProofResolver] = None
@@ -67,9 +72,9 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         requested_budget = int(max_requests)
         # Small/direct test resolvers keep the historical two-call reserve so
         # existing cache/error semantics do not change accidentally. The real
-        # 36-call production resolver reserves eight requests, matching four
-        # strict exact card-search + card-detail proof pairs already observed in
-        # the proven 31/96 Magi production baseline.
+        # 48-call production resolver reserves 18 exact-card calls while
+        # capping broad recovery traffic at 30. This is sized from the measured
+        # post-Classic live workload rather than opening an unbounded retry path.
         reserve_target = (
             _CARD_IDENTITY_RESERVE_REQUESTS
             if requested_budget >= _MAX_RECOVERY_REQUESTS
@@ -112,9 +117,9 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         # Cap broad set/discovery traffic independently from exact card proof.
         # Counting against total requests here was order-dependent: early exact
         # card calls made later broad calls hit the reserve before broad traffic
-        # had actually consumed its 28-call production allowance. The separate
-        # counter preserves the same total 36-call ceiling while making the
-        # reserve invariant to listing order.
+        # had actually consumed its bounded allowance. The separate counter
+        # preserves the total ceiling while making the reserve invariant to
+        # listing order.
         is_priority = request_class in _CARD_IDENTITY_PRIORITY_CLASSES
         if (
             self._card_identity_reserve
