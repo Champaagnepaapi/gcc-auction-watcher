@@ -34,6 +34,10 @@ _SOURCE_MAX_REQUESTS_PER_RUN = max(
 )
 
 _ALLOWED_FINISH_KEYS = frozenset({"normal", "holo", "reverse"})
+_SPECIAL_FINISH_BY_FOIL = {
+    "pokeball": "poke_ball",
+    "masterball": "master_ball",
+}
 _SAFE_COORDINATE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SESSION = requests.Session()
 _SOURCE_CACHE: dict[str, "SourcePinnedFinishProof | None"] = {}
@@ -46,6 +50,7 @@ class SourcePinnedFinishProof:
     finishes: tuple[str, ...]
     source_path: str
     source_commit: str = _SOURCE_COMMIT
+    special_finishes: tuple[str, ...] = ()
 
 
 def clear_source_finish_runtime_state() -> None:
@@ -164,6 +169,60 @@ def _extract_variants_block(text: str) -> str:
     return ""
 
 
+def _top_level_variant_objects(block: str) -> tuple[str, ...]:
+    """Return balanced top-level object literals from one variants array."""
+    output: list[str] = []
+    depth = 0
+    start = -1
+    quote = ""
+    escaped = False
+    for index, char in enumerate(block):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+            continue
+        if char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                output.append(block[start : index + 1])
+                start = -1
+    return tuple(output) if depth == 0 else ()
+
+
+def _source_special_finishes(block: str) -> tuple[str, ...]:
+    """Extract only recognized reverse-foil microvariants from one source block."""
+    observed: set[str] = set()
+    for entry in _top_level_variant_objects(block):
+        types = [
+            value.strip().casefold()
+            for value in re.findall(r"\btype\s*:\s*['\"]([^'\"]+)['\"]", entry)
+        ]
+        if len(types) != 1 or types[0] != "reverse":
+            continue
+        foils = [
+            value.strip().casefold()
+            for value in re.findall(r"\bfoil\s*:\s*['\"]([^'\"]+)['\"]", entry)
+        ]
+        if len(foils) != 1:
+            continue
+        special = _SPECIAL_FINISH_BY_FOIL.get(foils[0])
+        if special:
+            observed.add(special)
+    return tuple(key for key in ("poke_ball", "master_ball") if key in observed)
+
+
 def _parse_source_finish_proof(
     text: str,
     *,
@@ -195,7 +254,11 @@ def _parse_source_finish_proof(
     finishes = tuple(key for key in ("normal", "holo", "reverse") if key in observed)
     if not finishes:
         return None
-    return SourcePinnedFinishProof(finishes=finishes, source_path=source_path)
+    return SourcePinnedFinishProof(
+        finishes=finishes,
+        source_path=source_path,
+        special_finishes=_source_special_finishes(block),
+    )
 
 
 def _fetch_source_proof(path: str, *, set_id: str) -> SourcePinnedFinishProof | None:
