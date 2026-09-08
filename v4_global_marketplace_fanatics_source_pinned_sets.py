@@ -17,8 +17,11 @@ the Japanese source alias intentionally tolerates localized-name mismatch.
 For an explicitly titled Poke Ball or Master Ball card, the material finish is
 recovered only after the same exact Fanatics set/localId identity resolves with
 the special finish removed and the immutable TCGdex card source proves a reverse
-variant carrying that exact foil.  The final v3 provider gates then run unchanged
-against the original coordinate.  Missing source proof remains fail-closed.
+variant carrying that exact foil.  When the reviewed alias explicitly permits a
+localized-name mismatch, the provider set/name labels are restored only after
+that exact source set/localId coordinate has been proven.  The final v3 provider
+gates then run unchanged against the original coordinate. Missing source proof
+remains fail-closed.
 
 The existing V4 canonical resolver still performs the exact set/localId read and
 revalidates the source-pinned official set count; all downstream Fanatics
@@ -228,6 +231,26 @@ def _special_finish_key(coordinate: v1.FanaticsNativeCoordinate) -> str:
     return _SPECIAL_FINISH_KEYS.get(v1._norm(coordinate.finish), "")
 
 
+def _provider_labels_after_exact_alias(
+    canonical,
+    *,
+    coordinate: v1.FanaticsNativeCoordinate,
+    alias,
+):
+    """Restore provider labels only after the reviewed exact alias coordinate is proven."""
+    if not alias.allow_localized_name_mismatch:
+        if v1._norm(canonical.name) != v1._norm(coordinate.name):
+            return None
+        if v1._norm(canonical.set_name) != v1._norm(coordinate.set_name):
+            return None
+        return canonical
+    return replace(
+        canonical,
+        name=coordinate.name,
+        set_name=coordinate.set_name,
+    )
+
+
 def _resolve_source_special_finish(
     coordinate: v1.FanaticsNativeCoordinate,
     *,
@@ -259,7 +282,13 @@ def _resolve_source_special_finish(
         return None
     if v1._norm_local(canonical.local_id) != coordinate.local_id:
         return None
-    if v1._norm(canonical.name) != v1._norm(coordinate.name):
+
+    canonical = _provider_labels_after_exact_alias(
+        canonical,
+        coordinate=coordinate,
+        alias=alias,
+    )
+    if canonical is None:
         return None
 
     source_proof = source_finish.source_pinned_finish_proof(canonical)
