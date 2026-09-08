@@ -14,6 +14,12 @@ display tokens (Holo/Reverse/Poke Ball/Master Ball).  This prevents multiple
 synthetic name partitions from becoming separate exact identities merely because
 the Japanese source alias intentionally tolerates localized-name mismatch.
 
+For an explicitly titled Poke Ball or Master Ball card, the material finish is
+recovered only after the same exact Fanatics set/localId identity resolves with
+the special finish removed and the immutable TCGdex card source proves a reverse
+variant carrying that exact foil.  The final v3 provider gates then run unchanged
+against the original coordinate.  Missing source proof remains fail-closed.
+
 The existing V4 canonical resolver still performs the exact set/localId read and
 revalidates the source-pinned official set count; all downstream Fanatics
 language, grade, explicit full-fraction, finish/edition and ambiguity gates remain
@@ -30,6 +36,7 @@ from typing import Iterator
 import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v3 as v3
 import v4_tcgdex_generalized_coordinate_recovery as generalized
+import v4_tcgdex_source_pinned_finish as source_finish
 
 
 _SOURCE_PIN = "af33c9ac882e2acfadffaf19e8083aa976d12983"
@@ -76,6 +83,12 @@ _LEADING_DISPLAY_RE = re.compile(
     r"REVERSE\s+HOLO|REVERSE|NON[-\s]?HOLO|HOLO)\b[\s\-:|/]*)+",
     re.IGNORECASE,
 )
+_SPECIAL_FINISH_KEYS = {
+    "poke ball": "poke_ball",
+    "pokeball": "poke_ball",
+    "master ball": "master_ball",
+    "masterball": "master_ball",
+}
 _ORIGINAL_CANDIDATES = None
 _ORIGINAL_RESOLVE_COORDINATE = None
 _INSTALLED = False
@@ -208,6 +221,72 @@ def _scoped_alias(alias, lot) -> Iterator[bool]:
             generalized._SET_ALIASES_BY_KEY[alias_key] = existing_alias
 
 
+def _special_finish_key(coordinate: v1.FanaticsNativeCoordinate) -> str:
+    """Return one supported explicit special finish, never an inferred one."""
+    if coordinate.edition or coordinate.variant:
+        return ""
+    return _SPECIAL_FINISH_KEYS.get(v1._norm(coordinate.finish), "")
+
+
+def _resolve_source_special_finish(
+    coordinate: v1.FanaticsNativeCoordinate,
+    *,
+    alias,
+    title: str,
+    proof_text: str,
+    resolver,
+):
+    """Recover one ball-mirror coordinate only from exact immutable source proof."""
+    assert _ORIGINAL_RESOLVE_COORDINATE is not None
+    special_finish = _special_finish_key(coordinate)
+    if not special_finish:
+        return None
+
+    # Resolve card/set/localId without the special finish first.  This does not
+    # create a final identity: the original coordinate is restored below and the
+    # standard v3 gates run only after immutable source proves the exact foil.
+    base_coordinate = replace(coordinate, finish="")
+    base_lot = v1._lot_for_coordinate(base_coordinate)
+    *_, cache_key = generalized._lot_components(base_lot)
+    generalized._RECOVERY_CACHE.pop(cache_key, None)
+    generalized._RECOVERY_NEGATIVE_CACHE.discard(cache_key)
+    canonical = resolver(base_lot)
+    if canonical.status != "EXACT":
+        return None
+    if canonical.language_code != coordinate.language_code:
+        return None
+    if canonical.set_id != alias.tcgdex_set_id:
+        return None
+    if v1._norm_local(canonical.local_id) != coordinate.local_id:
+        return None
+    if v1._norm(canonical.name) != v1._norm(coordinate.name):
+        return None
+
+    source_proof = source_finish.source_pinned_finish_proof(canonical)
+    if source_proof is None:
+        return None
+    if "reverse" not in source_proof.finishes:
+        return None
+    if special_finish not in source_proof.special_finishes:
+        return None
+
+    # Reuse every existing Fanatics v3 downstream gate.  Only the TCGdex resolver
+    # result is pinned to the already-proven exact base coordinate for this one
+    # synchronous call; the original coordinate still carries Master/Poke Ball.
+    def proven_resolver(_lot):
+        return canonical
+
+    identity, reason = _ORIGINAL_RESOLVE_COORDINATE(
+        coordinate,
+        title=title,
+        proof_text=proof_text,
+        resolver=proven_resolver,
+    )
+    if identity is None:
+        return None
+    return identity, f"{reason}_SOURCE_PINNED_{special_finish.upper()}"
+
+
 def _resolve_coordinate_with_source_set(
     coordinate: v1.FanaticsNativeCoordinate,
     *,
@@ -226,6 +305,17 @@ def _resolve_coordinate_with_source_set(
     with _scoped_alias(alias, lot) as installed:
         if not installed:
             return None, "tcgdex_fanatics_source_alias_conflict"
+
+        recovered = _resolve_source_special_finish(
+            coordinate,
+            alias=alias,
+            title=title,
+            proof_text=proof_text,
+            resolver=resolver,
+        )
+        if recovered is not None:
+            return recovered
+
         return _ORIGINAL_RESOLVE_COORDINATE(
             coordinate, title=title, proof_text=proof_text, resolver=resolver
         )
