@@ -20,6 +20,9 @@ from typing import Any, Callable, Optional, Sequence
 import v4_canonical_multimarket as multimarket
 import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v3 as v3
+from v4_global_marketplace_fanatics_source_pinned_sets import (
+    install_global_marketplace_fanatics_source_pinned_sets,
+)
 
 
 _INSTALLED = False
@@ -31,11 +34,6 @@ _LANGUAGE_PATTERNS = (
     re.compile(r"\bPok[eé]mon[\s_-]+(?P<language>Japanese|English|JPN|ENG)\b", re.I),
     re.compile(r"\b(?:Card\s+)?Language\s*:?\s*(?P<language>Japanese|English|JPN|ENG)\b", re.I),
 )
-
-# Current Fanatics H1s also use PSA-style short language fields, for example
-# ``... DRI EN #193/182 ... PSA 10`` and ``... Promos JP #098/SV-P ... PSA 10``.
-# EN/JP are accepted only inside an H1-like Pokemon+PSA title. A generic page
-# token such as a locale selector therefore cannot prove language.
 _SHORT_TITLE_LANGUAGE_RE = re.compile(
     r"^(?=.*\bPok[eé]mon\b)(?=.*\bPSA\s*(?:GEM\s*MT\s*)?"
     r"(?:10(?:\.0)?|9(?:\.0)?|8\.5|8(?:\.0)?)\b)"
@@ -97,12 +95,6 @@ def _emit_fanatics_diagnostic(
     proof_text: str,
     resolution: v1.FanaticsNativeResolution,
 ) -> None:
-    """Emit bounded public listing diagnostics without changing resolution.
-
-    No additional provider or TCGdex request is made here. Production schedules
-    remain inert unless explicitly opted in; pull-request live validation enables
-    the probe automatically so rejection causes can be audited listing by listing.
-    """
     global _fanatics_diagnostics_count
     if not _diagnostics_enabled() or _fanatics_diagnostics_count >= _FANATICS_DIAGNOSTICS_MAX:
         return
@@ -130,12 +122,6 @@ def _title_with_provider_language(
     title: str,
     language: tuple[str, str],
 ) -> str:
-    """Replace one explicit EN/JP H1 field with the long parser label.
-
-    The replacement is retrieval normalization only. The short token itself is
-    provider evidence; final acceptance still requires the unchanged exact
-    Fanatics/TCGdex resolver.
-    """
     raw = str(title or "")
     match = _SHORT_TITLE_LANGUAGE_RE.search(raw)
     if match is not None:
@@ -167,8 +153,6 @@ def resolve_fanatics_native_identity_with_provider_language(
         resolver=resolver,
     )
     if recovered.status != "EXACT" or recovered.identity is None:
-        # Preserve blocking ERROR/AMBIGUOUS semantics from the exact resolver;
-        # otherwise keep the original missing-language no-match.
         return recovered if recovered.status in {"ERROR", "AMBIGUOUS"} else original
     if recovered.identity.language != language[0]:
         return v1.FanaticsNativeResolution(
@@ -192,7 +176,6 @@ def scan_fanatics_native_inventory_with_provider_language(
     max_detail_pages: int = 200,
     scroll_rounds: int = 20,
 ):
-    """Reuse v3 scanning while adding the public provider URL to proof text."""
     try:
         urls, rounds = v3.v2._fanatics_pokemon_urls(page, scroll_rounds=scroll_rounds)
     except Exception as error:
@@ -220,9 +203,6 @@ def scan_fanatics_native_inventory_with_provider_language(
         if price is None:
             rejects["price_unproven"] += 1
             continue
-        # The URL slug and H1 are public provider text. Explicit EN/JP fields are
-        # accepted only in the bounded H1 schema above; conflicting evidence
-        # remains fail-closed.
         proof_text = f"{before_guide}\nProvider URL: {url}"
         resolution = v3.resolve_fanatics_native_identity_v3(
             title,
@@ -270,6 +250,10 @@ def install_global_marketplace_fanatics_provider_language() -> None:
     global _INSTALLED, _ORIGINAL_RESOLVER, _fanatics_diagnostics_count
     if _INSTALLED:
         return
+    # Scope source-pinned numerator-only Japanese set bridges to Fanatics before
+    # this wrapper captures the v3 resolver. They never enter the shared Magi/
+    # canonical alias registry outside one synchronous Fanatics resolution call.
+    install_global_marketplace_fanatics_source_pinned_sets()
     _ORIGINAL_RESOLVER = v3.resolve_fanatics_native_identity_v3
     v3.resolve_fanatics_native_identity_v3 = resolve_fanatics_native_identity_with_provider_language
     v3.scan_fanatics_native_inventory_v3 = scan_fanatics_native_inventory_with_provider_language
