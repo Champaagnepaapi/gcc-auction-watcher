@@ -6,16 +6,25 @@ alias registry cannot safely carry these numerator-only provider labels because
 it is also consumed by Magi and other V4 paths.
 
 This layer therefore scopes three independently reviewed TCGdex set bridges to
-one Fanatics resolution call only.  It never leaves an alias or generalized
-resolver cache entry behind.  The existing V4 canonical resolver still performs
-the exact set/localId read and revalidates the source-pinned official set count;
-all downstream Fanatics language, grade, explicit full-fraction, finish/edition
-and ambiguity gates remain unchanged.
+one Fanatics resolution call only.  When one reviewed set phrase is explicitly
+present in the provider H1, it also collapses generic parser partitions to one
+bounded source-set candidate whose card name is the provider text between that
+set phrase and the exact collector number after stripping only leading material
+display tokens (Holo/Reverse/Poke Ball/Master Ball).  This prevents multiple
+synthetic name partitions from becoming separate exact identities merely because
+the Japanese source alias intentionally tolerates localized-name mismatch.
+
+The existing V4 canonical resolver still performs the exact set/localId read and
+revalidates the source-pinned official set count; all downstream Fanatics
+language, grade, explicit full-fraction, finish/edition and ambiguity gates remain
+unchanged.  No alias or generalized resolver cache entry leaks outside the one
+synchronous Fanatics resolution call.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+import re
 from typing import Iterator
 
 import v4_global_fanatics_native_identity as v1
@@ -62,6 +71,11 @@ _SOURCE_ALIASES = (
 _ALIAS_BY_LABEL = {
     generalized._norm_text(alias.listing_set): alias for alias in _SOURCE_ALIASES
 }
+_LEADING_DISPLAY_RE = re.compile(
+    r"^(?:(?:MASTER\s*BALL|MASTERBALL|POK[EÉ]\s*BALL|POKEBALL|"
+    r"REVERSE\s+HOLO|REVERSE|NON[-\s]?HOLO|HOLO)\b[\s\-:|/]*)+",
+    re.IGNORECASE,
+)
 _ORIGINAL_CANDIDATES = None
 _ORIGINAL_RESOLVE_COORDINATE = None
 _INSTALLED = False
@@ -79,31 +93,81 @@ def _alias_for_coordinate(coordinate: v1.FanaticsNativeCoordinate):
     return _ALIAS_BY_LABEL.get(generalized._norm_text(coordinate.set_name))
 
 
+def _source_card_name(title: str, alias, local_id: str) -> str:
+    """Extract one bounded provider card name after an exact reviewed set phrase."""
+    raw = str(title or "")
+    phrase_pattern = re.compile(
+        r"\s+".join(re.escape(token) for token in str(alias.listing_set).split()),
+        re.IGNORECASE,
+    )
+    phrase_matches = list(phrase_pattern.finditer(raw))
+    if len(phrase_matches) != 1:
+        return ""
+
+    normalized_local = v1._norm_local(local_id)
+    if not normalized_local or not normalized_local.isdigit():
+        return ""
+    number_pattern = re.compile(
+        rf"(?<![A-Za-z0-9])#\s*0*{re.escape(normalized_local)}(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    tail = raw[phrase_matches[0].end() :]
+    number_matches = list(number_pattern.finditer(tail))
+    if len(number_matches) != 1:
+        return ""
+
+    segment = tail[: number_matches[0].start()].strip(" -|:/")
+    previous = None
+    while segment and segment != previous:
+        previous = segment
+        segment = _LEADING_DISPLAY_RE.sub("", segment, count=1).strip(" -|:/")
+    return segment if v1._norm(segment) else ""
+
+
 def _source_candidates(title: str, candidates):
-    """Add only exact reviewed provider-set partitions; never invent a card name."""
+    """Prefer one exact reviewed provider-set partition when it is provable."""
     output = list(candidates)
-    seen = {
-        (v1._norm(row.set_name), v1._norm(row.name), row.local_id)
-        for row in output
+    matching_aliases = [
+        alias for alias in _SOURCE_ALIASES if _phrase_present(title, alias.listing_set)
+    ]
+    if len(matching_aliases) != 1:
+        return output
+
+    alias = matching_aliases[0]
+    japanese_rows = [
+        row
+        for row in candidates
+        if row.language_code == "ja" and row.name and row.local_id
+    ]
+    if not japanese_rows:
+        return output
+
+    # Generic candidate partitions may differ in set/name only.  The provider
+    # grade/localId/material dimensions must still agree before source collapse.
+    metadata = {
+        (
+            row.language_code,
+            row.language_label,
+            row.local_id,
+            row.grade,
+            row.edition,
+            row.finish,
+            row.variant,
+        )
+        for row in japanese_rows
     }
-    for alias in _SOURCE_ALIASES:
-        if not _phrase_present(title, alias.listing_set):
-            continue
-        # Reuse card-name/localId/grade/dimensions already parsed from the H1.
-        # This only repairs the set partition when finish tokens were absorbed
-        # into it (e.g. "151 Master Ball Reverse Holo Pikachu #025").
-        for row in tuple(candidates):
-            if row.language_code != "ja" or not row.name or not row.local_id:
-                continue
-            candidate = replace(row, set_name=alias.listing_set)
-            key = (v1._norm(candidate.set_name), v1._norm(candidate.name), candidate.local_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            output.append(candidate)
-            if len(output) >= v3._MAX_CANDIDATES:
-                return output
-    return output
+    if len(metadata) != 1:
+        return output
+
+    row = japanese_rows[0]
+    card_name = _source_card_name(title, alias, row.local_id)
+    if not card_name:
+        return output
+
+    # For a reviewed explicit set phrase, returning only this deterministic
+    # partition is stricter than carrying generic parser alternatives alongside
+    # an alias that intentionally permits localized-name mismatch.
+    return [replace(row, set_name=alias.listing_set, name=card_name)]
 
 
 def _candidates_with_source_sets(title: str):
