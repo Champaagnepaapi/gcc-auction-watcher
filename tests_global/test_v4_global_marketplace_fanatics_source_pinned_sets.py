@@ -38,14 +38,16 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
 
     @staticmethod
     def _pikachu_canonical():
+        # Live Japanese TCGdex labels are localized; the reviewed Fanatics alias
+        # deliberately permits that label mismatch only after exact SV2a + #025.
         return canonical.CanonicalCard(
             status="EXACT",
             card_id="SV2a-025",
             set_id="SV2a",
-            set_name="Scarlet & Violet 151",
+            set_name="ポケモンカード151",
             local_id="025",
-            full_number="25",
-            name="Pikachu",
+            full_number="25/165",
+            name="ピカチュウ",
             language_code="ja",
             variants={"normal": True, "reverse": True},
             reason="TCGDEX_EXACT_SET_LOCALID",
@@ -169,11 +171,15 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
             seen["finish"] = original_coordinate.finish
             self.assertEqual(title, "provider title")
             self.assertEqual(proof_text, "provider proof")
-            self.assertIs(resolver(v1._lot_for_coordinate(original_coordinate)), card)
+            proven = resolver(v1._lot_for_coordinate(original_coordinate))
+            self.assertEqual(proven.set_id, "SV2a")
+            self.assertEqual(proven.local_id, "025")
+            self.assertEqual(proven.set_name, "Scarlet & Violet 151")
+            self.assertEqual(proven.name, "Pikachu")
             identity = CommercialIdentity(
-                name="Pikachu",
-                set_name="Scarlet & Violet 151",
-                number="25",
+                name=proven.name,
+                set_name=proven.set_name,
+                number=proven.full_number,
                 language="ja",
                 grader="PSA",
                 grade="10",
@@ -183,7 +189,7 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
 
         with patch.object(
             source_finish, "source_pinned_finish_proof", return_value=proof
-        ), patch.object(
+        ) as source_proof, patch.object(
             source_sets, "_ORIGINAL_RESOLVE_COORDINATE", downstream
         ):
             recovered = source_sets._resolve_source_special_finish(
@@ -195,6 +201,10 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(recovered)
+        source_card = source_proof.call_args.args[0]
+        self.assertEqual(source_card.set_id, "SV2a")
+        self.assertEqual(source_card.local_id, "025")
+        self.assertEqual(source_card.name, "Pikachu")
         identity, reason = recovered
         self.assertEqual(seen["finish"], "Master Ball")
         self.assertEqual(identity.finish, "Master Ball")
@@ -226,6 +236,21 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
 
         self.assertIsNone(recovered)
         downstream.assert_not_called()
+
+    def test_nonlocalized_alias_never_overwrites_conflicting_provider_labels(self):
+        alias = generalized.ExactSetAlias(
+            "ja",
+            "Strict Set",
+            "SV2a",
+            165,
+            allow_localized_name_mismatch=False,
+        )
+        coordinate = self._pikachu_coordinate()
+        self.assertIsNone(
+            source_sets._provider_labels_after_exact_alias(
+                self._pikachu_canonical(), coordinate=coordinate, alias=alias
+            )
+        )
 
 
 if __name__ == "__main__":
