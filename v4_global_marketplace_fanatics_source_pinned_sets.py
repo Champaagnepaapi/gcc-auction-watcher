@@ -40,6 +40,7 @@ import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v3 as v3
 import v4_tcgdex_generalized_coordinate_recovery as generalized
 import v4_tcgdex_source_pinned_finish as source_finish
+import v4_tcgdex_detailed_variants as detailed
 import v4_raw_consensus as raw_consensus
 
 
@@ -88,6 +89,11 @@ _ALIAS_BY_LABEL = {
 _LEADING_DISPLAY_RE = re.compile(
     r"^(?:(?:MASTER\s*BALL|MASTERBALL|POK[EÉ]\s*BALL|POKEBALL|"
     r"REVERSE\s+HOLO|REVERSE|NON[-\s]?HOLO|HOLO)\b[\s\-:|/]*)+",
+    re.IGNORECASE,
+)
+_TRAILING_DISPLAY_RE = re.compile(
+    r"(?:[\s\-:|/]+(?:MASTER\s*BALL|MASTERBALL|POK[EÉ]\s*BALL|POKEBALL|"
+    r"REVERSE\s+HOLO|REVERSE|NON[-\s]?HOLO|HOLO))+$",
     re.IGNORECASE,
 )
 _SPECIAL_FINISH_KEYS = {
@@ -141,6 +147,7 @@ def _source_card_name(title: str, alias, local_id: str) -> str:
     while segment and segment != previous:
         previous = segment
         segment = _LEADING_DISPLAY_RE.sub("", segment, count=1).strip(" -|:/")
+        segment = _TRAILING_DISPLAY_RE.sub("", segment, count=1).strip(" -|:/")
     return segment if v1._norm(segment) else ""
 
 
@@ -230,8 +237,14 @@ def _scoped_alias(alias, lot) -> Iterator[bool]:
 
 def _special_finish_key(coordinate: v1.FanaticsNativeCoordinate) -> str:
     """Return one supported explicit special finish, never an inferred one."""
-    if coordinate.edition or coordinate.variant:
+    if coordinate.edition:
         return ""
+    if coordinate.variant in {"master_ball", "poke_ball"}:
+        return coordinate.variant if coordinate.finish == "reverse" else ""
+    if coordinate.variant:
+        return ""
+    # Compatibility with already parsed coordinates; live V2/V3 now share the
+    # independent reverse + ball representation above.
     return _SPECIAL_FINISH_KEYS.get(v1._norm(coordinate.finish), "")
 
 
@@ -265,7 +278,7 @@ def _resolve_source_special_finish(
     # Resolve card/set/localId without the special finish first.  This does not
     # create a final identity: the original coordinate is restored below and the
     # standard v3 gates run only after immutable source proves the exact foil.
-    base_coordinate = replace(coordinate, finish="")
+    base_coordinate = replace(coordinate, finish="", variant="")
     base_lot = v1._lot_for_coordinate(base_coordinate)
     *_, cache_key = generalized._lot_components(base_lot)
     generalized._RECOVERY_CACHE.pop(cache_key, None)
@@ -289,6 +302,11 @@ def _resolve_source_special_finish(
     if "reverse" not in source_proof.finishes:
         return None
     if special_finish not in source_proof.special_finishes:
+        return None
+    decision = detailed.detailed_variant_decision(
+        canonical, detailed._expected_from_global_identity(coordinate)
+    )
+    if not decision.compatible:
         return None
 
     # Both provider and Japanese names have independent same-card source proof.
@@ -321,9 +339,13 @@ def _resolve_coordinate_with_source_set(
     dimensions = raw_consensus.parse_multilingual_commercial_dimensions(
         f"{title}\n{proof_text}\n{coordinate.finish}\n{coordinate.variant}"
     )
-    if "__conflict__" in dimensions.values():
+    if "__conflict__" in dimensions.values() or "__conflict__" in (
+        coordinate.edition, coordinate.finish, coordinate.variant
+    ):
         return None, "fanatics_explicit_dimension_conflict"
     special = dimensions.get("special_finish") in {"master_ball", "poke_ball"}
+    if special and v3._language(f"{title}\n{proof_text}") != ("ja", "Japanese"):
+        return None, "fanatics_special_explicit_japanese_unproven"
     alias = _alias_for_coordinate(coordinate)
     if alias is None:
         if special:

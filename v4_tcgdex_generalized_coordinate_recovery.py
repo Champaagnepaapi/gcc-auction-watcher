@@ -237,7 +237,7 @@ def _canonical_from_coordinate(
         listing_name if allow_localized_name_mismatch and not preserve_catalog_name
         else returned_name
     )
-    return canonical.CanonicalCard(
+    result = canonical.CanonicalCard(
         status="EXACT",
         card_id=card_id,
         set_id=set_id,
@@ -256,6 +256,12 @@ def _canonical_from_coordinate(
         reason="TCGDEX_EXACT_SET_LOCALID",
         unique_name_number=False,
     )
+    if preserve_catalog_name:
+        # Fanatics' exact coordinate path bypasses _validate_tcgdex_card. Keep
+        # the same detailed-variant evidence for its final material gate.
+        from v4_tcgdex_detailed_variants import annotate_detailed_variants
+        return annotate_detailed_variants(result, card, language_code=language_code)
+    return result
 
 
 def _fetch_coordinate(

@@ -34,6 +34,7 @@ class CatalogueHTTP:
     def __init__(self, case):
         self.case = case
         self.calls = []
+        self.unexpected = []
 
     def request(self, session, method, url, **kwargs):
         import requests
@@ -57,6 +58,10 @@ class CatalogueHTTP:
                         payload = payload.replace('foil: "masterball"', 'foil: "pokeball"')
                     if self.case == "wrong_source_set" and relative.endswith("/025.ts"):
                         payload = payload.replace('from "../SV2a"', 'from "../SV10"')
+                    if self.case == "missing_source_name" and relative.endswith("/025.ts"):
+                        payload = payload.replace('id: "Pikachu",', '')
+                    if self.case == "attack_name_is_not_card_name" and relative.endswith("/025.ts"):
+                        payload = payload.replace('id: "Pikachu",', '').replace('id: "Charge",', 'id: "Pikachu",')
         elif parsed.hostname == "api.tcgdex.net":
             card = {
                 "id": "SV2a-025", "localId": "025", "name": "ピカチュウ",
@@ -70,6 +75,18 @@ class CatalogueHTTP:
                 card["localId"] = "026"
             if self.case == "wrong_rest_card_id":
                 card["id"] = "SV2a-026"
+            if self.case == "wrong_rest_name":
+                card["name"] = "ライチュウ"
+            if self.case == "wrong_rest_count":
+                card["set"]["cardCount"]["official"] = 166
+            if self.case == "wrong_detail_foil":
+                card["variants_detailed"] = [{"type": "reverse", "foil": "pokeball"}]
+            if self.case == "wrong_detail_language":
+                card["variants_detailed"] = [{"type": "reverse", "foil": "masterball", "languages": ["en"]}]
+            if self.case == "malformed_details":
+                card["variants_detailed"] = "not-a-variant-list"
+            if self.case == "compatible_details":
+                card["variants_detailed"] = [{"type": "reverse", "foil": "masterball", "languages": ["ja"]}]
             if path.endswith("/ja/sets/SV2a/25") or path.endswith("/ja/sets/SV2a/025"):
                 status, payload = 200, card
             elif path.endswith("/ja/cards/SV2a-025"):
@@ -87,6 +104,7 @@ class CatalogueHTTP:
                     if params.get("name") == "eq:Pikachu":
                         status, payload = 200, [alias_card]
         else:
+            self.unexpected.append(url)
             raise AssertionError(f"Unexpected HTTP boundary: {url}")
         if self.case == "cross_locale_missing_proof" and parsed.hostname == "raw.githubusercontent.com":
             status, payload = 404, {}
@@ -125,11 +143,14 @@ def run_case(case):
             import v4_tcgdex_generalized_coordinate_recovery as generalized
             import v4_tcgdex_japanese_set_aliases as shared
 
-            title = LIVE if case in {"live", "parser_dimensions", "poke_positive"} else SIMPLE
+            title = LIVE if case in {"live", "parser_dimensions", "poke_positive", "wrong_name_live"} else SIMPLE
+            proof_text = ""
             if case in {"wrong_name", "wrong_name_plain"}:
                 title = title.replace("Pikachu", "Charizard")
                 if case == "wrong_name_plain":
                     title = title.replace(" Master Ball", "")
+            elif case == "wrong_name_live":
+                title = title.replace("Pikachu", "Charizard")
             elif case == "wrong_title_set":
                 title = title.replace("Scarlet & Violet 151", "SV Glory Of The Rocket Gang")
             elif case == "wrong_title_local":
@@ -142,6 +163,10 @@ def run_case(case):
                 title = title.replace("Master Ball", "Master Ball Reverse Non-Holo")
             elif case == "poke_positive":
                 title = title.replace("Master Ball", "Poke Ball")
+            elif case == "conflicting_provider_language":
+                title = title.replace("Japanese", "JPN")
+                proof_text = "Card Language: English"
+            proof_text = proof_text or title
 
             if case == "parser_dimensions":
                 strict, _ = v2.fanatics_coordinate_candidates(title)
@@ -169,7 +194,7 @@ def run_case(case):
             if case == "exception_cleanup":
                 assert rows, flexible
                 try:
-                    v3._resolve_coordinate_v3(rows[0], title=title, proof_text=title,
+                    v3._resolve_coordinate_v3(rows[0], title=title, proof_text=proof_text,
                                               resolver=canonical.resolve_tcgdex_card)
                 except SourceInterrupted:
                     pass
@@ -177,29 +202,36 @@ def run_case(case):
                     raise AssertionError("The real source boundary was not reached")
             else:
                 result = v3.resolve_fanatics_native_identity_v3(
-                    title, proof_text=title, resolver=canonical.resolve_tcgdex_card)
+                    title, proof_text=proof_text, resolver=canonical.resolve_tcgdex_card)
                 print(json.dumps({"case": case, "status": result.status, "reason": result.reason,
                                   "identity": repr(result.identity)}, ensure_ascii=False))
-                if case in {"live", "poke_positive", "success_cleanup"}:
+                positive = case in {"live", "poke_positive", "success_cleanup", "compatible_details"}
+                if positive:
                     assert result.status == "EXACT", result
                     expected_ball = "poke_ball" if case == "poke_positive" else "master_ball"
                     assert result.identity.finish == "reverse", result
                     assert result.identity.variant == expected_ball, result
                     assert result.identity.language == "ja" and result.identity.grade == "10", result
+                    assert result.identity.name == "Pikachu", result
+                    import v4_tcgdex_detailed_variants as detailed
+                    assert detailed._expected_from_global_identity(result.identity) == {
+                        "finish": "reverse", "special_finish": expected_ball,
+                    }
                     assert any(f"/{PIN}/data-asia/SV/SV2a/025.ts" in url for _, url, _ in http.calls)
                 else:
                     assert result.status != "EXACT", result
                 # Also exercise each real flexible coordinate directly through
                 # the INSTALLED resolver. P4 must not hide an unsafe inner EXACT.
-                if case not in {"live", "poke_positive", "success_cleanup"}:
+                if not positive:
                     for coordinate in flexible:
                         identity, reason = v3._resolve_coordinate_v3(
-                            coordinate, title=title, proof_text=title,
+                            coordinate, title=title, proof_text=proof_text,
                             resolver=canonical.resolve_tcgdex_card)
                         assert identity is None, (case, coordinate, identity, reason)
 
             assert generalized._SET_ALIASES_BY_KEY == aliases_before
             assert tuple(shared._ALIASES) == shared_before
+            assert not http.unexpected, http.unexpected
             assert generalized._RECOVERY_CACHE == before_positive
             assert before_negative <= generalized._RECOVERY_NEGATIVE_CACHE
             for alias in source_sets._SOURCE_ALIASES:
@@ -224,6 +256,9 @@ for _case in (
     "poke_only", "missing_proof", "wrong_source_set", "conflicting_balls",
     "conflicting_finish", "cross_locale_missing_proof", "poke_positive",
     "success_cleanup", "exception_cleanup",
+    "wrong_name_live", "missing_source_name", "attack_name_is_not_card_name",
+    "wrong_rest_name", "wrong_rest_count", "conflicting_provider_language",
+    "wrong_detail_foil", "wrong_detail_language", "malformed_details", "compatible_details",
 ):
     setattr(FanaticsRealRuntimeContractTests, "test_" + _case,
             lambda self, case=_case: self.check_case(case))

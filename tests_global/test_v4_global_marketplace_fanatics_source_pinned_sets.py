@@ -151,6 +151,33 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
         self.assertNotIn(cache_key, generalized._RECOVERY_CACHE)
         self.assertNotIn(cache_key, generalized._RECOVERY_NEGATIVE_CACHE)
 
+    def test_scoped_alias_restores_existing_positive_and_negative_after_return_or_abort(self):
+        alias = self._alias("Scarlet & Violet 151")
+        lot = v1._lot_for_coordinate(self._pikachu_coordinate())
+        key = generalized._lot_components(lot)[-1]
+        alias_key = generalized._alias_key("ja", alias.listing_set)
+        # These sentinels only test state restoration; they never enter a
+        # resolver or manufacture a commercial identity.
+        old, during = object(), object()
+        for abort in (False, True):
+            with self.subTest(abort=abort), patch.dict(generalized._RECOVERY_CACHE, {key: old}):
+                generalized._RECOVERY_NEGATIVE_CACHE.add(key)
+                try:
+                    try:
+                        with source_sets._scoped_alias(alias, lot):
+                            self.assertNotIn(key, generalized._RECOVERY_CACHE)
+                            self.assertNotIn(key, generalized._RECOVERY_NEGATIVE_CACHE)
+                            generalized._RECOVERY_CACHE[key] = during
+                            if abort:
+                                raise RuntimeError("source interrupted")
+                    except RuntimeError:
+                        self.assertTrue(abort)
+                    self.assertIs(generalized._RECOVERY_CACHE[key], old)
+                    self.assertIn(key, generalized._RECOVERY_NEGATIVE_CACHE)
+                    self.assertNotIn(alias_key, generalized._SET_ALIASES_BY_KEY)
+                finally:
+                    generalized._RECOVERY_NEGATIVE_CACHE.discard(key)
+
     def test_finish_proof_without_same_card_names_cannot_rewrite_canonical_name(self):
         alias = self._alias("Scarlet & Violet 151")
         coordinate = self._pikachu_coordinate()

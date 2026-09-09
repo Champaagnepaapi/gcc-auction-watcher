@@ -464,7 +464,6 @@ def _validate_with_detailed_variants(
     unique_name_number: bool,
     reason: str,
 ):
-    global _LIVE_LOGGED
     result = _ORIGINAL_VALIDATE(
         lot,
         card,
@@ -472,6 +471,12 @@ def _validate_with_detailed_variants(
         unique_name_number=unique_name_number,
         reason=reason,
     )
+    return annotate_detailed_variants(result, card, language_code=language_code)
+
+
+def annotate_detailed_variants(result, card: Mapping[str, Any], *, language_code: str):
+    """Preserve detail evidence on exact recovery paths as on base validation."""
+    global _LIVE_LOGGED
     if result is None or result.status != "EXACT" or "variants_detailed" not in card:
         return result
 

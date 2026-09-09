@@ -95,13 +95,7 @@ def _strip_scaffolding(value: str) -> str:
 
 
 def _dimensions(title: str) -> tuple[str, str, str]:
-    edition, finish, variant = v1._explicit_dimensions(title)
-    upper = unicodedata.normalize("NFKC", str(title or "")).upper()
-    if re.search(r"\bMASTER\s*BALL\b|\bMASTERBALL\b", upper):
-        finish = "Master Ball"
-    elif re.search(r"\bPOK[EÉ]\s*BALL\b|\bPOKEBALL\b", upper):
-        finish = "Poke Ball"
-    return edition, finish, variant
+    return v1._explicit_dimensions(title)
 
 
 def _coordinate(
