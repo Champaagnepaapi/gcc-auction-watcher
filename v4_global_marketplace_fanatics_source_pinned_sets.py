@@ -17,11 +17,11 @@ the Japanese source alias intentionally tolerates localized-name mismatch.
 For an explicitly titled Poke Ball or Master Ball card, the material finish is
 recovered only after the same exact Fanatics set/localId identity resolves with
 the special finish removed and the immutable TCGdex card source proves a reverse
-variant carrying that exact foil.  When the reviewed alias explicitly permits a
-localized-name mismatch, the provider set/name labels are restored only after
-that exact source set/localId coordinate has been proven.  The final v3 provider
-gates then run unchanged against the original coordinate. Missing source proof
-remains fail-closed.
+variant carrying that exact foil. The catalogue name is never replaced with an
+unproven provider label. Both the actual Japanese name and the commercial alias
+must occur in the same pinned card's root name map. The final v3 provider gates
+then run with the proven catalogue name and the original material dimensions.
+Missing or contradictory special proof is terminal, including for fallbacks.
 
 The existing V4 canonical resolver still performs the exact set/localId read and
 revalidates the source-pinned official set count; all downstream Fanatics
@@ -40,6 +40,7 @@ import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v3 as v3
 import v4_tcgdex_generalized_coordinate_recovery as generalized
 import v4_tcgdex_source_pinned_finish as source_finish
+import v4_raw_consensus as raw_consensus
 
 
 _SOURCE_PIN = "af33c9ac882e2acfadffaf19e8083aa976d12983"
@@ -50,6 +51,7 @@ _SOURCE_ALIASES = (
         "SV2a",
         165,
         allow_localized_name_mismatch=True,
+        preserve_catalog_name=True,
         provenance=(
             f"TCGdex source pin {_SOURCE_PIN} data-asia/SV/SV2a.ts + exact card path; "
             "Fanatics Japanese Scarlet & Violet 151 label"
@@ -61,6 +63,7 @@ _SOURCE_ALIASES = (
         "web1",
         48,
         allow_localized_name_mismatch=True,
+        preserve_catalog_name=True,
         provenance=(
             f"TCGdex source pin {_SOURCE_PIN} data-asia/web/web1.ts + exact card path; "
             "Fanatics Japanese Web 1st Edition label"
@@ -72,6 +75,7 @@ _SOURCE_ALIASES = (
         "SV10",
         98,
         allow_localized_name_mismatch=True,
+        preserve_catalog_name=True,
         provenance=(
             f"TCGdex source pin {_SOURCE_PIN} data-asia/SV/SV10.ts + exact card path; "
             "Fanatics Japanese SV Glory Of The Rocket Gang label"
@@ -231,24 +235,17 @@ def _special_finish_key(coordinate: v1.FanaticsNativeCoordinate) -> str:
     return _SPECIAL_FINISH_KEYS.get(v1._norm(coordinate.finish), "")
 
 
-def _provider_labels_after_exact_alias(
-    canonical,
-    *,
-    coordinate: v1.FanaticsNativeCoordinate,
-    alias,
-):
-    """Restore provider labels only after the reviewed exact alias coordinate is proven."""
-    if not alias.allow_localized_name_mismatch:
-        if v1._norm(canonical.name) != v1._norm(coordinate.name):
-            return None
-        if v1._norm(canonical.set_name) != v1._norm(coordinate.set_name):
-            return None
-        return canonical
-    return replace(
-        canonical,
-        name=coordinate.name,
-        set_name=coordinate.set_name,
-    )
+def _source_name_alias(canonical, coordinate, proof) -> str:
+    """Return a catalogue alias only when both names belong to this same card."""
+    names = dict(proof.card_names)
+    # Keep Japanese text intact: the old ASCII normalizer maps every Japanese
+    # name to an empty string and therefore cannot serve as this proof.
+    actual_name = generalized._norm_text(canonical.name)
+    if not actual_name or actual_name != generalized._norm_text(names.get("ja")):
+        return ""
+    provider_name = generalized._norm_text(coordinate.name)
+    return next((name for name in names.values()
+                 if provider_name and generalized._norm_text(name) == provider_name), "")
 
 
 def _resolve_source_special_finish(
@@ -283,37 +280,34 @@ def _resolve_source_special_finish(
     if v1._norm_local(canonical.local_id) != coordinate.local_id:
         return None
 
-    canonical = _provider_labels_after_exact_alias(
-        canonical,
-        coordinate=coordinate,
-        alias=alias,
-    )
-    if canonical is None:
-        return None
-
     source_proof = source_finish.source_pinned_finish_proof(canonical)
-    if source_proof is None:
+    if source_proof is None or source_proof.source_commit != _SOURCE_PIN:
+        return None
+    source_name = _source_name_alias(canonical, coordinate, source_proof)
+    if not source_name:
         return None
     if "reverse" not in source_proof.finishes:
         return None
     if special_finish not in source_proof.special_finishes:
         return None
 
-    # Reuse every existing Fanatics v3 downstream gate.  Only the TCGdex resolver
-    # result is pinned to the already-proven exact base coordinate for this one
-    # synchronous call; the original coordinate still carries Master/Poke Ball.
+    # Both provider and Japanese names have independent same-card source proof.
+    # Adapt the gate input to the actual catalogue label, never rewrite the
+    # canonical result to make an unproven provider name match itself.
+    gate_coordinate = replace(coordinate, name=canonical.name)
     def proven_resolver(_lot):
         return canonical
 
     identity, reason = _ORIGINAL_RESOLVE_COORDINATE(
-        coordinate,
+        gate_coordinate,
         title=title,
         proof_text=proof_text,
         resolver=proven_resolver,
     )
     if identity is None:
         return None
-    return identity, f"{reason}_SOURCE_PINNED_{special_finish.upper()}"
+    # The commercial alias is taken from the source name map, not provider text.
+    return replace(identity, name=source_name), f"{reason}_SOURCE_PINNED_{special_finish.upper()}"
 
 
 def _resolve_coordinate_with_source_set(
@@ -324,8 +318,16 @@ def _resolve_coordinate_with_source_set(
     resolver,
 ):
     assert _ORIGINAL_RESOLVE_COORDINATE is not None
+    dimensions = raw_consensus.parse_multilingual_commercial_dimensions(
+        f"{title}\n{proof_text}\n{coordinate.finish}\n{coordinate.variant}"
+    )
+    if "__conflict__" in dimensions.values():
+        return None, "fanatics_explicit_dimension_conflict"
+    special = dimensions.get("special_finish") in {"master_ball", "poke_ball"}
     alias = _alias_for_coordinate(coordinate)
     if alias is None:
+        if special:
+            return None, "fanatics_special_source_set_unproven"
         return _ORIGINAL_RESOLVE_COORDINATE(
             coordinate, title=title, proof_text=proof_text, resolver=resolver
         )
@@ -335,15 +337,13 @@ def _resolve_coordinate_with_source_set(
         if not installed:
             return None, "tcgdex_fanatics_source_alias_conflict"
 
-        recovered = _resolve_source_special_finish(
-            coordinate,
-            alias=alias,
-            title=title,
-            proof_text=proof_text,
-            resolver=resolver,
-        )
-        if recovered is not None:
-            return recovered
+        if special:
+            recovered = _resolve_source_special_finish(
+                coordinate, alias=alias, title=title, proof_text=proof_text, resolver=resolver,
+            )
+            # A failed special proof is terminal, including for ordinary EXACT
+            # candidates. Set/localId alone says nothing about the requested foil.
+            return recovered or (None, "fanatics_special_source_proof_unproven")
 
         return _ORIGINAL_RESOLVE_COORDINATE(
             coordinate, title=title, proof_text=proof_text, resolver=resolver

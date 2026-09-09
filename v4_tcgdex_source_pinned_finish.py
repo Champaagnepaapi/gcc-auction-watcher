@@ -51,6 +51,31 @@ class SourcePinnedFinishProof:
     source_path: str
     source_commit: str = _SOURCE_COMMIT
     special_finishes: tuple[str, ...] = ()
+    card_names: tuple[tuple[str, str], ...] = ()
+
+
+def _source_card_names(text: str) -> tuple[tuple[str, str], ...]:
+    """Read only the root card name map, never attack/ability names.
+
+    This deliberately accepts the bounded immutable catalogue syntax; an
+    unsupported shape supplies no name proof. Existing finish-only consumers
+    do not depend on this optional evidence.
+    """
+    match = re.search(
+        r"\bconst\s+card\s*:\s*Card\s*=\s*\{\s*set\s*:\s*Set\s*,\s*"
+        r"name\s*:\s*\{(?P<names>[^{}]*)\}", text,
+    )
+    if match is None:
+        return ()
+    entries = re.findall(
+        r"(?:['\"]([a-z-]+)['\"]|([a-z]+))\s*:\s*"
+        r"(?:\"([^\"\\\n]+)\"|'([^'\\\n]+)')\s*(?:,|$)",
+        match.group("names"),
+    )
+    names = tuple((quoted or bare, double or single) for quoted, bare, double, single in entries)
+    if len({language for language, _ in names}) != len(names):
+        return ()
+    return names
 
 
 def clear_source_finish_runtime_state() -> None:
@@ -258,6 +283,7 @@ def _parse_source_finish_proof(
         finishes=finishes,
         source_path=source_path,
         special_finishes=_source_special_finishes(block),
+        card_names=_source_card_names(text),
     )
 
 

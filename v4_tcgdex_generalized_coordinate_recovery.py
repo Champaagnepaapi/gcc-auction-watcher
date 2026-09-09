@@ -25,6 +25,10 @@ class ExactSetAlias:
     require_numeric_denominator: bool = False
     allow_localized_name_mismatch: bool = False
     provenance: str = ""
+    # Fanatics validates localized aliases independently against pinned names.
+    # Keep the actual catalogue name for that final check; shared aliases retain
+    # their existing behavior unless they explicitly opt in.
+    preserve_catalog_name: bool = False
 
 
 def _norm_text(value: Any) -> str:
@@ -199,6 +203,7 @@ def _canonical_from_coordinate(
     expected_set_id: str,
     expected_count: Optional[int],
     allow_localized_name_mismatch: bool,
+    preserve_catalog_name: bool = False,
 ) -> Optional[canonical.CanonicalCard]:
     identity = watcher.extract_card_identity(lot)
     reference = str(lot.card_number or identity.get("ref") or "").strip()
@@ -222,7 +227,16 @@ def _canonical_from_coordinate(
         return None
 
     returned_name = str(card.get("name") or "").strip()
-    canonical_name = listing_name if allow_localized_name_mismatch else returned_name
+    if preserve_catalog_name:
+        prefix = f"{expected_set_id}-"
+        if not returned_name or not card_id.startswith(prefix):
+            return None
+        if not _same_local_id(card_id[len(prefix):], local_id):
+            return None
+    canonical_name = (
+        listing_name if allow_localized_name_mismatch and not preserve_catalog_name
+        else returned_name
+    )
     return canonical.CanonicalCard(
         status="EXACT",
         card_id=card_id,
@@ -253,6 +267,7 @@ def _fetch_coordinate(
     set_id: str,
     expected_count: Optional[int],
     allow_localized_name_mismatch: bool,
+    preserve_catalog_name: bool = False,
 ) -> canonical.CanonicalCard | None:
     identity = watcher.extract_card_identity(lot)
     reference = str(lot.card_number or identity.get("ref") or "").strip()
@@ -291,6 +306,7 @@ def _fetch_coordinate(
             expected_set_id=set_id,
             expected_count=expected_count,
             allow_localized_name_mismatch=allow_localized_name_mismatch,
+            preserve_catalog_name=preserve_catalog_name,
         )
     return None
 
@@ -308,6 +324,7 @@ def _recover_from_set_alias(lot: watcher.Lot) -> canonical.CanonicalCard | None:
         set_id=alias.tcgdex_set_id,
         expected_count=alias.tcgdex_official_count,
         allow_localized_name_mismatch=alias.allow_localized_name_mismatch,
+        preserve_catalog_name=alias.preserve_catalog_name,
     )
 
 

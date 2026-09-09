@@ -7,7 +7,6 @@ import v4_canonical_multimarket as canonical
 import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v3 as fanatics
 import v4_global_marketplace_fanatics_source_pinned_sets as source_sets
-from v4_global_market_core import CommercialIdentity
 import v4_tcgdex_generalized_coordinate_recovery as generalized
 import v4_tcgdex_japanese_set_aliases as shared_aliases
 import v4_tcgdex_source_pinned_finish as source_finish
@@ -152,7 +151,7 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
         self.assertNotIn(cache_key, generalized._RECOVERY_CACHE)
         self.assertNotIn(cache_key, generalized._RECOVERY_NEGATIVE_CACHE)
 
-    def test_master_ball_recovery_requires_exact_source_foil_then_reuses_v3_gate(self):
+    def test_finish_proof_without_same_card_names_cannot_rewrite_canonical_name(self):
         alias = self._alias("Scarlet & Violet 151")
         coordinate = self._pikachu_coordinate()
         card = self._pikachu_canonical()
@@ -161,57 +160,25 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
             source_path="data-asia/SV/SV2a/025.ts",
             special_finishes=("master_ball",),
         )
-        seen = {}
-
-        def resolver(lot):
-            self.assertNotIn("Master Ball", str(lot.variant or ""))
-            return card
-
-        def downstream(original_coordinate, *, title, proof_text, resolver):
-            seen["finish"] = original_coordinate.finish
-            self.assertEqual(title, "provider title")
-            self.assertEqual(proof_text, "provider proof")
-            proven = resolver(v1._lot_for_coordinate(original_coordinate))
-            self.assertEqual(proven.set_id, "SV2a")
-            self.assertEqual(proven.local_id, "025")
-            self.assertEqual(proven.set_name, "Scarlet & Violet 151")
-            self.assertEqual(proven.name, "Pikachu")
-            identity = CommercialIdentity(
-                name=proven.name,
-                set_name=proven.set_name,
-                number=proven.full_number,
-                language="ja",
-                grader="PSA",
-                grade="10",
-                finish=original_coordinate.finish,
-            )
-            return identity, "FANATICS_TCGDEX_SET_EXACT"
-
         with patch.object(
             source_finish, "source_pinned_finish_proof", return_value=proof
         ) as source_proof, patch.object(
-            source_sets, "_ORIGINAL_RESOLVE_COORDINATE", downstream
-        ):
+            source_sets, "_ORIGINAL_RESOLVE_COORDINATE"
+        ) as downstream:
             recovered = source_sets._resolve_source_special_finish(
                 coordinate,
                 alias=alias,
                 title="provider title",
                 proof_text="provider proof",
-                resolver=resolver,
+                resolver=lambda _lot: card,
             )
 
-        self.assertIsNotNone(recovered)
+        self.assertIsNone(recovered)
+        downstream.assert_not_called()
         source_card = source_proof.call_args.args[0]
         self.assertEqual(source_card.set_id, "SV2a")
         self.assertEqual(source_card.local_id, "025")
-        self.assertEqual(source_card.name, "Pikachu")
-        identity, reason = recovered
-        self.assertEqual(seen["finish"], "Master Ball")
-        self.assertEqual(identity.finish, "Master Ball")
-        self.assertEqual(
-            reason,
-            "FANATICS_TCGDEX_SET_EXACT_SOURCE_PINNED_MASTER_BALL",
-        )
+        self.assertEqual(source_card.name, "ピカチュウ")
 
     def test_master_ball_recovery_fails_closed_on_wrong_source_foil(self):
         alias = self._alias("Scarlet & Violet 151")
@@ -221,6 +188,7 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
             finishes=("normal", "reverse"),
             source_path="data-asia/SV/SV2a/025.ts",
             special_finishes=("poke_ball",),
+            card_names=(("ja", "ピカチュウ"), ("id", "Pikachu")),
         )
 
         with patch.object(
@@ -237,20 +205,10 @@ class FanaticsSourcePinnedJapaneseSetTests(unittest.TestCase):
         self.assertIsNone(recovered)
         downstream.assert_not_called()
 
-    def test_nonlocalized_alias_never_overwrites_conflicting_provider_labels(self):
-        alias = generalized.ExactSetAlias(
-            "ja",
-            "Strict Set",
-            "SV2a",
-            165,
-            allow_localized_name_mismatch=False,
-        )
-        coordinate = self._pikachu_coordinate()
-        self.assertIsNone(
-            source_sets._provider_labels_after_exact_alias(
-                self._pikachu_canonical(), coordinate=coordinate, alias=alias
-            )
-        )
+    def test_only_fanatics_aliases_opt_in_to_preserving_catalogue_names(self):
+        self.assertTrue(all(alias.preserve_catalog_name for alias in source_sets._SOURCE_ALIASES))
+        self.assertFalse(any(alias.preserve_catalog_name for alias in shared_aliases._ALIASES))
+        self.assertFalse(any(alias.preserve_catalog_name for alias in generalized._SET_ALIASES))
 
 
 if __name__ == "__main__":
