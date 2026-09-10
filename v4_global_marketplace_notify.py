@@ -511,11 +511,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     report["mode"] = MODE_ACTIVE if enabled else MODE_DRY
     report["notifications"] = enabled
     report["transactions"] = False
+    # Full per-candidate evidence is archived; the CLI prints only the compact
+    # discovery summary below, not hundreds of manifest rows.
+    report["magi_manifest"] = next(
+        (status.manifest for status in statuses if status.market == "magi" and hasattr(status, "manifest")),
+        None,
+    )
     report["marketplace_discovery"] = {
         "strategy": "MARKETPLACE_FIRST",
         "bootstrap_detects_edges": True,
         "baseline_then_incremental": True,
-        "scan_status": [asdict(status) for status in statuses],
+        "scan_status": [{key: value for key, value in asdict(status).items() if key != "manifest"}
+                        for status in statuses],
         "catalog_status": catalog_status,
         "discovery_state_status": discovery_state_status,
         "inventory": reconciliation,

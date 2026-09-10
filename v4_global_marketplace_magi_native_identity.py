@@ -326,6 +326,8 @@ def scan_magi_native_inventory(
     max_detail_pages: int = 200,
 ) -> tuple[list[MarketplaceListing], ScanStatus]:
     """One broad Magi inventory scan with catalog-native exact identity proof."""
+    from v4_global_marketplace_magi_rejection_probe import MagiManifest, MagiScanStatus, budget_snapshot
+
     try:
         asks = scan._magi_broad_rows(page)
     except Exception as error:
@@ -338,17 +340,21 @@ def scan_magi_native_inventory(
     alias_budget = _AliasBudget(multimarket._json_get, max_requests=_MAX_TCGDEX_ALIAS_REQUESTS)
     proof_cache: dict[tuple[str, str], retrieval_v3.JapaneseCatalogProof] = {}
     alias_cache: dict[str, tuple[Optional[Mapping[str, Any]], str]] = {}
+    manifest = MagiManifest(len(asks))
     try:
         for ask in asks[:limit]:
+            before = budget_snapshot(resolver, alias_budget)
             try:
                 detailed = retrieval_v1.magi_detail_only(page, ask)
             except Exception:
                 rejects["detail_error"] += 1
+                manifest.record(ask, "ERROR", "detail_error", before, budget_snapshot(resolver, alias_budget))
                 continue
 
             available, availability_reason = magi_hardening.magi_listing_availability_check(page, detailed)
             if not available:
                 rejects[availability_reason] += 1
+                manifest.record(ask, "NO_MATCH", availability_reason, before, budget_snapshot(resolver, alias_budget))
                 continue
 
             resolution = resolve_magi_native_identity(
@@ -358,6 +364,8 @@ def scan_magi_native_inventory(
                 proof_cache=proof_cache,
                 alias_cache=alias_cache,
             )
+            manifest.record(ask, resolution.status, resolution.reason, before,
+                            budget_snapshot(resolver, alias_budget), resolution)
             if resolution.status != "EXACT" or resolution.identity is None:
                 rejects[resolution.reason or resolution.status or "identity_unproven"] += 1
                 continue
@@ -385,7 +393,9 @@ def scan_magi_native_inventory(
     finally:
         resolver.close()
 
-    return output, ScanStatus(
+    for ask in asks[limit:]:
+        manifest.record(ask, "NOT_EVALUATED", "detail_cap", {}, {})
+    return output, MagiScanStatus(
         "magi",
         "OK",
         pages=1,
@@ -395,9 +405,11 @@ def scan_magi_native_inventory(
             "broad Pokemon PSA10 inventory query; Magi native full-number+set-code -> "
             "exact Japanese TCGdex -> same immutable card Latin projection; no per-card searches; "
             f"GCC identity catalog not required; tcgdex_ja_requests={resolver.requests_used}; "
-            f"tcgdex_alias_requests={alias_budget.requests_used}; rejects={dict(rejects)}"
+            f"tcgdex_alias_requests={alias_budget.requests_used}; rejects={dict(rejects)}; "
+            f"manifest_rows={len(manifest.rows)}; manifest_truncated={manifest.payload()['truncated']}"
         ),
         complete=len(asks) <= limit,
+        manifest=manifest.payload(),
     )
 
 
