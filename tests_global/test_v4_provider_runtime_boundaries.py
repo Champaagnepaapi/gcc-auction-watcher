@@ -7,13 +7,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from tests_global.test_v4_global_marketplace_cardova_exhaustive_capture import (
     FakeResponse, PagedFakePage, _row,
 )
 import v4_global_marketplace_cardova_exhaustive_capture as cardova
-
-ROOT = Path(__file__).resolve().parents[1]
-
 
 class LanePage(PagedFakePage):
     def __init__(self, scenario):
