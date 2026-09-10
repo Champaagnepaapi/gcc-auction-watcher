@@ -31,41 +31,43 @@ def _positive_int(value: object) -> int | None:
     return parsed if parsed >= 1 else None
 
 
-def _mapping_proves_last_page(value: object, *, depth: int = 0) -> bool:
-    if depth > 7:
-        return False
-    if isinstance(value, Mapping):
-        pairs = (
-            ("current_page", "last_page"),
-            ("currentPage", "lastPage"),
-            ("page", "total_pages"),
-            ("page", "totalPages"),
-            ("page", "pageCount"),
-            ("page_no", "total_page"),
-        )
-        for current_key, last_key in pairs:
-            current = _positive_int(value.get(current_key))
-            last = _positive_int(value.get(last_key))
-            if current is not None and last is not None and current >= last:
-                return True
+def _listing_envelopes(value: object, *, depth: int = 0):
+    """Keep a listing array attached to its own immediate pagination envelope."""
+    if depth > 6 or not isinstance(value, Mapping):
+        return
+    for key, rows in value.items():
+        if key in {"items", "list", "data", "results"} and isinstance(rows, list):
+            if rows and all(isinstance(row, Mapping) and base._looks_like_listing_row(row) for row in rows):
+                yield value, rows
+        elif isinstance(rows, Mapping):
+            yield from _listing_envelopes(rows, depth=depth + 1)
+
+
+def _envelope_proves_last_page(envelope: Mapping[str, Any], *, page_number: int) -> bool:
+    # Contradictory or unrelated nested metadata cannot establish completeness.
+    containers = [envelope]
+    for key in ("meta", "pagination"):
+        if isinstance(envelope.get(key), Mapping):
+            containers.append(envelope[key])
+    terminal = False
+    for value in containers:
         page_info = value.get("pageInfo")
-        if isinstance(page_info, Mapping) and page_info.get("hasNextPage") is False:
-            return True
-        for nested in value.values():
-            if _mapping_proves_last_page(nested, depth=depth + 1):
-                return True
-    elif isinstance(value, list):
-        for nested in value[:20]:
-            if _mapping_proves_last_page(nested, depth=depth + 1):
-                return True
-    return False
-
-
-def _payload_has_listing_rows(payload: object) -> bool:
-    for rows in base._row_lists(payload):
-        if any(base._looks_like_listing_row(row) for row in rows):
-            return True
-    return False
+        if isinstance(page_info, Mapping) and page_info.get("hasNextPage") is True:
+            return False
+        for current_key, last_key in (
+            ("current_page", "last_page"), ("currentPage", "lastPage"),
+            ("page", "total_pages"), ("page", "totalPages"),
+            ("page", "pageCount"), ("page_no", "total_page"),
+        ):
+            if current_key not in value and last_key not in value:
+                continue
+            current, last = _positive_int(value.get(current_key)), _positive_int(value.get(last_key))
+            if current != page_number or last != current:
+                return False
+            terminal = True
+    # A bare hasNextPage flag has no page coordinate. Preserve partial coverage
+    # until the provider supplies a bound numeric page, even when it says false.
+    return terminal
 
 
 def capture_cardova_public_inventory_exhaustive(
@@ -81,11 +83,17 @@ def capture_cardova_public_inventory_exhaustive(
     raw_rows = 0
     pages_visited = 0
     current_lane = ""
+    current_page = 0
+    requests_seen: set[int] = set()
     lane_complete = {"auction": False, "fixed": False}
+
+    def on_request(request: Any) -> None:
+        if current_lane and len(requests_seen) < 500:
+            requests_seen.add(id(request))
 
     def on_response(response: Any) -> None:
         nonlocal json_responses, raw_rows
-        if not base._safe_cardova_get(response):
+        if not base._safe_cardova_get(response) or getattr(response, "status", None) != 200:
             return
         try:
             headers = response.headers
@@ -99,7 +107,6 @@ def capture_cardova_public_inventory_exhaustive(
         except Exception:
             return
         json_responses += 1
-        has_listing_rows = _payload_has_listing_rows(payload)
         for rows in base._row_lists(payload):
             for row in rows:
                 if not base._looks_like_listing_row(row):
@@ -114,12 +121,14 @@ def capture_cardova_public_inventory_exhaustive(
                 kind = base._listing_type(clean.get("listing_type"))
                 target = auction if kind == 1 else fixed
                 target[ulid] = clean
-        # Pagination metadata can only prove completeness on a response that is
-        # demonstrably carrying Cardova listing rows for the currently visited
-        # lane. Unrelated Cardova JSON cannot close the lane.
-        if current_lane and has_listing_rows and _mapping_proves_last_page(payload):
-            lane_complete[current_lane] = True
+        if current_lane and id(response.request) in requests_seen:
+            kind = 1 if current_lane == "auction" else 4
+            for envelope, rows in _listing_envelopes(payload):
+                if all(base._listing_type(row.get("listing_type")) == kind for row in rows):
+                    if _envelope_proves_last_page(envelope, page_number=current_page):
+                        lane_complete[current_lane] = True
 
+    page.on("request", on_request)
     page.on("response", on_response)
     try:
         lanes = (
@@ -129,6 +138,8 @@ def capture_cardova_public_inventory_exhaustive(
         for lane, url in lanes:
             current_lane = lane
             for page_number in range(1, max(1, int(max_pages_each)) + 1):
+                current_page = page_number
+                requests_seen.clear()
                 page.goto(base._page_url(url, page_number), wait_until="domcontentloaded", timeout=25000)
                 pages_visited += 1
                 page.wait_for_timeout(max(0, int(settle_ms)))
@@ -153,6 +164,11 @@ def capture_cardova_public_inventory_exhaustive(
         )
     finally:
         current_lane = ""
+        requests_seen.clear()
+        try:
+            page.remove_listener("request", on_request)
+        except Exception:
+            pass
         try:
             page.remove_listener("response", on_response)
         except Exception:

@@ -11,6 +11,7 @@ class FakeResponse:
         self._payload = payload
         self.url = "https://api.cardova.co.jp/public/list"
         self.request = SimpleNamespace(method="GET")
+        self.status = 200
         self.headers = {"content-type": "application/json"}
 
     def json(self):
@@ -21,14 +22,21 @@ class PagedFakePage:
     def __init__(self, payloads_by_page):
         self.payloads_by_page = payloads_by_page
         self.handler = None
+        self.request_handler = None
         self.visited = []
 
     def on(self, event, handler):
+        if event == "request":
+            self.request_handler = handler
+            return
         if event != "response":
             raise AssertionError(event)
         self.handler = handler
 
     def remove_listener(self, event, handler):
+        if event == "request":
+            self.request_handler = None
+            return
         if event != "response":
             raise AssertionError(event)
         if self.handler is handler:
@@ -41,7 +49,16 @@ class PagedFakePage:
             page_number = int(url.split("page=", 1)[1].split("&", 1)[0])
         if self.handler:
             for payload in self.payloads_by_page.get(page_number, []):
-                self.handler(FakeResponse(payload))
+                # Real browser lifecycle and lane-specific inventory envelope.
+                import copy
+                payload = copy.deepcopy(payload)
+                if "/auction" in url:
+                    for rows in target.base._row_lists(payload):
+                        for row in rows:
+                            row["listing_type"] = 1
+                response = FakeResponse(payload)
+                self.request_handler(response.request)
+                self.handler(response)
 
     def wait_for_timeout(self, _milliseconds):
         return None
@@ -111,7 +128,7 @@ class CardovaExhaustiveCaptureTests(unittest.TestCase):
         self.assertFalse(result.complete)
         self.assertEqual(result.pages_visited, 6)
 
-    def test_graphql_has_next_false_is_explicit_completion_proof(self):
+    def test_graphql_has_next_false_without_page_coordinate_stays_incomplete(self):
         payload = {
             "data": {
                 "items": [_row("one")],
@@ -122,7 +139,7 @@ class CardovaExhaustiveCaptureTests(unittest.TestCase):
         result = target.capture_cardova_public_inventory_exhaustive(
             page, max_pages_each=12, settle_ms=0
         )
-        self.assertTrue(result.complete)
+        self.assertFalse(result.complete)
 
 
 if __name__ == "__main__":

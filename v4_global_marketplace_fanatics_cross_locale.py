@@ -32,6 +32,7 @@ _SET_CODE_RE = re.compile(
 _MAX_ALIAS_NAMES = 4
 _CROSS_LOCALE_NAME_LANGUAGE = "id"
 _ORIGINAL_RESOLVER = None
+_INSTALLED = False
 
 
 def _set_payload(card: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -359,7 +360,9 @@ def resolve_fanatics_native_identity_with_cross_locale(
 
 
 def install_global_marketplace_fanatics_cross_locale() -> None:
-    global _ORIGINAL_RESOLVER
+    global _ORIGINAL_RESOLVER, _INSTALLED
+    if _INSTALLED:
+        return
     current = v3.resolve_fanatics_native_identity_v3
     if getattr(current, "_fanatics_cross_locale_installed", False):
         v3.install_global_marketplace_fanatics_native_v3()
@@ -368,3 +371,4 @@ def install_global_marketplace_fanatics_cross_locale() -> None:
     resolve_fanatics_native_identity_with_cross_locale._fanatics_cross_locale_installed = True  # type: ignore[attr-defined]
     v3.resolve_fanatics_native_identity_v3 = resolve_fanatics_native_identity_with_cross_locale
     v3.install_global_marketplace_fanatics_native_v3()
+    _INSTALLED = True
