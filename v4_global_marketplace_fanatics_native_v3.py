@@ -312,7 +312,8 @@ def scan_fanatics_native_inventory_v3(
     scroll_rounds: int = 20,
 ) -> tuple[list[MarketplaceListing], ScanStatus]:
     try:
-        urls, rounds = v2._fanatics_pokemon_urls(page, scroll_rounds=scroll_rounds)
+        collection = v2._fanatics_pokemon_urls(page, scroll_rounds=scroll_rounds)
+        urls, rounds = collection
     except Exception as error:
         return [], ScanStatus("fanatics", "ERROR", detail=type(error).__name__, complete=False)
 
@@ -362,15 +363,15 @@ def scan_fanatics_native_inventory_v3(
 
     return output, ScanStatus(
         "fanatics",
-        "OK",
+        "UNAVAILABLE" if collection.state == "UNAVAILABLE" else "OK",
         pages=rounds,
         candidates=len(urls),
         exact=len(output),
         detail=(
             "broad Pokemon marketplace retrieval; explicit language+PSA+collector coordinate -> exact TCGdex; "
-            f"GCC identity catalog not required; rejects={dict(rejects)}"
+            f"GCC identity catalog not required; rejects={dict(rejects)}; {collection.detail}"
         ),
-        complete=len(urls) <= limit,
+        complete=collection.complete and len(urls) <= limit,
     )
 
 
