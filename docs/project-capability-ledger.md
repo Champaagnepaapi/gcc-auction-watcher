@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **7 septembre 2026**. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel re-vérifié le **10 septembre 2026**. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`, `DRAFT_VALIDATION`.
 
@@ -8,13 +8,15 @@ Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`,
 
 ```text
 V4 production branch             : main
-V4 main HEAD docs                : 85f429e2eec6f810e53f7fcbc00d77f2da525c75
-V4 production code HEAD #261     : 24230552d52574e2769c21dcfa84ba11320da2cf
+V4 main HEAD                     : b43dec6084f341b2b52301a4f0542d6f616cf1e2
+V4 production code HEAD #266     : 761b5e980aeaf63833f574127fbe1ff4728f86b4
 External fair-value authority    : #255 / PROD_V4
 Integrated recall/source roles   : #259 / PROD_V4
 TCGdex constrained name recovery : #260 / PROD_V4
 Cross-grader calibration         : #261 / PROD_V4
 CA -> PSA recall tuning          : #263 / haircut 35 %
+TCGdex Rainbow microvariant      : #266 / PROD_V4
+Global provider hardening        : #268 / DRAFT_VALIDATION / NON MERGED
 Auction pagination preservation  : #245 / PROD_V4
 Auction recovery capacity        : #229/#231 / PROD_V4 / adaptive sizing / hard cap 250
 Auction order hardening          : #211/#212 / PROD_V4
@@ -34,7 +36,7 @@ TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 
 ---
 
-# Production actuelle — #255 + #259 + #260 + #261 + tuning #263
+# Production actuelle — #255 + #259 + #260 + #261 + #263 + #266
 
 ## #255 — external fair-value authority — `PROD_V4`
 
@@ -79,6 +81,45 @@ Merge runtime #261 `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs ma
 - déduplication cross-market v2.
 
 Validation #261 code `c58aa4c...`, run `34092254431` SUCCESS, tests ciblés + suite V4 + compile/YAML/diff-check + comparaison live read-only PASS. #263 conserve des régressions dédiées Glaceon/Riolu et un cas de recall à la frontière ; le head exact doit rester CI-vert avant merge.
+
+## #266 — TCGdex Rainbow microvariant — `PROD_V4`
+
+Rainbow reste une microvariante matérielle, jamais un simple alias Holo. Set/langue/localId/dénominateur/nom doivent être exacts et `variants_detailed` doit prouver `type=holo + foil=rainbow`; toute absence, autre foil ou contradiction reste fail-closed. Merge production : `761b5e980aeaf63833f574127fbe1ff4728f86b4`; closeout `main` : `b43dec6084f341b2b52301a4f0542d6f616cf1e2`.
+
+---
+
+# #268 — Global provider coverage hardening — `DRAFT_VALIDATION`
+
+PR #268 reste **OPEN / DRAFT / NON MERGED**, branche `fix/v4-global-coverage-losses-20260907`, base `main@b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Le runtime validé avant closeout docs est `e51de1e924ef9090190dba1107924d6b345ea06d`.
+
+Capacités validées sur cette branche :
+
+- Fanatics : aliases TCGdex japonais reviewés strictement provider-only ; aucun nom de listing ne peut remplacer le nom catalogue pour fabriquer un `EXACT` ;
+- Master Ball/Poke Ball : preuve source immuable obligatoire, échec/contradiction terminal, représentation commune `finish=reverse` + `variant=master_ball|poke_ball` ;
+- le cas historique Pikachu `SV2a-025` est couvert par un test runtime V2+V3 avec pin `af33c9ac882e2acfadffaf19e8083aa976d12983`, mais l'annonce n'était plus dans le dernier échantillon live ;
+- Fanatics collection : zéro URL non prouvé ne devient plus `complete=true`; états et diagnostics HTTP/DOM/observations restent bornés ;
+- Magi : manifeste final borné à 200 lignes sans requête supplémentaire. Les bornes de recovery de #268 sont `50 total / 35 broad / 15 réserve exacte` ; **elles sont candidate-only et ne remplacent pas les bornes production #178 tant que #268 n'est pas mergée** ;
+- Auction compare : états `RESOLVED`, `ENDED`, `UNKNOWN`, `INSPECTION_ERROR` séparés ; `ENDED` nécessite une preuve structurée propre à l'item et ne constitue jamais une vente SOLD ;
+- Cardova : la pagination publique reste fail-closed sur la complétude ;
+- PriceCharting : les erreurs HTTP 403 restent `PROVIDER_ERROR`; aucun bypass/WAF workaround.
+
+Validation automatique du head runtime `e51de1e924ef9090190dba1107924d6b345ea06d` :
+
+- Global `34471762196` SUCCESS : Global offline `506` PASS ; live Fanatics `24/0` avec HTTP 200/`RESULTS_STABLE`, Magi `32/93` avec manifeste `93/93`, recovery `48/50`, broad `35`, réserve `15`, PriceCharting `24/0` avec HTTP 403, notifications `0`, safety contract PASS ;
+- Fanatics avant/après : par rapport au run `34276645596` à `2/24`, les anciens exacts Gengar Web 1st Edition et Rocket's Moltres ex sont absents ; 20 URL sorties, 20 nouvelles, 4 communes inchangées en `NO_MATCH / explicit_language_unproven`. Aucun `EXACT -> rejet` observé ;
+- Auction `34471762199` SUCCESS : `1002` tests, `2` skipped, compile/YAML/diff-check PASS, live `310 effectifs / 294 legacy`, `legacy missing=0`, unresolved timers `0` ;
+- Cardova `34471762219` SUCCESS, complétude non prouvée conservée `false`.
+
+Limitations connues / suite séparée :
+
+- le Pikachu historique n'est pas live-revalidé parce qu'il a quitté l'échantillon Fanatics ;
+- PriceCharting reste inaccessible en live public (HTTP 403), sans contournement autorisé ;
+- audit P5 : durcir l'admissibilité identité PriceCharting avant tout `MATCHED` ;
+- audit P6 : faire passer le chemin PPT reviewed-set par le même gate canonique strict ;
+- audit P7 : rendre la chaîne d'installers Fanatics idempotente/acyclique ;
+- audit P8 : lier toute preuve de fin de pagination Cardova à la bonne enveloppe/lane.
+
+Aucun de P5–P8 n'est revendiqué corrigé par ce closeout. PR #8/V5, Robot KB/Neon et les sémantiques SOLD/ASK restent séparés.
 
 ---
 
@@ -204,7 +245,7 @@ PostgreSQL local Mac actif, `V4_USE=false`, Neon writers automatiques OFF. Obser
 
 # V5 / non-production
 
-PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié historiquement `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`. Ne jamais merger PR #8 dans `main` sans autorisation explicite.
+PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` le 10 septembre 2026. Ne jamais merger PR #8 dans `main` sans autorisation explicite.
 
 ---
 
@@ -228,7 +269,9 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié historiquement `bc6
 - #259 : intégration production canonique recall/source-role/Global/Japan ;
 - #260 : recovery TCGdex contraint production ;
 - #261 : calibration cross-grader production ;
-- #263 : tuning CA→PSA 35 % de la lane de revue cross-grader, sans changement du floor 30 % ni des règles d'identité.
+- #263 : tuning CA→PSA 35 % de la lane de revue cross-grader, sans changement du floor 30 % ni des règles d'identité ;
+- #266 : Rainbow source-proven en production ;
+- #268 : `DRAFT_VALIDATION`, provider coverage/hardening validé sur branche mais non mergé.
 
 ---
 
