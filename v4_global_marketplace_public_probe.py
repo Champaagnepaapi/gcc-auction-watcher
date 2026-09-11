@@ -99,8 +99,12 @@ def inspect_public_item(page, url):
         if (urlsplit(page.url).hostname, urlsplit(page.url).path) != (urlsplit(url).hostname, urlsplit(url).path):
             result["state"] = "UNEXPECTED_REDIRECT"
             return result
-        page.wait_for_timeout(1500)
-        snapshot = page.evaluate(PRODUCT_SNAPSHOT)
+        snapshot = {}
+        for _ in range(3):
+            page.wait_for_timeout(3000)
+            snapshot = page.evaluate(PRODUCT_SNAPSHOT)
+            if snapshot.get("title") and snapshot.get("product"):
+                break
         product = snapshot.get("product") or {}
         result["title"] = str(snapshot.get("title") or "")[:240]
         result["product_count"] = snapshot.get("product_count")

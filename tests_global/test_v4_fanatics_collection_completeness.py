@@ -57,6 +57,12 @@ def runtime_case(method):
 
 
 class FanaticsCollectionTests(unittest.TestCase):
+    @runtime_case
+    def test_stable_results_without_total_are_not_exhaustive(self):
+        result = v2._fanatics_pokemon_urls(Page([{'container_present': True, 'hrefs': [URL]}]), scroll_rounds=8)
+        self.assertEqual(result.urls, [URL])
+        self.assertFalse(result.complete)
+
     @classmethod
     def setUpClass(cls):
         if os.environ.get("FANATICS_COLLECTION_CHILD") != "1":

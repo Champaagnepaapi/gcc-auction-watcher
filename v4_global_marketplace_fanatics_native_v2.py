@@ -350,7 +350,9 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
         # explicit main-content state within the existing bounded scroll loop.
         stable = stable + 1 if container and found and len(found) == previous else 0
         if stable >= 2:
-            return result("RESULTS", "RESULTS_STABLE", True)
+            # A stable viewport is not a provider inventory count or an end
+            # cursor. Retain these results without declaring the sweep complete.
+            return result("RESULTS", "RESULTS_STABLE_WITHOUT_PAGINATION_PROOF")
         if container and found:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(850)

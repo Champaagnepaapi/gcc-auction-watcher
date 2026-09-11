@@ -19,6 +19,13 @@ class Page:
 
 
 class PublicProbeTests(unittest.TestCase):
+    def test_product_waits_for_explicit_late_content(self):
+        page = Page(snapshots=[{}, {}, {"title": "Pikachu PSA10", "product": {"name": "Pikachu"}}])
+        result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")
+        self.assertEqual(result["state"], "PRODUCT_OBSERVED")
+        self.assertEqual(len(page.waits), 3)
+        self.assertLessEqual(sum(page.waits), 9000)
+
     def test_product_probe_retains_only_allowlisted_public_item_fields(self):
         page = Page(snapshots=[{"title": "Pikachu PSA10", "product": {"name": "Pikachu", "description": "do not copy", "seller": "do not copy", "offers": {"price": "1000", "priceCurrency": "JPY", "availability": "https://schema.org/InStock", "payment": "do not copy"}}, "fields": {"商品の状態": "未使用", "配送の方法": "匿名配送", "account": "do not copy"}}])
         result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")
