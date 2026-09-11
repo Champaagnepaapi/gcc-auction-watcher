@@ -454,6 +454,45 @@ def _notify(
     }
 
 
+def pipeline_report(statuses, cards):
+    """Per-market stage counts from existing results; no provider work or I/O."""
+    output = {}
+    for status in statuses:
+        output[status.market] = {
+            "discovery_status": status.status, "candidates": status.candidates,
+            "discovered_identities": status.exact, "pages": status.pages,
+            "pagination_complete": status.complete, "selected": 0,
+            "canonical_exact": 0, "value_matched": 0, "cost_unproven": 0,
+            "would_notify": 0, "canonical_statuses": {}, "valuation_statuses": {},
+            "decisions": {},
+        }
+    for card in cards:
+        confirmation = card.get("economic_confirmation") or {}
+        canonical = (confirmation.get("external_canonical") or {}).get("status", "NOT_EVALUATED")
+        decision = confirmation.get("decision") or {}
+        for offer in card.get("offers", []):
+            market = output.get(offer.get("market"))
+            if market is None:
+                continue
+            market["selected"] += 1
+            market["canonical_exact"] += canonical == "EXACT"
+            market["cost_unproven"] += offer.get("all_in_eur") is None
+            market["canonical_statuses"][canonical] = market["canonical_statuses"].get(canonical, 0) + 1
+            matched = False
+            for provider in ("ppt", "poketrace", "pricecharting"):
+                state = (confirmation.get(provider) or {}).get("status", "NOT_EVALUATED")
+                key = f"{provider}:{state}"
+                market["valuation_statuses"][key] = market["valuation_statuses"].get(key, 0) + 1
+                matched = matched or state == "MATCHED"
+            market["value_matched"] += matched
+            state = decision.get("status", "NOT_EVALUATED")
+            market["decisions"][state] = market["decisions"].get(state, 0) + 1
+            market["would_notify"] += bool(decision.get("would_notify")
+                and decision.get("best_market") == offer.get("market")
+                and decision.get("source_url") == offer.get("source_url"))
+    return output
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     enabled = _enabled()
     if enabled and not os.getenv("NTFY_TOPIC", "").strip():
@@ -540,6 +579,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "PriceCharting exact PSA10 guide fallback",
         ],
         "direct_ebay_sold_is_valuation_source": False,
+        "provider_pipeline": pipeline_report(statuses, report.get("cards", [])),
     }
     report["notification_delivery"] = delivery
     report["safety"] = {

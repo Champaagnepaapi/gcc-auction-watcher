@@ -237,6 +237,9 @@ jobs:
             --browser-scroll-rounds 15 \
             --comc-pages 10
 
+      - name: Probe unwired Japan public surfaces read-only
+        run: python v4_global_marketplace_public_probe.py
+
       - name: Assert live safety contract
         run: |
           python - <<'PY'

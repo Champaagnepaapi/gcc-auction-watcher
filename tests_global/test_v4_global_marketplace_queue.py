@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 
 import v4_global_marketplace_discovery as discovery
@@ -32,6 +33,30 @@ def _listing(source_id: str, name: str, number: str, price: float):
 
 
 class MarketplaceQueueTests(unittest.TestCase):
+    def test_bootstrap_visits_every_market_before_second_market_turn(self):
+        markets = ("gcc", "fanatics", "comc", "magi", "cardova", "mercari", "snkrdunk")
+        listings = [_listing(str(i), "Pikachu", "173/165", 10 + i) for i in range(60)]
+        listings += [replace(_listing(m, "Mewtwo", "183/165", 500), market=m,
+                             currency="JPY") for m in markets[1:]]
+        state, _ = queue.reconcile_inventory_with_attempts(
+            discovery.empty_discovery_state(), listings, observed_at=NOW)
+        current = {listing.stable_key: listing for listing in listings}
+        chosen, keys = queue.select_pending_fair_round_robin(state, current, limit=7)
+        self.assertEqual({listing.market for listing in chosen}, set(markets))
+        self.assertEqual(len(keys), 7)
+        self.assertEqual(sum(state["attempts"].values()), 7)
+
+    def test_market_round_robin_preserves_unattempted_before_retry(self):
+        fresh = [_listing(str(i), "Pikachu", "173/165", 10) for i in range(8)]
+        retry = replace(fresh[0], market="magi")
+        listings = fresh + [retry]
+        state, _ = queue.reconcile_inventory_with_attempts(
+            discovery.empty_discovery_state(), listings, observed_at=NOW)
+        state["attempts"][retry.stable_key] = 1
+        chosen, _ = queue.select_pending_fair_round_robin(
+            state, {r.stable_key: r for r in listings}, limit=7)
+        self.assertNotIn(retry, chosen)
+
     def test_attempts_survive_save_and_reload(self):
         listing = _listing("a", "Pikachu", "173/165", 50)
         state, _ = queue.reconcile_inventory_with_attempts(
