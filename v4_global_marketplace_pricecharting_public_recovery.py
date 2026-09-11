@@ -290,13 +290,13 @@ def _lookup_public_with_numerator_recovery(
     identity_text = _product_identity_text(product_html, body)
     pseudo_detail = {
         "id": product_url,
-        "product-name": identity_text,
-        "console-name": f"{urlsplit(product_url).path.replace('/', ' ').replace('-', ' ')} {identity_text}",
+        "product-name": pc._html_text(h1.group(1)).strip() if (h1 := re.search(r"(?is)<h1\b[^>]*>(.*?)</h1>", product_html)) else "",
+        "console-name": pc.strict_identity.category_from_url(product_url),
     }
-    if _candidate_has_number_conflict(lot, pseudo_detail):
+    if _candidate_has_number_conflict(lot, dict(pseudo_detail, **{"product-name": identity_text})):
         return pc.PriceChartingLookup("CLEAN_NO_MATCH", product_id=product_url, note="coordonnée imprimée PriceCharting en conflit")
     detail_match = pc._score_candidate(lot, pseudo_detail)
-    if detail_match.score < self.config.minimum_match_score:
+    if not pc.strict_identity.exact_identity(lot, pseudo_detail) or detail_match.score < self.config.minimum_match_score:
         return pc.PriceChartingLookup("CLEAN_NO_MATCH", product_id=product_url, note="identité page publique PriceCharting non prouvée")
     value = pc._public_guide_value(body, price_key)
     if value is None or value <= 0:

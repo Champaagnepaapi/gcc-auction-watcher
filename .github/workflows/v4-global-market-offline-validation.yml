@@ -26,6 +26,7 @@ on:
       - "v4_tcgdex_japanese_set_aliases.py"
       - "v4_poketrace_market_retrieval.py"
       - "v4_pricecharting_valuation.py"
+      - "v4_pricecharting_identity.py"
       - "v4_global_rejection_diagnostics.py"
       - "v4_global_retrieval_hardening.py"
       - "v4_global_retrieval_hardening_v2.py"
@@ -98,6 +99,7 @@ jobs:
           python -m py_compile v4_tcgdex_japanese_set_aliases.py
           python -m py_compile v4_poketrace_market_retrieval.py
           python -m py_compile v4_pricecharting_valuation.py
+          python -m py_compile v4_pricecharting_identity.py
           python -m py_compile v4_global_rejection_diagnostics.py
           python -m py_compile v4_global_retrieval_hardening.py
           python -m py_compile v4_global_retrieval_hardening_v2.py

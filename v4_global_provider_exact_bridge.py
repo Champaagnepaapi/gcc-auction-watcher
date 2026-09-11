@@ -208,7 +208,8 @@ def _ppt_candidate_matches(
         expected_number=canonical.full_number,
     ):
         return False
-    return ppt._variant_compatible(identity, row)
+    # Retrieval aliases do not bypass the reviewed/dynamic canonical material gate.
+    return ppt._canonical_variant_compatible(identity, canonical, row)
 
 
 def global_ppt_match_canonical(
