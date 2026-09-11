@@ -103,7 +103,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
         self.assertFalse(recovery._validate_reference_for_alias("023/SVP", alias))
         self.assertFalse(recovery._validate_reference_for_alias("023", alias))
 
-    def test_jolteon_japanese_coordinate_can_be_proven_without_localized_name(self) -> None:
+    def test_jolteon_japanese_coordinate_without_source_name_is_blocked(self) -> None:
         lot = self._lot(
             name="Jolteon V",
             card_set="Eevee Heroes",
@@ -127,13 +127,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             expected_count=69,
             allow_localized_name_mismatch=True,
         )
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.status, "EXACT")
-        self.assertEqual(result.card_id, "S6a-030")
-        self.assertEqual(result.name, "Jolteon V")
-        self.assertEqual(result.reason, "TCGDEX_EXACT_SET_LOCALID")
-        self.assertFalse(result.unique_name_number)
+        self.assertIsNone(result)
 
     def test_japanese_coordinate_rejects_wrong_set_localid_or_count(self) -> None:
         lot = self._lot(
@@ -153,7 +147,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
         kwargs = dict(
             language_code="ja",
             listing_set="Brilliant Stars",
-            listing_name="Charizard VStar",
+            listing_name="リザードンVSTAR",
             expected_set_id="S9",
             expected_count=100,
             allow_localized_name_mismatch=True,

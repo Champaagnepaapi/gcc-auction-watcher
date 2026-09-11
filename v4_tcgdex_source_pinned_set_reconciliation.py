@@ -82,6 +82,19 @@ def _recover_from_immutable_source(
         if proof is None:
             continue
 
+        # A finish proof proves the set import and printing, not the listing's
+        # name. Recovery must independently find that name in this card's root
+        # name map, with the requested language present. Never mint an EXACT
+        # canonical by copying an unverified supplier name into it.
+        source_names = dict(proof.card_names)
+        if not source_names.get(language_code):
+            continue
+        name_key = generalized._norm_text(listing_name)
+        proven_name = next((name for name in source_names.values()
+                            if name_key and generalized._norm_text(name) == name_key), "")
+        if not proven_name:
+            continue
+
         finishes = set(proof.finishes)
         variants = {
             key: key in finishes
@@ -95,6 +108,7 @@ def _recover_from_immutable_source(
         )
         return replace(
             candidate,
+            name=proven_name,
             variants=variants,
             reason="TCGDEX_SOURCE_PINNED_SET_RECONCILED",
         )

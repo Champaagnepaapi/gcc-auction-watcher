@@ -26,8 +26,8 @@ class ExactSetAlias:
     allow_localized_name_mismatch: bool = False
     provenance: str = ""
     # Fanatics validates localized aliases independently against pinned names.
-    # Keep the actual catalogue name for that final check; shared aliases retain
-    # their existing behavior unless they explicitly opt in.
+    # Keep the actual catalogue name for that final check. Shared aliases must
+    # prove the name here; a reviewed set is never a reviewed card-name alias.
     preserve_catalog_name: bool = False
 
 
@@ -160,11 +160,18 @@ def _transient_status(status: int) -> bool:
     return status in {0, 408, 425, 429} or status >= 500
 
 
+def _name_key(value: Any) -> str:
+    text = _norm_text(value)
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text):
+        return " ".join("".join(ch if ch.isalnum() else " " for ch in text).split())
+    return canonical._normalize(text)
+
+
 def _name_candidates(listing_name: str) -> set[str]:
-    normalized = canonical._normalize(listing_name)
+    normalized = _name_key(listing_name)
     candidates = {normalized} if normalized else set()
     for suffix in _DISPLAY_SUFFIXES:
-        normalized_suffix = canonical._normalize(suffix)
+        normalized_suffix = _name_key(suffix)
         if normalized and normalized_suffix and normalized.endswith(f" {normalized_suffix}"):
             base = normalized[: -(len(normalized_suffix) + 1)].strip()
             if base:
@@ -173,7 +180,7 @@ def _name_candidates(listing_name: str) -> set[str]:
 
 
 def _card_name_compatible(listing_name: str, card: Mapping[str, Any]) -> bool:
-    candidate_name = canonical._normalize(card.get("name"))
+    candidate_name = _name_key(card.get("name"))
     return bool(candidate_name and candidate_name in _name_candidates(listing_name))
 
 
@@ -223,20 +230,17 @@ def _canonical_from_coordinate(
     if expected_count is not None and not _set_count_matches(set_payload, expected_count):
         return None
 
-    if not allow_localized_name_mismatch and not _card_name_compatible(listing_name, card):
+    # Fanatics has a separate final pinned-name gate. Every shared recovery
+    # must prove the name here, regardless of the reviewed set alias flag.
+    if not preserve_catalog_name and not _card_name_compatible(listing_name, card):
         return None
 
     returned_name = str(card.get("name") or "").strip()
-    if preserve_catalog_name:
-        prefix = f"{expected_set_id}-"
-        if not returned_name or not card_id.startswith(prefix):
-            return None
-        if not _same_local_id(card_id[len(prefix):], local_id):
-            return None
-    canonical_name = (
-        listing_name if allow_localized_name_mismatch and not preserve_catalog_name
-        else returned_name
-    )
+    prefix = f"{expected_set_id}-"
+    if not returned_name or not card_id.startswith(prefix):
+        return None
+    if not _same_local_id(card_id[len(prefix):], local_id):
+        return None
     result = canonical.CanonicalCard(
         status="EXACT",
         card_id=card_id,
@@ -245,9 +249,7 @@ def _canonical_from_coordinate(
         set_name=listing_set,
         local_id=local_id,
         full_number=reference,
-        # Japanese aliases preserve the GCC/romanized name because TCGdex ja may
-        # have only a localized name or, for some coordinates, no ja name at all.
-        name=canonical_name,
+        name=returned_name,
         language_code=language_code,
         pricing=card.get("pricing") if isinstance(card.get("pricing"), Mapping) else {},
         variants=card.get("variants") if isinstance(card.get("variants"), Mapping) else {},

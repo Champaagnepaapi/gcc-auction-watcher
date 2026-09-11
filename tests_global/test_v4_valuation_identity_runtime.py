@@ -59,8 +59,14 @@ def run_case(case):
                 payload = [row]
             else:
                 status = 404
-            if case.endswith("unresolved"):
+            if case.endswith("unresolved") or case.startswith(("source_alias_", "rest_alias_")):
                 status, payload = 404, {}
+                if case.startswith(("source_alias_", "rest_alias_")) and path.endswith(("/cards", "/sets")):
+                    status, payload = 200, []
+                if case.startswith("rest_alias_") and path.endswith("/ja/sets/SV8/112"):
+                    status, payload = 200, {"id": "SV8-112", "localId": "112", "name": "レアコイル",
+                        "set": {"id": "SV8", "name": "超電ブレイカー", "cardCount": {"official": 106}},
+                        "variants": {"holo": True}}
         elif host == "www.pokemonpricetracker.com":
             row = {"id": "fixture-ppt", "name": "Pikachu", "setName": "151",
                    "setId": "23599", "cardNumber": "25/165", "language": "japanese",
@@ -97,6 +103,11 @@ def run_case(case):
             payload = {"data": [row]}
         elif host == "raw.githubusercontent.com":
             status = 404
+            if case.startswith("source_alias_") and path.endswith("/data-asia/SV/SV8/112.ts"):
+                # Relevant root-name / finish fields of immutable SV8-112
+                # (af33c9ac): レアコイル, never ピカチュウ.
+                status = 200
+                payload = 'import Set from "../SV8";\nconst card: Card = {\n set: Set,\n name: {ja: "レアコイル"},\n variants: [{type: "holo"}]\n};'
         else:
             raise AssertionError(f"Unexpected HTTP boundary {host} {path}")
         response = requests.Response()
@@ -119,6 +130,12 @@ def run_case(case):
         from v4_global_market_core import CommercialIdentity
         identity = CommercialIdentity("Pikachu", "151", "25/165", "ja", "PSA", "10")
         lot = econ._lot_for_identity(identity)
+        if case.startswith(("source_alias_", "rest_alias_")):
+            identity = CommercialIdentity("レアコイル" if case.endswith("_valid") else "ピカチュウ", "Super Electric Breaker", "112/106", "ja", "PSA", "10")
+            lot, canonical = econ.resolve_global_canonical(identity)
+            print(case, canonical)
+            assert (canonical.status == "EXACT") == case.endswith("_valid"), canonical
+            return
         if case.startswith("pc_"):
             import v4_pricecharting_valuation as pc
             if case.endswith(("wrong_variant", "both_variants", "missing_variant", "valid_variant")):
@@ -179,6 +196,10 @@ for scenario in ("valid", "wrong_name", "wrong_set", "wrong_catalog", "wrong_den
 for scenario in ("valid", "wrong_set", "both_editions", "both_balls"):
     case = "pt_gate_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for route in ("source_alias_", "rest_alias_"):
+    for scenario in ("valid", "wrong_name"):
+        case = route + scenario
+        setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 
 if __name__ == "__main__":
     if len(sys.argv) == 2:
