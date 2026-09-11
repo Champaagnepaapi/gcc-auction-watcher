@@ -87,7 +87,7 @@ class TestV4TCGdexRun1054SetAliases(unittest.TestCase):
                 self.assertEqual(alias.allow_localized_name_mismatch, localized)
                 self.assertTrue(generalized._validate_reference_for_alias(reference, alias))
 
-    def test_all_seven_run1054_coordinates_pass_exact_coordinate_proof(self) -> None:
+    def test_run1054_coordinates_do_not_prove_unreviewed_name_translations(self) -> None:
         cases = (
             ("Clamiral de Hisui", "SWSH Promo", "SWSH207", "French", 2022, "swshp", 307, "Clamiral de Hisui", False),
             ("Dedenne", "VMAX Climax", "200/184", "Japanese", 2021, "S8b", 184, "デデンネ", True),
@@ -123,6 +123,17 @@ class TestV4TCGdexRun1054SetAliases(unittest.TestCase):
                     expected_count=count,
                     allow_localized_name_mismatch=localized,
                 )
+                if localized:
+                    self.assertIsNone(result)
+                    # The same coordinate is usable when the observed name is
+                    # actually present in the supplied catalogue projection.
+                    result = generalized._canonical_from_coordinate(
+                        lot, self._card(card_id=f"{set_id}-{local_id}", local_id=local_id,
+                            name=provider_name, set_id=set_id, count=count),
+                        language_code="ja", listing_set=card_set, listing_name=provider_name,
+                        expected_set_id=set_id, expected_count=count,
+                        allow_localized_name_mismatch=localized,
+                    )
                 self.assertIsNotNone(result)
                 assert result is not None
                 self.assertEqual(result.status, "EXACT")

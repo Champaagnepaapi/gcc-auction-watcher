@@ -111,7 +111,7 @@ class TcgdexNameFilteredCoordinateRecoveryTests(unittest.TestCase):
         self.assertEqual(result.status, "EXACT")
         self.assertEqual(result.card_id, "base1-53")
 
-    def test_fuzzy_name_recovers_one_unique_exact_coordinate_candidate(self):
+    def test_approximate_name_cannot_bypass_final_coordinate_name_proof(self):
         lot = watcher.Lot(
             url="https://gradedcardcenter.com/item/brocks-ninetales",
             title="PSA 9 Brock Ninetales",
@@ -152,10 +152,7 @@ class TcgdexNameFilteredCoordinateRecoveryTests(unittest.TestCase):
              mock.patch.object(unique, "_canonicalize_unique_card", return_value=None):
             result = recovery._recover_exact_name_from_ambiguous_coordinate(lot)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result.status, "EXACT")
-        self.assertEqual(result.card_id, "gym2-3")
-        self.assertEqual(result.language_code, "en")
+        self.assertIsNone(result)
 
     def test_two_fuzzy_compatible_matches_remain_ambiguous(self):
         lot = watcher.Lot(
