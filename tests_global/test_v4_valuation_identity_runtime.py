@@ -89,6 +89,11 @@ def run_case(case):
                     row.pop("externalCatalogId")
                     row["setName"] = "SV2a: Pokemon Card 151"
                     row["variant"] = "Master Ball"
+                if case.endswith("prefix_wrong_set"):
+                    row.pop("externalCatalogId")
+                    row["setName"] = "SV2a: Base Set"
+                if case.endswith("deep_coordinate") and "tcgPlayerId" in kwargs.get("params", {}):
+                    row["tcgPlayerId"] = "contradictory-coordinate"
             payload = {"data": [row]}
         elif host == "raw.githubusercontent.com":
             status = 404
@@ -122,6 +127,23 @@ def run_case(case):
                 token="fixture" if case.startswith("pc_api") else None,
                 public_request_interval_seconds=0, minimum_request_interval_seconds=0), requests.Session())
             result = provider.lookup(lot)
+        elif case.startswith("pt_gate"):
+            import v4_canonical_multimarket as mm
+            lot, canonical = econ.resolve_global_canonical(identity)
+            assert canonical.status == "EXACT", canonical
+            candidate = {"name": "Pikachu (Japanese)", "cardNumber": "25/165", "game": "pokemon-japanese", "productType": "single", "set": {"name": "151"}, "variant": "Normal"}
+            if case.endswith("wrong_set"):
+                candidate["set"]["name"] = "SV2a: Base Set"
+            if case.endswith("both_editions"):
+                lot.variant = "First Edition"
+                candidate["variant"] = "Normal First Edition Unlimited"
+            if case.endswith("both_balls"):
+                lot.variant = "Master Ball"
+                candidate["variant"] = "Normal Master Ball Poke Ball"
+            actual = mm._candidate_exact_for_canonical(lot, canonical, candidate)
+            print(case, actual)
+            assert actual == case.endswith("_valid"), candidate
+            return
         else:
             import v4_global_ppt_confirmation as ppt
             from ecb_fx import ECBCurrencyConverter
@@ -151,8 +173,11 @@ for provider in ("pc_api", "pc_public"):
                      "wrong_variant", "both_variants", "missing_variant"):
         case = f"{provider}_{scenario}"
         setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
-for scenario in ("valid", "wrong_name", "wrong_set", "wrong_catalog", "wrong_denominator", "wrong_language", "wrong_variant", "deep_name", "unresolved", "unicode_name", "unicode_set", "fallback_variant"):
+for scenario in ("valid", "wrong_name", "wrong_set", "wrong_catalog", "wrong_denominator", "wrong_language", "wrong_variant", "deep_name", "unresolved", "unicode_name", "unicode_set", "fallback_variant", "prefix_wrong_set", "deep_coordinate"):
     case = "ppt_" + scenario
+    setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for scenario in ("valid", "wrong_set", "both_editions", "both_balls"):
+    case = "pt_gate_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 
 if __name__ == "__main__":

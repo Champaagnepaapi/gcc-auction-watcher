@@ -221,6 +221,12 @@ def _canonical_variant_compatible(identity, canonical, row):
     return _sensitive_dimensions_compatible(_lot_for_identity(identity), canonical, candidate)
 
 
+def _deep_coordinate_consistent(row, requested_id):
+    """A present contradictory detail identifier cannot supply the price."""
+    return all(str(row[key]).strip() == str(requested_id).strip()
+               for key in ("tcgPlayerId", "tcgplayerId") if row.get(key) not in (None, ""))
+
+
 def _match_canonical(identity, canonical, rows, *, provider_set_id=""):
     """One strict macro/material gate for reviewed and dynamic PPT retrieval."""
     if canonical is None or canonical.status != "EXACT" or not canonical.card_id:
@@ -605,6 +611,8 @@ def fetch_snapshot(
             identity_resolution=resolution or deep_proof,
         )
 
+    if not _deep_coordinate_consistent(row, tcgplayer_id):
+        return PptSnapshot("CLEAN_NO_MATCH", note="DEEP_COORDINATE_CONFLICT", provider_set_id=provider_set_id)
     return _snapshot_from_deep_row(
         identity,
         row,

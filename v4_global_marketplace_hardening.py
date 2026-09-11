@@ -441,6 +441,8 @@ def fetch_ppt_snapshot_generalized(
             identity_resolution=resolution or deep_proof,
         )
 
+    if not ppt._deep_coordinate_consistent(row, tcgplayer_id):
+        return ppt.PptSnapshot("CLEAN_NO_MATCH", note="DEEP_COORDINATE_CONFLICT", provider_set_id=provider_set_id)
     snapshot = ppt._snapshot_from_deep_row(
         identity,
         row,

@@ -89,13 +89,18 @@ def _set_exact_or_catalog_prefix(
     canonical: multimarket.CanonicalCard, provider_set_name: object
 ) -> bool:
     raw = str(provider_set_name or "").strip()
-    return bool(
-        raw
-        and (
-            multimarket._normalize(raw) == multimarket._normalize(canonical.set_name)
-            or safety._provider_set_id_prefix_matches(canonical, raw)
-        )
-    )
+    if not raw:
+        return False
+    expected = multimarket._normalize(canonical.set_name)
+    if multimarket._normalize(raw) == expected:
+        return True
+    if not safety._provider_set_id_prefix_matches(canonical, raw):
+        return False
+    # The coordinate cannot erase a conflicting label. Remove only generic
+    # packaging vocabulary observed in provider set names, never card aliases.
+    label = raw.split(":", 1)[1].strip()
+    label = re.sub(r"^(?:High Class Pack|Enhanced Expansion Pack|Expansion Pack|Pokemon Card)\s*:?\s+", "", label, flags=re.IGNORECASE)
+    return bool(expected and multimarket._normalize(label) == expected)
 
 
 def _sensitive_dimensions_compatible(
@@ -119,6 +124,8 @@ def _sensitive_dimensions_compatible(
         expected.pop("edition", None)
 
     observed = safety._candidate_sensitive_dimensions(candidate)
+    if any(len(values) > 1 for values in observed.values()):
+        return False
     for dimension in watcher.SENSITIVE_COMMERCIAL_DIMENSIONS:
         expected_value = expected.get(dimension)
         if not expected_value:
@@ -152,6 +159,14 @@ def global_candidate_exact_for_canonical(
     candidate: Mapping[str, object],
 ) -> bool:
     """Global PokeTrace exact gate with bounded mechanic nomenclature support."""
+    if canonical.status != "EXACT":
+        return False
+    set_payload = candidate.get("set")
+    provider_set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else ""
+    if not _set_exact_or_catalog_prefix(canonical, provider_set_name):
+        return False
+    if not _sensitive_dimensions_compatible(lot, canonical, candidate):
+        return False
     if safety.hardened_candidate_exact_for_canonical(lot, canonical, candidate):
         return True
     if canonical.status != "EXACT":
