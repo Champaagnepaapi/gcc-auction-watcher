@@ -8,6 +8,17 @@ import v4_global_marketplace_notify as runner
 
 
 class PipelineReportTests(unittest.TestCase):
+    def test_selected_manifest_is_bounded_and_does_not_copy_arbitrary_payloads(self):
+        card = {"identity": {"name": "Pikachu", "set_name": "Pokemon Japanese 151", "number": "025", "language": "ja", "finish": "Reverse", "private_field": "never_copy"},
+                "offers": [{"market": "cardova", "source_id": "abc", "source_url": "https://www.cardova.co.jp/item/abc?tracking=never_copy", "all_in_eur": 12}],
+                "economic_confirmation": {"external_canonical": {"status": "NO_MATCH", "note": "set unproven"}, "ppt": {"status": "TCGDEX_UNRESOLVED"}, "decision": {"status": "NO_EXTERNAL_CONFIRMATION"}}}
+        rows = runner.selected_pipeline_manifest([card] * 120, limit=50)
+        self.assertEqual(len(rows), 50)
+        self.assertEqual(rows[0]["canonical"]["note"], "set unproven")
+        self.assertEqual(rows[0]["identity"]["finish"], "Reverse")
+        self.assertNotIn("never_copy", str(rows))
+        self.assertEqual(rows, runner.selected_pipeline_manifest([card] * 120))
+
     def test_report_distinguishes_discovery_identity_value_cost_and_decision(self):
         identity = CommercialIdentity("Pikachu", "151", "025/165", "ja", "PSA", "10")
         card = {"identity": asdict(identity), "offers": [

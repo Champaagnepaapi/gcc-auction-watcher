@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -454,6 +455,29 @@ def _notify(
     }
 
 
+def selected_pipeline_manifest(cards, limit=50):
+    """Bounded public identity/stage evidence; never copy arbitrary provider data."""
+    result = []
+    for card in cards:
+        identity = card.get("identity") or {}
+        confirmation = card.get("economic_confirmation") or {}
+        canonical = confirmation.get("external_canonical") or {}
+        for offer in card.get("offers", []):
+            if len(result) >= min(50, max(0, limit)):
+                return result
+            parsed = urlsplit(str(offer.get("source_url") or ""))
+            result.append({
+                "market": offer.get("market"), "id": str(offer.get("source_id") or "")[:100],
+                "url": urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")),
+                "identity": {k: str(identity[k])[:200] for k in ("name", "set_name", "number", "language", "grader", "grade", "edition", "finish", "variant") if k in identity},
+                "canonical": {k: str(canonical[k])[:240] for k in ("status", "card_id", "set_id", "local_id", "language_code", "reason", "note") if k in canonical},
+                "valuation": {k: (confirmation.get(k) or {}).get("status", "NOT_EVALUATED") for k in ("ppt", "poketrace", "pricecharting")},
+                "all_in_eur": offer.get("all_in_eur"),
+                "decision": (confirmation.get("decision") or {}).get("status", "NOT_EVALUATED"),
+            })
+    return result
+
+
 def pipeline_report(statuses, cards):
     """Per-market stage counts from existing results; no provider work or I/O."""
     output = {}
@@ -620,6 +644,8 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     report = run(args)
+    for row in selected_pipeline_manifest(report.get("cards", [])):
+        print("[V4_SELECTED_PIPELINE] " + json.dumps(row, ensure_ascii=False), flush=True)
     print(
         json.dumps(
             {

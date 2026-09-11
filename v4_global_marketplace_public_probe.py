@@ -17,6 +17,7 @@ SURFACES = (
 SNAPSHOT = r"""() => {
  const root = document.querySelector('main,[role=main]');
  return {container:!!root, title:document.title.slice(0,160),
+ text_length:(document.body?.innerText||'').length, script_count:document.scripts.length,
  headings:[...document.querySelectorAll('h1,h2,[role=alert]')].map(e=>e.innerText.slice(0,200)).slice(0,8),
  links:[...document.querySelectorAll('a[href]')].slice(0,1800).map(a=>a.href),
  buttons:[...document.querySelectorAll('button,[role=button]')].filter(e=>e.offsetParent!==null).map(e=>e.innerText.slice(0,80)).filter(Boolean).slice(-12)};
@@ -53,7 +54,9 @@ def probe(page, market, url, item_pattern):
                 parsed = urlsplit(str(raw))
                 if parsed.scheme == "https" and parsed.hostname == host and re.fullmatch(item_pattern, parsed.path):
                     urls.add(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")))
-            result["snapshot"] = {k: snapshot.get(k) for k in ("container", "title", "headings", "buttons")}
+            result["snapshot"] = {k: snapshot.get(k) for k in ("container", "title", "headings", "buttons", "text_length", "script_count")}
+            paths = sorted({urlsplit(str(u)).path for u in snapshot.get("links", []) if urlsplit(str(u)).hostname == host})
+            result["snapshot"]["link_paths"] = paths[:25]
             result["urls"] = sorted(urls)[:100]
             if urls:
                 result["state"] = "RESULTS"
@@ -63,6 +66,55 @@ def probe(page, market, url, item_pattern):
         result["error_class"] = type(error).__name__
     finally:
         page.remove_listener("response", response_seen)
+    return result
+
+
+ITEM_FIELDS = ("カテゴリー", "ブランド", "商品の状態", "配送料の負担", "配送の方法", "発送までの日数", "言語", "枚数")
+PRODUCT_SNAPSHOT = r"""() => {
+ const products=[];
+ function visit(x, d=0) {
+  if(!x || typeof x!=='object' || d>5) return;
+  if(x['@type']==='Product' || (Array.isArray(x['@type']) && x['@type'].includes('Product'))) products.push(x);
+  if(Array.isArray(x)) x.forEach(y=>visit(y,d+1));
+  else if(x['@graph']) visit(x['@graph'],d+1);
+ }
+ for(const s of document.querySelectorAll('script[type="application/ld+json"]')) {try{visit(JSON.parse(s.textContent))}catch{}}
+ const fields={};
+ for(const row of document.querySelectorAll('tr,dl')) {
+  const label=row.querySelector('th,dt')?.innerText?.trim();
+  if(label) fields[label]=row.querySelector('td,dd')?.innerText?.trim()?.slice(0,160);
+ }
+ return {title:(document.querySelector('h1')?.innerText||'').slice(0,240), product:products.length===1?products[0]:{}, product_count:products.length, fields};
+}"""
+
+
+def inspect_public_item(page, url):
+    result = {"url": url, "state": "CONTENT_UNPROVEN", "sold_proven": False}
+    try:
+        response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        result["http"] = response.status if response else None
+        if result["http"] is not None and result["http"] >= 400:
+            result["state"] = "HTTP_BLOCKED" if result["http"] in {401, 403, 429} else "HTTP_ERROR"
+            return result
+        if (urlsplit(page.url).hostname, urlsplit(page.url).path) != (urlsplit(url).hostname, urlsplit(url).path):
+            result["state"] = "UNEXPECTED_REDIRECT"
+            return result
+        page.wait_for_timeout(1500)
+        snapshot = page.evaluate(PRODUCT_SNAPSHOT)
+        product = snapshot.get("product") or {}
+        result["title"] = str(snapshot.get("title") or "")[:240]
+        result["product_count"] = snapshot.get("product_count")
+        result["product"] = {k: str(product[k])[:240] for k in ("name", "category", "sku") if k in product}
+        offers = product.get("offers") or {}
+        if isinstance(offers, dict):
+            result["product"]["offers"] = {k: str(offers[k])[:100] for k in ("price", "priceCurrency", "availability", "itemCondition") if k in offers}
+        fields = snapshot.get("fields") or {}
+        result["fields"] = {k: str(fields[k])[:160] for k in ITEM_FIELDS if k in fields}
+        if product and result["title"]:
+            result["state"] = "PRODUCT_OBSERVED"
+    except Exception as error:
+        result["state"] = "INSPECTION_ERROR"
+        result["error_class"] = type(error).__name__
     return result
 
 
@@ -78,6 +130,9 @@ def main():
                     result = probe(context.new_page(), market, url, pattern)
                     results.append(result)
                     print("[V4_PUBLIC_SURFACE] " + json.dumps(result, ensure_ascii=False), flush=True)
+                    for url in result["urls"][:3]:
+                        item = inspect_public_item(context.new_page(), url)
+                        print("[V4_PUBLIC_ITEM] " + json.dumps(item, ensure_ascii=False), flush=True)
                 finally:
                     context.close()
         finally:
