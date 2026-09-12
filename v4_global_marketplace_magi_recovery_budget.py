@@ -8,10 +8,12 @@ coordinate reads, exact parameterized card searches and clean card-detail reads,
 and exposes aggregate request-class diagnostics. No listing data is emitted and
 every identity gate remains unchanged.
 
-The production recovery budget keeps at most 28 broad set/discovery requests,
-leaving capacity for up to eight exact card-search/card-detail requests. The
-broad cap is counted independently from exact-card calls, so request ordering
-cannot consume the reserve prematurely. The total ceiling remains 36.
+Measured PR live validation showed a stable 13 exact card-search/detail calls.
+The 49-call ceiling still used 34 broad calls and then reserved one deterministic
+set-coordinate read while two total calls were unused. Keep the 15-call exact
+reserve unchanged and move only the hard ceiling from 49 to 50: this permits a
+35th broad call while still leaving two subsequent exact-card calls after the
+measured 13-call exact workload. Identity/ambiguity gates remain unchanged.
 """
 from __future__ import annotations
 
@@ -23,8 +25,8 @@ import v4_global_marketplace_magi_native_identity as native
 import v4_global_retrieval_hardening_v3 as retrieval_v3
 
 
-_MAX_RECOVERY_REQUESTS = 36
-_CARD_IDENTITY_RESERVE_REQUESTS = 8
+_MAX_RECOVERY_REQUESTS = 50
+_CARD_IDENTITY_RESERVE_REQUESTS = 15
 _LEGACY_SMALL_RESERVE_REQUESTS = 2
 _CARD_IDENTITY_PRIORITY_CLASSES = frozenset({"card_search", "card_detail"})
 _ACTIVE_RECOVERY_RESOLVER: Optional[retrieval_v3.TCGdexJapaneseProofResolver] = None
@@ -67,9 +69,9 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         requested_budget = int(max_requests)
         # Small/direct test resolvers keep the historical two-call reserve so
         # existing cache/error semantics do not change accidentally. The real
-        # 36-call production resolver reserves eight requests, matching four
-        # strict exact card-search + card-detail proof pairs already observed in
-        # the proven 31/96 Magi production baseline.
+        # production resolver reserves 15 exact-card calls while capping broad
+        # recovery traffic at 35 under the 50-call hard ceiling. This is sized
+        # from measured live workload rather than opening an unbounded path.
         reserve_target = (
             _CARD_IDENTITY_RESERVE_REQUESTS
             if requested_budget >= _MAX_RECOVERY_REQUESTS
@@ -91,9 +93,6 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
         if normalized_path == "sets" and params_key in self._set_list_cache:
             self.cache_hits[request_class] += 1
             return 200, self._set_list_cache[params_key]
-        # Only parameterized card searches are cached. This keeps the cache
-        # bounded to explicit recovery queries (for example exact name=eq:...)
-        # and avoids accidentally retaining an unfiltered cards catalog.
         if normalized_path == "cards" and params_key and params_key in self._card_search_cache:
             self.cache_hits[request_class] += 1
             return 200, self._card_search_cache[params_key]
@@ -109,12 +108,6 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
             self.cache_hits[request_class] += 1
             return self._card_detail_cache[coordinate_key]
 
-        # Cap broad set/discovery traffic independently from exact card proof.
-        # Counting against total requests here was order-dependent: early exact
-        # card calls made later broad calls hit the reserve before broad traffic
-        # had actually consumed its 28-call production allowance. The separate
-        # counter preserves the same total 36-call ceiling while making the
-        # reserve invariant to listing order.
         is_priority = request_class in _CARD_IDENTITY_PRIORITY_CLASSES
         if (
             self._card_identity_reserve
@@ -138,10 +131,6 @@ class CachedRecoveryResolver(retrieval_v3.TCGdexJapaneseProofResolver):
             self._set_list_cache[params_key] = payload
         if normalized_path == "cards" and params_key and status == 200:
             self._card_search_cache[params_key] = payload
-        # Clean 200/404 exact-coordinate and exact-card-detail answers are
-        # deterministic for this one scan and safe to reuse. Never cache
-        # transport/rate-limit/server failures or budget exhaustion because
-        # they must remain retryable/fail-closed.
         if is_set_coordinate and status in {200, 404}:
             self._coordinate_cache[coordinate_key] = (status, payload)
         if is_card_detail and status in {200, 404}:
@@ -158,8 +147,6 @@ def _scan_with_recovery_budget(*args, **kwargs):
     global _ACTIVE_RECOVERY_RESOLVER
     assert _ORIGINAL_SCAN is not None
 
-    # Nested invocation should share the same bounded context rather than create
-    # another independent budget.
     if _ACTIVE_RECOVERY_RESOLVER is not None:
         return _ORIGINAL_SCAN(*args, **kwargs)
 
@@ -198,7 +185,6 @@ def install_global_marketplace_magi_recovery_budget() -> None:
     if _INSTALLED:
         return
 
-    # Lazy imports avoid import-order cycles with the native scanner module.
     import v4_global_marketplace_notify as marketplace
     import v4_global_marketplace_scan as scan
 

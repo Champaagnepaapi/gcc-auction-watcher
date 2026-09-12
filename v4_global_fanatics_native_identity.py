@@ -23,6 +23,7 @@ import v4_global_marketplace_notify as marketplace
 import v4_global_marketplace_scan as scan
 import v4_global_retrieval_hardening as retrieval_v1
 import v4_global_retrieval_hardening_v2 as retrieval_v2
+import v4_raw_consensus as raw_consensus
 from v4_global_market_core import CommercialIdentity
 from v4_global_marketplace_discovery import MarketplaceListing, listing_from_observation
 from v4_global_marketplace_scan import ScanStatus
@@ -126,6 +127,18 @@ def _explicit_dimensions(title: str) -> tuple[str, str, str]:
         finish = "Non-Holo"
     elif re.search(r"\bHOLO(?:FOIL)?\b", upper):
         finish = "Holo"
+
+    # Both V2 and V3 use this parser. Ball mirrors have two material dimensions,
+    # not competing finish labels. The source-pinned resolver still has to prove
+    # this requested combination before an identity can become EXACT.
+    material = raw_consensus.parse_multilingual_commercial_dimensions(normalized)
+    special = material.get("special_finish")
+    if "__conflict__" in material.values():
+        return edition, finish, "__conflict__"
+    if special in {"master_ball", "poke_ball"}:
+        if material.get("finish") == "non_holo" or variant:
+            return edition, finish, "__conflict__"
+        finish, variant = "reverse", special
     return edition, finish, variant
 
 

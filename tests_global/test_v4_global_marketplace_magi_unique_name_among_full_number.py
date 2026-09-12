@@ -55,22 +55,25 @@ class FakeResolver:
 
 
 class MagiUniqueNameAmongFullNumberTests(unittest.TestCase):
-    def _original(self):
+    def _original(self, status="AMBIGUOUS"):
         return native.MagiNativeResolution(
-            "AMBIGUOUS",
+            status,
             "target_catalog_unproven:TCGDEX_MULTIPLE_CARDS_FOR_FULL_NUMBER",
         )
 
-    def test_one_exact_japanese_name_disambiguates_multiple_coordinates(self):
+    def _recover(self, original):
         title = "〔PSA10鑑定済〕ポケモンだいすきクラブ【SR】{071/066} 1枚の通販"
         ask = japan.Ask("magi", "https://magi.camp/items/1", title, 100000, title)
         resolver = FakeResolver()
         with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
-            result = unique_name.recover_unique_name_among_full_number_resolution(
+            return unique_name.recover_unique_name_among_full_number_resolution(
                 ask,
-                self._original(),
+                original,
                 resolver=resolver,
             )
+
+    def test_one_exact_japanese_name_disambiguates_multiple_coordinates(self):
+        result = self._recover(self._original())
         self.assertEqual(result.status, "EXACT")
         self.assertEqual(result.card_id, "SM-A-071")
         self.assertEqual(result.set_id, "SM-A")
@@ -78,6 +81,12 @@ class MagiUniqueNameAmongFullNumberTests(unittest.TestCase):
         assert result.identity is not None
         self.assertEqual(result.identity.name, "ポケモンだいすきクラブ")
         self.assertEqual(result.identity.number, "71/66")
+
+    def test_live_native_no_match_status_with_exact_multiple_reason_is_recoverable(self):
+        result = self._recover(self._original("NO_MATCH"))
+        self.assertEqual(result.status, "EXACT")
+        self.assertEqual(result.card_id, "SM-A-071")
+        self.assertIsNotNone(result.identity)
 
     def test_two_candidate_names_in_provider_evidence_remain_ambiguous(self):
         title = "PSA10 ポケモンだいすきクラブ 別カード 071/066 1枚"
@@ -106,7 +115,7 @@ class MagiUniqueNameAmongFullNumberTests(unittest.TestCase):
     def test_provider_error_during_candidate_universe_fails_closed(self):
         title = "PSA10 ポケモンだいすきクラブ 071/066 1枚"
         ask = japan.Ask("magi", "https://magi.camp/items/4", title, 100000, title)
-        original = self._original()
+        original = self._original("NO_MATCH")
         with mock.patch.object(core, "_norm", unicode_identity._unicode_identity_norm):
             result = unique_name.recover_unique_name_among_full_number_resolution(
                 ask,

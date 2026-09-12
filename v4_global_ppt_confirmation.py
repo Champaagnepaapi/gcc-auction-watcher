@@ -180,104 +180,96 @@ def reviewed_set_id(identity: CommercialIdentity) -> Optional[str]:
     return REVIEWED_JP_SET_IDS.get(_norm(identity.set_name))
 
 
-def _match(
-    identity: CommercialIdentity,
-    rows: Sequence[Mapping[str, object]],
-    set_id: str,
-):
-    """Reviewed provider setId + exact collector proof, retained for fast path."""
-    expected_id = _norm(set_id)
-    expected_number = _collector(identity.number)
-    candidates = [
-        row
-        for row in _unique_rows(rows)
-        if _language_compatible(row)
-        and _norm(row.get("setId") or row.get("set_id")) == expected_id
-        and _collector(row.get("cardNumber") or row.get("number")) == expected_number
-    ]
-    if len(candidates) != 1:
-        return "AMBIGUOUS" if len(candidates) > 1 else "CLEAN_NO_MATCH", None
-    row = candidates[0]
-    if not _variant_compatible(identity, row):
-        return "MICROVARIANT_UNPROVEN", None
-    return "EXACT", row
+def _match(identity, rows, set_id, *, canonical=None):
+    """Reviewed set IDs narrow retrieval; the canonical gate remains mandatory."""
+    status, row, _proof = _match_canonical(identity, canonical, rows, provider_set_id=set_id)
+    return status, row
 
 
-def _match_canonical(
-    identity: CommercialIdentity,
-    canonical: multimarket.CanonicalCard,
-    rows: Sequence[Mapping[str, object]],
-    *,
-    provider_set_id: str = "",
-):
-    """Unique generic proof from a real TCGdex coordinate.
+def _language_code(value):
+    return {"jp": "ja", "japanese": "ja", "japonais": "ja", "english": "en", "anglais": "en"}.get(_norm(value), _norm(value))
 
-    `externalCatalogId == canonical.card_id` is authoritative macro proof. The
-    deterministic fallback is allowed only on rows that omit externalCatalogId,
-    and then requires exact name + exact set name + collector number. A present
-    conflicting externalCatalogId can never fall through to the fallback.
-    """
-    if canonical.status != "EXACT" or not canonical.card_id:
+
+def _identity_text_norm(value):
+    # Keep Japanese names as evidence, rather than treating them as an absent
+    # ASCII field. Reuse the already validated Global Unicode normalizer.
+    from v4_global_marketplace_unicode_identity import _unicode_identity_norm
+    return _unicode_identity_norm(value)
+
+
+def _number_consistent(value, full_number):
+    if _collector(value) != _collector(full_number):
+        return False
+    # Numerator-only provider fields may use an exact catalog/set coordinate,
+    # but a printed conflicting denominator is never discarded.
+    actual = str(value or "").partition("/")[2]
+    expected = str(full_number or "").partition("/")[2]
+    return not actual or _norm(actual) == _norm(expected)
+
+
+def _canonical_variant_compatible(identity, canonical, row):
+    from v4_global_economic_confirmation import _lot_for_identity
+    from v4_global_provider_exact_bridge import _sensitive_dimensions_compatible
+    from v4_multimarket_safety import _candidate_sensitive_dimensions
+    candidate = {
+        "name": row.get("name"), "rarity": row.get("rarity"),
+        "variant": " ".join(str(row.get(k) or "") for k in ("variant", "printing", "finish", "edition")),
+    }
+    observed = _candidate_sensitive_dimensions(candidate)
+    if any(len(values) != 1 for values in observed.values()):
+        return False
+    return _sensitive_dimensions_compatible(_lot_for_identity(identity), canonical, candidate)
+
+
+def _deep_coordinate_consistent(row, requested_id):
+    """A present contradictory detail identifier cannot supply the price."""
+    return all(str(row[key]).strip() == str(requested_id).strip()
+               for key in ("tcgPlayerId", "tcgplayerId") if row.get(key) not in (None, ""))
+
+
+def _match_canonical(identity, canonical, rows, *, provider_set_id=""):
+    """One strict macro/material gate for reviewed and dynamic PPT retrieval."""
+    if canonical is None or canonical.status != "EXACT" or not canonical.card_id:
         return "TCGDEX_UNRESOLVED", None, ""
-
-    expected_catalog = _norm(canonical.card_id)
-    expected_number = _collector(identity.number)
-    expected_set_id = _norm(provider_set_id)
-    rows_unique = _unique_rows(rows)
-
-    catalog_matches: list[Mapping[str, object]] = []
-    for row in rows_unique:
-        if not _language_compatible(row):
+    language = _language_code(identity.language)
+    if language not in {"ja", "en"} or _language_code(canonical.language_code) != language:
+        return "TCGDEX_UNRESOLVED", None, ""
+    if not _number_consistent(identity.number, canonical.full_number):
+        return "TCGDEX_UNRESOLVED", None, ""
+    names = {_identity_text_norm(identity.name), _identity_text_norm(canonical.name)} - {""}
+    sets = {_identity_text_norm(identity.set_name), _identity_text_norm(canonical.set_name)} - {""}
+    matches = []
+    for row in _unique_rows(rows):
+        if row.get("language") not in (None, "") and _language_code(row["language"]) != language:
             continue
-        if _collector(row.get("cardNumber") or row.get("number")) != expected_number:
+        if not _number_consistent(row.get("cardNumber") or row.get("number"), canonical.full_number):
             continue
-        row_catalog = _norm(row.get("externalCatalogId"))
-        if not row_catalog or row_catalog != expected_catalog:
+        row_name = _identity_text_norm(row.get("name"))
+        catalog_id = _norm(row.get("externalCatalogId"))
+        if (row_name and row_name not in names) or (not row_name and catalog_id != _norm(canonical.card_id)):
             continue
-        if expected_set_id:
-            row_set_id = _norm(row.get("setId") or row.get("set_id"))
-            if row_set_id and row_set_id != expected_set_id:
+        row_set = _identity_text_norm(row.get("setName") or row.get("set_name"))
+        if row_set and row_set not in sets:
+            from v4_global_provider_exact_bridge import _set_exact_or_catalog_prefix
+            if not _set_exact_or_catalog_prefix(canonical, row.get("setName") or row.get("set_name")):
                 continue
-        catalog_matches.append(row)
-
-    if len(catalog_matches) > 1:
-        return "AMBIGUOUS", None, "TCGDEX_EXTERNAL_CATALOG_ID"
-    if len(catalog_matches) == 1:
-        row = catalog_matches[0]
-        if not _variant_compatible(identity, row):
-            return "MICROVARIANT_UNPROVEN", None, "TCGDEX_EXTERNAL_CATALOG_ID"
-        return "EXACT", row, "TCGDEX_EXTERNAL_CATALOG_ID"
-
-    target_names = {_norm(identity.name), _norm(canonical.name)} - {""}
-    target_sets = {_norm(identity.set_name), _norm(canonical.set_name)} - {""}
-    fallback: list[Mapping[str, object]] = []
-    for row in rows_unique:
-        if not _language_compatible(row):
+        row_id = _norm(row.get("setId") or row.get("set_id"))
+        if provider_set_id and row_id != _norm(provider_set_id):
             continue
-        # Never ignore a present provider/catalog coordinate that disagrees.
-        if _norm(row.get("externalCatalogId")):
+        if catalog_id and catalog_id != _norm(canonical.card_id):
             continue
-        if _collector(row.get("cardNumber") or row.get("number")) != expected_number:
+        if not catalog_id and not row_set and not provider_set_id:
             continue
-        if _norm(row.get("name")) not in target_names:
-            continue
-        if _norm(row.get("setName") or row.get("set_name")) not in target_sets:
-            continue
-        if expected_set_id:
-            row_set_id = _norm(row.get("setId") or row.get("set_id"))
-            if row_set_id and row_set_id != expected_set_id:
-                continue
-        fallback.append(row)
-
-    if len(fallback) > 1:
-        return "AMBIGUOUS", None, "TCGDEX_SET_NAME_NUMBER_FALLBACK"
-    if len(fallback) == 1:
-        row = fallback[0]
-        if not _variant_compatible(identity, row):
-            return "MICROVARIANT_UNPROVEN", None, "TCGDEX_SET_NAME_NUMBER_FALLBACK"
-        return "EXACT", row, "TCGDEX_SET_NAME_NUMBER_FALLBACK"
-    return "CLEAN_NO_MATCH", None, "TCGDEX_COORDINATE_NOT_FOUND"
-
+        proof = "TCGDEX_EXTERNAL_CATALOG_ID" if catalog_id else "TCGDEX_SET_NAME_NUMBER_FALLBACK"
+        matches.append((row, proof))
+    if len(matches) > 1:
+        return "AMBIGUOUS", None, matches[0][1]
+    if not matches:
+        return "CLEAN_NO_MATCH", None, "TCGDEX_COORDINATE_NOT_FOUND"
+    row, proof = matches[0]
+    if not _canonical_variant_compatible(identity, canonical, row):
+        return "MICROVARIANT_UNPROVEN", None, proof
+    return "EXACT", row, proof
 
 @dataclass
 class PptBudget:
@@ -473,6 +465,9 @@ def fetch_snapshot(
     if not api_key:
         return PptSnapshot("PROVIDER_DISABLED", note="PPT key unavailable")
 
+    if canonical is None or canonical.status != "EXACT":
+        return PptSnapshot("TCGDEX_UNRESOLVED", note="exact canonical required before PPT; no network")
+
     reviewed = reviewed_set_id(identity)
     matched: Optional[Mapping[str, object]] = None
     provider_set_id = reviewed or ""
@@ -498,7 +493,7 @@ def fetch_snapshot(
             return PptSnapshot("RATE_LIMIT", note="HTTP 429")
         if status != 200:
             return PptSnapshot("PROVIDER_ERROR", note=f"HTTP {status}")
-        match_status, row = _match(identity, _rows(payload), reviewed)
+        match_status, row = _match(identity, _rows(payload), reviewed, canonical=canonical)
         if match_status in {"AMBIGUOUS", "MICROVARIANT_UNPROVEN"}:
             return PptSnapshot(
                 match_status,
@@ -600,7 +595,7 @@ def fetch_snapshot(
 
     deep_rows = _rows(payload)
     if reviewed:
-        deep_status, row = _match(identity, deep_rows, reviewed)
+        deep_status, row = _match(identity, deep_rows, reviewed, canonical=canonical)
         deep_proof = "REVIEWED_SET_ID"
     else:
         deep_status, row, deep_proof = _match_canonical(
@@ -618,6 +613,8 @@ def fetch_snapshot(
             identity_resolution=resolution or deep_proof,
         )
 
+    if not _deep_coordinate_consistent(row, tcgplayer_id):
+        return PptSnapshot("CLEAN_NO_MATCH", note="DEEP_COORDINATE_CONFLICT", provider_set_id=provider_set_id)
     return _snapshot_from_deep_row(
         identity,
         row,

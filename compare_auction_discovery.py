@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import os
-from math import ceil
+import json
+import re
+from collections import Counter
+from datetime import datetime, timezone
+from math import ceil, isfinite
 from pathlib import Path
 from time import monotonic
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 import watcher
 from playwright.sync_api import sync_playwright
@@ -22,6 +27,95 @@ from v4_private_auction_coverage import (
 
 LEGACY_TIMER_INSPECTION_ATTEMPTS = 2
 LEGACY_TIMER_RETRY_WAIT_MS = 300
+
+
+def _item_id(url: str) -> str:
+    parsed = urlsplit(str(url))
+    match = re.fullmatch(r"/item/([A-Za-z0-9-]{1,80})/?", parsed.path)
+    return match.group(1) if parsed.scheme == "https" and parsed.netloc == "gradedcardcenter.com" and match else ""
+
+
+def _timer_diagnostic(lot, *, provenance, reason="", state=None):
+    minutes = lot.minutes_to_end
+    valid = isinstance(minutes, (int, float)) and not isinstance(minutes, bool) and isfinite(minutes) and minutes >= 0
+    state = state or ("INSPECTION_ERROR" if lot.inspection_error else "RESOLVED" if valid else "UNKNOWN")
+    return {"item_id": _item_id(lot.url), "state": state, "minutes": minutes if valid else None,
+            "provenance": provenance, "reason": reason or ("timer_read" if state == "RESOLVED" else "timer_unproven"),
+            "sold_proven": False}
+
+
+def _inspect_legacy_timer(page, lot, inspector, observed_at):
+    """Observe item responses already loaded by inspect_item; no extra GET.
+
+    Only a typed AUCTION record from its exact public GCC item endpoint may
+    prove termination. Sale-level text, other items, past timestamps alone,
+    disappearance and payment status alone are not proof.
+    """
+    item_id = _item_id(lot.url)
+    records = []
+    invalid_evidence = False
+    observations = 0
+
+    def observe(response):
+        nonlocal invalid_evidence, observations
+        url = urlsplit(str(response.url))
+        if not item_id or url.scheme != "https" or url.netloc != "api.gradedcardcenter.com" or url.path.rstrip('/') != f"/on-sale-items/{item_id}":
+            return
+        observations += 1
+        if observations > 4:
+            invalid_evidence = True
+            return
+        try:
+            if response.status != 200 or "application/json" not in response.headers.get("content-type", ""):
+                invalid_evidence = True
+                return
+            if int(response.headers.get("content-length", "0")) > 1_000_000:
+                invalid_evidence = True
+                return
+            payload = response.json()
+            if not isinstance(payload, dict) or payload.get("id") != item_id:
+                invalid_evidence = True
+                return
+            records.append({key: str(payload.get(key, ""))[:80]
+                            for key in ("sellingType", "status", "endTime")})
+        except Exception:
+            invalid_evidence = True
+
+    listening = False
+    try:
+        if hasattr(page, "on") and hasattr(page, "remove_listener"):
+            page.on("response", observe)
+            listening = True
+        current = inspector(page, lot)
+    except Exception as error:
+        return lot, _timer_diagnostic(lot, provenance="item_inspection", state="INSPECTION_ERROR",
+                                      reason=type(error).__name__)
+    finally:
+        if listening:
+            page.remove_listener("response", observe)
+
+    diagnostic = _timer_diagnostic(current, provenance="item_countdown")
+    if current.inspection_error:
+        return current, _timer_diagnostic(current, provenance="item_inspection", reason="inspection_failed")
+    # A redirect can neither resolve a timer nor prove this item's termination.
+    if hasattr(page, "url") and _item_id(page.url) != item_id:
+        return current, _timer_diagnostic(current, provenance="item_location", state="UNKNOWN", reason="unexpected_location")
+    terminal = False
+    for record in records:
+        try:
+            end = datetime.fromisoformat(record["endTime"].replace("Z", "+00:00"))
+            proved = (record["sellingType"] == "AUCTION"
+                      and record["status"] in {"ENDED", "WAITING_FOR_PAYMENT"}
+                      and end.tzinfo is not None and end <= observed_at)
+        except (ValueError, TypeError):
+            proved = False
+        terminal = terminal or proved
+        invalid_evidence = invalid_evidence or not proved
+    if terminal:
+        if invalid_evidence or (diagnostic["minutes"] is not None and diagnostic["minutes"] > 0):
+            return current, _timer_diagnostic(current, provenance="gcc_item_response", state="UNKNOWN", reason="contradictory_terminal_evidence")
+        return current, _timer_diagnostic(current, provenance="gcc_item_response.status+endTime", state="ENDED", reason="item_auction_explicitly_ended")
+    return current, diagnostic
 
 
 def write_output(name: str, value: object) -> None:
@@ -81,32 +175,30 @@ def resolve_legacy_ids(
     *,
     inspection_attempts: int = LEGACY_TIMER_INSPECTION_ATTEMPTS,
     inspect_func: Optional[Callable] = None,
+    diagnostics: Optional[dict] = None,
+    observed_at: Optional[datetime] = None,
 ) -> tuple[set[str], set[str]]:
     """Resolve legacy candidates with one bounded retry for transient timer reads.
 
-    This is validation-only. A timer that remains unreadable after the bounded
-    retry is still unresolved and keeps the comparison red; no candidate is
-    silently dropped or assumed to be outside the horizon.
+    This is validation-only. Explicit item termination is separate from an
+    unreadable timer, which still keeps the comparison red after bounded retry.
+    No state in this comparison constitutes SOLD evidence.
     """
 
     if inspection_attempts < 1:
         raise ValueError("inspection_attempts must be >= 1")
 
     inspector = inspect_func or watcher.inspect_item
+    reference = observed_at or datetime.now(timezone.utc)
     resolved: set[str] = set()
     unresolved: set[str] = set()
     for lot in lots:
         current = lot
-        if current.minutes_to_end is None or current.inspection_error:
+        diagnostic = _timer_diagnostic(current, provenance="listing_timer")
+        if diagnostic["state"] != "RESOLVED":
             for attempt in range(inspection_attempts):
-                try:
-                    current = inspector(page, current)
-                except Exception:
-                    # Keep the previous state and retry once. A second failure
-                    # remains unresolved and fails the live validation below.
-                    pass
-
-                if not current.inspection_error and current.minutes_to_end is not None:
+                current, diagnostic = _inspect_legacy_timer(page, current, inspector, reference)
+                if diagnostic["state"] in {"RESOLVED", "ENDED"}:
                     break
 
                 if attempt + 1 < inspection_attempts:
@@ -115,7 +207,11 @@ def resolve_legacy_ids(
                     except Exception:
                         pass
 
-        if current.inspection_error or current.minutes_to_end is None:
+        if diagnostics is not None:
+            diagnostics[lot.url] = diagnostic
+        if diagnostic["state"] == "ENDED":
+            continue
+        if diagnostic["state"] != "RESOLVED":
             unresolved.add(lot.url)
             continue
         if current.current_price is None:
@@ -199,8 +295,10 @@ def main() -> int:
         elapsed_seconds = max(0.0, monotonic() - effective_anchor)
         boundary_margin_minutes = max(1, ceil(elapsed_seconds / 60.0))
         legacy_comparable_horizon = max(0, horizon - boundary_margin_minutes)
+        legacy_timer_diagnostics = {}
         legacy_ids, legacy_unresolved = resolve_legacy_ids(
-            comparison_page, legacy_lots, legacy_comparable_horizon
+            comparison_page, legacy_lots, legacy_comparable_horizon,
+            diagnostics=legacy_timer_diagnostics,
         )
         browser.close()
 
@@ -246,14 +344,20 @@ def main() -> int:
     print(f"effective only: {len(effective_only)}", flush=True)
     print(f"legacy only: {len(legacy_only)}", flush=True)
     print(f"legacy unresolved timers: {len(legacy_unresolved)}", flush=True)
+    print(f"legacy timer states: {dict(Counter(row['state'] for row in legacy_timer_diagnostics.values()))}", flush=True)
+    effective_by_url = {lot.url: lot for lot in effective_lots}
     for url in effective_only[:20]:
-        print(f"EFFECTIVE_ONLY {url}", flush=True)
+        detail = _timer_diagnostic(effective_by_url[url], provenance="effective_discovery_timer")
+        print(f"EFFECTIVE_ONLY {url} TIMER {json.dumps(detail, sort_keys=True)}", flush=True)
     for url in legacy_only[:20]:
         source = legacy_source_by_url.get(url, "UNKNOWN_LEGACY_SOURCE")
-        print(f"LEGACY_ONLY {url} SOURCE {source}", flush=True)
+        print(f"LEGACY_ONLY {url} SOURCE {source} TIMER {json.dumps(legacy_timer_diagnostics[url], sort_keys=True)}", flush=True)
     for url in sorted(legacy_unresolved)[:20]:
         source = legacy_source_by_url.get(url, "UNKNOWN_LEGACY_SOURCE")
-        print(f"LEGACY_UNRESOLVED {url} SOURCE {source}", flush=True)
+        print(f"LEGACY_UNRESOLVED {url} SOURCE {source} TIMER {json.dumps(legacy_timer_diagnostics[url], sort_keys=True)}", flush=True)
+    ended = sorted(url for url, row in legacy_timer_diagnostics.items() if row["state"] == "ENDED")
+    for url in ended[:20]:
+        print(f"LEGACY_ENDED {url} TIMER {json.dumps(legacy_timer_diagnostics[url], sort_keys=True)}", flush=True)
 
     write_output("primary_complete", str(api_result.complete).lower())
     write_output("primary_scope", api_result.scope_status)

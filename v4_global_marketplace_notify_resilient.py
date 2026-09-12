@@ -7,12 +7,21 @@ from __future__ import annotations
 import v4_global_live_confirmed as confirmed
 import v4_global_marketplace_notify as marketplace
 from v4_global_cardova_public_install import install_global_cardova_public_inventory
+from v4_global_marketplace_cardova_exhaustive_capture import (
+    install_global_marketplace_cardova_exhaustive_capture,
+)
+from v4_global_marketplace_fanatics_provider_language import (
+    install_global_marketplace_fanatics_provider_language,
+)
 from v4_global_marketplace_fanatics_language_proof import (
     install_global_marketplace_fanatics_language_proof,
 )
 from v4_global_marketplace_hardening import install_marketplace_first_hardening
 from v4_global_marketplace_identity_dimension_hardening import (
     install_global_marketplace_identity_dimension_hardening,
+)
+from v4_global_marketplace_magi_classic_reviewed_catalog import (
+    install_global_marketplace_magi_classic_reviewed_catalog,
 )
 from v4_global_marketplace_magi_detail_coordinate import (
     install_global_marketplace_magi_detail_coordinate,
@@ -22,6 +31,9 @@ from v4_global_marketplace_magi_detail_retry import (
 )
 from v4_global_marketplace_magi_japanese_native_identity import (
     install_global_marketplace_magi_japanese_native_identity,
+)
+from v4_global_marketplace_magi_native_budget import (
+    install_global_marketplace_magi_native_budget,
 )
 from v4_global_marketplace_magi_native_identity import (
     install_global_marketplace_magi_native_identity,
@@ -59,8 +71,17 @@ from v4_global_marketplace_magi_unique_full_number import (
 from v4_global_marketplace_magi_unique_name_among_full_number import (
     install_global_marketplace_magi_unique_name_among_full_number,
 )
+from v4_global_marketplace_magi_user_scope import (
+    install_global_marketplace_magi_user_scope,
+)
 from v4_global_marketplace_poketrace_recall import (
     install_global_marketplace_poketrace_recall,
+)
+from v4_global_marketplace_pricecharting_diagnostics import (
+    install_global_marketplace_pricecharting_diagnostics,
+)
+from v4_global_marketplace_pricecharting_public_recovery import (
+    install_global_marketplace_pricecharting_public_recovery,
 )
 from v4_global_marketplace_queue import install_marketplace_queue_hardening
 from v4_global_marketplace_tcgdex_source_alias_recovery import (
@@ -97,19 +118,37 @@ def _install_stack_with_global_bridges() -> None:
 
 
 def main() -> int:
+    # Recover current public PriceCharting search shapes before any mandatory
+    # guide policy captures the provider. Identity scoring remains unchanged.
+    install_global_marketplace_pricecharting_public_recovery()
+    # PR-only bounded diagnostics observe already-returned PriceCharting outcomes;
+    # no request, matching gate or economic decision is added by this wrapper.
+    install_global_marketplace_pricecharting_diagnostics()
     install_marketplace_first_hardening()
-    # Fanatics native identity is installed before Magi/Cardova because all
-    # three wrap the marketplace scan. Missing Fanatics language is accepted
-    # only after a deterministic two-language TCGdex set proof.
+    # Provider URL/body language is accepted only when Fanatics states exactly
+    # one supported language explicitly. Install before the two-language probe so
+    # explicit evidence avoids two unnecessary TCGdex probes.
+    install_global_marketplace_fanatics_provider_language()
     install_global_marketplace_fanatics_language_proof()
     # Global-only Unicode normalization preserves the exact historical Latin
     # contract while allowing already-proved Japanese names/sets to remain
     # complete commercial identities without translation.
     install_global_marketplace_unicode_identity()
+    # Exact operator exclusions are applied to broad Magi rows before detail or
+    # identity work. The provider-native `presented` status also removes SOLD
+    # listings at search time; detail-page SOLD guards remain defense in depth.
+    install_global_marketplace_magi_user_scope()
+    # Restore the native Japanese proof lane to the TCGdex resolver's existing
+    # bounded 60-request baseline. The separate recovery budget is unchanged.
+    install_global_marketplace_magi_native_budget()
     # Magi keeps one broad public inventory query but proves standard Japanese
     # single-card coordinates natively through TCGdex; GCC history is no longer
     # an identity prerequisite for this vault.
     install_global_marketplace_magi_native_identity()
+    # Pokemon Card Game Classic CLL/CLK/CLF is absent from the current TCGdex
+    # projection. A tiny independently reviewed coordinate table may recover
+    # only exact supported model codes; unknown Classic coordinates stay blocked.
+    install_global_marketplace_magi_classic_reviewed_catalog()
     # Exact coordinate evidence may live in the current Magi detail body even
     # when page.title() omits it. Related-item/footer text remains excluded.
     install_global_marketplace_magi_detail_coordinate()
@@ -163,8 +202,9 @@ def main() -> int:
     # PR validation can opt into bounded public listing-level reject diagnostics.
     # Production schedules do not set this flag, so the probe is inert there.
     install_global_marketplace_magi_rejection_probe()
-    # Cardova public inventory wraps the exact production scanner selected by
-    # the preceding marketplace hardenings.
+    # Cardova no longer stops because two pages contain only out-of-scope rows.
+    # Complete=true still requires explicit provider last-page proof for both lanes.
+    install_global_marketplace_cardova_exhaustive_capture()
     install_global_cardova_public_inventory()
     install_global_marketplace_identity_dimension_hardening()
     install_marketplace_queue_hardening()

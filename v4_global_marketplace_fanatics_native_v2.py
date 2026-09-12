@@ -12,7 +12,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs
 
 import v4_canonical_multimarket as multimarket
 import v4_global_economic_confirmation as confirmed
@@ -267,38 +267,135 @@ def resolve_fanatics_native_identity_v2(
     return v1.FanaticsNativeResolution("NO_MATCH", "tcgdex_no_exact_partition", coordinate=candidates[0])
 
 
-def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> tuple[list[str], int]:
-    page.goto(FANATICS_POKEMON_BROWSE, wait_until="domcontentloaded", timeout=25000)
-    page.wait_for_timeout(1200)
+@dataclass(frozen=True)
+class FanaticsCollection:
+    urls: list[str]
+    observations: int
+    state: str
+    stop_reason: str
+    http_status: Optional[int]
+    container_present: bool
+    complete: bool = False
+    navigation_labels: tuple[str, ...] = ()
+    scroll_regions: int = 0
+    pagination: str = "NOT_INSPECTED"
+
+    def __iter__(self):
+        # Preserve the two-value collector API for existing callers.
+        yield self.urls
+        yield self.observations
+
+    @property
+    def detail(self) -> str:
+        return (f"collection={self.state}; http={self.http_status}; "
+                f"observations={self.observations}; stop={self.stop_reason}; "
+                f"container_present={self.container_present}; "
+                f"navigation_labels={self.navigation_labels}; scroll_regions={self.scroll_regions}; "
+                f"pagination={self.pagination}")
+
+
+_CONTENT_SNAPSHOT = r"""() => {
+    const root = document.querySelector('main, [role="main"]');
+    const labels = root ? Array.from(root.querySelectorAll('h1,h2,[role="status"]')) : [];
+    const visible = el => !!(el.getClientRects().length);
+    const empty = labels.some(el => visible(el) &&
+        /^(no results found|no items found|no matching items found)[.!]?$/i.test(el.innerText.trim()));
+    const hrefs = root ? Array.from(root.querySelectorAll('a[href]')).slice(0,1800).map(a => a.href) : [];
+    const navigation_labels = [...document.querySelectorAll('button,[role=button],nav a')].filter(visible)
+      .map(e=>(e.getAttribute('aria-label')||e.innerText||'').trim())
+      .filter(s=>/next|previous|page|more|load|show/i.test(s) && s.length<=80).slice(0,12);
+    const scroll_regions = root ? [...root.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+50 && /auto|scroll/.test(getComputedStyle(e).overflowY)).length : 0;
+    return {container_present: !!root && visible(root), empty_proven: empty, hrefs, navigation_labels, scroll_regions};
+}"""
+
+
+def _fanatics_browse_location_matches(url: str) -> bool:
+    actual, expected = urlparse(url), urlparse(FANATICS_POKEMON_BROWSE)
+    return (actual.scheme == expected.scheme and actual.netloc == expected.netloc
+            and actual.path.rstrip('/') == expected.path.rstrip('/')
+            and all(parse_qs(actual.query).get(key) == value
+                    for key, value in parse_qs(expected.query).items()))
+
+
+def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollection:
+    response = page.goto(FANATICS_POKEMON_BROWSE, wait_until="domcontentloaded", timeout=25000)
+    raw_status = getattr(response, "status", None)
+    status = raw_status if isinstance(raw_status, int) else None
     found: list[str] = []
-    rounds = 0
-    stable = 0
-    previous = 0
-    for _ in range(max(1, int(scroll_rounds))):
-        rounds += 1
+    observations, stable = 0, 0
+    container = False
+    navigation_labels, scroll_regions = (), 0
+    last_advanced_inventory: tuple[str, ...] = ()
+    pagination = "NOT_INSPECTED"
+
+    def result(state, reason, complete=False):
+        return FanaticsCollection(found, observations, state, reason, status, container, complete, navigation_labels, scroll_regions, pagination)
+
+    if status is not None and not 200 <= status < 300:
+        return result("UNAVAILABLE", "HTTP_UNAVAILABLE")
+    for _ in range(min(20, max(1, int(scroll_rounds)))):
+        if not _fanatics_browse_location_matches(str(getattr(page, "url", ""))):
+            return result("UNAVAILABLE", "UNEXPECTED_LOCATION")
+        observations += 1
         try:
-            hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(Boolean)")
+            snapshot = page.evaluate(_CONTENT_SNAPSHOT)
+            if not isinstance(snapshot, dict):
+                return result("UNAVAILABLE", "DOM_UNREADABLE")
+            container = snapshot.get("container_present") is True
+            navigation_labels = tuple(str(s)[:80] for s in snapshot.get("navigation_labels", [])[:12])
+            scroll_regions = int(snapshot.get("scroll_regions") or 0)
+            hrefs = snapshot.get("hrefs")
+            if not isinstance(hrefs, list):
+                return result("UNAVAILABLE", "DOM_UNREADABLE")
         except Exception:
-            hrefs = []
-        try:
-            html = page.content()
-        except Exception:
-            html = ""
-        for href in hrefs if isinstance(hrefs, list) else []:
-            canonical = v1.retrieval_v2._canonical_fanatics_url(str(href))
-            if canonical and canonical not in found:
-                found.append(canonical)
-        for match in v1.retrieval_v2.FANATICS_ROUTE_RE.finditer(html):
-            canonical = v1.retrieval_v2._canonical_fanatics_url(match.group(0))
-            if canonical and canonical not in found:
-                found.append(canonical)
-        stable = stable + 1 if len(found) == previous else 0
+            return result("UNAVAILABLE", "DOM_UNREADABLE")
         previous = len(found)
+        if container:
+            for href in hrefs:
+                canonical = v1.retrieval_v2._canonical_fanatics_url(str(href))
+                if canonical and canonical not in found:
+                    found.append(canonical)
+            if snapshot.get("empty_proven") is True:
+                if found:
+                    return result("UNAVAILABLE", "CONTRADICTORY_CONTENT")
+                if status is not None:
+                    return result("EMPTY_PROVEN", "EXPLICIT_EMPTY_CONTENT", True)
+        # Zero URLs never establish readiness or completeness. Keep polling the
+        # explicit main-content state within the existing bounded scroll loop.
+        stable = stable + 1 if container and found and len(found) == previous else 0
         if stable >= 2:
-            break
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            # The live marketplace exposes ordinary numbered pagination. Only
+            # its uniquely labeled, enabled Next button is used (pagination
+            # may be a sibling of main, as on many public inventory pages);
+            # facet "See More" controls and any blocked state are untouched.
+            inventory = tuple(found)
+            if inventory != last_advanced_inventory:
+                try:
+                    next_page = page.get_by_role('button', name='Go to next page', exact=True)
+                    count = next_page.count()
+                    pagination = f"NEXT_COUNT_{min(count, 9)}"
+                    if (count == 1 and next_page.is_visible() and next_page.is_enabled()
+                            and next_page.get_attribute('aria-disabled') != 'true'):
+                        next_page.click(timeout=2000)
+                        pagination = "NEXT_CLICKED"
+                        last_advanced_inventory = inventory
+                        stable = 0
+                        page.wait_for_timeout(850)
+                        continue
+                    elif count == 1:
+                        pagination = "NEXT_NOT_ACTIONABLE"
+                except Exception as error:
+                    pagination = "NEXT_INSPECTION_" + type(error).__name__[:40]
+            else:
+                pagination = "NO_NEW_RESULTS_AFTER_NEXT"
+            # A stable viewport is not a provider inventory count or an end
+            # cursor. Retain these results without declaring the sweep complete.
+            return result("RESULTS", "RESULTS_STABLE_WITHOUT_PAGINATION_PROOF")
+        if container and found:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(850)
-    return found, rounds
+    return result("RESULTS" if found else "UNAVAILABLE",
+                  "OBSERVATION_LIMIT" if found else "CONTENT_UNPROVEN")
 
 
 def scan_fanatics_native_inventory_v2(
@@ -311,7 +408,8 @@ def scan_fanatics_native_inventory_v2(
 ) -> tuple[list[MarketplaceListing], ScanStatus]:
     """Broad Pokemon retrieval; exact TCGdex identity; no GCC identity prerequisite."""
     try:
-        urls, rounds = _fanatics_pokemon_urls(page, scroll_rounds=scroll_rounds)
+        collection = _fanatics_pokemon_urls(page, scroll_rounds=scroll_rounds)
+        urls, rounds = collection
     except Exception as error:
         return [], ScanStatus("fanatics", "ERROR", detail=type(error).__name__, complete=False)
 
@@ -369,12 +467,12 @@ def scan_fanatics_native_inventory_v2(
     )
     return output, ScanStatus(
         "fanatics",
-        "OK",
+        "UNAVAILABLE" if collection.state == "UNAVAILABLE" else "OK",
         pages=rounds,
         candidates=len(urls),
         exact=len(output),
-        detail=detail,
-        complete=len(urls) <= limit,
+        detail=f"{detail}; {collection.detail}",
+        complete=collection.complete and len(urls) <= limit,
     )
 
 

@@ -2,13 +2,31 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from v4_global_market_core import ACTIVE_AUCTION, AUCTION_SNAPSHOT_LE5, FINISHED_UNPROVEN, FIXED_ASK
-from v4_market_cardova import parse_auction_payload, parse_fixed_payload
+from v4_market_cardova import _identity, parse_auction_payload, parse_fixed_payload
 
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 
 
 class CardovaAdapterTests(unittest.TestCase):
+    def test_public_series_wrapper_preserves_exact_leaf_set(self):
+        row = {"player": "Dialga", "variety": "Pokemon TCG: Japanese XY Legendary Shine Collection", "variety_short": "Legendary Shine Collection", "card_number": "#017", "language": "Japanese", "authentication_company_code": "P", "grade": "10", "attribute": "FA", "attribute2": "1st Edition"}
+        identity = _identity(row)
+        self.assertEqual(identity.set_name, "Legendary Shine Collection")
+        self.assertEqual(identity.edition, "First Edition")
+        self.assertEqual(identity.finish, "")
+        self.assertIn("FA", identity.variant)
+
+    def test_public_series_or_language_contradiction_is_blocking(self):
+        row = {"player": "Dialga", "variety": "Pokemon TCG: Japanese XY Legendary Shine Collection", "variety_short": "Base Set", "card_number": "#017", "language": "Japanese", "authentication_company_code": "P", "grade": "10"}
+        self.assertFalse(_identity(row).complete_for_exact_market)
+        row.update(variety_short="Legendary Shine Collection", language="English")
+        self.assertFalse(_identity(row).complete_for_exact_market)
+
+    def test_explicit_material_contradictions_cannot_prove_identity(self):
+        row = {"ulid":"conflict", "listing_type":4, "asking_price":1000, "set_quantity":1, "player":"Pikachu", "variety":"151", "card_number":"25/165", "language":"Japanese", "authentication_company_code":"P", "grade":"10", "attribute":"Master Ball", "attribute2":"Poke Ball"}
+        self.assertFalse(parse_fixed_payload({"list":[row]}, observed_at=NOW)[0].identity_proven)
+
     def test_fixed_direct_single_only(self):
         payload = {"list": [
             {"ulid":"a", "listing_type":4, "asking_price":120000, "set_quantity":1, "authentication_company_code":"P", "grade":"10.0", "language":"Japanese", "player":"Charizard ex", "variety":"Pokemon Card 151", "card_number":"#201/165", "attribute":"SAR"},

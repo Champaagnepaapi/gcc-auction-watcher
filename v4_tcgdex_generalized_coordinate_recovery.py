@@ -25,6 +25,10 @@ class ExactSetAlias:
     require_numeric_denominator: bool = False
     allow_localized_name_mismatch: bool = False
     provenance: str = ""
+    # Fanatics validates localized aliases independently against pinned names.
+    # Keep the actual catalogue name for that final check. Shared aliases must
+    # prove the name here; a reviewed set is never a reviewed card-name alias.
+    preserve_catalog_name: bool = False
 
 
 def _norm_text(value: Any) -> str:
@@ -95,6 +99,7 @@ _RECOVERY_CACHE: dict[tuple[str, str, str, str, int], canonical.CanonicalCard] =
 _RECOVERY_NEGATIVE_CACHE: set[tuple[str, str, str, str, int]] = set()
 _ORIGINAL_RESOLVER = None
 _ORIGINAL_CLEAR_CACHE = None
+_SOURCE_NAME_PROOF_ENABLED = False
 
 
 def _lot_components(
@@ -156,11 +161,18 @@ def _transient_status(status: int) -> bool:
     return status in {0, 408, 425, 429} or status >= 500
 
 
+def _name_key(value: Any) -> str:
+    text = _norm_text(value)
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text):
+        return " ".join("".join(ch if ch.isalnum() else " " for ch in text).split())
+    return canonical._normalize(text)
+
+
 def _name_candidates(listing_name: str) -> set[str]:
-    normalized = canonical._normalize(listing_name)
+    normalized = _name_key(listing_name)
     candidates = {normalized} if normalized else set()
     for suffix in _DISPLAY_SUFFIXES:
-        normalized_suffix = canonical._normalize(suffix)
+        normalized_suffix = _name_key(suffix)
         if normalized and normalized_suffix and normalized.endswith(f" {normalized_suffix}"):
             base = normalized[: -(len(normalized_suffix) + 1)].strip()
             if base:
@@ -169,7 +181,7 @@ def _name_candidates(listing_name: str) -> set[str]:
 
 
 def _card_name_compatible(listing_name: str, card: Mapping[str, Any]) -> bool:
-    candidate_name = canonical._normalize(card.get("name"))
+    candidate_name = _name_key(card.get("name"))
     return bool(candidate_name and candidate_name in _name_candidates(listing_name))
 
 
@@ -189,6 +201,33 @@ def _validate_reference_for_alias(reference: str, alias: ExactSetAlias) -> bool:
     return True
 
 
+def _coordinate_set_proven(language_code: str, listing_set: str, reference: str, set_payload: Mapping[str, Any]) -> bool:
+    set_id = str(set_payload.get("id") or "")
+    if _name_key(listing_set) in {_name_key(set_id), _name_key(set_payload.get("name"))} - {""}:
+        return True
+    alias = _SET_ALIASES_BY_KEY.get(_alias_key(language_code, listing_set))
+    if alias is not None:
+        return alias.tcgdex_set_id == set_id and _validate_reference_for_alias(reference, alias)
+    if language_code == "ja":
+        from v4_tcgdex_japanese_set_registry import resolve_japanese_set
+        entry, _ = resolve_japanese_set(listing_set, reference)
+        return entry is not None and entry.set_id == set_id
+    return False
+
+
+def _source_proven_coordinate_name(candidate: canonical.CanonicalCard, listing_name: str) -> str:
+    if not _SOURCE_NAME_PROOF_ENABLED or candidate.language_code != "ja":
+        return ""
+    from v4_tcgdex_source_pinned_finish import source_pinned_finish_proof
+    proof = source_pinned_finish_proof(candidate)
+    names = dict(proof.card_names) if proof is not None else {}
+    # The immutable file must prove Japanese publication and agree with the
+    # actual REST name. Another locale of this SAME card may prove its spelling.
+    if not names.get("ja") or _name_key(candidate.name) not in {_name_key(n) for n in names.values()}:
+        return ""
+    return next((n for n in names.values() if _name_key(n) in _name_candidates(listing_name)), "")
+
+
 def _canonical_from_coordinate(
     lot: watcher.Lot,
     card: Mapping[str, Any],
@@ -199,6 +238,7 @@ def _canonical_from_coordinate(
     expected_set_id: str,
     expected_count: Optional[int],
     allow_localized_name_mismatch: bool,
+    preserve_catalog_name: bool = False,
 ) -> Optional[canonical.CanonicalCard]:
     identity = watcher.extract_card_identity(lot)
     reference = str(lot.card_number or identity.get("ref") or "").strip()
@@ -217,13 +257,16 @@ def _canonical_from_coordinate(
         return None
     if expected_count is not None and not _set_count_matches(set_payload, expected_count):
         return None
-
-    if not allow_localized_name_mismatch and not _card_name_compatible(listing_name, card):
+    if not _coordinate_set_proven(language_code, listing_set, reference, set_payload):
         return None
 
     returned_name = str(card.get("name") or "").strip()
-    canonical_name = listing_name if allow_localized_name_mismatch else returned_name
-    return canonical.CanonicalCard(
+    prefix = f"{expected_set_id}-"
+    if not returned_name or not card_id.startswith(prefix):
+        return None
+    if not _same_local_id(card_id[len(prefix):], local_id):
+        return None
+    result = canonical.CanonicalCard(
         status="EXACT",
         card_id=card_id,
         set_id=set_id,
@@ -231,9 +274,7 @@ def _canonical_from_coordinate(
         set_name=listing_set,
         local_id=local_id,
         full_number=reference,
-        # Japanese aliases preserve the GCC/romanized name because TCGdex ja may
-        # have only a localized name or, for some coordinates, no ja name at all.
-        name=canonical_name,
+        name=returned_name,
         language_code=language_code,
         pricing=card.get("pricing") if isinstance(card.get("pricing"), Mapping) else {},
         variants=card.get("variants") if isinstance(card.get("variants"), Mapping) else {},
@@ -242,6 +283,21 @@ def _canonical_from_coordinate(
         reason="TCGDEX_EXACT_SET_LOCALID",
         unique_name_number=False,
     )
+    # Fanatics keeps its own final pinned-name gate. Shared Global recovery can
+    # reuse the existing bounded immutable-source cache for an exact same-card
+    # spelling, never an inferred translation or a new alias registry.
+    if not preserve_catalog_name and not _card_name_compatible(listing_name, card):
+        source_name = _source_proven_coordinate_name(result, listing_name)
+        if not source_name:
+            return None
+        from dataclasses import replace
+        result = replace(result, name=source_name)
+    if preserve_catalog_name:
+        # Fanatics' exact coordinate path bypasses _validate_tcgdex_card. Keep
+        # the same detailed-variant evidence for its final material gate.
+        from v4_tcgdex_detailed_variants import annotate_detailed_variants
+        return annotate_detailed_variants(result, card, language_code=language_code)
+    return result
 
 
 def _fetch_coordinate(
@@ -253,6 +309,7 @@ def _fetch_coordinate(
     set_id: str,
     expected_count: Optional[int],
     allow_localized_name_mismatch: bool,
+    preserve_catalog_name: bool = False,
 ) -> canonical.CanonicalCard | None:
     identity = watcher.extract_card_identity(lot)
     reference = str(lot.card_number or identity.get("ref") or "").strip()
@@ -291,6 +348,7 @@ def _fetch_coordinate(
             expected_set_id=set_id,
             expected_count=expected_count,
             allow_localized_name_mismatch=allow_localized_name_mismatch,
+            preserve_catalog_name=preserve_catalog_name,
         )
     return None
 
@@ -308,6 +366,7 @@ def _recover_from_set_alias(lot: watcher.Lot) -> canonical.CanonicalCard | None:
         set_id=alias.tcgdex_set_id,
         expected_count=alias.tcgdex_official_count,
         allow_localized_name_mismatch=alias.allow_localized_name_mismatch,
+        preserve_catalog_name=alias.preserve_catalog_name,
     )
 
 

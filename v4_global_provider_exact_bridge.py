@@ -21,10 +21,11 @@ import v4_multimarket_safety as safety
 _MECHANIC_SUFFIXES = frozenset({"v", "vmax", "vstar", "ex", "gx"})
 _INSTALLED = False
 _ORIGINAL_PPT_MATCH_CANONICAL = ppt._match_canonical
+_SET_REJECT_SEEN: set[tuple[str, str, str]] = set()
 
 
 def _norm_tokens(value: object) -> tuple[str, ...]:
-    normalized = multimarket._normalize(value)
+    normalized = ppt._identity_text_norm(value)
     return tuple(token for token in re.split(r"\s+", normalized) if token)
 
 
@@ -89,13 +90,32 @@ def _set_exact_or_catalog_prefix(
     canonical: multimarket.CanonicalCard, provider_set_name: object
 ) -> bool:
     raw = str(provider_set_name or "").strip()
-    return bool(
-        raw
-        and (
-            multimarket._normalize(raw) == multimarket._normalize(canonical.set_name)
-            or safety._provider_set_id_prefix_matches(canonical, raw)
-        )
-    )
+    if not raw:
+        return False
+    expected = ppt._identity_text_norm(canonical.set_name)
+    if ppt._identity_text_norm(raw) == expected:
+        return True
+    key = (str(canonical.set_id)[:40], str(canonical.set_name)[:160], raw[:160])
+    if key not in _SET_REJECT_SEEN and len(_SET_REJECT_SEEN) < 20:
+        _SET_REJECT_SEEN.add(key)
+        import json
+        watcher.log("[GLOBAL_SET_LABEL_COMPARE] " + json.dumps({"set_id": key[0], "canonical": key[1], "provider": key[2]}, ensure_ascii=False))
+    label = raw
+    if ":" in raw:
+        if not safety._provider_set_id_prefix_matches(canonical, raw):
+            return False
+        label = raw.split(":", 1)[1].strip()
+        # A literal coordinate cannot erase a conflicting label. Keep the
+        # existing bounded packaging normalization inside that prefixed path.
+        label = re.sub(r"^(?:High Class Pack|Enhanced Expansion Pack|Expansion Pack|Pokemon Card)\s*:?\s+", "", label, flags=re.IGNORECASE)
+    if expected and ppt._identity_text_norm(label) == expected:
+        return True
+    if canonical.language_code != "ja":
+        return False
+    from v4_tcgdex_japanese_set_registry import resolve_japanese_set
+    target, _ = resolve_japanese_set(canonical.set_name, canonical.full_number)
+    observed, _ = resolve_japanese_set(label, canonical.full_number)
+    return bool(target and observed and target.set_id == observed.set_id == canonical.set_id)
 
 
 def _sensitive_dimensions_compatible(
@@ -119,6 +139,8 @@ def _sensitive_dimensions_compatible(
         expected.pop("edition", None)
 
     observed = safety._candidate_sensitive_dimensions(candidate)
+    if any(len(values) > 1 for values in observed.values()):
+        return False
     for dimension in watcher.SENSITIVE_COMMERCIAL_DIMENSIONS:
         expected_value = expected.get(dimension)
         if not expected_value:
@@ -152,6 +174,18 @@ def global_candidate_exact_for_canonical(
     candidate: Mapping[str, object],
 ) -> bool:
     """Global PokeTrace exact gate with bounded mechanic nomenclature support."""
+    if canonical.status != "EXACT":
+        return False
+    # The older safety gate normalizes to ASCII. Require the Unicode-safe name
+    # proof first so Japanese names sharing only an `ex` suffix cannot match.
+    if not mechanic_name_equivalent(canonical.name, candidate.get("name"), language_code=canonical.language_code):
+        return False
+    set_payload = candidate.get("set")
+    provider_set_name = set_payload.get("name") if isinstance(set_payload, Mapping) else ""
+    if not _set_exact_or_catalog_prefix(canonical, provider_set_name):
+        return False
+    if not _sensitive_dimensions_compatible(lot, canonical, candidate):
+        return False
     if safety.hardened_candidate_exact_for_canonical(lot, canonical, candidate):
         return True
     if canonical.status != "EXACT":
@@ -208,7 +242,8 @@ def _ppt_candidate_matches(
         expected_number=canonical.full_number,
     ):
         return False
-    return ppt._variant_compatible(identity, row)
+    # Retrieval aliases do not bypass the reviewed/dynamic canonical material gate.
+    return ppt._canonical_variant_compatible(identity, canonical, row)
 
 
 def global_ppt_match_canonical(

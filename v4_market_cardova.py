@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
+import unicodedata
 from typing import Any, Mapping, Optional
+from v4_raw_consensus import MULTILINGUAL_DIMENSION_PATTERNS, parse_multilingual_commercial_dimensions
 
 from v4_global_market_core import (
     ACTIVE_AUCTION,
@@ -45,24 +48,49 @@ def _grade(value: object) -> str:
 
 
 def _identity(row: Mapping[str, Any]) -> CommercialIdentity:
-    finish = " ".join(
+    attributes = " ".join(
         str(row.get(key) or "").strip()
         for key in ("attribute", "attribute2", "attribute3")
         if str(row.get(key) or "").strip()
     )
+    set_name = str(row.get("variety") or row.get("variety_short") or "").strip()
+    # Cardova repeats a catalog leaf under an explicit product/language/era
+    # prefix. Remove only this syntax, and only when BOTH provider fields agree.
+    wrapped = re.fullmatch(r"Pokemon TCG:\s*(Japanese|English)\s+(?:(?:XY|Sun & Moon|Sword & Shield|Scarlet & Violet|Black & White)\s+)?(.+)", set_name, re.I)
+    if wrapped:
+        short = str(row.get("variety_short") or "").strip()
+        norm = lambda text: unicodedata.normalize("NFKC", text).casefold().strip()
+        if _language(wrapped[1]) != _language(row.get("language")) or (short and norm(short) != norm(wrapped[2])):
+            set_name = ""
+        elif short:
+            set_name = short
+    dims = parse_multilingual_commercial_dimensions(attributes)
+    edition = {"first_edition": "First Edition", "unlimited": "Unlimited"}.get(dims.get("edition"), "")
+    finish = {"reverse": "Reverse", "holo": "Holo", "non_holo": "Non Holo"}.get(dims.get("finish"), "")
+    # Preserve all remaining claims (FA, Shiny, Glossy, Green Back, etc.) for
+    # downstream gates. An unrecognized attribute never disappears.
+    variant = attributes
+    if "__conflict__" not in dims.values():
+        for dimension in ("edition", "finish"):
+            for pattern in MULTILINGUAL_DIMENSION_PATTERNS[dimension].values():
+                variant = re.sub(pattern, " ", variant, flags=re.I)
+        variant = " ".join(variant.split())
     return CommercialIdentity(
         name=str(row.get("player") or "").strip(),
-        set_name=str(row.get("variety") or row.get("variety_short") or "").strip(),
+        set_name=set_name,
         number=str(row.get("card_number") or "").strip(),
         language=_language(row.get("language")),
         grader=_grader(row.get("authentication_company_code")),
         grade=_grade(row.get("grade")),
         finish=finish,
+        edition=edition,
+        variant=variant,
     )
 
 
 def _identity_proven(identity: CommercialIdentity) -> bool:
-    return identity.complete_for_exact_market and identity.language in {"en", "ja"}
+    dims = parse_multilingual_commercial_dimensions(" ".join((identity.edition, identity.finish, identity.variant)))
+    return identity.complete_for_exact_market and identity.language in {"en", "ja"} and "__conflict__" not in dims.values()
 
 
 def parse_fixed_payload(

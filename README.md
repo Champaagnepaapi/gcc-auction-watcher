@@ -4,7 +4,7 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Les SHA et états ci-dessous sont des ancres de reprise ; toujours re-vérifier `main`, les PR et les workflows live avant une action importante.
 
-## État canonique — 7 septembre 2026
+## État canonique — 10 septembre 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -17,6 +17,7 @@ Global/Japan integration             : #259 MERGED / production
 Cross-grader calibration             : #261 MERGED / production
 CA -> PSA recall tuning              : #263 / haircut 35 %
 TCGdex Rainbow microvariant          : #266 MERGED / production
+Global provider hardening            : #268 / OPEN / DRAFT / NON MERGED
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -37,6 +38,33 @@ Neon                                 : writers automatiques OFF / rollback manue
 V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
+
+### Phase closeout candidate — PR #268 : Global provider coverage hardening
+
+PR #268 reste **OPEN / DRAFT / NON MERGED** sur `fix/v4-global-coverage-losses-20260907`, basée sur `main@b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Le dernier head runtime validé avant ce closeout documentaire est `e51de1e924ef9090190dba1107924d6b345ea06d`.
+
+Objectif : récupérer et diagnostiquer les pertes de couverture Global sans relâcher l'identité, les budgets provider ni les sémantiques SOLD/ASK.
+
+Durcissements validés :
+
+- Fanatics ne peut plus fabriquer un nom canonique en recopiant le nom du listing ; les aliases de set reviewés restent Fanatics-only et une contradiction de nom/set/langue/localId reste bloquante ;
+- les titres `Master Ball` / `Poke Ball` exigent une preuve source TCGdex immuable de la microvariante ; l'échec ou la contradiction de cette preuve est terminal, sans fallback ordinaire plus permissif ;
+- V2/V3 utilisent une représentation commune `finish=reverse` + `variant=master_ball|poke_ball`, et les contradictions explicites restent fail-closed ;
+- le cas historique `2023 Pokemon Japanese Scarlet & Violet 151 Master Ball Reverse Holo Pikachu #025 PSA 10 GEM` passe le test runtime réel V2+V3 uniquement avec la preuve source épinglée `SV2a/025`. Cette annonce n'était plus présente dans le dernier échantillon live, donc cette récupération n'est pas revendiquée comme revalidée live ;
+- une collecte Fanatics à zéro résultat n'est plus déclarée complète sans preuve : état indisponible/incomplet si le DOM ou l'inventaire vide n'est pas prouvé, avec diagnostics bornés HTTP/observations/conteneur/motif d'arrêt ;
+- Magi expose un manifeste borné à 200 entrées à partir des données déjà calculées, sans requête supplémentaire. Sur #268 seulement, le recovery reste plafonné à `50` requêtes, dont `35` broad/non-prioritaires maximum et `15` réservées aux chemins exacts ; ces bornes ne sont pas encore la production `main` tant que #268 n'est pas mergée ;
+- la comparaison Auction sépare `RESOLVED`, `ENDED`, `UNKNOWN` et `INSPECTION_ERROR`. `ENDED` exige une preuve structurée propre à l'item et **ne devient jamais SOLD**.
+
+Validation automatique du runtime `e51de1e924ef9090190dba1107924d6b345ea06d` :
+
+- Global `34471762196` : **SUCCESS**. Fanatics `24 candidats / 0 exact`, collecte `RESULTS`, HTTP 200, 5 observations, `RESULTS_STABLE`, conteneur présent ; Magi `32/93`, manifeste `93` sans troncature, recovery `48/50`, broad `35`, réserve `15` ; PriceCharting `24 attempted / 0 matched`, tous les accès observés en HTTP 403 ; assertions de sécurité PASS et notifications `0` ;
+- comparaison Fanatics avec le dernier run à `2/24` (`34276645596`) : les deux anciens exacts Gengar Web 1st Edition et Rocket's Moltres ex sont absents du nouvel échantillon ; `20` URL sont sorties, `20` nouvelles sont entrées, les `4` communes gardent exactement `NO_MATCH / explicit_language_unproven`. Aucun `EXACT -> rejet` n'est donc observé ;
+- Auction `34471762199` : **SUCCESS**, suite complète `1002` tests avec `2` skipped, compile/YAML/diff-check PASS, comparaison live `310 effectifs / 294 legacy`, `legacy missing=0`, timers non résolus `0` ;
+- Cardova `34471762219` : **SUCCESS** ; la complétude fournisseur reste correctement `false` lorsque la pagination totale n'est pas prouvée.
+
+Limites résiduelles : PriceCharting reste indisponible via HTTP 403 et aucun contournement WAF n'est autorisé ; le Pikachu historique n'était plus dans l'échantillon Fanatics ; les points d'audit P5–P8 (durcissement identité PriceCharting, gate canonique PPT reviewed-set, idempotence des wrappers Fanatics, pagination Cardova imbriquée) restent une phase suivante séparée.
+
+PR #8/V5, Robot KB/Neon et toute logique d'achat/bid/checkout/paiement restent inchangés. Aucun merge de #268 n'est autorisé implicitement par ce closeout.
 
 ### Phase closeout — #266 : TCGdex Rainbow microvariant
 
@@ -283,6 +311,13 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
+PR #268
+  -> phase provider-hardening validée sur head runtime e51de1e924ef9090190dba1107924d6b345ea06d
+  -> conserver les gates Fanatics source-pinnées et le manifeste Magi borné
+  -> PriceCharting/PPT : traiter ensuite les défauts d'identité P5/P6 avant tout gain de couverture
+  -> wrappers Fanatics/Cardova : P7/P8 ensuite, sans élargissement d'identité
+  -> aucun merge de #268 sans décision explicite utilisateur
+
 Post-#266
   -> observer en production le recall Rainbow réellement source-proven
   -> conserver suffixe Rainbow + set/langue/localId/dénominateur/nom exacts

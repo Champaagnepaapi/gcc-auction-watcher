@@ -65,6 +65,7 @@ class SourcePinnedOutageFallbackTests(unittest.TestCase):
             'import { Card } from "../../../interfaces";\n'
             f'import Set from "../{set_id}";\n'
             "const card: Card = {\n"
+            '    set: Set,\n    name: {ja: "フリーザー"},\n'
             "    variants: [\n"
             f"{variants}\n"
             "    ],\n"
@@ -80,7 +81,7 @@ class SourcePinnedOutageFallbackTests(unittest.TestCase):
             return_value=_Response(200, self._source("SV9", "holo")),
         ) as get, patch.object(watcher, "log"):
             result = outage.recover_source_pinned_outage(
-                self._lot(), self._error()
+                self._lot(title="フリーザー"), self._error()
             )
 
         self.assertEqual(result.status, "EXACT")
@@ -88,7 +89,7 @@ class SourcePinnedOutageFallbackTests(unittest.TestCase):
         self.assertEqual(result.set_id, "SV9")
         self.assertEqual(result.local_id, "102")
         self.assertEqual(result.full_number, "102/100")
-        self.assertEqual(result.name, "Articuno")
+        self.assertEqual(result.name, "フリーザー")
         self.assertEqual(result.language_code, "ja")
         self.assertEqual(result.reason, "TCGDEX_SOURCE_PINNED_OUTAGE_RECOVERY")
         self.assertTrue(result.variants["holo"])

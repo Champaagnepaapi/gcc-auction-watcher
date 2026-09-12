@@ -20,6 +20,7 @@ import v4_global_marketplace_fanatics_native_v3 as v3
 _MAX_LANGUAGE_PROOF_TITLES = 20
 _language_proof_titles = 0
 _ORIGINAL_RESOLVER: Optional[Callable[..., v1.FanaticsNativeResolution]] = None
+_INSTALLED = False
 
 _CLEAN_TCGDEX_NO_MATCH = "tcgdex_aucune identité tcgdex exacte"
 _SET_EXACT_REASONS = {
@@ -138,7 +139,11 @@ def resolve_fanatics_native_identity_with_language_proof(
 
 
 def install_global_marketplace_fanatics_language_proof() -> None:
-    global _ORIGINAL_RESOLVER, _language_proof_titles
+    global _ORIGINAL_RESOLVER, _language_proof_titles, _INSTALLED
+    # Outer wrappers may hide our function marker. Never recapture the chain:
+    # it already contains us, so doing so creates a cycle through _ORIGINAL.
+    if _INSTALLED:
+        return
     cross_locale.install_global_marketplace_fanatics_cross_locale()
     current = v3.resolve_fanatics_native_identity_v3
     if getattr(current, "_fanatics_language_proof_installed", False):
@@ -150,3 +155,4 @@ def install_global_marketplace_fanatics_language_proof() -> None:
     resolve_fanatics_native_identity_with_language_proof._fanatics_language_proof_installed = True  # type: ignore[attr-defined]
     v3.resolve_fanatics_native_identity_v3 = resolve_fanatics_native_identity_with_language_proof
     v3.install_global_marketplace_fanatics_native_v3()
+    _INSTALLED = True

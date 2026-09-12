@@ -309,62 +309,7 @@ def _match_canonical_general(
     *,
     provider_set_id: str = "",
 ):
-    if canonical.status != "EXACT" or not canonical.card_id:
-        return "TCGDEX_UNRESOLVED", None, ""
-    expected_catalog = ppt._norm(canonical.card_id)
-    expected_number = ppt._collector(identity.number)
-    expected_set_id = ppt._norm(provider_set_id)
-    unique = ppt._unique_rows(rows)
-
-    catalog_matches = []
-    for row in unique:
-        if not _row_language_compatible(identity, row):
-            continue
-        if ppt._collector(row.get("cardNumber") or row.get("number")) != expected_number:
-            continue
-        row_catalog = ppt._norm(row.get("externalCatalogId"))
-        if not row_catalog or row_catalog != expected_catalog:
-            continue
-        if expected_set_id:
-            row_set_id = ppt._norm(row.get("setId") or row.get("set_id"))
-            if row_set_id and row_set_id != expected_set_id:
-                continue
-        catalog_matches.append(row)
-    if len(catalog_matches) > 1:
-        return "AMBIGUOUS", None, "TCGDEX_EXTERNAL_CATALOG_ID"
-    if len(catalog_matches) == 1:
-        row = catalog_matches[0]
-        if not ppt._variant_compatible(identity, row):
-            return "MICROVARIANT_UNPROVEN", None, "TCGDEX_EXTERNAL_CATALOG_ID"
-        return "EXACT", row, "TCGDEX_EXTERNAL_CATALOG_ID"
-
-    target_names = {ppt._norm(identity.name), ppt._norm(canonical.name)} - {""}
-    target_sets = {ppt._norm(identity.set_name), ppt._norm(canonical.set_name)} - {""}
-    fallback = []
-    for row in unique:
-        if not _row_language_compatible(identity, row):
-            continue
-        if ppt._norm(row.get("externalCatalogId")):
-            continue
-        if ppt._collector(row.get("cardNumber") or row.get("number")) != expected_number:
-            continue
-        if ppt._norm(row.get("name")) not in target_names:
-            continue
-        if ppt._norm(row.get("setName") or row.get("set_name")) not in target_sets:
-            continue
-        if expected_set_id:
-            row_set_id = ppt._norm(row.get("setId") or row.get("set_id"))
-            if row_set_id and row_set_id != expected_set_id:
-                continue
-        fallback.append(row)
-    if len(fallback) > 1:
-        return "AMBIGUOUS", None, "TCGDEX_SET_NAME_NUMBER_FALLBACK"
-    if len(fallback) == 1:
-        row = fallback[0]
-        if not ppt._variant_compatible(identity, row):
-            return "MICROVARIANT_UNPROVEN", None, "TCGDEX_SET_NAME_NUMBER_FALLBACK"
-        return "EXACT", row, "TCGDEX_SET_NAME_NUMBER_FALLBACK"
-    return "CLEAN_NO_MATCH", None, "TCGDEX_COORDINATE_NOT_FOUND"
+    return ppt._match_canonical(identity, canonical, rows, provider_set_id=provider_set_id)
 
 
 def fetch_ppt_snapshot_generalized(
@@ -390,6 +335,9 @@ def fetch_ppt_snapshot_generalized(
     if not api_key:
         return ppt.PptSnapshot("PROVIDER_DISABLED", note="PPT key unavailable")
 
+    if canonical is None or canonical.status != "EXACT":
+        return ppt.PptSnapshot("TCGDEX_UNRESOLVED", note="exact canonical required before PPT; no network")
+
     language_query = "japanese" if language == "ja" else "english"
     reviewed = ppt.reviewed_set_id(identity) if language == "ja" else None
     matched = None
@@ -411,7 +359,7 @@ def fetch_ppt_snapshot_generalized(
             return ppt.PptSnapshot("RATE_LIMIT", note="HTTP 429")
         if status != 200:
             return ppt.PptSnapshot("PROVIDER_ERROR", note=f"HTTP {status}")
-        match_status, row = ppt._match(identity, ppt._rows(payload), reviewed)
+        match_status, row = ppt._match(identity, ppt._rows(payload), reviewed, canonical=canonical)
         if match_status in {"AMBIGUOUS", "MICROVARIANT_UNPROVEN"}:
             return ppt.PptSnapshot(
                 match_status,
@@ -478,7 +426,7 @@ def fetch_ppt_snapshot_generalized(
 
     deep_rows = ppt._rows(payload)
     if reviewed:
-        deep_status, row = ppt._match(identity, deep_rows, reviewed)
+        deep_status, row = ppt._match(identity, deep_rows, reviewed, canonical=canonical)
         deep_proof = "REVIEWED_SET_ID"
     else:
         deep_status, row, deep_proof = _match_canonical_general(
@@ -493,6 +441,8 @@ def fetch_ppt_snapshot_generalized(
             identity_resolution=resolution or deep_proof,
         )
 
+    if not ppt._deep_coordinate_consistent(row, tcgplayer_id):
+        return ppt.PptSnapshot("CLEAN_NO_MATCH", note="DEEP_COORDINATE_CONFLICT", provider_set_id=provider_set_id)
     snapshot = ppt._snapshot_from_deep_row(
         identity,
         row,

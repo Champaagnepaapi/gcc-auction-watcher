@@ -47,6 +47,16 @@ def _same_denominator(left: str, right: str) -> bool:
 # allowed when resolving entries.
 JAPANESE_SET_REGISTRY: tuple[JapaneseSetRegistryEntry, ...] = (
     JapaneseSetRegistryEntry(
+        target_names=("Terastal Fest ex", "Festival Terastal ex"),
+        set_id="SV8a",
+        expected_denominator="187",
+        ja_set_name="テラスタルフェスex",
+        provenance_url="https://github.com/tcgdex/cards-database/pull/1853",
+        provenance_merge_sha="1f285568a8a97fd6843805e57169eec4727466c7",
+        provenance_label=("TCGdex PR #1853: SV8a Terastal Fest ex; Indonesian label Festival Terastal ex "
+                          "in af33c9ac882e2acfadffaf19e8083aa976d12983/data-asia/SV/SV8a.ts"),
+    ),
+    JapaneseSetRegistryEntry(
         target_names=("151", "Pokemon Card 151", "Pokémon Card 151"),
         set_id="SV2a",
         expected_denominator="165",

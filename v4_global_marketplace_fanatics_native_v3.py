@@ -95,13 +95,7 @@ def _strip_scaffolding(value: str) -> str:
 
 
 def _dimensions(title: str) -> tuple[str, str, str]:
-    edition, finish, variant = v1._explicit_dimensions(title)
-    upper = unicodedata.normalize("NFKC", str(title or "")).upper()
-    if re.search(r"\bMASTER\s*BALL\b|\bMASTERBALL\b", upper):
-        finish = "Master Ball"
-    elif re.search(r"\bPOK[EÉ]\s*BALL\b|\bPOKEBALL\b", upper):
-        finish = "Poke Ball"
-    return edition, finish, variant
+    return v1._explicit_dimensions(title)
 
 
 def _coordinate(
@@ -318,7 +312,8 @@ def scan_fanatics_native_inventory_v3(
     scroll_rounds: int = 20,
 ) -> tuple[list[MarketplaceListing], ScanStatus]:
     try:
-        urls, rounds = v2._fanatics_pokemon_urls(page, scroll_rounds=scroll_rounds)
+        collection = v2._fanatics_pokemon_urls(page, scroll_rounds=scroll_rounds)
+        urls, rounds = collection
     except Exception as error:
         return [], ScanStatus("fanatics", "ERROR", detail=type(error).__name__, complete=False)
 
@@ -368,15 +363,15 @@ def scan_fanatics_native_inventory_v3(
 
     return output, ScanStatus(
         "fanatics",
-        "OK",
+        "UNAVAILABLE" if collection.state == "UNAVAILABLE" else "OK",
         pages=rounds,
         candidates=len(urls),
         exact=len(output),
         detail=(
             "broad Pokemon marketplace retrieval; explicit language+PSA+collector coordinate -> exact TCGdex; "
-            f"GCC identity catalog not required; rejects={dict(rejects)}"
+            f"GCC identity catalog not required; rejects={dict(rejects)}; {collection.detail}"
         ),
-        complete=len(urls) <= limit,
+        complete=collection.complete and len(urls) <= limit,
     )
 
 

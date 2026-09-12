@@ -41,8 +41,6 @@ DYNAMIC_IDENTITY = CommercialIdentity(
     language="ja",
     grader="PSA",
     grade="10",
-    finish="V",
-    variant="Special Art Rare",
 )
 DYNAMIC_CANONICAL = multimarket.CanonicalCard(
     status="EXACT",
@@ -54,6 +52,10 @@ DYNAMIC_CANONICAL = multimarket.CanonicalCard(
     name="Raikou",
     language_code="ja",
     reason="TEST_EXACT",
+)
+REVIEWED_CANONICAL = multimarket.CanonicalCard(
+    status="EXACT", card_id="SV2a-183", set_id="SV2a", set_name="151",
+    local_id="183", full_number="183/165", name="Mewtwo", language_code="ja",
 )
 
 
@@ -91,8 +93,9 @@ class PptIdentityTests(unittest.TestCase):
     def test_exact_provider_set_number_matches(self):
         status, row = _match(
             IDENTITY,
-            [{"setId": "23599", "cardNumber": "183", "language": "japanese", "tcgPlayerId": 1}],
+            [{"setId": "23599", "cardNumber": "183", "name": "Mewtwo", "language": "japanese", "tcgPlayerId": 1}],
             "23599",
+            canonical=REVIEWED_CANONICAL,
         )
         self.assertEqual(status, "EXACT")
         self.assertIsNotNone(row)
@@ -102,6 +105,7 @@ class PptIdentityTests(unittest.TestCase):
             IDENTITY,
             [{"setId": "23599", "cardNumber": "183", "language": "english"}],
             "23599",
+            canonical=REVIEWED_CANONICAL,
         )
         self.assertEqual(status, "CLEAN_NO_MATCH")
         self.assertIsNone(row)
@@ -114,6 +118,9 @@ class PptIdentityTests(unittest.TestCase):
             identity,
             [{"setId": "23599", "cardNumber": "025", "language": "japanese", "name": "Pikachu"}],
             "23599",
+            canonical=multimarket.CanonicalCard(
+                status="EXACT", card_id="SV2a-025", set_id="SV2a", set_name="151",
+                local_id="025", full_number="025/165", name="Pikachu", language_code="ja"),
         )
         self.assertEqual(status, "MICROVARIANT_UNPROVEN")
 
@@ -124,7 +131,7 @@ class PptIdentityTests(unittest.TestCase):
             [{
                 "externalCatalogId": "s12a-218",
                 "setId": "provider-777",
-                "setName": "provider wording can differ",
+                "setName": "VSTAR Universe",
                 "cardNumber": "218",
                 "language": "japanese",
                 "name": "Raikou",
