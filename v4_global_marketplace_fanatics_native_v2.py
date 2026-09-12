@@ -276,6 +276,8 @@ class FanaticsCollection:
     http_status: Optional[int]
     container_present: bool
     complete: bool = False
+    navigation_labels: tuple[str, ...] = ()
+    scroll_regions: int = 0
 
     def __iter__(self):
         # Preserve the two-value collector API for existing callers.
@@ -286,7 +288,8 @@ class FanaticsCollection:
     def detail(self) -> str:
         return (f"collection={self.state}; http={self.http_status}; "
                 f"observations={self.observations}; stop={self.stop_reason}; "
-                f"container_present={self.container_present}")
+                f"container_present={self.container_present}; "
+                f"navigation_labels={self.navigation_labels}; scroll_regions={self.scroll_regions}")
 
 
 _CONTENT_SNAPSHOT = r"""() => {
@@ -296,7 +299,11 @@ _CONTENT_SNAPSHOT = r"""() => {
     const empty = labels.some(el => visible(el) &&
         /^(no results found|no items found|no matching items found)[.!]?$/i.test(el.innerText.trim()));
     const hrefs = root ? Array.from(root.querySelectorAll('a[href]')).slice(0,1800).map(a => a.href) : [];
-    return {container_present: !!root && visible(root), empty_proven: empty, hrefs};
+    const navigation_labels = [...document.querySelectorAll('button,[role=button],nav a')].filter(visible)
+      .map(e=>(e.getAttribute('aria-label')||e.innerText||'').trim())
+      .filter(s=>/next|previous|page|more|load|show/i.test(s) && s.length<=80).slice(0,12);
+    const scroll_regions = root ? [...root.querySelectorAll('*')].filter(e=>e.scrollHeight>e.clientHeight+50 && /auto|scroll/.test(getComputedStyle(e).overflowY)).length : 0;
+    return {container_present: !!root && visible(root), empty_proven: empty, hrefs, navigation_labels, scroll_regions};
 }"""
 
 
@@ -315,9 +322,10 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
     found: list[str] = []
     observations, stable = 0, 0
     container = False
+    navigation_labels, scroll_regions = (), 0
 
     def result(state, reason, complete=False):
-        return FanaticsCollection(found, observations, state, reason, status, container, complete)
+        return FanaticsCollection(found, observations, state, reason, status, container, complete, navigation_labels, scroll_regions)
 
     if status is not None and not 200 <= status < 300:
         return result("UNAVAILABLE", "HTTP_UNAVAILABLE")
@@ -330,6 +338,8 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
             if not isinstance(snapshot, dict):
                 return result("UNAVAILABLE", "DOM_UNREADABLE")
             container = snapshot.get("container_present") is True
+            navigation_labels = tuple(str(s)[:80] for s in snapshot.get("navigation_labels", [])[:12])
+            scroll_regions = int(snapshot.get("scroll_regions") or 0)
             hrefs = snapshot.get("hrefs")
             if not isinstance(hrefs, list):
                 return result("UNAVAILABLE", "DOM_UNREADABLE")

@@ -18,6 +18,8 @@ SNAPSHOT = r"""() => {
  const root = document.querySelector('main,[role=main]');
  return {container:!!root, title:document.title.slice(0,160),
  text_length:(document.body?.innerText||'').length, script_count:document.scripts.length,
+ forms:[...document.querySelectorAll('form')].map(f=>({action:new URL(f.action,location.href).pathname,method:f.method})).slice(0,4),
+ inputs:[...document.querySelectorAll('input[type=search],input[type=text]')].map(e=>({name:e.name.slice(0,60),placeholder:e.placeholder.slice(0,80),visible:!!e.getClientRects().length})).slice(0,6),
  headings:[...document.querySelectorAll('h1,h2,[role=alert]')].map(e=>e.innerText.slice(0,200)).slice(0,8),
  links:[...document.querySelectorAll('a[href]')].slice(0,1800).map(a=>a.href),
  buttons:[...document.querySelectorAll('button,[role=button]')].filter(e=>e.offsetParent!==null).map(e=>e.innerText.slice(0,80)).filter(Boolean).slice(-12)};
@@ -54,7 +56,7 @@ def probe(page, market, url, item_pattern):
                 parsed = urlsplit(str(raw))
                 if parsed.scheme == "https" and parsed.hostname == host and re.fullmatch(item_pattern, parsed.path):
                     urls.add(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")))
-            result["snapshot"] = {k: snapshot.get(k) for k in ("container", "title", "headings", "buttons", "text_length", "script_count")}
+            result["snapshot"] = {k: snapshot.get(k) for k in ("container", "title", "headings", "buttons", "text_length", "script_count", "forms", "inputs")}
             paths = sorted({urlsplit(str(u)).path for u in snapshot.get("links", []) if urlsplit(str(u)).hostname == host})
             result["snapshot"]["link_paths"] = paths[:25]
             result["urls"] = sorted(urls)[:100]
@@ -69,7 +71,7 @@ def probe(page, market, url, item_pattern):
     return result
 
 
-ITEM_FIELDS = ("カテゴリー", "ブランド", "商品の状態", "配送料の負担", "配送の方法", "発送までの日数", "言語", "枚数")
+ITEM_FIELDS = ("カテゴリー", "ブランド", "商品の状態", "配送料の負担", "配送の方法", "発送までの日数", "言語", "枚数", "カード名", "カード番号", "シリーズ", "セット", "鑑定状況", "グレード", "種別", "Language", "Set", "Card Name", "Card Number", "Grading Company", "Grade", "Quantity")
 PRODUCT_SNAPSHOT = r"""() => {
  const products=[];
  function visit(x, d=0) {
@@ -83,6 +85,18 @@ PRODUCT_SNAPSHOT = r"""() => {
  for(const row of document.querySelectorAll('tr,dl')) {
   const label=row.querySelector('th,dt')?.innerText?.trim();
   if(label) fields[label]=row.querySelector('td,dd')?.innerText?.trim()?.slice(0,160);
+ }
+ const allowed=new Set(['カテゴリー','商品の状態','配送料の負担','配送の方法','言語','枚数','カード名','カード番号','シリーズ','セット','鑑定状況','グレード','種別','Language','Set','Card Name','Card Number','Grading Company','Grade','Quantity']);
+ // Item-scoped schema properties and visible labeled rows only. No seller,
+ // account data or arbitrary description is returned by this extractor.
+ if(products.length===1 && Array.isArray(products[0].additionalProperty)) {
+  for(const p of products[0].additionalProperty) if(allowed.has(p.name) && typeof p.value==='string') fields[p.name]=p.value.slice(0,160);
+ }
+ for(const e of document.querySelectorAll('main p,main span,main div')) {
+  if(e.children.length || !allowed.has(e.innerText.trim())) continue;
+  const next=e.nextElementSibling || e.parentElement?.nextElementSibling;
+  const value=next?.innerText?.trim();
+  if(value && value.length<=160 && !fields[e.innerText.trim()]) fields[e.innerText.trim()]=value;
  }
  return {title:(document.querySelector('h1')?.innerText||'').slice(0,240), product:products.length===1?products[0]:{}, product_count:products.length, fields};
 }"""

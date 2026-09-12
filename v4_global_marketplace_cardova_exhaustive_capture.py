@@ -36,7 +36,7 @@ def _listing_envelopes(value: object, *, depth: int = 0):
     if depth > 6 or not isinstance(value, Mapping):
         return
     for key, rows in value.items():
-        if key in {"items", "list", "data", "results"} and isinstance(rows, list):
+        if isinstance(rows, list):
             if rows and all(isinstance(row, Mapping) and base._looks_like_listing_row(row) for row in rows):
                 yield value, rows
         elif isinstance(rows, Mapping):

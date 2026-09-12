@@ -84,6 +84,12 @@ def _row(ulid, *, grader="P", category="Pokemon"):
 
 
 class CardovaExhaustiveCaptureTests(unittest.TestCase):
+    def test_listing_array_key_does_not_hide_request_bound_envelope(self):
+        page = PagedFakePage({1: [{"data": {"listings": [_row("one")], "current_page": 1, "last_page": 1}}]})
+        result = target.capture_cardova_public_inventory_exhaustive(page, max_pages_each=1)
+        self.assertEqual(len(result.page_evidence), 2)
+        self.assertTrue(result.complete)
+
     def test_late_listing_response_is_awaited_before_navigation(self):
         class LatePage(PagedFakePage):
             def goto(self, url, **kwargs):
