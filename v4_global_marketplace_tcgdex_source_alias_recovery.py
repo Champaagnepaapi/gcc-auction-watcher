@@ -100,6 +100,7 @@ def install_global_marketplace_tcgdex_source_alias_recovery() -> None:
     )
 
     japanese_aliases.install_v4_tcgdex_japanese_set_aliases()
+    generalized._SOURCE_NAME_PROOF_ENABLED = True
     _ORIGINAL_RESOLVER = canonical.resolve_tcgdex_card
     canonical.resolve_tcgdex_card = _resolve_with_global_source_alias
     _INSTALLED = True

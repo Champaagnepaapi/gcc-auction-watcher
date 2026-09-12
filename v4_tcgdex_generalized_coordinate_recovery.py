@@ -99,6 +99,7 @@ _RECOVERY_CACHE: dict[tuple[str, str, str, str, int], canonical.CanonicalCard] =
 _RECOVERY_NEGATIVE_CACHE: set[tuple[str, str, str, str, int]] = set()
 _ORIGINAL_RESOLVER = None
 _ORIGINAL_CLEAR_CACHE = None
+_SOURCE_NAME_PROOF_ENABLED = False
 
 
 def _lot_components(
@@ -200,6 +201,33 @@ def _validate_reference_for_alias(reference: str, alias: ExactSetAlias) -> bool:
     return True
 
 
+def _coordinate_set_proven(language_code: str, listing_set: str, reference: str, set_payload: Mapping[str, Any]) -> bool:
+    set_id = str(set_payload.get("id") or "")
+    if _name_key(listing_set) in {_name_key(set_id), _name_key(set_payload.get("name"))} - {""}:
+        return True
+    alias = _SET_ALIASES_BY_KEY.get(_alias_key(language_code, listing_set))
+    if alias is not None:
+        return alias.tcgdex_set_id == set_id and _validate_reference_for_alias(reference, alias)
+    if language_code == "ja":
+        from v4_tcgdex_japanese_set_registry import resolve_japanese_set
+        entry, _ = resolve_japanese_set(listing_set, reference)
+        return entry is not None and entry.set_id == set_id
+    return False
+
+
+def _source_proven_coordinate_name(candidate: canonical.CanonicalCard, listing_name: str) -> str:
+    if not _SOURCE_NAME_PROOF_ENABLED or candidate.language_code != "ja":
+        return ""
+    from v4_tcgdex_source_pinned_finish import source_pinned_finish_proof
+    proof = source_pinned_finish_proof(candidate)
+    names = dict(proof.card_names) if proof is not None else {}
+    # The immutable file must prove Japanese publication and agree with the
+    # actual REST name. Another locale of this SAME card may prove its spelling.
+    if not names.get("ja") or _name_key(candidate.name) not in {_name_key(n) for n in names.values()}:
+        return ""
+    return next((n for n in names.values() if _name_key(n) in _name_candidates(listing_name)), "")
+
+
 def _canonical_from_coordinate(
     lot: watcher.Lot,
     card: Mapping[str, Any],
@@ -229,10 +257,7 @@ def _canonical_from_coordinate(
         return None
     if expected_count is not None and not _set_count_matches(set_payload, expected_count):
         return None
-
-    # Fanatics has a separate final pinned-name gate. Every shared recovery
-    # must prove the name here, regardless of the reviewed set alias flag.
-    if not preserve_catalog_name and not _card_name_compatible(listing_name, card):
+    if not _coordinate_set_proven(language_code, listing_set, reference, set_payload):
         return None
 
     returned_name = str(card.get("name") or "").strip()
@@ -258,6 +283,15 @@ def _canonical_from_coordinate(
         reason="TCGDEX_EXACT_SET_LOCALID",
         unique_name_number=False,
     )
+    # Fanatics keeps its own final pinned-name gate. Shared Global recovery can
+    # reuse the existing bounded immutable-source cache for an exact same-card
+    # spelling, never an inferred translation or a new alias registry.
+    if not preserve_catalog_name and not _card_name_compatible(listing_name, card):
+        source_name = _source_proven_coordinate_name(result, listing_name)
+        if not source_name:
+            return None
+        from dataclasses import replace
+        result = replace(result, name=source_name)
     if preserve_catalog_name:
         # Fanatics' exact coordinate path bypasses _validate_tcgdex_card. Keep
         # the same detailed-variant evidence for its final material gate.

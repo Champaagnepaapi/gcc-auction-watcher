@@ -43,6 +43,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
         name: str,
         set_id: str,
         count: int,
+        set_name: str = "localized set",
     ) -> dict:
         return {
             "id": card_id,
@@ -50,7 +51,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             "name": name,
             "set": {
                 "id": set_id,
-                "name": "localized set",
+                "name": set_name,
                 "cardCount": {"official": count},
             },
             "pricing": {},
@@ -260,6 +261,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             name="Pikachu",
             set_id="sv05",
             count=162,
+            set_name="Forces Temporelles",
         )
         result = recovery._canonical_from_coordinate(
             lot,
@@ -289,6 +291,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             name="Mémoire Ball",
             set_id="sm11",
             count=236,
+            set_name="Harmonie des Esprits",
         )
         result = recovery._canonical_from_coordinate(
             lot,
@@ -319,6 +322,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             name="Pikachu",
             set_id="sv05",
             count=162,
+            set_name="Forces Temporelles",
         )
         with patch.object(
             canonical,

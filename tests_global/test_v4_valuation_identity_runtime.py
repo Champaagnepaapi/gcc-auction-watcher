@@ -51,6 +51,10 @@ def run_case(case):
             row = {"id": "SV2a-025", "localId": "025", "name": "Pikachu",
                    "set": {"id": "SV2a", "name": "151", "cardCount": {"official": 165, "total": 210}},
                    "variants": {"normal": True, "holo": False, "reverse": False, "firstEdition": False}}
+            if case.startswith("coordinate_names_"):
+                row.update(id="SV2a-169", localId="169", name="リザード")
+                if case.endswith("wrong_rest_name"):
+                    row["name"] = "リザードン"
             if path.endswith("/sets"):
                 payload = [row["set"]]
             elif "/cards/" in path or "/sets/SV2a/" in path:
@@ -103,6 +107,12 @@ def run_case(case):
             payload = {"data": [row]}
         elif host == "raw.githubusercontent.com":
             status = 404
+            if case.startswith("coordinate_names_") and path.endswith("/data-asia/SV/SV2a/169.ts") and not case.endswith("missing_source"):
+                status = 200
+                names = 'ja: "リザード", id: "Charmeleon",'
+                if case.endswith("missing_native"):
+                    names = 'id: "Charmeleon",'
+                payload = 'import Set from "../SV2a";\nconst card: Card = {\n set: Set,\n name: {' + names + '},\n variants: [{type: "holo"}]\n};'
             if case.startswith("source_alias_") and path.endswith("/data-asia/SV/SV8/112.ts"):
                 # Relevant root-name / finish fields of immutable SV8-112
                 # (af33c9ac): レアコイル, never ピカチュウ.
@@ -130,6 +140,14 @@ def run_case(case):
         from v4_global_market_core import CommercialIdentity
         identity = CommercialIdentity("Pikachu", "151", "25/165", "ja", "PSA", "10")
         lot = econ._lot_for_identity(identity)
+        if case.startswith("coordinate_names_"):
+            identity = CommercialIdentity("Charizard" if case.endswith("wrong_name") else "Charmeleon", "Base Set" if case.endswith("wrong_set") else "151", "169/165", "ja", "PSA", "10")
+            lot, canonical = econ.resolve_global_canonical(identity)
+            print(case, canonical)
+            assert (canonical.status == "EXACT") == case.endswith("_valid"), canonical
+            if canonical.status == "EXACT":
+                assert canonical.name == "Charmeleon" and canonical.card_id == "SV2a-169"
+            return
         if case.startswith(("source_alias_", "rest_alias_")):
             identity = CommercialIdentity("レアコイル" if case.endswith("_valid") else "ピカチュウ", "Super Electric Breaker", "112/106", "ja", "PSA", "10")
             lot, canonical = econ.resolve_global_canonical(identity)
@@ -200,6 +218,9 @@ for route in ("source_alias_", "rest_alias_"):
     for scenario in ("valid", "wrong_name"):
         case = route + scenario
         setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for scenario in ("valid", "wrong_name", "wrong_rest_name", "wrong_set", "missing_source", "missing_native"):
+    case = "coordinate_names_" + scenario
+    setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 
 if __name__ == "__main__":
     if len(sys.argv) == 2:
