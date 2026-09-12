@@ -58,6 +58,37 @@ def runtime_case(method):
 
 class FanaticsCollectionTests(unittest.TestCase):
     @runtime_case
+    def test_next_page_outside_main_is_followed_only_when_unique(self):
+        other = URL.replace('7922000d', '8922000d')
+        class NavigationPage(Page):
+            def __init__(self, count=1, disabled=False):
+                super().__init__([{'container_present': True, 'hrefs': [URL]}])
+                self.matches, self.disabled, self.clicks = count, disabled, 0
+            def locator(self, selector):
+                # The inventory is inside main; its pagination is a sibling.
+                return SimpleNamespace(get_by_role=lambda *a, **k: SimpleNamespace(count=lambda: 0))
+            def get_by_role(self, role, *, name, exact):
+                assert (role, name, exact) == ('button', 'Go to next page', True)
+                return self
+            def count(self): return self.matches
+            def is_visible(self): return True
+            def is_enabled(self): return not self.disabled and not self.clicks
+            def get_attribute(self, name): return 'true' if self.disabled else None
+            def click(self, **kwargs):
+                self.clicks += 1
+                self.snapshots = [{'container_present': True, 'hrefs': [other]}]
+        page = NavigationPage()
+        result = v2._fanatics_pokemon_urls(page, scroll_rounds=10)
+        self.assertEqual(result.urls, [URL, other])
+        self.assertEqual(page.clicks, 1)
+        self.assertFalse(result.complete)
+        for page in (NavigationPage(count=2), NavigationPage(disabled=True)):
+            result = v2._fanatics_pokemon_urls(page, scroll_rounds=10)
+            self.assertEqual(result.urls, [URL])
+            self.assertEqual(page.clicks, 0)
+            self.assertIn('pagination=', result.detail)
+
+    @runtime_case
     def test_real_next_page_control_collects_second_page(self):
         other = URL.replace('7922000d', '8922000d')
         class PagedPage(Page):

@@ -278,6 +278,7 @@ class FanaticsCollection:
     complete: bool = False
     navigation_labels: tuple[str, ...] = ()
     scroll_regions: int = 0
+    pagination: str = "NOT_INSPECTED"
 
     def __iter__(self):
         # Preserve the two-value collector API for existing callers.
@@ -289,7 +290,8 @@ class FanaticsCollection:
         return (f"collection={self.state}; http={self.http_status}; "
                 f"observations={self.observations}; stop={self.stop_reason}; "
                 f"container_present={self.container_present}; "
-                f"navigation_labels={self.navigation_labels}; scroll_regions={self.scroll_regions}")
+                f"navigation_labels={self.navigation_labels}; scroll_regions={self.scroll_regions}; "
+                f"pagination={self.pagination}")
 
 
 _CONTENT_SNAPSHOT = r"""() => {
@@ -324,9 +326,10 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
     container = False
     navigation_labels, scroll_regions = (), 0
     last_advanced_inventory: tuple[str, ...] = ()
+    pagination = "NOT_INSPECTED"
 
     def result(state, reason, complete=False):
-        return FanaticsCollection(found, observations, state, reason, status, container, complete, navigation_labels, scroll_regions)
+        return FanaticsCollection(found, observations, state, reason, status, container, complete, navigation_labels, scroll_regions, pagination)
 
     if status is not None and not 200 <= status < 300:
         return result("UNAVAILABLE", "HTTP_UNAVAILABLE")
@@ -362,22 +365,29 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
         stable = stable + 1 if container and found and len(found) == previous else 0
         if stable >= 2:
             # The live marketplace exposes ordinary numbered pagination. Only
-            # its uniquely labeled, enabled main-content Next button is used;
+            # its uniquely labeled, enabled Next button is used (pagination
+            # may be a sibling of main, as on many public inventory pages);
             # facet "See More" controls and any blocked state are untouched.
             inventory = tuple(found)
             if inventory != last_advanced_inventory:
                 try:
-                    next_page = page.locator('main, [role="main"]').get_by_role(
-                        'button', name='Go to next page', exact=True)
-                    if (next_page.count() == 1 and next_page.is_visible() and next_page.is_enabled()
+                    next_page = page.get_by_role('button', name='Go to next page', exact=True)
+                    count = next_page.count()
+                    pagination = f"NEXT_COUNT_{min(count, 9)}"
+                    if (count == 1 and next_page.is_visible() and next_page.is_enabled()
                             and next_page.get_attribute('aria-disabled') != 'true'):
                         next_page.click(timeout=2000)
+                        pagination = "NEXT_CLICKED"
                         last_advanced_inventory = inventory
                         stable = 0
                         page.wait_for_timeout(850)
                         continue
-                except Exception:
-                    pass
+                    elif count == 1:
+                        pagination = "NEXT_NOT_ACTIONABLE"
+                except Exception as error:
+                    pagination = "NEXT_INSPECTION_" + type(error).__name__[:40]
+            else:
+                pagination = "NO_NEW_RESULTS_AFTER_NEXT"
             # A stable viewport is not a provider inventory count or an end
             # cursor. Retain these results without declaring the sweep complete.
             return result("RESULTS", "RESULTS_STABLE_WITHOUT_PAGINATION_PROOF")
