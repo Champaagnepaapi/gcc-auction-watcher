@@ -22,7 +22,25 @@ def run_case(case):
         calls.append((url, kwargs.get("params", {})))
         host, path = urlsplit(url).hostname, urlsplit(url).path
         payload, status = {}, 200
-        if host in {"www.pricecharting.com", "pricecharting.com"}:
+        if host == "api.poketrace.com":
+            if path.endswith("/auth/info"):
+                plan = "Free" if "free" in case else "Pro"
+                payload = {"data": {"active": True, "user": {"plan": plan}}}
+                if case.endswith("unknown_plan"):
+                    payload["data"]["user"] = {}
+                for code in (401, 403, 429):
+                    if case.endswith("auth_" + str(code)):
+                        status, payload = code, {"code": "UPGRADE_REQUIRED" if code == 403 else "UNAUTHORIZED"}
+            elif path.endswith("/cards"):
+                row = {"id": "fixture-pt", "name": "Pikachu", "cardNumber": "25/165", "game": "pokemon-japanese", "productType": "single", "set": {"name": "151"}, "variant": "Normal", "prices": {"ebay": {"NEAR_MINT": {"avg": 5, "saleCount": 4}}}}
+                payload = {"data": [] if case.endswith("empty") else [row], "pagination": {"hasMore": False}}
+                if case.endswith("search_403"):
+                    status, payload = 403, {"code": "UPGRADE_REQUIRED"}
+                if case.endswith("malformed"):
+                    payload = {"unexpected": True}
+            else:
+                raise AssertionError(path)
+        elif host in {"www.pricecharting.com", "pricecharting.com"}:
             name, category = "Pikachu #025", "Pokemon Japanese 151"
             if case.endswith("wrong_name"):
                 name = "Flying Pikachu #025"
@@ -153,6 +171,37 @@ def run_case(case):
         if case.startswith("ppt_sv8a_"):
             identity = CommercialIdentity("Jolteon ex", "Festival Terastal ex", "209/187", "ja", "PSA", "10")
         lot = econ._lot_for_identity(identity)
+        if case.startswith("pt_access_"):
+            import os
+            import watcher
+            import v4_canonical_multimarket as mm
+            from datetime import datetime, timezone
+            lot, canonical = econ.resolve_global_canonical(identity)
+            assert canonical.status == "EXACT", canonical
+            budget = mm.RequestBudget()
+            with patch.object(mm, "POKETRACE_API_KEY", "fixture"), patch.object(mm, "POKETRACE_ENABLED", True), patch.object(mm, "POKETRACE_PACING_SECONDS", 0), patch.dict(os.environ, {"GLOBAL_POKETRACE_CAPABILITY_PROBE": "true" if case.endswith("free_probe") else "false"}):
+                evidence = mm._poketrace_evidence(lot, canonical, budget, datetime.now(timezone.utc))
+                again = mm._poketrace_evidence(lot, canonical, budget, datetime.now(timezone.utc)) if "free" in case else evidence
+            print(case, evidence.status, evidence.note, "requests", budget.poketrace_requests)
+            if case.endswith("empty"):
+                assert evidence.status == watcher.EXTERNAL_CLEAN_NO_MATCH, evidence
+            elif case.endswith("missing_tier"):
+                assert evidence.status == watcher.EXTERNAL_CLEAN_INSUFFICIENT, evidence
+            elif case.endswith("auth_429"):
+                assert evidence.status == watcher.EXTERNAL_RATE_LIMITED, evidence
+            else:
+                assert evidence.status in watcher.EXTERNAL_RETRY_STATUSES, evidence
+                assert evidence.status not in watcher.EXTERNAL_CACHEABLE_STATUSES, evidence
+                if "free" in case or case.endswith("403"):
+                    assert "ACCESS_RESTRICTED" in evidence.note, evidence
+            assert evidence.estimate is None and again.estimate is None
+            if "free" in case:
+                assert budget.poketrace_requests == (2 if case.endswith("free_probe") else 1), calls
+            fallback = watcher.ExternalMarketEvidence("fixture", watcher.EXTERNAL_CLEAN_NO_MATCH, watcher.EVIDENCE_UNAVAILABLE, "fixture")
+            combined = mm._combine_retry_with_fallback(evidence, fallback)
+            if evidence.status in watcher.EXTERNAL_RETRY_STATUSES:
+                assert combined.status == evidence.status
+            return
         if case.startswith("pt_native_"):
             import v4_canonical_multimarket as mm
             identity = CommercialIdentity("ピカチュウex", "Super Electric Breaker", "136/106", "ja", "PSA", "10")
@@ -246,6 +295,9 @@ for scenario in ("valid", "wrong_name", "wrong_rest_name", "wrong_set", "missing
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 for scenario in ("valid", "wrong_name"):
     case = "pt_native_" + scenario
+    setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for scenario in ("free", "free_probe", "auth_401", "auth_403", "auth_429", "search_403", "unknown_plan", "empty", "missing_tier", "malformed"):
+    case = "pt_access_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 for scenario in ("valid", "wrong_set", "wrong_language", "wrong_catalog"):
     case = "ppt_sv8a_" + scenario

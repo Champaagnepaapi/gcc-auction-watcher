@@ -148,6 +148,8 @@ class RequestBudget:
     auth_checked: bool = False
     auth_ok: bool = False
     auth_note: str = ""
+    auth_failure_status: str = watcher.EXTERNAL_TRANSIENT_UNAVAILABLE
+    poketrace_plan: str = ""
 
 
 import v4_price_discovery as pd
@@ -1010,18 +1012,50 @@ def _paced_poketrace_get(
 ) -> tuple[int, object, Mapping[str, str]]:
     if budget.poketrace_requests >= POKETRACE_MAX_REQUESTS_PER_RUN:
         return 0, {"_budget_pending": True}, {}
-    if budget.last_poketrace_started is not None and POKETRACE_PACING_SECONDS > 0:
+    # Unknown accounts may be Free (one request per two seconds). Never send
+    # at the paid burst rate until the account itself proves that entitlement.
+    interval = max(POKETRACE_PACING_SECONDS, 2.0 if budget.poketrace_plan in {"", "FREE"} else 0.0)
+    if budget.last_poketrace_started is not None and interval > 0:
         elapsed = time.monotonic() - budget.last_poketrace_started
-        if elapsed < POKETRACE_PACING_SECONDS:
-            time.sleep(POKETRACE_PACING_SECONDS - elapsed)
+        if elapsed < interval:
+            time.sleep(interval - elapsed)
     budget.last_poketrace_started = time.monotonic()
     budget.poketrace_requests += 1
-    return _json_get(
+    response = _json_get(
         url,
         params=params,
         headers=_poketrace_headers(),
         timeout=POKETRACE_TIMEOUT_SECONDS,
     )
+    plan = str(response[2].get("X-Plan", "")).upper()
+    if plan in {"FREE", "PRO", "GROWTH", "SCALE"}:
+        budget.poketrace_plan = plan
+    return response
+
+
+def _probe_poketrace_free_raw(budget: RequestBudget) -> None:
+    """One opt-in read in the same budget; counts only, never graded evidence."""
+    if os.getenv("GLOBAL_POKETRACE_CAPABILITY_PROBE", "false").lower() != "true":
+        return
+    summary = {"plan": "FREE", "purpose": "RAW_CAPABILITY_ONLY", "graded_valuation": False}
+    try:
+        status, payload, _ = _paced_poketrace_get(budget, f"{POKETRACE_BASE_URL}/cards",
+            params={"market": "US", "game": "pokemon", "product_type": "single", "limit": 3})
+        rows = _extract_list_payload(payload)
+        raw_count = graded_count = 0
+        for row in rows:
+            prices = row.get("prices")
+            for tiers in prices.values() if isinstance(prices, Mapping) else ():
+                for tier, value in tiers.items() if isinstance(tiers, Mapping) else ():
+                    if not isinstance(value, Mapping) or _finite_positive(value.get("avg")) is None:
+                        continue
+                    raw_count += str(tier) in {"MINT", "NEAR_MINT", "LIGHTLY_PLAYED", "MODERATELY_PLAYED", "HEAVILY_PLAYED", "DAMAGED"}
+                    graded_count += bool(re.fullmatch(r"(?:PSA|BGS|CGC|SGC|ACE|TAG)_[0-9_]+", str(tier)))
+        summary.update(http=status, cards=len(rows), raw_tiers_with_price=raw_count, graded_tiers_with_price=graded_count)
+    except Exception as error:
+        summary["error"] = type(error).__name__
+    summary["requests_used"] = budget.poketrace_requests
+    watcher.log("[POKETRACE_CAPABILITY] " + json.dumps(summary, sort_keys=True))
 
 
 def _ensure_poketrace_auth(budget: RequestBudget) -> tuple[bool, str]:
@@ -1029,14 +1063,17 @@ def _ensure_poketrace_auth(budget: RequestBudget) -> tuple[bool, str]:
         return budget.auth_ok, budget.auth_note
     budget.auth_checked = True
     try:
-        status, payload, _headers = _paced_poketrace_get(
+        status, payload, headers = _paced_poketrace_get(
             budget, f"{POKETRACE_BASE_URL}/auth/info"
         )
     except Exception as error:
         budget.auth_note = f"auth {type(error).__name__}"
         return False, budget.auth_note
     if status != 200:
-        budget.auth_note = f"auth HTTP {status}"
+        budget.auth_failure_status = (watcher.EXTERNAL_RATE_LIMITED if status == 429 else
+            watcher.EXTERNAL_PENDING if status == 0 else watcher.EXTERNAL_PROVIDER_ERROR if status == 401 else
+            watcher.EXTERNAL_TRANSIENT_UNAVAILABLE)
+        budget.auth_note = f"{'ACCESS_RESTRICTED; ' if status == 403 else ''}auth HTTP {status}"
         return False, budget.auth_note
     data = _extract_single_payload(payload)
     user = data.get("user") if isinstance(data, Mapping) else None
@@ -1045,12 +1082,20 @@ def _ensure_poketrace_auth(budget: RequestBudget) -> tuple[bool, str]:
         if isinstance(user, Mapping)
         else ""
     )
-    active = bool(data.get("active", True)) if isinstance(data, Mapping) else False
+    plan = plan if plan in {"FREE", "PRO", "GROWTH", "SCALE"} else budget.poketrace_plan
+    if budget.poketrace_plan == "FREE":
+        plan = "FREE"  # A downgrade in current response headers is blocking.
+    budget.poketrace_plan = plan
+    active = data.get("active") is True if isinstance(data, Mapping) else False
+    watcher.log("[POKETRACE_ACCESS] " + json.dumps({"http": status, "plan": plan or "UNKNOWN", "active": active,
+        "graded_access": active and plan in {"PRO", "GROWTH", "SCALE"}}, sort_keys=True))
     if active and plan in {"PRO", "GROWTH", "SCALE"}:
         budget.auth_ok = True
         budget.auth_note = plan
         return True, plan
-    budget.auth_note = f"plan {plan or 'UNKNOWN'} / active={active}"
+    budget.auth_note = f"{'ACCESS_RESTRICTED; ' if plan == 'FREE' and active else ''}plan {plan or 'UNKNOWN'} / active={active}"
+    if active and plan == "FREE":
+        _probe_poketrace_free_raw(budget)
     return False, budget.auth_note
 
 
@@ -1205,7 +1250,7 @@ def _poketrace_evidence(
         _DIAGNOSTICS.poketrace_error += 1
         return watcher.ExternalMarketEvidence(
             key,
-            watcher.EXTERNAL_CLEAN_NO_MATCH,
+            budget.auth_failure_status,
             watcher.EVIDENCE_UNAVAILABLE,
             "poketrace",
             note=f"PokeTrace graded indisponible: {auth_note}",
@@ -1264,9 +1309,19 @@ def _poketrace_evidence(
             watcher.EXTERNAL_TRANSIENT_UNAVAILABLE,
             watcher.EVIDENCE_UNAVAILABLE,
             "poketrace",
-            note=f"PokeTrace HTTP {status}",
+            note=f"{'ACCESS_RESTRICTED; ' if status == 403 else ''}PokeTrace HTTP {status}",
             fetched_at=now,
         )
+
+    if budget.poketrace_plan == "FREE":
+        return watcher.ExternalMarketEvidence(key, watcher.EXTERNAL_TRANSIENT_UNAVAILABLE,
+            watcher.EVIDENCE_UNAVAILABLE, "poketrace", note="ACCESS_RESTRICTED; plan FREE; graded prices filtered", fetched_at=now)
+    container = payload.get("data") if isinstance(payload, Mapping) else payload
+    if isinstance(container, Mapping):
+        container = next((container[k] for k in ("items", "cards", "results") if isinstance(container.get(k), list)), None)
+    if not isinstance(container, list) or not all(isinstance(row, Mapping) for row in container):
+        return watcher.ExternalMarketEvidence(key, watcher.EXTERNAL_PROVIDER_ERROR,
+            watcher.EVIDENCE_UNAVAILABLE, "poketrace", note="PokeTrace response shape unproven", fetched_at=now)
 
     matches = [
         candidate
@@ -1318,7 +1373,7 @@ def _poketrace_evidence(
         _DIAGNOSTICS.poketrace_weak += 1
         return watcher.ExternalMarketEvidence(
             key,
-            watcher.EXTERNAL_CLEAN_NO_MATCH,
+            watcher.EXTERNAL_CLEAN_INSUFFICIENT,
             watcher.EVIDENCE_UNAVAILABLE,
             "poketrace",
             note=f"PokeTrace exact mais tier {tier_name} absent",
