@@ -171,6 +171,18 @@ def run_case(case):
         if case.startswith("ppt_sv8a_"):
             identity = CommercialIdentity("Jolteon ex", "Festival Terastal ex", "209/187", "ja", "PSA", "10")
         lot = econ._lot_for_identity(identity)
+        if case.startswith("comc_native_"):
+            from tests_global.test_v4_comc_native_discovery import Page, CELLS
+            from datetime import datetime, timezone
+            import v4_global_marketplace_scan as scan
+            cells = CELLS.copy()
+            cells[1] = "025"
+            cells[2] = "Charizard [PSA 10 GEM MT]" if case.endswith("wrong_name") else "Pikachu [PSA 10 GEM MT]"
+            rows, _ = scan.scan_comc_inventory(Page(cells), (), observed_at=datetime.now(timezone.utc), max_pages=1)
+            assert len(rows) == 1
+            lot, canonical = econ.resolve_global_canonical(rows[0].identity)
+            assert (canonical.status == "EXACT") == case.endswith("valid"), canonical
+            return
         if case.startswith("pt_access_"):
             import os
             import watcher
@@ -298,6 +310,9 @@ for scenario in ("valid", "wrong_name"):
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 for scenario in ("free", "free_probe", "free_ceiling", "ceiling_free_probe", "auth_401", "auth_403", "auth_429", "search_403", "unknown_plan", "empty", "missing_tier", "malformed"):
     case = "pt_access_" + scenario
+    setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for scenario in ("valid", "wrong_name"):
+    case = "comc_native_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 for scenario in ("valid", "wrong_set", "wrong_language", "wrong_catalog"):
     case = "ppt_sv8a_" + scenario

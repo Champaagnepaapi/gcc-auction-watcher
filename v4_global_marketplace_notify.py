@@ -99,7 +99,7 @@ def _scan(args: argparse.Namespace, *, observed_at: datetime):
     listings.extend(cardova_rows)
     statuses.append(cardova_status)
 
-    if not args.no_browser_sources and seeds:
+    if not args.no_browser_sources:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
