@@ -24,7 +24,7 @@ def run_case(case):
         payload, status = {}, 200
         if host == "api.poketrace.com":
             if path.endswith("/auth/info"):
-                plan = "Free" if "free" in case else "Pro"
+                plan = "Free" if "free" in case and "ceiling" not in case else "Pro"
                 payload = {"data": {"active": True, "user": {"plan": plan}}}
                 if case.endswith("unknown_plan"):
                     payload["data"]["user"] = {}
@@ -179,7 +179,7 @@ def run_case(case):
             lot, canonical = econ.resolve_global_canonical(identity)
             assert canonical.status == "EXACT", canonical
             budget = mm.RequestBudget()
-            with patch.object(mm, "POKETRACE_API_KEY", "fixture"), patch.object(mm, "POKETRACE_ENABLED", True), patch.object(mm, "POKETRACE_PACING_SECONDS", 0), patch.dict(os.environ, {"GLOBAL_POKETRACE_CAPABILITY_PROBE": "true" if case.endswith("free_probe") else "false"}):
+            with patch.object(mm, "POKETRACE_API_KEY", "fixture"), patch.object(mm, "POKETRACE_ENABLED", True), patch.object(mm, "POKETRACE_PACING_SECONDS", 0), patch.dict(os.environ, {"GLOBAL_POKETRACE_CAPABILITY_PROBE": "true" if case.endswith("free_probe") else "false", "V4_POKETRACE_PLAN_CEILING": "FREE" if "ceiling" in case else ""}):
                 evidence = mm._poketrace_evidence(lot, canonical, budget, datetime.now(timezone.utc))
                 again = mm._poketrace_evidence(lot, canonical, budget, datetime.now(timezone.utc)) if "free" in case else evidence
             print(case, evidence.status, evidence.note, "requests", budget.poketrace_requests)
@@ -296,7 +296,7 @@ for scenario in ("valid", "wrong_name", "wrong_rest_name", "wrong_set", "missing
 for scenario in ("valid", "wrong_name"):
     case = "pt_native_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
-for scenario in ("free", "free_probe", "auth_401", "auth_403", "auth_429", "search_403", "unknown_plan", "empty", "missing_tier", "malformed"):
+for scenario in ("free", "free_probe", "free_ceiling", "ceiling_free_probe", "auth_401", "auth_403", "auth_429", "search_403", "unknown_plan", "empty", "missing_tier", "malformed"):
     case = "pt_access_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 for scenario in ("valid", "wrong_set", "wrong_language", "wrong_catalog"):

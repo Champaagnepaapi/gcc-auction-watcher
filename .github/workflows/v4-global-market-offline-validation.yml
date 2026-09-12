@@ -175,6 +175,9 @@ jobs:
       PRICECHARTING_PUBLIC_INTERVAL_SECONDS: "0.35"
       GLOBAL_POKETRACE_CANDIDATE_DIAGNOSTICS: "true"
       GLOBAL_POKETRACE_CAPABILITY_PROBE: "true"
+      # The operator reports Pro expiration. Do not depend on a lingering Pro
+      # response while validating the Free-compatible execution path.
+      V4_POKETRACE_PLAN_CEILING: "FREE"
       GLOBAL_MAGI_REJECTION_DIAGNOSTICS: "true"
       GLOBAL_MAGI_REJECTION_DIAGNOSTICS_MAX_TOTAL: "30"
       GLOBAL_MAGI_REJECTION_DIAGNOSTICS_MAX_PER_REASON: "10"

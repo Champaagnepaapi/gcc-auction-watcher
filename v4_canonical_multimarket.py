@@ -150,6 +150,7 @@ class RequestBudget:
     auth_note: str = ""
     auth_failure_status: str = watcher.EXTERNAL_TRANSIENT_UNAVAILABLE
     poketrace_plan: str = ""
+    poketrace_provider_plan: str = ""
 
 
 import v4_price_discovery as pd
@@ -1029,7 +1030,8 @@ def _paced_poketrace_get(
     )
     plan = str(response[2].get("X-Plan", "")).upper()
     if plan in {"FREE", "PRO", "GROWTH", "SCALE"}:
-        budget.poketrace_plan = plan
+        budget.poketrace_provider_plan = plan
+        budget.poketrace_plan = "FREE" if os.getenv("V4_POKETRACE_PLAN_CEILING", "").upper() == "FREE" else plan
     return response
 
 
@@ -1037,7 +1039,8 @@ def _probe_poketrace_free_raw(budget: RequestBudget) -> None:
     """One opt-in read in the same budget; counts only, never graded evidence."""
     if os.getenv("GLOBAL_POKETRACE_CAPABILITY_PROBE", "false").lower() != "true":
         return
-    summary = {"plan": "FREE", "purpose": "RAW_CAPABILITY_ONLY", "graded_valuation": False}
+    summary = {"effective_plan": "FREE", "provider_plan": budget.poketrace_provider_plan or "UNKNOWN",
+        "purpose": "RAW_CAPABILITY_ONLY", "graded_valuation": False}
     try:
         status, payload, _ = _paced_poketrace_get(budget, f"{POKETRACE_BASE_URL}/cards",
             params={"market": "US", "game": "pokemon", "product_type": "single", "limit": 3})
@@ -1082,18 +1085,21 @@ def _ensure_poketrace_auth(budget: RequestBudget) -> tuple[bool, str]:
         if isinstance(user, Mapping)
         else ""
     )
-    plan = plan if plan in {"FREE", "PRO", "GROWTH", "SCALE"} else budget.poketrace_plan
-    if budget.poketrace_plan == "FREE":
+    plan = plan if plan in {"FREE", "PRO", "GROWTH", "SCALE"} else budget.poketrace_provider_plan
+    if budget.poketrace_provider_plan == "FREE":
         plan = "FREE"  # A downgrade in current response headers is blocking.
+    budget.poketrace_provider_plan = plan
+    if plan and os.getenv("V4_POKETRACE_PLAN_CEILING", "").upper() == "FREE":
+        plan = "FREE"  # Operator ceiling only removes entitlements, never adds.
     budget.poketrace_plan = plan
     active = data.get("active") is True if isinstance(data, Mapping) else False
-    watcher.log("[POKETRACE_ACCESS] " + json.dumps({"http": status, "plan": plan or "UNKNOWN", "active": active,
+    watcher.log("[POKETRACE_ACCESS] " + json.dumps({"http": status, "plan": budget.poketrace_provider_plan or "UNKNOWN", "effective_plan": plan or "UNKNOWN", "active": active,
         "graded_access": active and plan in {"PRO", "GROWTH", "SCALE"}}, sort_keys=True))
     if active and plan in {"PRO", "GROWTH", "SCALE"}:
         budget.auth_ok = True
         budget.auth_note = plan
         return True, plan
-    budget.auth_note = f"{'ACCESS_RESTRICTED; ' if plan == 'FREE' and active else ''}plan {plan or 'UNKNOWN'} / active={active}"
+    budget.auth_note = f"{'ACCESS_RESTRICTED; ' if plan == 'FREE' and active else ''}effective plan {plan or 'UNKNOWN'} / provider plan {budget.poketrace_provider_plan or 'UNKNOWN'} / active={active}"
     if active and plan == "FREE":
         _probe_poketrace_free_raw(budget)
     return False, budget.auth_note
