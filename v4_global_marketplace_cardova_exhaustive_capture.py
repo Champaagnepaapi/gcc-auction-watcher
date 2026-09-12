@@ -86,13 +86,15 @@ def capture_cardova_public_inventory_exhaustive(
     current_page = 0
     requests_seen: set[int] = set()
     lane_complete = {"auction": False, "fixed": False}
+    page_has_inventory = False
+    page_evidence: list[dict[str, Any]] = []
 
     def on_request(request: Any) -> None:
         if current_lane and len(requests_seen) < 500:
             requests_seen.add(id(request))
 
     def on_response(response: Any) -> None:
-        nonlocal json_responses, raw_rows
+        nonlocal json_responses, raw_rows, page_has_inventory
         if not base._safe_cardova_get(response) or getattr(response, "status", None) != 200:
             return
         try:
@@ -125,6 +127,17 @@ def capture_cardova_public_inventory_exhaustive(
             kind = 1 if current_lane == "auction" else 4
             for envelope, rows in _listing_envelopes(payload):
                 if all(base._listing_type(row.get("listing_type")) == kind for row in rows):
+                    page_has_inventory = True
+                    # Pagination diagnostics retain only allowlisted numeric
+                    # coordinates, never arbitrary response/account fields.
+                    if len(page_evidence) < 60:
+                        coordinates = {}
+                        for container in (envelope, envelope.get("meta"), envelope.get("pagination")):
+                            if isinstance(container, Mapping):
+                                for key in ("current_page", "last_page", "currentPage", "lastPage", "page", "total_pages", "totalPages", "pageCount", "page_no", "total_page", "total", "per_page", "limit", "offset"):
+                                    if key in container and str(container[key]).isdigit():
+                                        coordinates[key] = int(container[key])
+                        page_evidence.append({"lane": current_lane, "requested_page": current_page, "rows": len(rows), "pagination": coordinates})
                     if _envelope_proves_last_page(envelope, page_number=current_page):
                         lane_complete[current_lane] = True
 
@@ -139,10 +152,21 @@ def capture_cardova_public_inventory_exhaustive(
             current_lane = lane
             for page_number in range(1, max(1, int(max_pages_each)) + 1):
                 current_page = page_number
+                page_has_inventory = False
                 requests_seen.clear()
-                page.goto(base._page_url(url, page_number), wait_until="domcontentloaded", timeout=25000)
+                response = page.goto(base._page_url(url, page_number), wait_until="domcontentloaded", timeout=25000)
                 pages_visited += 1
-                page.wait_for_timeout(max(0, int(settle_ms)))
+                http = getattr(response, "status", None)
+                if isinstance(http, int) and http >= 400:
+                    page_evidence.append({"lane": lane, "requested_page": page_number, "http": http, "stop": "HTTP_UNAVAILABLE"})
+                    break
+                # A settings/analytics response does not prove item readiness.
+                # Await a request-bound listing envelope for this lane, bounded
+                # to 3.6 seconds at the normal setting, without extra requests.
+                for _ in range(4):
+                    if page_has_inventory:
+                        break
+                    page.wait_for_timeout(min(900, max(0, int(settle_ms))))
                 try:
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     page.wait_for_timeout(min(max(0, int(settle_ms)), 900))
@@ -161,6 +185,7 @@ def capture_cardova_public_inventory_exhaustive(
             rejected_rows=dict(rejects),
             status=f"ERROR:{type(error).__name__}",
             complete=False,
+            page_evidence=tuple(page_evidence),
         )
     finally:
         current_lane = ""
@@ -174,7 +199,7 @@ def capture_cardova_public_inventory_exhaustive(
         except Exception:
             pass
 
-    status = "OK" if json_responses > 0 else "NO_PUBLIC_JSON"
+    status = "OK" if raw_rows > 0 else ("PUBLIC_INVENTORY_UNPROVEN" if json_responses else "NO_PUBLIC_JSON")
     return base.CardovaPublicCapture(
         fixed_payload={"list": list(fixed.values())},
         auction_payload={"list": list(auction.values())},
@@ -185,6 +210,7 @@ def capture_cardova_public_inventory_exhaustive(
         rejected_rows=dict(rejects),
         status=status,
         complete=bool(lane_complete["auction"] and lane_complete["fixed"]),
+        page_evidence=tuple(page_evidence),
     )
 
 

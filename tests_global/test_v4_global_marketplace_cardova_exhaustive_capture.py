@@ -84,6 +84,26 @@ def _row(ulid, *, grader="P", category="Pokemon"):
 
 
 class CardovaExhaustiveCaptureTests(unittest.TestCase):
+    def test_late_listing_response_is_awaited_before_navigation(self):
+        class LatePage(PagedFakePage):
+            def goto(self, url, **kwargs):
+                self.pending, self.ticks = url, 0
+                self.url = url
+            def wait_for_timeout(self, ms):
+                self.ticks += 1
+                if self.ticks == 3:
+                    super().goto(self.pending)
+        payload = {"data": {"items": [_row("late")], "current_page": 1, "last_page": 1}}
+        result = target.capture_cardova_public_inventory_exhaustive(LatePage({1: [payload]}), max_pages_each=1)
+        self.assertEqual(result.accepted_rows, 2)
+        self.assertTrue(result.complete)
+
+    def test_unrelated_json_is_not_inventory_readiness(self):
+        page = PagedFakePage({1: [{"configuration": {"ok": True}}]})
+        result = target.capture_cardova_public_inventory_exhaustive(page, max_pages_each=1)
+        self.assertEqual(result.status, "PUBLIC_INVENTORY_UNPROVEN")
+        self.assertFalse(result.complete)
+
     def test_out_of_scope_middle_pages_do_not_stop_later_pokemon_discovery(self):
         page = PagedFakePage(
             {

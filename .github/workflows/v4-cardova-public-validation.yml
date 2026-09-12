@@ -5,8 +5,10 @@ on:
     paths:
       - "v4_cardova_public_inventory.py"
       - "v4_global_cardova_public_install.py"
+      - "v4_global_marketplace_cardova_exhaustive_capture.py"
       - "v4_global_marketplace_notify_resilient.py"
       - "tests_global/test_v4_cardova_public_inventory.py"
+      - "tests_global/test_v4_global_marketplace_cardova_exhaustive_capture.py"
       - ".github/workflows/v4-cardova-public-validation.yml"
   workflow_dispatch:
 
@@ -63,7 +65,7 @@ jobs:
           python - <<'PY'
           import json
           from playwright.sync_api import sync_playwright
-          from v4_cardova_public_inventory import capture_cardova_public_inventory
+          from v4_global_marketplace_cardova_exhaustive_capture import capture_cardova_public_inventory_exhaustive as capture_cardova_public_inventory
           from v4_global_marketplace_discovery import cardova_inventory
           from datetime import datetime, timezone
 
@@ -85,6 +87,7 @@ jobs:
           )
           summary = {
               "status": capture.status,
+              "page_evidence": capture.page_evidence,
               "pages_visited": capture.pages_visited,
               "json_responses": capture.json_responses,
               "raw_listing_rows": capture.raw_listing_rows,

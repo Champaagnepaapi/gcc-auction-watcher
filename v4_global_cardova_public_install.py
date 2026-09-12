@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from typing import Any
 
 import v4_global_marketplace_notify as marketplace
@@ -68,6 +69,11 @@ def _scan_with_public_cardova(args, *, observed_at):
         auction_buyer_premium_rate=None,
         logistics_jpy=0.0,
     )
+    for evidence in capture.page_evidence:
+        print("[V4_CARDOVA_PAGE] " + json.dumps(evidence, ensure_ascii=False), flush=True)
+    for row in list(capture.fixed_payload.get("list", []))[:20]:
+        evidence = {key: str(row[key])[:180] for key in ("ulid", "player", "variety", "variety_short", "card_number", "language", "attribute", "attribute2", "attribute3") if key in row}
+        print("[V4_CARDOVA_IDENTITY] " + json.dumps(evidence, ensure_ascii=False), flush=True)
     merged = {listing.stable_key: listing for listing in listings}
     for listing in cardova_rows:
         merged[listing.stable_key] = listing
