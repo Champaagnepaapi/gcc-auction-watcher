@@ -323,6 +323,7 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
     observations, stable = 0, 0
     container = False
     navigation_labels, scroll_regions = (), 0
+    last_advanced_inventory: tuple[str, ...] = ()
 
     def result(state, reason, complete=False):
         return FanaticsCollection(found, observations, state, reason, status, container, complete, navigation_labels, scroll_regions)
@@ -360,6 +361,23 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
         # explicit main-content state within the existing bounded scroll loop.
         stable = stable + 1 if container and found and len(found) == previous else 0
         if stable >= 2:
+            # The live marketplace exposes ordinary numbered pagination. Only
+            # its uniquely labeled, enabled main-content Next button is used;
+            # facet "See More" controls and any blocked state are untouched.
+            inventory = tuple(found)
+            if inventory != last_advanced_inventory:
+                try:
+                    next_page = page.locator('main, [role="main"]').get_by_role(
+                        'button', name='Go to next page', exact=True)
+                    if (next_page.count() == 1 and next_page.is_visible() and next_page.is_enabled()
+                            and next_page.get_attribute('aria-disabled') != 'true'):
+                        next_page.click(timeout=2000)
+                        last_advanced_inventory = inventory
+                        stable = 0
+                        page.wait_for_timeout(850)
+                        continue
+                except Exception:
+                    pass
             # A stable viewport is not a provider inventory count or an end
             # cursor. Retain these results without declaring the sweep complete.
             return result("RESULTS", "RESULTS_STABLE_WITHOUT_PAGINATION_PROOF")

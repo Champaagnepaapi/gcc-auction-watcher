@@ -58,6 +58,36 @@ def runtime_case(method):
 
 class FanaticsCollectionTests(unittest.TestCase):
     @runtime_case
+    def test_real_next_page_control_collects_second_page(self):
+        other = URL.replace('7922000d', '8922000d')
+        class PagedPage(Page):
+            def __init__(self):
+                super().__init__([{'container_present': True, 'hrefs': [URL]}])
+                self.clicks = 0
+            def locator(self, selector):
+                assert selector == 'main, [role="main"]'
+                return self
+            def get_by_role(self, role, *, name, exact):
+                assert (role, name, exact) == ('button', 'Go to next page', True)
+                return self
+            def count(self):
+                return 1
+            def is_visible(self):
+                return True
+            def is_enabled(self):
+                return self.clicks == 0
+            def get_attribute(self, name):
+                return None
+            def click(self, **kwargs):
+                self.clicks += 1
+                self.snapshots = [{'container_present': True, 'hrefs': [other]}]
+        page = PagedPage()
+        result = v2._fanatics_pokemon_urls(page, scroll_rounds=10)
+        self.assertEqual(result.urls, [URL, other])
+        self.assertEqual(page.clicks, 1)
+        self.assertFalse(result.complete)
+
+    @runtime_case
     def test_stable_results_without_total_are_not_exhaustive(self):
         result = v2._fanatics_pokemon_urls(Page([{'container_present': True, 'hrefs': [URL]}]), scroll_rounds=8)
         self.assertEqual(result.urls, [URL])
