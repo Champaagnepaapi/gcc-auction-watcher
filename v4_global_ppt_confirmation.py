@@ -250,7 +250,9 @@ def _match_canonical(identity, canonical, rows, *, provider_set_id=""):
             continue
         row_set = _identity_text_norm(row.get("setName") or row.get("set_name"))
         if row_set and row_set not in sets:
-            continue
+            from v4_global_provider_exact_bridge import _set_exact_or_catalog_prefix
+            if not _set_exact_or_catalog_prefix(canonical, row.get("setName") or row.get("set_name")):
+                continue
         row_id = _norm(row.get("setId") or row.get("set_id"))
         if provider_set_id and row_id != _norm(provider_set_id):
             continue

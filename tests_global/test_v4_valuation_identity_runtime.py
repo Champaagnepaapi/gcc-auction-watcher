@@ -55,9 +55,15 @@ def run_case(case):
                 row.update(id="SV2a-169", localId="169", name="リザード")
                 if case.endswith("wrong_rest_name"):
                     row["name"] = "リザードン"
+            if case.startswith("pt_native_"):
+                row.update(id="SV8-136", localId="136", name="ピカチュウex")
+                row["set"] = {"id": "SV8", "name": "Super Electric Breaker", "cardCount": {"official": 106}}
+            if case.startswith("ppt_sv8a_"):
+                row.update(id="SV8a-209", localId="209", name="サンダースex")
+                row["set"] = {"id": "SV8a", "name": "テラスタルフェスex", "cardCount": {"official": 187}}
             if path.endswith("/sets"):
                 payload = [row["set"]]
-            elif "/cards/" in path or "/sets/SV2a/" in path:
+            elif "/cards/" in path or "/sets/SV2a/" in path or "/sets/SV8/" in path or "/sets/SV8a/" in path:
                 payload = row
             elif path.endswith("/cards"):
                 payload = [row]
@@ -77,6 +83,8 @@ def run_case(case):
                    "externalCatalogId": "SV2a-025", "tcgPlayerId": "fixture-025",
                    "ebay": {"salesByGrade": {"psa10": {"count": 5, "medianPrice": 100,
                                                         "lastSaleDate": "2026-09-09"}}}}
+            if case.startswith("ppt_sv8a_"):
+                row.update(name="Jolteon ex", setName="SV8a: Terastal Fest ex", setId="23821", cardNumber="209/187", externalCatalogId="SV8a-209")
             change = not case.endswith("deep_name") or "tcgPlayerId" in kwargs.get("params", {})
             if change:
                 if case.endswith(("wrong_name", "deep_name")):
@@ -107,6 +115,9 @@ def run_case(case):
             payload = {"data": [row]}
         elif host == "raw.githubusercontent.com":
             status = 404
+            if case.startswith("ppt_sv8a_") and path.endswith("/data-asia/SV/SV8a/209.ts"):
+                status = 200
+                payload = 'import Set from "../SV8a";\nconst card: Card = {\n set: Set,\n name: {ja: "サンダースex", id: "Jolteon ex"},\n variants: [{type: "normal"}]\n};'
             if case.startswith("coordinate_names_") and path.endswith("/data-asia/SV/SV2a/169.ts") and not case.endswith("missing_source"):
                 status = 200
                 names = 'ja: "リザード", id: "Charmeleon",'
@@ -139,7 +150,19 @@ def run_case(case):
         import v4_global_economic_confirmation as econ
         from v4_global_market_core import CommercialIdentity
         identity = CommercialIdentity("Pikachu", "151", "25/165", "ja", "PSA", "10")
+        if case.startswith("ppt_sv8a_"):
+            identity = CommercialIdentity("Jolteon ex", "Festival Terastal ex", "209/187", "ja", "PSA", "10")
         lot = econ._lot_for_identity(identity)
+        if case.startswith("pt_native_"):
+            import v4_canonical_multimarket as mm
+            identity = CommercialIdentity("ピカチュウex", "Super Electric Breaker", "136/106", "ja", "PSA", "10")
+            lot, canonical = econ.resolve_global_canonical(identity)
+            assert canonical.status == "EXACT", canonical
+            candidate = {"name": "リザードンex" if case.endswith("wrong_name") else "ピカチュウex", "cardNumber": "136/106", "game": "pokemon-japanese", "productType": "single", "set": {"name": "Super Electric Breaker"}, "variant": "Normal"}
+            actual = mm._candidate_exact_for_canonical(lot, canonical, candidate)
+            print(case, actual)
+            assert actual == case.endswith("_valid"), candidate
+            return
         if case.startswith("coordinate_names_"):
             identity = CommercialIdentity("Charizard" if case.endswith("wrong_name") else "Charmeleon", "Base Set" if case.endswith("wrong_set") else "151", "169/165", "ja", "PSA", "10")
             lot, canonical = econ.resolve_global_canonical(identity)
@@ -220,6 +243,12 @@ for route in ("source_alias_", "rest_alias_"):
         setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 for scenario in ("valid", "wrong_name", "wrong_rest_name", "wrong_set", "missing_source", "missing_native"):
     case = "coordinate_names_" + scenario
+    setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for scenario in ("valid", "wrong_name"):
+    case = "pt_native_" + scenario
+    setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for scenario in ("valid", "wrong_set", "wrong_language", "wrong_catalog"):
+    case = "ppt_sv8a_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 
 if __name__ == "__main__":
