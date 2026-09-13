@@ -374,6 +374,13 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
                     next_page = page.get_by_role('button', name='Go to next page', exact=True)
                     count = next_page.count()
                     pagination = f"NEXT_COUNT_{min(count, 9)}"
+                    if count == 0:
+                        # Public pagination may use an aria-labeled nav anchor
+                        # without native button semantics. The same snapshot
+                        # already observes nav a; never click a facet control.
+                        next_page = page.locator('nav a[aria-label="Go to next page"]')
+                        count = next_page.count()
+                        pagination = f"NEXT_NAV_ANCHOR_COUNT_{min(count, 9)}"
                     if (count == 1 and next_page.is_visible() and next_page.is_enabled()
                             and next_page.get_attribute('aria-disabled') != 'true'):
                         next_page.click(timeout=2000)

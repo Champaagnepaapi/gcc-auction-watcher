@@ -58,6 +58,29 @@ def runtime_case(method):
 
 class FanaticsCollectionTests(unittest.TestCase):
     @runtime_case
+    def test_aria_labeled_nav_anchor_is_not_lost_as_non_button(self):
+        other = URL.replace('7922000d', '8922000d')
+        class AnchorPage(Page):
+            clicks = 0
+            def get_by_role(self, *a, **k):
+                return SimpleNamespace(count=lambda: 0)
+            def locator(self, selector):
+                assert 'nav a[aria-label="Go to next page"]' in selector
+                return self
+            def count(self): return 1
+            def is_visible(self): return True
+            def is_enabled(self): return self.clicks == 0
+            def get_attribute(self, name): return None
+            def click(self, **kwargs):
+                self.clicks += 1
+                self.snapshots = [{'container_present':True,'hrefs':[other]}]
+        page = AnchorPage([{'container_present':True,'hrefs':[URL]}])
+        result = v2._fanatics_pokemon_urls(page, scroll_rounds=10)
+        self.assertEqual(result.urls, [URL, other])
+        self.assertEqual(page.clicks, 1)
+        self.assertFalse(result.complete)
+
+    @runtime_case
     def test_next_page_outside_main_is_followed_only_when_unique(self):
         other = URL.replace('7922000d', '8922000d')
         class NavigationPage(Page):
