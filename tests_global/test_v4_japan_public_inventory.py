@@ -29,6 +29,19 @@ class Page:
 
 
 class JapanPublicInventoryTests(unittest.TestCase):
+    def test_native_mercari_labels_and_number_explicitly_in_title(self):
+        item = copy.deepcopy(ITEM)
+        item['fields'] = {'言語':'日本語版','種別':'シングルカード 1枚', 'カード名':'Pikachu',
+                          'セット':'151', 'グレード':'PSA10'}
+        rows, _, _ = self.scan(item)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].identity.number, '025/165')
+        for key, value in [('種別','シングルカード 2枚'),('グレード','PSA9'),('言語','英語版'),('ミラー加工','Master Ball Poke Ball'),('特徴','unknown stamp')]:
+            bad = copy.deepcopy(item); bad['fields'][key] = value
+            if key == '言語':
+                bad['title'] += ' Japanese'; bad['product']['name'] = bad['title']
+            self.assertEqual(self.scan(bad)[0], [], (key,value))
+
     def scan(self, item=None, status=200, structured=True):
         from v4_global_marketplace_japan_public import scan_public_inventory
         page = Page(item, status, structured)

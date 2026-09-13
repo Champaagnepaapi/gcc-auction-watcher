@@ -229,6 +229,11 @@ jobs:
             timeout 180s playwright install --with-deps chromium
           fi
 
+      - name: Verify public item DOM contract without provider requests
+        env:
+          V4_TEST_BROWSER_DOM: "1"
+        run: python -m unittest tests_global.test_v4_mercari_dom_contract -v
+
       - name: Run marketplace-first read-only bootstrap
         run: |
           python v4_global_marketplace_notify_resilient.py \

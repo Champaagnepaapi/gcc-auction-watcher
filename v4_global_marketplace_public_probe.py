@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 SURFACES = (
     ("mercari", "https://jp.mercari.com/search?keyword=PSA10%20Pokemon", r"/item/m\d+"),
-    ("snkrdunk", "https://snkrdunk.com/en/search/result?keyword=PSA10%20Pokemon", r"/(?:en/)?apparels/\d+/used/\d+"),
+    ("snkrdunk", "https://snkrdunk.com/en/search/result?keyword=PSA10%20Pokemon", r"/(?:en/)?(?:apparels/\d+/used/\d+|trading-cards/used/listings/[0-9A-HJKMNP-TV-Z]{26})"),
 )
 
 SNAPSHOT = r"""() => {
@@ -48,6 +48,15 @@ def probe(page, market, url, item_pattern):
         if urlsplit(page.url).hostname != host or urlsplit(page.url).path != urlsplit(url).path:
             result["state"] = "UNEXPECTED_REDIRECT"
             return result
+        if market == 'snkrdunk':
+            try:
+                # Public content may hydrate after the navigation shell. One
+                # bounded wait for the actual card-offer/catalog DOM, no retry
+                # request and no alternate/private endpoint.
+                page.wait_for_function("() => !!document.querySelector('a[href*=\"/trading-cards/used/listings/\"],a[href*=\"/en/trading-cards/\"]')", timeout=15000)
+                result['readiness'] = 'CARD_CONTENT_OBSERVED'
+            except Exception as error:
+                result['readiness'] = 'UNPROVEN_' + type(error).__name__[:40]
         for _ in range(3):
             page.wait_for_timeout(3000)
             if (urlsplit(page.url).hostname, urlsplit(page.url).path) != (host, urlsplit(url).path):
@@ -99,7 +108,7 @@ def probe(page, market, url, item_pattern):
     return result
 
 
-ITEM_FIELDS = ("カテゴリー", "ブランド", "商品の状態", "配送料の負担", "配送の方法", "発送までの日数", "言語", "枚数", "カード名", "カード番号", "シリーズ", "セット", "鑑定状況", "グレード", "種別", "Language", "Set", "Card Name", "Card Number", "Grading Company", "Grade", "Quantity")
+ITEM_FIELDS = ("カテゴリー", "ブランド", "商品の状態", "配送料の負担", "配送の方法", "発送までの日数", "言語", "枚数", "カード名", "カード番号", "シリーズ", "セット", "鑑定状況", "グレード", "種別", "ミラー加工", "特徴", "レアリティ", "Language", "Set", "Card Name", "Card Number", "Grading Company", "Grade", "Quantity")
 PRODUCT_SNAPSHOT = r"""() => {
  const products=[];
  function visit(x, d=0) {
@@ -114,7 +123,41 @@ PRODUCT_SNAPSHOT = r"""() => {
   const label=row.querySelector('th,dt')?.innerText?.trim();
   if(label) fields[label]=row.querySelector('td,dd')?.innerText?.trim()?.slice(0,160);
  }
- const allowed=new Set(['カテゴリー','商品の状態','配送料の負担','配送の方法','言語','枚数','カード名','カード番号','シリーズ','セット','鑑定状況','グレード','種別','Language','Set','Card Name','Card Number','Grading Company','Grade','Quantity']);
+ const allowed=new Set(['カテゴリー','商品の状態','配送料の負担','配送の方法','言語','枚数','カード名','カード番号','シリーズ','セット','鑑定状況','グレード','種別','ミラー加工','特徴','レアリティ','Language','Set','Card Name','Card Number','Grading Company','Grade','Quantity']);
+ const scoped_fields={};
+ const title=(document.querySelector('h1')?.innerText||'').trim();
+ // Mercari's live metadata are item-specific search links, not table cells.
+ // Bind them to the unique item heading and bounded feature/info sections;
+ // recommendations, seller text and the separate same-product catalog cannot
+ // supply identity. No arbitrary app state or API endpoint is inspected.
+ const main=document.querySelector('main');
+ function section(label) {
+   const headings=[...(main?.querySelectorAll('h2')||[])].filter(e=>e.innerText.trim()===label);
+   if(headings.length!==1) return null;
+   let node=headings[0];
+   for(let i=0;i<4 && node?.parentElement && node.parentElement!==main;i++) {
+     node=node.parentElement;
+     if(node.querySelectorAll('h2').length!==1) return null;
+     if(node.querySelector('a[data-location="item_details:item_info:metadata_link"],[data-testid="item-detail-category"]')) return node;
+   }
+   return null;
+ }
+ function record(key,value) {
+   if(!allowed.has(key) || !value || value.length>160) return;
+   scoped_fields[key]=key in scoped_fields && scoped_fields[key]!==value?'__conflict__':value;
+ }
+ if(location.hostname==='jp.mercari.com' && /^\/item\/m\d+$/.test(location.pathname)
+    && main?.querySelectorAll('h1').length===1 && products.length===1 && products[0].name?.trim()===title) {
+   const features=section('商品の特徴');
+   for(const a of features?.querySelectorAll('a[data-location="item_details:item_info:metadata_link"]')||[]) {
+     if(!a.getClientRects().length) continue;
+     const match=a.innerText.trim().match(/^([^:：]+)[:：]\s*(.+)$/);
+     if(match) record(match[1].trim(),match[2].trim());
+   }
+   const info=section('商品の情報');
+   const categories=info?.querySelectorAll('[data-testid="item-detail-category"]')||[];
+   if(categories.length===1) record('カテゴリー', categories[0].innerText.trim());
+ }
  // Item-scoped schema properties and visible labeled rows only. No seller,
  // account data or arbitrary description is returned by this extractor.
  if(products.length===1 && Array.isArray(products[0].additionalProperty)) {
@@ -128,7 +171,7 @@ PRODUCT_SNAPSHOT = r"""() => {
  }
  const field_labels=[...document.querySelectorAll('th,dt,p,span,div')].filter(e=>!e.children.length && e.getClientRects().length && allowed.has(e.innerText.trim())).map(e=>e.innerText.trim());
  const item_info_present=[...document.querySelectorAll('h2,h3')].some(e=>e.innerText.trim()==='商品の情報');
- return {title:(document.querySelector('h1')?.innerText||'').slice(0,240), product:products.length===1?products[0]:{}, product_count:products.length, fields, item_info_present, field_labels:[...new Set(field_labels)].slice(0,20)};
+ return {title:title.slice(0,240), product:products.length===1?products[0]:{}, product_count:products.length, fields, item_info_present, field_labels:[...new Set(field_labels)].slice(0,20), scoped_fields, scoped_url:location.origin+location.pathname, scoped_title:title.slice(0,240)};
 }"""
 
 
@@ -149,7 +192,7 @@ def inspect_public_item(page, url):
             snapshot = page.evaluate(PRODUCT_SNAPSHOT)
             # Product JSON-LD can precede the separate identity-information
             # section. Readiness of title/price alone must not skip those fields.
-            if snapshot.get("title") and snapshot.get("product") and snapshot.get("fields"):
+            if snapshot.get("title") and snapshot.get("product") and (snapshot.get("fields") or snapshot.get("scoped_fields")):
                 break
         product = snapshot.get("product") or {}
         # Only properties attached to the unique item Product can establish
@@ -163,6 +206,15 @@ def inspect_public_item(page, url):
             if key in proven and proven[key] != value:
                 conflicts.add(key)
             proven[key] = value
+        if (urlsplit(url).hostname == 'jp.mercari.com' and re.fullmatch(r'/item/m\d+', urlsplit(url).path)
+                and snapshot.get('scoped_url') == url and snapshot.get('scoped_title') == snapshot.get('title')
+                and snapshot.get('product_count') == 1 and product.get('name') == snapshot.get('title')):
+            for key, value in (snapshot.get('scoped_fields') or {}).items():
+                if key not in ITEM_FIELDS or not isinstance(value, str) or len(value) > 160:
+                    continue
+                if key in proven and proven[key] != value:
+                    conflicts.add(key)
+                proven[key] = value
         for key in conflicts:
             proven[key] = '__conflict__'
         result['proven_fields'] = proven

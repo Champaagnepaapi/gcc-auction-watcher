@@ -25,11 +25,15 @@ def _public_identity(item):
             return '__conflict__'
         return next(iter(values), '')
     language_text = field('Language', '言語')
-    language = {'japanese':'ja', '日本語':'ja', 'english':'en', '英語':'en'}.get(_norm(language_text))
+    language = {'japanese':'ja', '日本語':'ja', '日本語版':'ja', 'english':'en', '英語':'en', '英語版':'en'}.get(_norm(language_text))
     if not language:
         return None, 'LANGUAGE_UNPROVEN'
     quantity = field('Quantity', '枚数')
     kind = field('種別')
+    if kind == 'シングルカード 1枚':
+        if quantity and quantity not in {'1','1枚'}:
+            return None, 'SINGLE_CARD_CONFLICT'
+        kind, quantity = 'シングルカード', '1'
     if quantity not in {'1', '1枚'} and not (not quantity and kind == 'シングルカード'):
         return None, 'SINGLE_CARD_UNPROVEN'
     if kind and kind != 'シングルカード':
@@ -40,6 +44,10 @@ def _public_identity(item):
     name, set_name, number = field('Card Name', 'カード名'), field('Set', 'セット'), field('Card Number', 'カード番号')
     grader, grade = field('Grading Company', '鑑定会社'), field('Grade', 'グレード')
     certification = field('鑑定状況')
+    if re.fullmatch(r'PSA\s*(8(?:\.5)?|9|10)', grade, re.I):
+        if certification and _norm(certification) != _norm(grade):
+            return None, 'GRADE_CONFLICT'
+        certification, grade = grade, ''
     if certification:
         match = re.fullmatch(r'PSA\s*(8(?:\.5)?|9|10)', certification, re.I)
         if not match or (grader and grader.upper() != 'PSA') or (grade and grade != match[1]):
@@ -49,6 +57,12 @@ def _public_identity(item):
         return None, 'GRADE_UNPROVEN'
     if not name or not set_name or '__conflict__' in (name, set_name, number):
         return None, 'IDENTITY_FIELDS_UNPROVEN'
+    if not number:
+        # The item's full collector coordinate can be supplied by its own H1;
+        # never recover it from a price row, neighbor card or catalog guess.
+        numbers = set(re.findall(r'(?<!\w)[A-Za-z]*\d+/[A-Za-z0-9-]+(?!\w)', title))
+        if len(numbers) == 1:
+            number = next(iter(numbers))
     if not re.fullmatch(r'#?[A-Za-z]*\d+(?:/[A-Za-z0-9-]+)?', number):
         return None, 'NUMBER_UNPROVEN'
     # Independent title and structured claims must agree. Do not replace the
@@ -69,7 +83,13 @@ def _public_identity(item):
     for pattern, code in ((r'\bJapanese\b|日本語', 'ja'), (r'\bEnglish\b|英語', 'en')):
         if re.search(pattern, title, re.I) and code != language:
             return None, 'TITLE_LANGUAGE_CONFLICT'
-    dims = parse_multilingual_commercial_dimensions(title)
+    material = field('ミラー加工')
+    materials = {'キラ':'Holo', 'ホロ':'Holo', 'ミラー':'Reverse', 'マスターボールミラー':'Reverse Master Ball',
+                 'モンスターボールミラー':'Reverse Poke Ball', 'なし':'Non Holo'}
+    if field('特徴') or field('レアリティ') or (material and material not in materials):
+        return None, 'MATERIAL_METADATA_UNPROVEN'
+    material_title = title + ' ' + materials.get(material, '')
+    dims = parse_multilingual_commercial_dimensions(material_title)
     if '__conflict__' in dims.values():
         return None, 'MATERIAL_CONFLICT'
     # Account for every title claim using only the independently supplied item
@@ -89,7 +109,7 @@ def _public_identity(item):
     finish = {'reverse':'Reverse','holo':'Holo','non_holo':'Non Holo'}.get(dims.get('finish'), '')
     # Retain the entire public title for final material gates, including any
     # special foil request. Canonical EXACT remains the shared resolver's job.
-    identity = CommercialIdentity(name, set_name, number.lstrip('#'), language, grader.upper(), grade, edition, finish, title)
+    identity = CommercialIdentity(name, set_name, number.lstrip('#'), language, grader.upper(), grade, edition, finish, material_title.strip())
     return identity, 'PUBLIC_STRUCTURED_IDENTITY'
 
 

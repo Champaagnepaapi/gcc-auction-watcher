@@ -16,9 +16,34 @@ class Page:
         return SimpleNamespace(status=self.status)
     def wait_for_timeout(self, ms): self.waits.append(ms)
     def evaluate(self, script): return self.snapshots.pop(0)
+    def wait_for_function(self, script, **kwargs):
+        self.readiness_timeout = kwargs.get('timeout')
 
 
 class PublicProbeTests(unittest.TestCase):
+    def test_snkr_current_trading_card_offer_route_and_explicit_readiness(self):
+        market, url, pattern = module.SURFACES[1]
+        offer = 'https://snkrdunk.com/en/trading-cards/used/listings/01KX3MP0KG0F4HVD0XNFQAMMZ3'
+        page = Page(snapshots=[{'links':[offer+'?slide=right', 'https://snkrdunk.com/en/trading-cards/704397']}]*3)
+        result = probe(page, market, url, pattern)
+        self.assertEqual(result['urls'], [offer])
+        self.assertEqual(page.readiness_timeout, 15000)
+        self.assertFalse(result['complete'])
+
+    def test_item_scoped_mercari_fields_join_schema_without_overwriting_conflicts(self):
+        title = 'ピカチュウ 025/165 PSA10'
+        snapshot = {'title':title, 'product_count':1, 'product':{'name':title},
+                    'fields':{}, 'scoped_fields':{'言語':'日本語版','グレード':'PSA10'},
+                    'scoped_url':'https://jp.mercari.com/item/m123', 'scoped_title':title}
+        result = module.inspect_public_item(Page(snapshots=[snapshot]*3), snapshot['scoped_url'])
+        self.assertEqual(result['proven_fields'].get('言語'), '日本語版')
+        snapshot['product']['additionalProperty'] = [{'name':'言語','value':'English'}]
+        result = module.inspect_public_item(Page(snapshots=[snapshot]*3), snapshot['scoped_url'])
+        self.assertEqual(result['proven_fields']['言語'], '__conflict__')
+        snapshot['scoped_url'] += '9'
+        result = module.inspect_public_item(Page(snapshots=[snapshot]*3), 'https://jp.mercari.com/item/m123')
+        self.assertEqual(result['proven_fields']['言語'], 'English')
+
     def test_snkr_uses_public_search_form_before_declaring_shell_unproven(self):
         class SearchPage(Page):
             def __init__(self):
