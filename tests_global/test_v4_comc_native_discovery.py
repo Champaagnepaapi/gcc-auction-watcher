@@ -25,6 +25,24 @@ class Page:
 
 
 class ComcNativeTests(unittest.TestCase):
+    def test_live_inline_set_never_becomes_base_or_subset(self):
+        for surface, expected in (
+            ('2016 Pokémon XY Cruel Traitor - [Base] - Japanese','Cruel Traitor'),
+            ('2017 Pokémon The Best of XY - Subset - Japanese','The Best of XY'),
+            ('2025 Pokemon MEGA Dream ex M2a - [Base] - Japanese','MEGA Dream ex'),
+        ):
+            cells = CELLS.copy(); cells[0] = surface; cells[1] = '025'
+            rows, _ = self.scan(Page(cells))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].identity.set_name, expected)
+            self.assertNotIn(rows[0].identity.set_name, {'[Base]', 'Subset'})
+
+    def test_material_only_parenthesis_is_preserved_as_finish_not_name(self):
+        cells = CELLS.copy(); cells[2] = 'Piplup (Holo) [PSA 10 GEM MT]'
+        rows, _ = self.scan(Page(cells))
+        self.assertEqual(rows[0].identity.name, 'Piplup')
+        self.assertEqual(rows[0].identity.finish, 'Holo')
+
     def scan(self, page):
         return scan.scan_comc_inventory(page, (), observed_at=datetime.now(timezone.utc), max_pages=1)
 

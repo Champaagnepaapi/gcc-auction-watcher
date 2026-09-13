@@ -383,14 +383,34 @@ def _comc_native_identity(cells):
     if re.search(r"\b(?:lot of|set of|bundle|sealed|booster|box)\b", description, re.I):
         return None, "SINGLE_UNPROVEN"
     set_parts = re.split(r"\s+-\s+", set_field[:lang.start()])
-    # First component is the printed product/era, second is the set; further
-    # components are material/subset claims and must be retained.
-    if len(set_parts) < 2:
+    # COMC has both 'Pokemon <era> - <set> - [Base]' and
+    # 'Pokemon <era> <set> - [Base]'. A base/subset label is never the set.
+    product = re.sub(r'^\d{4}(?:-Current)?\s+Pok[eé]mon\s*', '', set_parts[0], flags=re.I)
+    eras = ('Scarlet & Violet', 'Sword & Shield', 'Sun & Moon', 'Black & White', 'XY')
+    if product.casefold() in {e.casefold() for e in (*eras, 'Neo')} or not product:
+        if len(set_parts) < 2:
+            return None, "SET_LABEL_UNPROVEN"
+        label, set_attributes = set_parts[1], set_parts[2:]
+    else:
+        label = product
+        for era in eras:
+            if label.casefold().startswith(era.casefold() + ' '):
+                label = label[len(era):].strip()
+                break
+        set_attributes = set_parts[1:]
+    if norm(label.strip('[]')) in {'base', 'subset'}:
         return None, "SET_LABEL_UNPROVEN"
-    label = set_parts[1]
     code_match = re.fullmatch(r"(.+?)\s*\[([A-Za-z0-9.-]+)\]", label)
     code = code_match[2] if code_match else ""
     label = code_match[1].strip() if code_match else label
+    if not code:
+        # A bare trailing code is separable only when this already reviewed
+        # set entry proves the exact code/label pair. Unknown labels stay intact.
+        for entry in JAPANESE_SET_REGISTRY:
+            suffix = ' ' + entry.set_id
+            if label.casefold().endswith(suffix.casefold()) and norm(label[:-len(suffix)]) in {norm(a) for a in entry.target_names}:
+                label, code = label[:-len(suffix)].strip(), entry.set_id
+                break
     entries = [entry for entry in JAPANESE_SET_REGISTRY if norm(label) in {norm(alias) for alias in entry.target_names}]
     number = number.lstrip('#').strip()
     if not re.fullmatch(r"[A-Za-z]*\d+(?:/[A-Za-z0-9-]+)?", number):
@@ -410,7 +430,11 @@ def _comc_native_identity(cells):
         return None, "SET_CODE_LABEL_PROOF_UNAVAILABLE"
     parts = re.split(r"\s+-\s+", description[:grade.start()].strip())
     name = parts[-1]
-    attributes = " ".join([*parts[:-1], *set_parts[2:]])
+    attributes = " ".join([*parts[:-1], *set_attributes])
+    material = re.search(r'\s+\((Holo|Non Holo|Reverse Holo)\)$', name, re.I)
+    if material:
+        attributes += ' ' + material[1]
+        name = name[:material.start()].strip()
     dims = parse_multilingual_commercial_dimensions(set_field + ' ' + description)
     if "__conflict__" in dims.values():
         return None, "DIMENSION_CONFLICT"
