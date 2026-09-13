@@ -58,6 +58,30 @@ def runtime_case(method):
 
 class FanaticsCollectionTests(unittest.TestCase):
     @runtime_case
+    def test_duplicate_navigation_requires_same_proven_destination(self):
+        other = URL.replace('7922000d', '8922000d')
+        class NavPage(Page):
+            def __init__(self, conflicting=False):
+                super().__init__([{'container_present':True,'hrefs':[URL]}])
+                self.clicks, self.conflicting = 0, conflicting
+            def get_by_role(self, *a, **k): return SimpleNamespace(count=lambda:0)
+            def locator(self, selector): return self
+            def count(self): return 2
+            def nth(self, n):
+                href = v2.FANATICS_POKEMON_BROWSE + '&page=' + ('3' if n and self.conflicting else '2')
+                return SimpleNamespace(is_visible=lambda:True, is_enabled=lambda:not self.clicks,
+                    get_attribute=lambda k:href if k == 'href' else None, click=self.click)
+            def click(self, **kwargs):
+                self.clicks += 1
+                self.snapshots = [{'container_present':True,'hrefs':[other]}]
+        for conflicting in (False, True):
+            page = NavPage(conflicting)
+            result = v2._fanatics_pokemon_urls(page, scroll_rounds=10)
+            self.assertEqual(page.clicks, 0 if conflicting else 1)
+            self.assertEqual(result.urls, [URL] if conflicting else [URL, other])
+            self.assertFalse(result.complete)
+
+    @runtime_case
     def test_aria_labeled_nav_anchor_is_not_lost_as_non_button(self):
         other = URL.replace('7922000d', '8922000d')
         class AnchorPage(Page):

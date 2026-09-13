@@ -12,7 +12,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
-from urllib.parse import quote, urlparse, parse_qs
+from urllib.parse import quote, urlparse, parse_qs, urljoin
 
 import v4_canonical_multimarket as multimarket
 import v4_global_economic_confirmation as confirmed
@@ -381,6 +381,19 @@ def _fanatics_pokemon_urls(page: Any, *, scroll_rounds: int) -> FanaticsCollecti
                         next_page = page.locator('nav a[aria-label="Go to next page"]')
                         count = next_page.count()
                         pagination = f"NEXT_NAV_ANCHOR_COUNT_{min(count, 9)}"
+                        if 1 < count <= 4:
+                            # Header/footer or responsive copies may repeat the
+                            # same navigation. Require one visible destination,
+                            # preserving the reviewed Pokemon fixed-ask lane.
+                            visible = [next_page.nth(i) for i in range(count) if next_page.nth(i).is_visible()]
+                            raw_hrefs = [a.get_attribute('href') for a in visible]
+                            hrefs = {urljoin(page.url, href) for href in raw_hrefs if href}
+                            if (visible and len(hrefs) == 1 and None not in hrefs
+                                    and all(raw_hrefs)
+                                    and _fanatics_browse_location_matches(next(iter(hrefs)))
+                                    and all(a.is_enabled() and a.get_attribute('aria-disabled') != 'true' for a in visible)):
+                                next_page, count = visible[0], 1
+                                pagination = 'DUPLICATE_NEXT_SAME_DESTINATION'
                     if (count == 1 and next_page.is_visible() and next_page.is_enabled()
                             and next_page.get_attribute('aria-disabled') != 'true'):
                         next_page.click(timeout=2000)
