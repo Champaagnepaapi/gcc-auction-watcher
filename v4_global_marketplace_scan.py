@@ -264,7 +264,7 @@ def scan_fanatics_inventory(
             observed_at=observed_at,
             source_id=url,
             identity_proven=True,
-            buyer_fee_rate=0.0,
+            buyer_fee_rate=None,  # Fanatics payment/funding route is unproven.
             note="Fanatics marketplace-first Buy Now ASK; exact known coordinate; TCGdex revalidation required downstream",
         )
         output.append(listing_from_observation(observation, source_url=url, title=title))

@@ -168,6 +168,29 @@ def run_case(case):
                 proof_text = "Card Language: English"
             proof_text = proof_text or title
 
+            if case == 'public_cost':
+                from types import SimpleNamespace
+                from datetime import datetime, timezone
+                url = 'https://www.fanaticscollect.com/buy-now/7922000d-352c-4290-b0eb-29578d712424'
+                class Page:
+                    def goto(self, value, **kwargs):
+                        self.url = value
+                        return SimpleNamespace(status=200)
+                    def wait_for_timeout(self, ms): pass
+                    def evaluate(self, script):
+                        return {'container_present':True, 'hrefs':[url]}
+                    def locator(self, selector):
+                        text = title if selector == 'h1' else title + '\n$100.00\nBuy Now'
+                        locator = SimpleNamespace(inner_text=lambda **kwargs: text)
+                        locator.first = locator
+                        return locator
+                output, status = runner.marketplace.scan_fanatics_inventory(Page(), (),
+                    observed_at=datetime.now(timezone.utc), max_detail_pages=1, scroll_rounds=1)
+                assert len(output) == 1, status
+                assert output[0].identity.name == 'Pikachu'
+                assert output[0].all_in_eur({'USD':1}) is None, output[0]
+                return
+
             if case == "parser_dimensions":
                 strict, _ = v2.fanatics_coordinate_candidates(title)
                 flexible, _ = v3._flexible_candidates(title)
@@ -251,7 +274,7 @@ class FanaticsRealRuntimeContractTests(unittest.TestCase):
 
 
 for _case in (
-    "live", "parser_dimensions", "wrong_name", "wrong_name_plain", "wrong_title_set", "wrong_rest_set",
+    "live", "public_cost", "parser_dimensions", "wrong_name", "wrong_name_plain", "wrong_title_set", "wrong_rest_set",
     "wrong_title_local", "wrong_rest_local", "wrong_rest_card_id", "wrong_language",
     "poke_only", "missing_proof", "wrong_source_set", "conflicting_balls",
     "conflicting_finish", "cross_locale_missing_proof", "poke_positive",

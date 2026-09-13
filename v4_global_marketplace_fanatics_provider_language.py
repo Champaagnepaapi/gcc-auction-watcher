@@ -225,7 +225,7 @@ def scan_fanatics_native_inventory_with_provider_language(
             observed_at=observed_at,
             source_id=url,
             identity_proven=True,
-            buyer_fee_rate=0.0,
+            buyer_fee_rate=None,  # Funding/payment method is not public item data.
             note=(
                 "Fanatics broad Pokemon Buy Now ASK; explicit provider language/grade/number -> exact TCGdex; "
                 f"{resolution.reason}; GCC history not required; ASK is not SOLD"

@@ -332,7 +332,7 @@ def scan_fanatics_native_inventory(
             observed_at=observed_at,
             source_id=url,
             identity_proven=True,
-            buyer_fee_rate=0.0,
+            buyer_fee_rate=None,  # Funding/payment method is not public item data.
             note=(
                 "Fanatics marketplace-first Buy Now ASK; native H1 -> exact TCGdex identity; "
                 "GCC history is not an identity prerequisite; ASK is not SOLD"

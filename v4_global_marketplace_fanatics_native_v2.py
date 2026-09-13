@@ -460,7 +460,7 @@ def scan_fanatics_native_inventory_v2(
             observed_at=observed_at,
             source_id=url,
             identity_proven=True,
-            buyer_fee_rate=0.0,
+            buyer_fee_rate=None,  # Funding/payment method is not public item data.
             note=(
                 "Fanatics broad Pokemon Buy Now ASK; bounded H1 partition -> exact TCGdex; "
                 "GCC history not required; ASK is not SOLD"
