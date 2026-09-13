@@ -97,7 +97,7 @@ def parse_fixed_payload(
     payload: Mapping[str, Any],
     *,
     observed_at: datetime,
-    buyer_fee_rate: float = 0.0,
+    buyer_fee_rate: Optional[float] = None,
     logistics_jpy: float = 0.0,
 ) -> list[PriceObservation]:
     observations: list[PriceObservation] = []

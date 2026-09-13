@@ -293,10 +293,12 @@ def cardova_inventory(
     fixed_payload: Optional[Mapping[str, Any]],
     auction_payload: Optional[Mapping[str, Any]],
     observed_at: datetime,
-    buyer_fee_rate: float = 0.0,
+    buyer_fee_rate: Optional[float] = None,
     auction_buyer_premium_rate: Optional[float] = None,
     logistics_jpy: float = 0.0,
 ) -> list[MarketplaceListing]:
+    # A public fixed listing proves the ask, not the buyer's funding/payment
+    # route. Zero seller/buyer commission does not prove zero acquisition fees.
     observations: list[PriceObservation] = []
     if fixed_payload is not None:
         observations.extend(

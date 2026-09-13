@@ -9,6 +9,18 @@ NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 
 
 class CardovaAdapterTests(unittest.TestCase):
+    def test_public_fixed_cost_needs_payment_context(self):
+        from v4_global_marketplace_discovery import cardova_inventory
+        payload = {"list": [{"ulid":"01K4PS9MJAF534BY63WA2K1SD7", "listing_type":4, "asking_price":1000, "set_quantity":1, "player":"Pikachu", "variety":"151", "card_number":"25/165", "language":"Japanese", "authentication_company_code":"P", "grade":"10"}]}
+        listing = cardova_inventory(fixed_payload=payload, auction_payload=None, observed_at=NOW)[0]
+        self.assertIsNone(listing.all_in_eur({"JPY": 160}))
+        # Explicitly supplied all-in acquisition charges remain usable. Public
+        # fixed buyer commission alone does not prove the payment route free.
+        configured = cardova_inventory(fixed_payload=payload, auction_payload=None, observed_at=NOW,
+                                       buyer_fee_rate=0.039, logistics_jpy=500)[0]
+        self.assertAlmostEqual(configured.all_in_eur({"JPY":160}), 1539 / 160)
+        self.assertEqual(configured.evidence_type, FIXED_ASK)
+
     def test_public_series_wrapper_preserves_exact_leaf_set(self):
         row = {"player": "Dialga", "variety": "Pokemon TCG: Japanese XY Legendary Shine Collection", "variety_short": "Legendary Shine Collection", "card_number": "#017", "language": "Japanese", "authentication_company_code": "P", "grade": "10", "attribute": "FA", "attribute2": "1st Edition"}
         identity = _identity(row)

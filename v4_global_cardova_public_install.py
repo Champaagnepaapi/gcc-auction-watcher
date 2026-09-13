@@ -63,7 +63,8 @@ def _scan_with_public_cardova(args, *, observed_at):
         fixed_payload=capture.fixed_payload,
         auction_payload=capture.auction_payload,
         observed_at=observed_at,
-        buyer_fee_rate=0.0,
+        # Public commission does not prove account funding/payment charges.
+        buyer_fee_rate=None,
         # Official buyer premium varies by membership rank.  Anonymous public
         # discovery cannot prove the user's rate, so auction all-in stays unknown.
         auction_buyer_premium_rate=None,
@@ -83,7 +84,7 @@ def _scan_with_public_cardova(args, *, observed_at):
         f"json={capture.json_responses}; raw={capture.raw_listing_rows}; "
         f"scope={capture.accepted_rows}; rejects={dict(capture.rejected_rows)}; "
         f"provider_pagination_complete={bool(capture.complete)}; "
-        "fixed buyer fee=0 per public fee schedule; auction buyer premium unproven"
+        "fixed payment/funding charges unproven; auction buyer premium unproven"
     )
     status = ScanStatus(
         "cardova",
