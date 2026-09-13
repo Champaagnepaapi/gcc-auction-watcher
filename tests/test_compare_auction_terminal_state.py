@@ -135,3 +135,48 @@ class AuctionTerminalTests(unittest.TestCase):
         self.assertEqual(result, ({URL}, set()))
         self.assertEqual(diagnostic['provenance'], 'listing_timer')
         self.assertEqual(page.navigations, 0)
+
+    def test_item_now_fixed_price_is_out_of_auction_scope_not_ended_or_sold(self):
+        # Same item endpoint schema as the nine UNKNOWN items in run 34775550636.
+        page = Page(payload=terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None))
+        result, diagnostic, lot = self.resolve(page)
+        self.assertEqual(result, (set(), set()))
+        self.assertEqual(diagnostic['state'], 'OUT_OF_SCOPE')
+        self.assertEqual(diagnostic['reason'], 'item_explicitly_fixed_price')
+        self.assertEqual(diagnostic['provenance'], 'gcc_item_response.sellingType+status+endTime')
+        self.assertFalse(diagnostic['sold_proven'])
+        self.assertIsNone(lot.minutes_to_end)
+        self.assertEqual(page.navigations, 1)
+
+    def test_fixed_price_exclusion_requires_complete_item_proof(self):
+        valid = terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None)
+        missing_end = dict(valid)
+        del missing_end['endTime']
+        for payload in (dict(valid, id='other'), dict(valid, status='ENDED'),
+                        dict(valid, status='WAITING_FOR_PAYMENT'), dict(valid, sellingType='FIXED'),
+                        dict(valid, endTime=''), terminal(sellingType='FIXED_PRICE', status='ON_SALE'),
+                        missing_end):
+            with self.subTest(payload=payload):
+                result, diagnostic, _ = self.resolve(Page(payload=payload))
+                self.assertEqual(result, (set(), {URL}))
+                self.assertEqual(diagnostic['state'], 'UNKNOWN')
+                self.assertFalse(diagnostic['sold_proven'])
+
+    def test_fixed_price_response_conflicting_with_countdown_is_unknown(self):
+        page = Page(payload=terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None),
+                    body='Pikachu PSA 10\n50 €\n0 jours 0 heures 12 minutes 0 secondes')
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'UNKNOWN')
+
+    def test_conflicting_item_responses_cannot_exclude_an_auction(self):
+        class ConflictingPage(Page):
+            def goto(self, url, **kwargs):
+                response = super().goto(url, **kwargs)
+                for callback in self.listeners:
+                    callback(Response(terminal(status='ON_SALE', endTime=(NOW + timedelta(minutes=12)).isoformat())))
+                return response
+        result, diagnostic, _ = self.resolve(ConflictingPage(
+            payload=terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None)))
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'UNKNOWN')

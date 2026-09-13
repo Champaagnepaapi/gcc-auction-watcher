@@ -76,8 +76,12 @@ def _inspect_legacy_timer(page, lot, inspector, observed_at):
             if not isinstance(payload, dict) or payload.get("id") != item_id:
                 invalid_evidence = True
                 return
-            records.append({key: str(payload.get(key, ""))[:80]
-                            for key in ("sellingType", "status", "endTime")})
+            record = {key: str(payload.get(key, ""))[:80]
+                      for key in ("sellingType", "status", "endTime")}
+            # Explicit JSON null is distinct from a missing/unreadable endTime.
+            if "endTime" in payload and payload["endTime"] is None:
+                record["endTime"] = None
+            records.append(record)
         except Exception:
             invalid_evidence = True
 
@@ -100,10 +104,18 @@ def _inspect_legacy_timer(page, lot, inspector, observed_at):
     # A redirect can neither resolve a timer nor prove this item's termination.
     if hasattr(page, "url") and _item_id(page.url) != item_id:
         return current, _timer_diagnostic(current, provenance="item_location", state="UNKNOWN", reason="unexpected_location")
+    fixed = [record["sellingType"] == "FIXED_PRICE" and record["status"] == "ON_SALE"
+             and record["endTime"] is None for record in records]
+    if any(fixed):
+        if invalid_evidence or not all(fixed) or diagnostic["minutes"] is not None:
+            return current, _timer_diagnostic(current, provenance="gcc_item_response", state="UNKNOWN",
+                                              reason="contradictory_auction_scope_evidence")
+        return current, _timer_diagnostic(current, provenance="gcc_item_response.sellingType+status+endTime",
+                                          state="OUT_OF_SCOPE", reason="item_explicitly_fixed_price")
     terminal = False
     for record in records:
         try:
-            end = datetime.fromisoformat(record["endTime"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(record["endTime"]).replace("Z", "+00:00"))
             proved = (record["sellingType"] == "AUCTION"
                       and record["status"] in {"ENDED", "WAITING_FOR_PAYMENT"}
                       and end.tzinfo is not None and end <= observed_at)
@@ -198,7 +210,7 @@ def resolve_legacy_ids(
         if diagnostic["state"] != "RESOLVED":
             for attempt in range(inspection_attempts):
                 current, diagnostic = _inspect_legacy_timer(page, current, inspector, reference)
-                if diagnostic["state"] in {"RESOLVED", "ENDED"}:
+                if diagnostic["state"] in {"RESOLVED", "ENDED", "OUT_OF_SCOPE"}:
                     break
 
                 if attempt + 1 < inspection_attempts:
@@ -209,7 +221,7 @@ def resolve_legacy_ids(
 
         if diagnostics is not None:
             diagnostics[lot.url] = diagnostic
-        if diagnostic["state"] == "ENDED":
+        if diagnostic["state"] in {"ENDED", "OUT_OF_SCOPE"}:
             continue
         if diagnostic["state"] != "RESOLVED":
             unresolved.add(lot.url)
@@ -358,6 +370,9 @@ def main() -> int:
     ended = sorted(url for url, row in legacy_timer_diagnostics.items() if row["state"] == "ENDED")
     for url in ended[:20]:
         print(f"LEGACY_ENDED {url} TIMER {json.dumps(legacy_timer_diagnostics[url], sort_keys=True)}", flush=True)
+    out_of_scope = sorted(url for url, row in legacy_timer_diagnostics.items() if row["state"] == "OUT_OF_SCOPE")
+    for url in out_of_scope[:20]:
+        print(f"LEGACY_OUT_OF_SCOPE {url} TIMER {json.dumps(legacy_timer_diagnostics[url], sort_keys=True)}", flush=True)
 
     write_output("primary_complete", str(api_result.complete).lower())
     write_output("primary_scope", api_result.scope_status)
