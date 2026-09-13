@@ -280,10 +280,17 @@ def scan_fanatics_inventory(
     )
 
 
+class MagiPublicUnavailable(RuntimeError):
+    """Bounded transport reason; never includes response bodies or credentials."""
+
+
 def _magi_broad_rows(page: Any) -> list[japan.Ask]:
     provider = next(provider for provider in japan.PROVIDERS if provider.code == "magi")
     url = provider.search_url.format(q=quote(MAGI_BROAD_QUERY, safe=""))
-    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    status = getattr(response, 'status', None)
+    if isinstance(status, int) and not 200 <= status < 300:
+        raise MagiPublicUnavailable(f'HTTP_{status}')
     page.wait_for_timeout(900)
     rows = page.evaluate(
         r"""() => Array.from(document.querySelectorAll('a[href]')).slice(0,1800).map(a=>{let n=a,t=(a.innerText||a.textContent||'').trim();for(let i=0;i<6&&n;i++,n=n.parentElement){const x=(n.innerText||n.textContent||'').trim();if(/[¥￥]|\d[\d,]*\s*円/.test(x)){t=x;break;}}return {href:a.href||'',anchor:(a.innerText||'').trim(),text:t};})"""
@@ -315,6 +322,8 @@ def scan_magi_inventory(
 ) -> tuple[list[MarketplaceListing], ScanStatus]:
     try:
         asks = _magi_broad_rows(page)
+    except MagiPublicUnavailable as error:
+        return [], ScanStatus("magi", "UNAVAILABLE", detail=str(error), complete=False)
     except Exception as error:
         return [], ScanStatus("magi", "ERROR", detail=type(error).__name__, complete=False)
     output: list[MarketplaceListing] = []
@@ -349,12 +358,12 @@ def scan_magi_inventory(
         output.append(listing_from_observation(observation, source_url=detailed.url, title=detailed.title))
     return output, ScanStatus(
         "magi",
-        "OK",
+        "OK" if asks else "UNAVAILABLE",
         pages=1,
         candidates=len(asks),
         exact=len(output),
-        detail="broad Pokemon PSA10 inventory query; no per-card searches",
-        complete=len(asks) <= max(1, int(max_detail_pages)),
+        detail="broad Pokemon PSA10 inventory query; no per-card searches; PAGINATION_UNPROVEN; one observed search page",
+        complete=False,
     )
 
 

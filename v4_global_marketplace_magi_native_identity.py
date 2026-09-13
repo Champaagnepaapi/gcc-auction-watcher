@@ -330,6 +330,8 @@ def scan_magi_native_inventory(
 
     try:
         asks = scan._magi_broad_rows(page)
+    except scan.MagiPublicUnavailable as error:
+        return [], ScanStatus("magi", "UNAVAILABLE", detail=str(error), complete=False)
     except Exception as error:
         return [], ScanStatus("magi", "ERROR", detail=type(error).__name__, complete=False)
 
@@ -397,7 +399,7 @@ def scan_magi_native_inventory(
         manifest.record(ask, "NOT_EVALUATED", "detail_cap", {}, {})
     return output, MagiScanStatus(
         "magi",
-        "OK",
+        "OK" if asks else "UNAVAILABLE",
         pages=1,
         candidates=len(asks),
         exact=len(output),
@@ -406,9 +408,10 @@ def scan_magi_native_inventory(
             "exact Japanese TCGdex -> same immutable card Latin projection; no per-card searches; "
             f"GCC identity catalog not required; tcgdex_ja_requests={resolver.requests_used}; "
             f"tcgdex_alias_requests={alias_budget.requests_used}; rejects={dict(rejects)}; "
-            f"manifest_rows={len(manifest.rows)}; manifest_truncated={manifest.payload()['truncated']}"
+            f"manifest_rows={len(manifest.rows)}; manifest_truncated={manifest.payload()['truncated']}; "
+            "PAGINATION_UNPROVEN; one observed search page"
         ),
-        complete=len(asks) <= limit,
+        complete=False,
         manifest=manifest.payload(),
     )
 

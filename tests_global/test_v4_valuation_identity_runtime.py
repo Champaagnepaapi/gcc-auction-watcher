@@ -22,7 +22,7 @@ def run_case(case):
         calls.append((url, kwargs.get("params", {})))
         host, path = urlsplit(url).hostname, urlsplit(url).path
         payload, status = {}, 200
-        if host == "api.gradedcardcenter.com" and case == 'cardova_public_cost':
+        if host == "api.gradedcardcenter.com" and case in {'cardova_public_cost', 'magi_public_completeness', 'magi_public_http'}:
             payload = {'results': [], 'info': {}}
         elif host == "api.poketrace.com":
             if path.endswith("/auth/info"):
@@ -173,7 +173,7 @@ def run_case(case):
         if case.startswith("ppt_sv8a_"):
             identity = CommercialIdentity("Jolteon ex", "Festival Terastal ex", "209/187", "ja", "PSA", "10")
         lot = econ._lot_for_identity(identity)
-        if case == 'cardova_public_cost':
+        if case in {'cardova_public_cost', 'magi_public_completeness', 'magi_public_http'}:
             from types import SimpleNamespace
             from datetime import datetime, timezone
             from tests_global.test_v4_global_marketplace_cardova_exhaustive_capture import PagedFakePage, _row
@@ -185,7 +185,7 @@ def run_case(case):
                     self.url = url
                     if 'cardova.co.jp' in url:
                         super().goto(url, **kwargs)
-                    return SimpleNamespace(status=200)
+                    return SimpleNamespace(status=403 if case == 'magi_public_http' and 'magi.camp' in url else 200)
                 def evaluate(self, script):
                     if 'container_present' in script:
                         return {'container_present':True,'empty_proven':True,'hrefs':[]}
@@ -204,6 +204,13 @@ def run_case(case):
                 gcc_live_pages=1,browser_detail_cap=1,browser_scroll_rounds=1,comc_pages=1)
             with patch('playwright.sync_api.sync_playwright', return_value=contextlib.nullcontext(runtime)), patch.dict(__import__('os').environ, {'GLOBAL_CARDOVA_PUBLIC_PAGES':'1'}):
                 rows, statuses, _, _ = runner.marketplace._scan(args, observed_at=datetime.now(timezone.utc))
+            if case.startswith('magi_public_'):
+                status = next(s for s in statuses if s.market == 'magi')
+                assert not status.complete, status
+                assert status.status == 'UNAVAILABLE', status
+                assert ('HTTP_403' if case.endswith('http') else 'PAGINATION_UNPROVEN') in status.detail, status
+                assert not any('tcgdex' in url for url, _ in calls), calls
+                return
             rows = [r for r in rows if r.market == 'cardova']
             assert len(rows) == 1, (rows, statuses)
             assert rows[0].all_in_eur({'JPY':160}) is None, rows[0]
@@ -369,6 +376,8 @@ for scenario in ("valid", "wrong_name"):
     case = "japan_native_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 setattr(ValuationIdentityRuntimeTests, "test_cardova_public_cost", lambda self: self.check_case('cardova_public_cost'))
+for case in ('magi_public_completeness', 'magi_public_http'):
+    setattr(ValuationIdentityRuntimeTests, 'test_' + case, lambda self, case=case: self.check_case(case))
 for scenario in ("valid", "wrong_set", "wrong_language", "wrong_catalog"):
     case = "ppt_sv8a_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
