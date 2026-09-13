@@ -20,7 +20,7 @@ class MercariDOMContract(unittest.TestCase):
         page = self.browser.new_page()
         self.addCleanup(page.close)
         product = {'@type':'Product','name':schema_title or title}
-        html = ('<main><h1>' + title + '</h1><script type="application/ld+json">' + json.dumps(product) + '</script>'
+        html = ('<meta charset="utf-8"><main><h1>' + title + '</h1><script type="application/ld+json">' + json.dumps(product) + '</script>'
                 '<div><div><div><h2>商品の情報</h2></div></div><div data-testid="item-detail-category">ポケモンカードゲーム</div></div>'
                 + feature_html + '<h2>出品者</h2><a data-location="item_details:item_info:metadata_link">言語: English</a></main>')
         page.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body=html))
