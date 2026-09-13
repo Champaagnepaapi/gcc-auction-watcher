@@ -9,6 +9,17 @@ NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 
 
 class CardovaAdapterTests(unittest.TestCase):
+    def test_public_fixed_ulid_is_a_card_link_not_a_bare_identifier(self):
+        from v4_global_marketplace_discovery import cardova_inventory
+        uid = '01M0V12A3FQ3XDG1ZZ93M4WQ4Q'
+        raw = {'ulid':uid,'listing_type':4,'asking_price':1000,'set_quantity':1,
+               'player':'Clefairy','variety':'Basic','card_number':'035','language':'Japanese',
+               'authentication_company_code':'P','grade':'10'}
+        listing = cardova_inventory(fixed_payload={'list':[raw]},auction_payload=None,observed_at=NOW)[0]
+        self.assertEqual(listing.source_url, 'https://www.cardova.co.jp/en/trade/card/' + uid)
+        self.assertEqual(listing.source_id, uid)
+        self.assertIsNone(listing.all_in_eur({'JPY':160}))
+
     def test_public_fixed_cost_needs_payment_context(self):
         from v4_global_marketplace_discovery import cardova_inventory
         payload = {"list": [{"ulid":"01K4PS9MJAF534BY63WA2K1SD7", "listing_type":4, "asking_price":1000, "set_quantity":1, "player":"Pikachu", "variety":"151", "card_number":"25/165", "language":"Japanese", "authentication_company_code":"P", "grade":"10"}]}

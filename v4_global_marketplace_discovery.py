@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -322,7 +323,13 @@ def cardova_inventory(
     for observation in observations:
         if not observation.identity_proven or not observation.identity.opportunity_language:
             continue
-        output.append(listing_from_observation(observation, source_url=observation.source_id))
+        source_url = observation.source_id
+        # Public fixed-card links use the same ULID as the inventory row
+        # (verified on the rendered /en/trade/live/fixed-price surface).
+        # Do not infer an auction link or change the stable provider identity.
+        if observation.evidence_type == FIXED_ASK and re.fullmatch(r'[0-9A-HJKMNP-TV-Z]{26}', source_url):
+            source_url = 'https://www.cardova.co.jp/en/trade/card/' + source_url
+        output.append(listing_from_observation(observation, source_url=source_url))
     return output
 
 
