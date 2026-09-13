@@ -28,6 +28,7 @@ SNAPSHOT = r"""() => {
 
 def probe(page, market, url, item_pattern):
     errors = []
+    search_submitted = False
     host = urlsplit(url).hostname
     def response_seen(response):
         parsed = urlsplit(response.url)
@@ -36,7 +37,7 @@ def probe(page, market, url, item_pattern):
             if (parsed.hostname or "").endswith(("mercari.jp", "mercari.com", "snkrdunk.com")):
                 errors.append({"host": parsed.hostname, "endpoint_family": family.group(1), "http": response.status})
     result = {"market": market, "state": "CONTENT_UNPROVEN", "http": None,
-              "observations": 0, "urls": [], "complete": False, "provider_errors": errors}
+              "observations": 0, "urls": [], "catalog_urls": [], "complete": False, "provider_errors": errors}
     page.on("response", response_seen)
     try:
         response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
@@ -49,20 +50,47 @@ def probe(page, market, url, item_pattern):
             return result
         for _ in range(3):
             page.wait_for_timeout(3000)
+            if (urlsplit(page.url).hostname, urlsplit(page.url).path) != (host, urlsplit(url).path):
+                result["state"] = "UNEXPECTED_REDIRECT"
+                return result
             snapshot = page.evaluate(SNAPSHOT)
             result["observations"] += 1
             urls = set()
+            catalogs = set()
             for raw in snapshot.get("links", []):
                 parsed = urlsplit(str(raw))
                 if parsed.scheme == "https" and parsed.hostname == host and re.fullmatch(item_pattern, parsed.path):
                     urls.add(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")))
+                elif (market == "snkrdunk" and parsed.scheme == "https" and parsed.hostname == host
+                        and re.fullmatch(r"/en/trading-cards/\d+", parsed.path)):
+                    catalogs.add(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")))
             result["snapshot"] = {k: snapshot.get(k) for k in ("container", "title", "headings", "buttons", "text_length", "script_count", "forms", "inputs")}
             paths = sorted({urlsplit(str(u)).path for u in snapshot.get("links", []) if urlsplit(str(u)).hostname == host})
             result["snapshot"]["link_paths"] = paths[:25]
             result["urls"] = sorted(urls)[:100]
+            result["catalog_urls"] = sorted(catalogs)[:30]
             if urls:
                 result["state"] = "RESULTS"
                 break
+            # Exercise the site's own public GET search form once. A query
+            # parameter alone does not prove a client-rendered search ran.
+            # No login, alternative endpoint or anti-bot retry is attempted.
+            if market == "snkrdunk" and not catalogs and not search_submitted:
+                forms = snapshot.get("forms") or []
+                inputs = snapshot.get("inputs") or []
+                if (any(f.get("action") == "/en/search/result" and f.get("method") == "get" for f in forms)
+                        and any(i.get("placeholder") == "Search for anything" and i.get("visible") is True for i in inputs)):
+                    search_submitted = True
+                    try:
+                        field = page.get_by_placeholder("Search for anything", exact=True)
+                        if field.count() == 1 and field.is_visible():
+                            field.fill("PSA10 Pokemon", timeout=2000)
+                            field.press("Enter", timeout=2000)
+                            result["search_form"] = "SUBMITTED_PUBLIC_GET"
+                        else:
+                            result["search_form"] = "UNPROVEN_UNIQUE_INPUT"
+                    except Exception as error:
+                        result["search_form"] = "INSPECTION_" + type(error).__name__[:40]
     except Exception as error:
         result["state"] = "INSPECTION_ERROR"
         result["error_class"] = type(error).__name__
@@ -98,7 +126,9 @@ PRODUCT_SNAPSHOT = r"""() => {
   const value=next?.innerText?.trim();
   if(value && value.length<=160 && !fields[e.innerText.trim()]) fields[e.innerText.trim()]=value;
  }
- return {title:(document.querySelector('h1')?.innerText||'').slice(0,240), product:products.length===1?products[0]:{}, product_count:products.length, fields};
+ const field_labels=[...document.querySelectorAll('th,dt,p,span,div')].filter(e=>!e.children.length && e.getClientRects().length && allowed.has(e.innerText.trim())).map(e=>e.innerText.trim());
+ const item_info_present=[...document.querySelectorAll('h2,h3')].some(e=>e.innerText.trim()==='商品の情報');
+ return {title:(document.querySelector('h1')?.innerText||'').slice(0,240), product:products.length===1?products[0]:{}, product_count:products.length, fields, item_info_present, field_labels:[...new Set(field_labels)].slice(0,20)};
 }"""
 
 
@@ -117,9 +147,27 @@ def inspect_public_item(page, url):
         for _ in range(3):
             page.wait_for_timeout(3000)
             snapshot = page.evaluate(PRODUCT_SNAPSHOT)
-            if snapshot.get("title") and snapshot.get("product"):
+            # Product JSON-LD can precede the separate identity-information
+            # section. Readiness of title/price alone must not skip those fields.
+            if snapshot.get("title") and snapshot.get("product") and snapshot.get("fields"):
                 break
         product = snapshot.get("product") or {}
+        # Only properties attached to the unique item Product can establish
+        # identity. Generic nearby labels remain diagnostics, never proof.
+        proven = {}
+        conflicts = set()
+        for prop in product.get('additionalProperty', []) if isinstance(product.get('additionalProperty'), list) else []:
+            if not isinstance(prop, dict) or prop.get('name') not in ITEM_FIELDS or not isinstance(prop.get('value'), (str, int)):
+                continue
+            key, value = prop['name'], str(prop['value'])[:160]
+            if key in proven and proven[key] != value:
+                conflicts.add(key)
+            proven[key] = value
+        for key in conflicts:
+            proven[key] = '__conflict__'
+        result['proven_fields'] = proven
+        result['item_info_present'] = snapshot.get('item_info_present') is True
+        result['field_labels'] = [str(s) for s in snapshot.get('field_labels', []) if s in ITEM_FIELDS][:20]
         result["title"] = str(snapshot.get("title") or "")[:240]
         result["product_count"] = snapshot.get("product_count")
         result["product"] = {k: str(product[k])[:240] for k in ("name", "category", "sku") if k in product}
@@ -151,6 +199,10 @@ def main():
                     for url in result["urls"][:3]:
                         item = inspect_public_item(context.new_page(), url)
                         print("[V4_PUBLIC_ITEM] " + json.dumps(item, ensure_ascii=False), flush=True)
+                    for url in result["catalog_urls"][:3]:
+                        item = inspect_public_item(context.new_page(), url)
+                        item["individual_offer_proven"] = False
+                        print("[V4_PUBLIC_CATALOG] " + json.dumps(item, ensure_ascii=False), flush=True)
                 finally:
                     context.close()
         finally:

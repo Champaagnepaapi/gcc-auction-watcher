@@ -19,6 +19,43 @@ class Page:
 
 
 class PublicProbeTests(unittest.TestCase):
+    def test_snkr_uses_public_search_form_before_declaring_shell_unproven(self):
+        class SearchPage(Page):
+            def __init__(self):
+                super().__init__(snapshots=[{"links":[], "forms":[{"action":"/en/search/result", "method":"get"}], "inputs":[{"placeholder":"Search for anything", "visible":True}]}] * 3)
+                self.actions = []
+            def get_by_placeholder(self, label, *, exact):
+                assert label == 'Search for anything' and exact
+                return self
+            def count(self): return 1
+            def is_visible(self): return True
+            def fill(self, value, **kwargs): self.actions.append(('fill', value))
+            def press(self, key, **kwargs):
+                self.actions.append(('press', key))
+                self.snapshots = [{"links":["https://snkrdunk.com/en/trading-cards/704397"]}] * 2
+        page = SearchPage()
+        market, url, pattern = module.SURFACES[1]
+        result = probe(page, market, url, pattern)
+        self.assertEqual(page.actions, [('fill','PSA10 Pokemon'),('press','Enter')])
+        self.assertEqual(result['catalog_urls'], ['https://snkrdunk.com/en/trading-cards/704397'])
+        self.assertLessEqual(len(page.waits), 3)
+        self.assertEqual(result['urls'], [])
+
+    def test_product_readiness_does_not_skip_later_identity_fields(self):
+        initial = {"title":"Pikachu PSA10", "product":{"name":"Pikachu"}, "fields":{}}
+        page = Page(snapshots=[initial, dict(initial, fields={"Language":"Japanese"})])
+        result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")
+        self.assertEqual(result["fields"], {"Language":"Japanese"})
+        self.assertEqual(len(page.waits), 2)
+
+    def test_snkr_catalog_is_observed_but_never_an_individual_offer(self):
+        market, url, pattern = module.SURFACES[1]
+        page = Page(snapshots=[{"links":["https://snkrdunk.com/en/trading-cards/704397"]}] * 3)
+        result = probe(page, market, url, pattern)
+        self.assertEqual(result["catalog_urls"], ["https://snkrdunk.com/en/trading-cards/704397"])
+        self.assertEqual(result["urls"], [])
+        self.assertFalse(result["complete"])
+
     def test_product_waits_for_explicit_late_content(self):
         page = Page(snapshots=[{}, {}, {"title": "Pikachu PSA10", "product": {"name": "Pikachu"}}])
         result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")

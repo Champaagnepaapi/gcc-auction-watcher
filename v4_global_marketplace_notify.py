@@ -136,11 +136,22 @@ def _scan(args: argparse.Namespace, *, observed_at: datetime):
             listings.extend(comc_rows)
             statuses.append(comc_status)
 
+            from v4_global_marketplace_japan_public import scan_public_inventory
+            for market in ('mercari', 'snkrdunk'):
+                public_context = browser.new_context()
+                try:
+                    rows, status = scan_public_inventory(public_context.new_page(), market,
+                        observed_at=observed_at, max_detail_pages=args.browser_detail_cap)
+                    listings.extend(rows)
+                    statuses.append(status)
+                finally:
+                    public_context.close()
+
             context.close()
             browser.close()
     else:
         detail = "browser sources disabled" if args.no_browser_sources else "identity catalog unavailable"
-        for market in ("fanatics", "magi", "comc"):
+        for market in ("fanatics", "magi", "comc", "mercari", "snkrdunk"):
             statuses.append(ScanStatus(market, "SKIPPED", detail=detail, complete=False))
 
     deduped = {listing.stable_key: listing for listing in listings}
@@ -596,7 +607,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "known_gcc_history_identities_are_retrieval_catalog_only": True,
         "provider_disappearance_is_sold": False,
         "marketplace_adapters_independent": True,
-        "opportunity_sources": ["gcc", "fanatics", "comc", "magi", "cardova"],
+        "opportunity_sources": ["gcc", "fanatics", "comc", "magi", "cardova", "mercari", "snkrdunk"],
         "marketplace_sources_have_valuation_authority": False,
         "valuation_sources": [
             "PokemonPriceTracker/PokeTrace SOLD-derived aggregate",

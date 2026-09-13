@@ -22,7 +22,9 @@ def run_case(case):
         calls.append((url, kwargs.get("params", {})))
         host, path = urlsplit(url).hostname, urlsplit(url).path
         payload, status = {}, 200
-        if host == "api.poketrace.com":
+        if host == "api.gradedcardcenter.com" and case == 'cardova_public_cost':
+            payload = {'results': [], 'info': {}}
+        elif host == "api.poketrace.com":
             if path.endswith("/auth/info"):
                 plan = "Free" if "free" in case and "ceiling" not in case else "Pro"
                 payload = {"data": {"active": True, "user": {"plan": plan}}}
@@ -171,6 +173,55 @@ def run_case(case):
         if case.startswith("ppt_sv8a_"):
             identity = CommercialIdentity("Jolteon ex", "Festival Terastal ex", "209/187", "ja", "PSA", "10")
         lot = econ._lot_for_identity(identity)
+        if case == 'cardova_public_cost':
+            from types import SimpleNamespace
+            from datetime import datetime, timezone
+            from tests_global.test_v4_global_marketplace_cardova_exhaustive_capture import PagedFakePage, _row
+            class Page(PagedFakePage):
+                def __init__(self):
+                    row = _row('fixed'); row.update(variety='151', asking_price=1000)
+                    super().__init__({1:[{'list':[row]}]})
+                def goto(self, url, **kwargs):
+                    self.url = url
+                    if 'cardova.co.jp' in url:
+                        super().goto(url, **kwargs)
+                    return SimpleNamespace(status=200)
+                def evaluate(self, script):
+                    if 'container_present' in script:
+                        return {'container_present':True,'empty_proven':True,'hrefs':[]}
+                    if 'const root' in script:
+                        return {'container':True,'links':[]}
+                    return []
+                def content(self): return '<html></html>'
+                def locator(self, selector): return self
+                def inner_text(self, **kwargs): return ''
+            class Browser:
+                def new_context(self, **kwargs): return self
+                def new_page(self): return Page()
+                def close(self): pass
+            runtime = SimpleNamespace(chromium=SimpleNamespace(launch=lambda **k: Browser()))
+            args = SimpleNamespace(no_browser_sources=False,cardova_fixed_json='',cardova_auction_json='',gcc_sold_pages=1,
+                gcc_live_pages=1,browser_detail_cap=1,browser_scroll_rounds=1,comc_pages=1)
+            with patch('playwright.sync_api.sync_playwright', return_value=contextlib.nullcontext(runtime)), patch.dict(__import__('os').environ, {'GLOBAL_CARDOVA_PUBLIC_PAGES':'1'}):
+                rows, statuses, _, _ = runner.marketplace._scan(args, observed_at=datetime.now(timezone.utc))
+            rows = [r for r in rows if r.market == 'cardova']
+            assert len(rows) == 1, (rows, statuses)
+            assert rows[0].all_in_eur({'JPY':160}) is None, rows[0]
+            return
+        if case.startswith("japan_native_"):
+            import copy
+            from tests_global.test_v4_japan_public_inventory import Page, ITEM
+            from v4_global_marketplace_japan_public import scan_public_inventory
+            from datetime import datetime, timezone
+            item = copy.deepcopy(ITEM)
+            if case.endswith("wrong_name"):
+                item['fields']['Card Name'] = 'Charizard'
+                item['title'] = item['product']['name'] = 'Charizard 025/165 PSA 10'
+            rows, _ = scan_public_inventory(Page(item), 'mercari', observed_at=datetime.now(timezone.utc))
+            assert len(rows) == 1
+            lot, canonical = econ.resolve_global_canonical(rows[0].identity)
+            assert (canonical.status == 'EXACT') == case.endswith('valid'), canonical
+            return
         if case.startswith("comc_native_"):
             from tests_global.test_v4_comc_native_discovery import Page, CELLS
             from datetime import datetime, timezone
@@ -314,6 +365,10 @@ for scenario in ("free", "free_probe", "free_ceiling", "ceiling_free_probe", "au
 for scenario in ("valid", "wrong_name"):
     case = "comc_native_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+for scenario in ("valid", "wrong_name"):
+    case = "japan_native_" + scenario
+    setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
+setattr(ValuationIdentityRuntimeTests, "test_cardova_public_cost", lambda self: self.check_case('cardova_public_cost'))
 for scenario in ("valid", "wrong_set", "wrong_language", "wrong_catalog"):
     case = "ppt_sv8a_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
