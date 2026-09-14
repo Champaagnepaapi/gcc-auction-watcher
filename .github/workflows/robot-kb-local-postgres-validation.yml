@@ -8,6 +8,7 @@ on:
       - "tests/test_robot_kb_local_mac_migration.py"
       - "tests/test_robot_kb_local_viewer.py"
       - "tests/test_robot_kb_multisource_harvest.py"
+      - "tests/test_robot_kb_magi_sold_marked.py"
       - "tests/test_robot_kb_paid_provider_fairness.py"
       - "tests/test_robot_kb_provider_persistence_bounds.py"
       - "tests/test_robot_kb_ebay_rapidapi_shadow.py"
@@ -69,6 +70,7 @@ jobs:
           PYTHONPATH: .robot-kb-p3:.
         run: |
           python -m unittest discover -s tests -p "test_robot_kb_multisource_harvest.py" -v
+          python -m unittest discover -s tests -p "test_robot_kb_magi_sold_marked.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_paid_provider_fairness.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_provider_persistence_bounds.py" -v
           python -m unittest discover -s tests -p "test_robot_kb_ebay_rapidapi_shadow.py" -v
@@ -86,6 +88,7 @@ jobs:
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_p3_compat.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_provider_bounds.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_paid_fairness.py"
+          python -m py_compile "mac/robot-kb-local/robot_kb_magi_sold_marked.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_multisource_entrypoint.py"
           python -m py_compile "mac/robot-kb-local/robot_kb_ebay_rapidapi_shadow.py"
 
