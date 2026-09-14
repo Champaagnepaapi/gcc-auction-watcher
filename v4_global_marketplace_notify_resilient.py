@@ -4,6 +4,16 @@ Transport retries stay Global-only and exhausted retries remain fail-closed.
 """
 from __future__ import annotations
 
+import os
+
+# The operator's PokeTrace Pro subscription has expired. Provider responses may
+# still report PRO, so production defaults to the verified Free capability
+# ceiling unless a future deployment explicitly opts into another ceiling.
+# Guard the default to direct production execution: importing this bootstrap in
+# unit tests must not leak a Free ceiling into tests that deliberately model Pro.
+if __name__ == "__main__":
+    os.environ.setdefault("V4_POKETRACE_PLAN_CEILING", "FREE")
+
 import v4_global_live_confirmed as confirmed
 import v4_global_marketplace_notify as marketplace
 from v4_global_cardova_public_install import install_global_cardova_public_inventory
