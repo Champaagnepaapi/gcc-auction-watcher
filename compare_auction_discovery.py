@@ -27,6 +27,7 @@ from v4_private_auction_coverage import (
 
 LEGACY_TIMER_INSPECTION_ATTEMPTS = 2
 LEGACY_TIMER_RETRY_WAIT_MS = 300
+LEGACY_PUBLIC_ITEM_READ_LIMIT = 20
 
 
 def _item_id(url: str) -> str:
@@ -44,8 +45,8 @@ def _timer_diagnostic(lot, *, provenance, reason="", state=None):
             "sold_proven": False}
 
 
-def _inspect_legacy_timer(page, lot, inspector, observed_at):
-    """Observe item responses already loaded by inspect_item; no extra GET.
+def _inspect_legacy_timer(page, lot, inspector, observed_at, public_budget=None):
+    """Observe item responses, with a bounded public read for server-rendered pages.
 
     Only a typed AUCTION record from its exact public GCC item endpoint may
     prove termination. Sale-level text, other items, past timestamps alone,
@@ -104,6 +105,25 @@ def _inspect_legacy_timer(page, lot, inspector, observed_at):
     # A redirect can neither resolve a timer nor prove this item's termination.
     if hasattr(page, "url") and _item_id(page.url) != item_id:
         return current, _timer_diagnostic(current, provenance="item_location", state="UNKNOWN", reason="unexpected_location")
+    # A server-rendered detail need not emit an API response in the browser.
+    # Only a missing timer AND no observed item response permits one public GET;
+    # never retry a provider rejection or replace contradictory observed data.
+    request = getattr(page, "request", None)
+    if (diagnostic["state"] == "UNKNOWN" and observations == 0 and item_id
+            and public_budget is not None and public_budget["remaining"] > 0
+            and item_id not in public_budget["attempted"] and hasattr(request, "get")):
+        public_budget["remaining"] -= 1
+        public_budget["attempted"].add(item_id)
+        response = None
+        try:
+            response = request.get(f"https://api.gradedcardcenter.com/on-sale-items/{item_id}",
+                                   timeout=10000, max_redirects=0)
+            observe(response)
+        except Exception:
+            invalid_evidence = True
+        finally:
+            if response is not None and hasattr(response, "dispose"):
+                response.dispose()
     fixed = [record["sellingType"] == "FIXED_PRICE" and record["status"] == "ON_SALE"
              and record["endTime"] is None for record in records]
     if any(fixed):
@@ -204,12 +224,13 @@ def resolve_legacy_ids(
     reference = observed_at or datetime.now(timezone.utc)
     resolved: set[str] = set()
     unresolved: set[str] = set()
+    public_budget = {"remaining": LEGACY_PUBLIC_ITEM_READ_LIMIT, "attempted": set()}
     for lot in lots:
         current = lot
         diagnostic = _timer_diagnostic(current, provenance="listing_timer")
         if diagnostic["state"] != "RESOLVED":
             for attempt in range(inspection_attempts):
-                current, diagnostic = _inspect_legacy_timer(page, current, inspector, reference)
+                current, diagnostic = _inspect_legacy_timer(page, current, inspector, reference, public_budget)
                 if diagnostic["state"] in {"RESOLVED", "ENDED", "OUT_OF_SCOPE"}:
                     break
 
@@ -220,6 +241,7 @@ def resolve_legacy_ids(
                         pass
 
         if diagnostics is not None:
+            diagnostic["public_item_read"] = _item_id(lot.url) in public_budget["attempted"]
             diagnostics[lot.url] = diagnostic
         if diagnostic["state"] in {"ENDED", "OUT_OF_SCOPE"}:
             continue

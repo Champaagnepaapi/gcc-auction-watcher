@@ -180,3 +180,53 @@ class AuctionTerminalTests(unittest.TestCase):
             payload=terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None)))
         self.assertEqual(result, (set(), {URL}))
         self.assertEqual(diagnostic['state'], 'UNKNOWN')
+
+    def test_server_rendered_item_uses_one_bounded_public_item_read(self):
+        page = Page()  # Real page inspection, no browser response event.
+        calls = []
+        def get(url, **kwargs):
+            calls.append((url, kwargs))
+            return Response(terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None))
+        page.request = SimpleNamespace(get=get)
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), set()))
+        self.assertEqual(diagnostic['state'], 'OUT_OF_SCOPE')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], Response.url)
+        self.assertLessEqual(calls[0][1]['timeout'], 10000)
+
+    def test_public_item_error_is_not_retried_or_interpreted_as_empty(self):
+        page, calls = Page(), []
+        def get(url, **kwargs):
+            calls.append(url)
+            response = Response({})
+            response.status = 403
+            return response
+        page.request = SimpleNamespace(get=get)
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'UNKNOWN')
+        self.assertEqual(len(calls), 1)
+
+    def test_existing_item_response_never_triggers_a_second_api_read(self):
+        page = Page(payload=terminal(status='ON_SALE'))
+        def forbidden(*args, **kwargs):
+            self.fail('already observed item response must not cause another GET')
+        page.request = SimpleNamespace(get=forbidden)
+        self.resolve(page)
+
+    def test_public_reads_share_a_fixed_run_cap(self):
+        page, calls = Page(), []
+        def get(url, **kwargs):
+            calls.append(url)
+            response = Response({})
+            response.url, response.status = url, 404
+            return response
+        page.request = SimpleNamespace(get=get)
+        lots = [watcher.Lot(f'https://gradedcardcenter.com/item/{i:036}', 'Pikachu PSA 10',
+                           50.0, source_type='auction') for i in range(21)]
+        resolved, unknown = resolve_legacy_ids(page, lots, 717)
+        self.assertEqual(len(calls), 20)
+        self.assertEqual(len(set(calls)), 20)
+        self.assertEqual(len(unknown), 21)
+        self.assertEqual(resolved, set())
