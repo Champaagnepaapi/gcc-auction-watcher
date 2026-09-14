@@ -1,0 +1,110 @@
+name: V4 Fanatics PPT Variant Diagnostic
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "v4_global_marketplace_ppt_variant_diagnostics.py"
+      - "v4_global_marketplace_ppt_variant_diag_runner.py"
+      - "tests_global/test_v4_global_marketplace_ppt_variant_diagnostics.py"
+      - ".github/workflows/v4-fanatics-ppt-variant-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run bounded diagnostic tests
+        run: python -m unittest tests_global.test_v4_global_marketplace_ppt_variant_diagnostics -v
+      - name: Compile diagnostic files
+        run: |
+          python -m py_compile v4_global_marketplace_ppt_variant_diagnostics.py
+          python -m py_compile v4_global_marketplace_ppt_variant_diag_runner.py
+          python -m py_compile tests_global/test_v4_global_marketplace_ppt_variant_diagnostics.py
+      - name: Check whitespace
+        run: git diff --check origin/${{ github.base_ref || 'main' }}...HEAD
+
+  live-read-only:
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: targeted
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GLOBAL_NOTIFY_ENABLED: "false"
+      GLOBAL_TCGDEX_MAX_ATTEMPTS: "2"
+      GLOBAL_TCGDEX_REQUEST_TIMEOUT_SECONDS: "10"
+      GLOBAL_TCGDEX_RETRY_BACKOFF_SECONDS: "0.25"
+      GLOBAL_PPT_MAX_HTTP_CALLS: "35"
+      GLOBAL_PPT_MAX_CREDITS: "180"
+      GLOBAL_PPT_DAILY_REMAINING_FLOOR: "15000"
+      GLOBAL_PPT_VARIANT_DIAGNOSTICS: "true"
+      GLOBAL_PPT_VARIANT_DIAGNOSTICS_MAX: "8"
+      V4_POKETRACE_MAX_REQUESTS_PER_RUN: "60"
+      V4_POKETRACE_PLAN_CEILING: "FREE"
+      PRICECHARTING_ENABLED: "true"
+      PRICECHARTING_MAX_CARDS_PER_RUN: "8"
+      PRICECHARTING_TIMEOUT_SECONDS: "10"
+      PRICECHARTING_PUBLIC_INTERVAL_SECONDS: "0.35"
+      POKEMONPRICETRACKER_API_KEY: ${{ secrets.POKEMONPRICETRACKER_API_KEY }}
+      POKETRACE_API_KEY: ${{ secrets.POKETRACE_API_KEY }}
+      NTFY_TOPIC: ""
+      JAPAN_EDGE_NOTIFY_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        timeout-minutes: 3
+        run: pip install -r requirements.txt
+      - name: Install Chromium
+        timeout-minutes: 5
+        run: playwright install --with-deps chromium
+      - name: Run normal Global lane with diagnostic-only observer
+        run: |
+          python v4_global_marketplace_ppt_variant_diag_runner.py \
+            --state-dir .global-marketplace-state \
+            --output-dir global_marketplace_out \
+            --max-evaluations 50 \
+            --gcc-sold-pages 30 \
+            --gcc-live-pages 100 \
+            --browser-detail-cap 100 \
+            --browser-scroll-rounds 15 \
+            --comc-pages 10
+      - name: Assert read-only safety
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('global_marketplace_out/global_marketplace_report.json').read_text())
+          assert report.get('notifications') is False
+          assert report.get('transactions') is False
+          safety = report.get('safety') or {}
+          assert safety.get('identity_gate_relaxed') is False
+          assert safety.get('marketplace_ask_is_sold') is False
+          assert safety.get('marketplace_listing_is_valuation') is False
+          for key in ('automatic_purchase','automatic_bid','automatic_checkout','automatic_payment'):
+              assert safety.get(key) is False
+          print('READ_ONLY_SAFETY_PASS')
+          PY
+      - name: Assert no tracked runtime mutation
+        run: test -z "$(git status --porcelain --untracked-files=no)"
+      - name: Upload diagnostic report
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-fanatics-ppt-variant-diagnostic-${{ github.run_id }}
+          path: global_marketplace_out/
+          if-no-files-found: error
+          retention-days: 7
