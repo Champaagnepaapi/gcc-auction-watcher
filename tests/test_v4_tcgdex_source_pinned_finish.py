@@ -91,6 +91,21 @@ class SourcePinnedFinishTests(unittest.TestCase):
             "export default card;\n"
         )
 
+    @staticmethod
+    def _source_with_special(set_id: str, *, variant_type: str, foil: str) -> str:
+        return (
+            'import { Card } from "../../../interfaces";\n'
+            f'import Set from "../{set_id}";\n'
+            "const card: Card = {\n"
+            "    variants: [\n"
+            '        { type: "normal", thirdParty: { cardmarket: 1 } },\n'
+            f'        {{ type: "{variant_type}", foil: "{foil}", '
+            "thirdParty: { cardmarket: 2 } },\n"
+            "    ],\n"
+            "};\n"
+            "export default card;\n"
+        )
+
     def test_source_paths_are_generic_for_s_and_sv_eras(self):
         self.assertEqual(
             source_finish._source_paths_for_card(self._card()),
@@ -117,6 +132,29 @@ class SourcePinnedFinishTests(unittest.TestCase):
         )
         self.assertIsNotNone(proof)
         self.assertEqual(proof.finishes, ("holo",))
+        self.assertEqual(proof.special_finishes, ())
+
+    def test_parser_proves_master_ball_only_on_reverse_variant(self):
+        proof = source_finish._parse_source_finish_proof(
+            self._source_with_special(
+                "SV2a", variant_type="reverse", foil="masterball"
+            ),
+            set_id="SV2a",
+            source_path="data-asia/SV/SV2a/025.ts",
+        )
+        self.assertIsNotNone(proof)
+        self.assertEqual(proof.finishes, ("normal", "reverse"))
+        self.assertEqual(proof.special_finishes, ("master_ball",))
+
+        wrong_type = source_finish._parse_source_finish_proof(
+            self._source_with_special(
+                "SV2a", variant_type="normal", foil="masterball"
+            ),
+            set_id="SV2a",
+            source_path="data-asia/SV/SV2a/025.ts",
+        )
+        self.assertIsNotNone(wrong_type)
+        self.assertEqual(wrong_type.special_finishes, ())
 
     def test_generic_source_proof_corrects_kricketune_finish_only(self):
         with patch.object(

@@ -3,6 +3,9 @@ from __future__ import annotations
 import runpy
 
 import v4_pricecharting_valuation as pricecharting_roles
+from v4_global_marketplace_pricecharting_public_recovery import (
+    install_global_marketplace_pricecharting_public_recovery,
+)
 from v4_global_tcgdex_resilience import install_v4_tcgdex_resilience
 from v4_pricecharting_mandatory_policy import (
     install_v4_pricecharting_mandatory_guide_policy,
@@ -34,6 +37,10 @@ def _install_pricecharting_and_readonly_kb_roles() -> None:
 
 def main() -> None:
     """Bootstrap canonical V4 with bounded provider resilience."""
+    # Public PriceCharting can redirect exact searches directly to /game pages or
+    # emit absolute game links. Recover those transport shapes before the
+    # mandatory guide policy captures the provider; identity gates are unchanged.
+    install_global_marketplace_pricecharting_public_recovery()
     install_v4_tcgdex_resilience()
     # Run only after the proven transport retry/breaker layer. This fallback can
     # recover a retryable REST outage only for already-reviewed Japanese exact

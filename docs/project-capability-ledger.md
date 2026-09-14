@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **7 septembre 2026**. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel : mise à jour ciblée #268 le **14 septembre 2026** ; historique production conservé. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`, `DRAFT_VALIDATION`.
 
@@ -8,13 +8,15 @@ Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`,
 
 ```text
 V4 production branch             : main
-V4 main HEAD docs                : 85f429e2eec6f810e53f7fcbc00d77f2da525c75
-V4 production code HEAD #261     : 24230552d52574e2769c21dcfa84ba11320da2cf
+V4 main HEAD                     : b43dec6084f341b2b52301a4f0542d6f616cf1e2
+V4 production code HEAD #266     : 761b5e980aeaf63833f574127fbe1ff4728f86b4
 External fair-value authority    : #255 / PROD_V4
 Integrated recall/source roles   : #259 / PROD_V4
 TCGdex constrained name recovery : #260 / PROD_V4
 Cross-grader calibration         : #261 / PROD_V4
 CA -> PSA recall tuning          : #263 / haircut 35 %
+TCGdex Rainbow microvariant      : #266 / PROD_V4
+Global provider hardening        : #268 / DRAFT_VALIDATION / NON MERGED
 Auction pagination preservation  : #245 / PROD_V4
 Auction recovery capacity        : #229/#231 / PROD_V4 / adaptive sizing / hard cap 250
 Auction order hardening          : #211/#212 / PROD_V4
@@ -34,7 +36,7 @@ TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 
 ---
 
-# Production actuelle — #255 + #259 + #260 + #261 + tuning #263
+# Production actuelle — #255 + #259 + #260 + #261 + #263 + #266
 
 ## #255 — external fair-value authority — `PROD_V4`
 
@@ -79,6 +81,30 @@ Merge runtime #261 `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs ma
 - déduplication cross-market v2.
 
 Validation #261 code `c58aa4c...`, run `34092254431` SUCCESS, tests ciblés + suite V4 + compile/YAML/diff-check + comparaison live read-only PASS. #263 conserve des régressions dédiées Glaceon/Riolu et un cas de recall à la frontière ; le head exact doit rester CI-vert avant merge.
+
+## #266 — TCGdex Rainbow microvariant — `PROD_V4`
+
+Rainbow reste une microvariante matérielle, jamais un simple alias Holo. Set/langue/localId/dénominateur/nom doivent être exacts et `variants_detailed` doit prouver `type=holo + foil=rainbow`; toute absence, autre foil ou contradiction reste fail-closed. Merge production : `761b5e980aeaf63833f574127fbe1ff4728f86b4`; closeout `main` : `b43dec6084f341b2b52301a4f0542d6f616cf1e2`.
+
+---
+
+# #268 — V4 multi-market — `DRAFT_VALIDATION` / NON MERGED
+
+Branche `fix/v4-global-coverage-losses-20260907`, base main `b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Runtime validé `29f448a7441e82267fc9d84c2b0f9a52168e77cb` ; [preuves complètes et historique exact des 32 commits](v4-multimarket-readiness-20260914.md). Le head documentaire ultérieur ne doit pas être confondu avec le dernier changement runtime.
+
+P1–P4 restent validés : noms canoniques non fabriqués, Master/Poke Ball sur preuve source immuable exacte et gates terminaux, dimensions V2+V3 compatibles, aliases Fanatics-only. Le Pikachu historique absent du live est couvert par test runtime, pas prétendu revalidé sur son ancien listing.
+
+P5–P8 sont maintenant corrigés sur cette branche : gates stricts PriceCharting/PPT reviewed-set, installers Fanatics idempotents, pagination Cardova liée à l'enveloppe/lane/page. Les audits de capacités existantes ont permis de réutiliser V4 Global/Japan et les providers indépendants, sans porter V5 ou Robot KB ni créer une nouvelle lane économique parallèle.
+
+Autres capacités livrées : discovery COMC autonome ; routes publiques Mercari/SNKRDUNK dans Global ; champs DOM Mercari liés à l'item et tests Chromium ; pagination Fanatics sur contrôles de destination prouvée ; coûts inconnus conservés inconnus ; sélection équitable plafonnée à 50 ; manifestes sans requêtes de diagnostic ; TCGdex noms source prouvés et indisponibilités exclues des caches négatifs ; Auction preuve item publique bornée et états terminaux séparés de SOLD.
+
+Classement du chemin économique public actuel : **GCC OPERATIONAL dans le scope vault** ; **Fanatics, COMC, Magi, Cardova, Mercari et SNKRDUNK PROVIDER_BLOCKED**, pour les preuves externes/conditions acheteur exactes décrites dans le rapport. Sites accessibles ne signifie pas identité, valeur et coût complet disponibles. Les caps et la pagination partielle ne sont pas des blocages fournisseurs et restent explicites.
+
+Validation runtime : Global [34812934273](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934273) SUCCESS ; Auction 34812934319 SUCCESS (48 effectifs / 46 legacy, zéro manquant/inconnu) ; Cardova 34812934329 SUCCESS. Suites : 632 Global, 4 DOM ignorés localement puis exécutés dans Chromium en CI ; 1 011 V4, 2 ignorés ; 51 multimarket ; compile/YAML/diff-check PASS.
+
+PokeTrace applique un plafond FREE alors que l'auth observée déclare encore PRO actif ; zéro usage gradé, restriction distincte d'absence. PriceCharting public HTTP 403 reste indisponible, pas NO_MATCH. Magi #268 conserve 50/35/15, natif JA 60, source 60, PT 60. Aucun ASK/live/ENDED/OUT_OF_SCOPE ne devient SOLD ; aucune marketplace n'est sa propre fair value.
+
+Les modifications sont candidate-only. Aucun merge, main/PR #8/V5/Robot KB/Neon inchangés.
 
 ---
 
@@ -204,7 +230,7 @@ PostgreSQL local Mac actif, `V4_USE=false`, Neon writers automatiques OFF. Obser
 
 # V5 / non-production
 
-PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié historiquement `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`. Ne jamais merger PR #8 dans `main` sans autorisation explicite.
+PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` le 10 septembre 2026. Ne jamais merger PR #8 dans `main` sans autorisation explicite.
 
 ---
 
@@ -228,7 +254,9 @@ PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié historiquement `bc6
 - #259 : intégration production canonique recall/source-role/Global/Japan ;
 - #260 : recovery TCGdex contraint production ;
 - #261 : calibration cross-grader production ;
-- #263 : tuning CA→PSA 35 % de la lane de revue cross-grader, sans changement du floor 30 % ni des règles d'identité.
+- #263 : tuning CA→PSA 35 % de la lane de revue cross-grader, sans changement du floor 30 % ni des règles d'identité ;
+- #266 : Rainbow source-proven en production ;
+- #268 : `DRAFT_VALIDATION`, provider coverage/hardening validé sur branche mais non mergé.
 
 ---
 

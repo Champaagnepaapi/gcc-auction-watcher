@@ -445,8 +445,16 @@ def _resolve_with_unique_coordinate_fallback(lot: watcher.Lot) -> canonical.Cano
     if original.status != "NO_MATCH":
         return original
 
+    from v4_tcgdex_source_pinned_finish import _SOURCE_RETRYABLE_MISSES as before_source_misses
     recovered = _recover_unique_coordinate(lot)
     if recovered is None:
+        from v4_tcgdex_source_pinned_finish import _SOURCE_RETRYABLE_MISSES as after_source_misses
+        if after_source_misses > before_source_misses:
+            # A source-access failure is not evidence that this coordinate is
+            # absent. Keep it out of the negative cache without retrying HTTP.
+            unavailable = canonical.CanonicalCard("ERROR", reason="TCGDEX_SOURCE_PROOF_UNAVAILABLE")
+            _reclassify_original_no_match(unavailable)
+            return unavailable
         _NEGATIVE_CACHE.add(key)
         return original
 

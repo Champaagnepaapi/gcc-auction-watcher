@@ -21,6 +21,7 @@ import v4_global_fanatics_native_identity as v1
 import v4_global_marketplace_fanatics_native_v2 as v2
 import v4_global_marketplace_fanatics_native_v3 as v3
 import v4_tcgdex_generalized_coordinate_recovery as generalized
+import v4_raw_consensus as raw_consensus
 from v4_global_market_core import CommercialIdentity
 
 
@@ -31,6 +32,7 @@ _SET_CODE_RE = re.compile(
 _MAX_ALIAS_NAMES = 4
 _CROSS_LOCALE_NAME_LANGUAGE = "id"
 _ORIGINAL_RESOLVER = None
+_INSTALLED = False
 
 
 def _set_payload(card: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -226,6 +228,11 @@ def resolve_fanatics_cross_locale_identity(
     json_get: Optional[Callable[..., tuple[int, object, Mapping[str, str]]]] = None,
 ) -> v1.FanaticsNativeResolution:
     """Recover explicit Japanese Fanatics titles without translating card names."""
+    dimensions = raw_consensus.parse_multilingual_commercial_dimensions(f"{title}\n{proof_text}")
+    if "__conflict__" in dimensions.values() or dimensions.get("special_finish") in {"master_ball", "poke_ball"}:
+        # This lane proves cross-locale names, not special foils. Only the
+        # Fanatics source-pinned path may promote these titles to EXACT.
+        return v1.FanaticsNativeResolution("NO_MATCH", "fanatics_special_source_proof_required")
     json_get = json_get or multimarket._json_get
     candidates, parse_reason = v3._flexible_candidates(title)
     candidates = [candidate for candidate in candidates if candidate.language_code == "ja"]
@@ -353,7 +360,9 @@ def resolve_fanatics_native_identity_with_cross_locale(
 
 
 def install_global_marketplace_fanatics_cross_locale() -> None:
-    global _ORIGINAL_RESOLVER
+    global _ORIGINAL_RESOLVER, _INSTALLED
+    if _INSTALLED:
+        return
     current = v3.resolve_fanatics_native_identity_v3
     if getattr(current, "_fanatics_cross_locale_installed", False):
         v3.install_global_marketplace_fanatics_native_v3()
@@ -362,3 +371,4 @@ def install_global_marketplace_fanatics_cross_locale() -> None:
     resolve_fanatics_native_identity_with_cross_locale._fanatics_cross_locale_installed = True  # type: ignore[attr-defined]
     v3.resolve_fanatics_native_identity_v3 = resolve_fanatics_native_identity_with_cross_locale
     v3.install_global_marketplace_fanatics_native_v3()
+    _INSTALLED = True

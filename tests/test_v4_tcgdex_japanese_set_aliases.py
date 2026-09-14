@@ -31,7 +31,7 @@ class JapaneseSetAliasTests(unittest.TestCase):
     def test_night_wanderer_exact_coordinate_recovers_zorua_from_sv6a(self):
         lot = watcher.Lot(
             url="https://gradedcardcenter.com/item/night-wanderer-test",
-            title="Zorua",
+            title="ゾロア",
             current_price=25.0,
             source_type="fixed",
             grader="CA",
@@ -72,7 +72,7 @@ class JapaneseSetAliasTests(unittest.TestCase):
         self.assertEqual(result.set_id, "SV6a")
         self.assertEqual(result.set_name, "Night Wanderer")
         self.assertEqual(result.full_number, "072/064")
-        self.assertEqual(result.name, "Zorua")
+        self.assertEqual(result.name, "ゾロア")
         self.assertEqual(result.language_code, "ja")
 
     def test_wrong_denominator_does_not_use_alias(self):

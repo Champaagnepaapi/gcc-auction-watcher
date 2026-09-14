@@ -2,13 +2,54 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from v4_global_market_core import ACTIVE_AUCTION, AUCTION_SNAPSHOT_LE5, FINISHED_UNPROVEN, FIXED_ASK
-from v4_market_cardova import parse_auction_payload, parse_fixed_payload
+from v4_market_cardova import _identity, parse_auction_payload, parse_fixed_payload
 
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
 
 
 class CardovaAdapterTests(unittest.TestCase):
+    def test_public_fixed_ulid_is_a_card_link_not_a_bare_identifier(self):
+        from v4_global_marketplace_discovery import cardova_inventory
+        uid = '01M0V12A3FQ3XDG1ZZ93M4WQ4Q'
+        raw = {'ulid':uid,'listing_type':4,'asking_price':1000,'set_quantity':1,
+               'player':'Clefairy','variety':'Basic','card_number':'035','language':'Japanese',
+               'authentication_company_code':'P','grade':'10'}
+        listing = cardova_inventory(fixed_payload={'list':[raw]},auction_payload=None,observed_at=NOW)[0]
+        self.assertEqual(listing.source_url, 'https://www.cardova.co.jp/en/trade/card/' + uid)
+        self.assertEqual(listing.source_id, uid)
+        self.assertIsNone(listing.all_in_eur({'JPY':160}))
+
+    def test_public_fixed_cost_needs_payment_context(self):
+        from v4_global_marketplace_discovery import cardova_inventory
+        payload = {"list": [{"ulid":"01K4PS9MJAF534BY63WA2K1SD7", "listing_type":4, "asking_price":1000, "set_quantity":1, "player":"Pikachu", "variety":"151", "card_number":"25/165", "language":"Japanese", "authentication_company_code":"P", "grade":"10"}]}
+        listing = cardova_inventory(fixed_payload=payload, auction_payload=None, observed_at=NOW)[0]
+        self.assertIsNone(listing.all_in_eur({"JPY": 160}))
+        # Explicitly supplied all-in acquisition charges remain usable. Public
+        # fixed buyer commission alone does not prove the payment route free.
+        configured = cardova_inventory(fixed_payload=payload, auction_payload=None, observed_at=NOW,
+                                       buyer_fee_rate=0.039, logistics_jpy=500)[0]
+        self.assertAlmostEqual(configured.all_in_eur({"JPY":160}), 1539 / 160)
+        self.assertEqual(configured.evidence_type, FIXED_ASK)
+
+    def test_public_series_wrapper_preserves_exact_leaf_set(self):
+        row = {"player": "Dialga", "variety": "Pokemon TCG: Japanese XY Legendary Shine Collection", "variety_short": "Legendary Shine Collection", "card_number": "#017", "language": "Japanese", "authentication_company_code": "P", "grade": "10", "attribute": "FA", "attribute2": "1st Edition"}
+        identity = _identity(row)
+        self.assertEqual(identity.set_name, "Legendary Shine Collection")
+        self.assertEqual(identity.edition, "First Edition")
+        self.assertEqual(identity.finish, "")
+        self.assertIn("FA", identity.variant)
+
+    def test_public_series_or_language_contradiction_is_blocking(self):
+        row = {"player": "Dialga", "variety": "Pokemon TCG: Japanese XY Legendary Shine Collection", "variety_short": "Base Set", "card_number": "#017", "language": "Japanese", "authentication_company_code": "P", "grade": "10"}
+        self.assertFalse(_identity(row).complete_for_exact_market)
+        row.update(variety_short="Legendary Shine Collection", language="English")
+        self.assertFalse(_identity(row).complete_for_exact_market)
+
+    def test_explicit_material_contradictions_cannot_prove_identity(self):
+        row = {"ulid":"conflict", "listing_type":4, "asking_price":1000, "set_quantity":1, "player":"Pikachu", "variety":"151", "card_number":"25/165", "language":"Japanese", "authentication_company_code":"P", "grade":"10", "attribute":"Master Ball", "attribute2":"Poke Ball"}
+        self.assertFalse(parse_fixed_payload({"list":[row]}, observed_at=NOW)[0].identity_proven)
+
     def test_fixed_direct_single_only(self):
         payload = {"list": [
             {"ulid":"a", "listing_type":4, "asking_price":120000, "set_quantity":1, "authentication_company_code":"P", "grade":"10.0", "language":"Japanese", "player":"Charizard ex", "variety":"Pokemon Card 151", "card_number":"#201/165", "attribute":"SAR"},

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ from v4_global_marketplace_discovery import (
 from v4_market_comc_bridge import comc_fixed_offer
 from v4_market_fanatics_bridge import fanatics_fixed_offer
 from v4_market_magi_bridge import magi_fixed_ask_to_observation
+from v4_global_market_core import CommercialIdentity
 
 
 FANATICS_BROWSE = "https://www.fanaticscollect.com/marketplace?type=FIXED"
@@ -262,7 +264,7 @@ def scan_fanatics_inventory(
             observed_at=observed_at,
             source_id=url,
             identity_proven=True,
-            buyer_fee_rate=0.0,
+            buyer_fee_rate=None,  # Fanatics payment/funding route is unproven.
             note="Fanatics marketplace-first Buy Now ASK; exact known coordinate; TCGdex revalidation required downstream",
         )
         output.append(listing_from_observation(observation, source_url=url, title=title))
@@ -278,10 +280,17 @@ def scan_fanatics_inventory(
     )
 
 
+class MagiPublicUnavailable(RuntimeError):
+    """Bounded transport reason; never includes response bodies or credentials."""
+
+
 def _magi_broad_rows(page: Any) -> list[japan.Ask]:
     provider = next(provider for provider in japan.PROVIDERS if provider.code == "magi")
     url = provider.search_url.format(q=quote(MAGI_BROAD_QUERY, safe=""))
-    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    response = page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    status = getattr(response, 'status', None)
+    if isinstance(status, int) and not 200 <= status < 300:
+        raise MagiPublicUnavailable(f'HTTP_{status}')
     page.wait_for_timeout(900)
     rows = page.evaluate(
         r"""() => Array.from(document.querySelectorAll('a[href]')).slice(0,1800).map(a=>{let n=a,t=(a.innerText||a.textContent||'').trim();for(let i=0;i<6&&n;i++,n=n.parentElement){const x=(n.innerText||n.textContent||'').trim();if(/[¥￥]|\d[\d,]*\s*円/.test(x)){t=x;break;}}return {href:a.href||'',anchor:(a.innerText||'').trim(),text:t};})"""
@@ -313,6 +322,8 @@ def scan_magi_inventory(
 ) -> tuple[list[MarketplaceListing], ScanStatus]:
     try:
         asks = _magi_broad_rows(page)
+    except MagiPublicUnavailable as error:
+        return [], ScanStatus("magi", "UNAVAILABLE", detail=str(error), complete=False)
     except Exception as error:
         return [], ScanStatus("magi", "ERROR", detail=type(error).__name__, complete=False)
     output: list[MarketplaceListing] = []
@@ -347,12 +358,12 @@ def scan_magi_inventory(
         output.append(listing_from_observation(observation, source_url=detailed.url, title=detailed.title))
     return output, ScanStatus(
         "magi",
-        "OK",
+        "OK" if asks else "UNAVAILABLE",
         pages=1,
         candidates=len(asks),
         exact=len(output),
-        detail="broad Pokemon PSA10 inventory query; no per-card searches",
-        complete=len(asks) <= max(1, int(max_detail_pages)),
+        detail="broad Pokemon PSA10 inventory query; no per-card searches; PAGINATION_UNPROVEN; one observed search page",
+        complete=False,
     )
 
 
@@ -360,6 +371,86 @@ def _comc_page_url(page_number: int) -> str:
     if page_number <= 1:
         return COMC_PSA10_INDEX + "%2CvText%2Ci100"
     return COMC_PSA10_INDEX + f"%2CvText%2Ci100%2Cp{page_number}"
+
+
+def _comc_native_identity(cells):
+    """Read the public row itself; a GCC seed never supplies missing identity."""
+    from v4_tcgdex_japanese_set_registry import JAPANESE_SET_REGISTRY
+    from v4_global_marketplace_unicode_identity import _unicode_identity_norm as norm
+    from v4_raw_consensus import parse_multilingual_commercial_dimensions
+    if len(cells) < 3:
+        return None, "ROW_SCHEMA_UNPROVEN"
+    set_field, number, description = (str(x or "").strip() for x in cells[:3])
+    if not re.match(r"^\d{4}(?:-Current)?\s+Pok[eé]mon\b", set_field, re.I):
+        return None, "POKEMON_SET_UNPROVEN"
+    lang = re.search(r"\s+-\s+(Japanese|English)$", set_field, re.I)
+    if not lang:
+        return None, "LANGUAGE_UNPROVEN"
+    grade = re.search(r"\[PSA\s+10\s+GEM\s+MT\]$", description, re.I)
+    if not grade:
+        return None, "PSA10_UNPROVEN"
+    if re.search(r"\b(?:lot of|set of|bundle|sealed|booster|box)\b", description, re.I):
+        return None, "SINGLE_UNPROVEN"
+    set_parts = re.split(r"\s+-\s+", set_field[:lang.start()])
+    # COMC has both 'Pokemon <era> - <set> - [Base]' and
+    # 'Pokemon <era> <set> - [Base]'. A base/subset label is never the set.
+    product = re.sub(r'^\d{4}(?:-Current)?\s+Pok[eé]mon\s*', '', set_parts[0], flags=re.I)
+    eras = ('Scarlet & Violet', 'Sword & Shield', 'Sun & Moon', 'Black & White', 'XY')
+    if product.casefold() in {e.casefold() for e in (*eras, 'Neo')} or not product:
+        if len(set_parts) < 2:
+            return None, "SET_LABEL_UNPROVEN"
+        label, set_attributes = set_parts[1], set_parts[2:]
+    else:
+        label = product
+        for era in eras:
+            if label.casefold().startswith(era.casefold() + ' '):
+                label = label[len(era):].strip()
+                break
+        set_attributes = set_parts[1:]
+    if norm(label.strip('[]')) in {'base', 'subset'}:
+        return None, "SET_LABEL_UNPROVEN"
+    code_match = re.fullmatch(r"(.+?)\s*\[([A-Za-z0-9.-]+)\]", label)
+    code = code_match[2] if code_match else ""
+    label = code_match[1].strip() if code_match else label
+    if not code:
+        # A bare trailing code is separable only when this already reviewed
+        # set entry proves the exact code/label pair. Unknown labels stay intact.
+        for entry in JAPANESE_SET_REGISTRY:
+            suffix = ' ' + entry.set_id
+            if label.casefold().endswith(suffix.casefold()) and norm(label[:-len(suffix)]) in {norm(a) for a in entry.target_names}:
+                label, code = label[:-len(suffix)].strip(), entry.set_id
+                break
+    entries = [entry for entry in JAPANESE_SET_REGISTRY if norm(label) in {norm(alias) for alias in entry.target_names}]
+    number = number.lstrip('#').strip()
+    if not re.fullmatch(r"[A-Za-z]*\d+(?:/[A-Za-z0-9-]+)?", number):
+        return None, "NUMBER_UNPROVEN"
+    language = "ja" if lang[1].lower() == "japanese" else "en"
+    if language == "ja" and len(entries) == 1:
+        entry = entries[0]
+        if code and code.casefold() != entry.set_id.casefold():
+            return None, "SET_CODE_CONFLICT"
+        left, _, denominator = number.partition('/')
+        if denominator and norm(denominator).lstrip('0') != norm(entry.expected_denominator).lstrip('0'):
+            return None, "NUMBER_CONFLICT"
+        number = left + '/' + entry.expected_denominator
+    elif code:
+        # An unreviewed code cannot erase a conflicting human label. Leave it
+        # blocked until the independent catalog proves their relationship.
+        return None, "SET_CODE_LABEL_PROOF_UNAVAILABLE"
+    parts = re.split(r"\s+-\s+", description[:grade.start()].strip())
+    name = parts[-1]
+    attributes = " ".join([*parts[:-1], *set_attributes])
+    material = re.search(r'\s+\((Holo|Non Holo|Reverse Holo)\)$', name, re.I)
+    if material:
+        attributes += ' ' + material[1]
+        name = name[:material.start()].strip()
+    dims = parse_multilingual_commercial_dimensions(set_field + ' ' + description)
+    if "__conflict__" in dims.values():
+        return None, "DIMENSION_CONFLICT"
+    edition = {"first_edition":"First Edition", "unlimited":"Unlimited"}.get(dims.get("edition"), "")
+    finish = {"holo":"Holo", "non_holo":"Non Holo", "reverse":"Reverse"}.get(dims.get("finish"), "")
+    identity = CommercialIdentity(name, label, number, language, "PSA", "10", edition, finish, attributes)
+    return (identity, "COMC_NATIVE_ROW") if identity.complete_for_exact_market else (None, "IDENTITY_INCOMPLETE")
 
 
 def scan_comc_inventory(
@@ -371,13 +462,18 @@ def scan_comc_inventory(
     max_detail_pages: int = 200,
 ) -> tuple[list[MarketplaceListing], ScanStatus]:
     output: list[MarketplaceListing] = []
-    products: list[tuple[str, str, legacy.Seed]] = []
+    products: list[tuple[str, str, CommercialIdentity]] = []
     seen: set[str] = set()
     pages = 0
-    complete = True
+    complete = False
+    rejects = Counter()
+    raw_rows = 0
     try:
         for page_number in range(1, max(1, int(max_pages)) + 1):
-            page.goto(_comc_page_url(page_number), wait_until="domcontentloaded", timeout=25000)
+            response = page.goto(_comc_page_url(page_number), wait_until="domcontentloaded", timeout=25000)
+            status = getattr(response, 'status', None)
+            if isinstance(status, int) and status >= 400:
+                return output, ScanStatus('comc', 'UNAVAILABLE', pages, raw_rows, 0, f'HTTP {status}', False)
             page.wait_for_timeout(650)
             rows = comc_v4._table_rows(page)
             pages += 1
@@ -388,19 +484,17 @@ def scan_comc_inventory(
                 if not isinstance(cells, list) or (cells and legacy._norm(cells[0]) == "set name"):
                     continue
                 data += 1
+                raw_rows += 1
                 cell_text = [str(value or "") for value in cells]
-                matches: list[legacy.Seed] = []
-                for seed in seeds:
-                    ok, _proof = comc_v4.comc_table_row_proof(cell_text, seed.source_identity)
-                    if ok:
-                        matches.append(seed)
-                if len(matches) != 1:
+                identity, reason = _comc_native_identity(cell_text)
+                if identity is None:
+                    rejects[reason] += 1
                     continue
                 product = comc_v4._product_url([str(value or "") for value in hrefs]) if isinstance(hrefs, list) else None
-                if not product or product in seen:
+                if not product or not product.rstrip('/').endswith('/Graded/PSA/10') or product in seen:
                     continue
                 seen.add(product)
-                products.append((product, " | ".join(cell_text[:7]), matches[0]))
+                products.append((product, " | ".join(cell_text[:3]), identity))
             if data < 100:
                 break
         else:
@@ -408,12 +502,12 @@ def scan_comc_inventory(
     except Exception as error:
         return output, ScanStatus("comc", "ERROR", pages, len(products), len(output), type(error).__name__, False)
 
-    for product_url, row_text, seed in products[: max(1, int(max_detail_pages))]:
+    for product_url, row_text, identity in products[: max(1, int(max_detail_pages))]:
         price, proof = comc_v4._fixed_ask_from_product(page, product_url)
         if price is None:
             continue
         observation = comc_fixed_offer(
-            identity=seed.identity,
+            identity=identity,
             price_usd=price,
             observed_at=observed_at,
             source_id=product_url,
@@ -426,10 +520,10 @@ def scan_comc_inventory(
         complete = False
     return output, ScanStatus(
         "comc",
-        "OK",
+        "OK" if raw_rows else "UNAVAILABLE",
         pages,
-        len(products),
+        raw_rows,
         len(output),
-        "direct PSA10 Pokemon inventory table sweep; no player/card searches",
+        f"native public PSA10 Pokemon rows; no GCC catalog dependency; rejects={dict(rejects)}; pagination total unproven",
         complete,
     )

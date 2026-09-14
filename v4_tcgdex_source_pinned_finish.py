@@ -34,9 +34,15 @@ _SOURCE_MAX_REQUESTS_PER_RUN = max(
 )
 
 _ALLOWED_FINISH_KEYS = frozenset({"normal", "holo", "reverse"})
+_SPECIAL_FINISH_BY_FOIL = {
+    "pokeball": "poke_ball",
+    "masterball": "master_ball",
+}
 _SAFE_COORDINATE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SESSION = requests.Session()
 _SOURCE_CACHE: dict[str, "SourcePinnedFinishProof | None"] = {}
+_SOURCE_OUTCOMES: dict[str, str] = {}
+_SOURCE_RETRYABLE_MISSES = 0
 _SOURCE_REQUESTS = 0
 _ORIGINAL_RESOLVER = None
 
@@ -46,14 +52,42 @@ class SourcePinnedFinishProof:
     finishes: tuple[str, ...]
     source_path: str
     source_commit: str = _SOURCE_COMMIT
+    special_finishes: tuple[str, ...] = ()
+    card_names: tuple[tuple[str, str], ...] = ()
+
+
+def _source_card_names(text: str) -> tuple[tuple[str, str], ...]:
+    """Read only the root card name map, never attack/ability names.
+
+    This deliberately accepts the bounded immutable catalogue syntax; an
+    unsupported shape supplies no name proof. Existing finish-only consumers
+    do not depend on this optional evidence.
+    """
+    match = re.search(
+        r"\bconst\s+card\s*:\s*Card\s*=\s*\{\s*set\s*:\s*Set\s*,\s*"
+        r"name\s*:\s*\{(?P<names>[^{}]*)\}", text,
+    )
+    if match is None:
+        return ()
+    entries = re.findall(
+        r"(?:['\"]([a-z-]+)['\"]|([a-z]+))\s*:\s*"
+        r"(?:\"([^\"\\\n]+)\"|'([^'\\\n]+)')\s*(?:,|$)",
+        match.group("names"),
+    )
+    names = tuple((quoted or bare, double or single) for quoted, bare, double, single in entries)
+    if len({language for language, _ in names}) != len(names):
+        return ()
+    return names
 
 
 def clear_source_finish_runtime_state() -> None:
     """Clear process-local proof cache/budget (mainly useful for tests)."""
 
-    global _SOURCE_REQUESTS
+    global _SOURCE_REQUESTS, _SOURCE_RETRYABLE_MISSES
     _SOURCE_CACHE.clear()
+    _SOURCE_OUTCOMES.clear()
     _SOURCE_REQUESTS = 0
+    _SOURCE_RETRYABLE_MISSES = 0
 
 
 def _same_local_id(first: object, second: object) -> bool:
@@ -164,6 +198,60 @@ def _extract_variants_block(text: str) -> str:
     return ""
 
 
+def _top_level_variant_objects(block: str) -> tuple[str, ...]:
+    """Return balanced top-level object literals from one variants array."""
+    output: list[str] = []
+    depth = 0
+    start = -1
+    quote = ""
+    escaped = False
+    for index, char in enumerate(block):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+            continue
+        if char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                output.append(block[start : index + 1])
+                start = -1
+    return tuple(output) if depth == 0 else ()
+
+
+def _source_special_finishes(block: str) -> tuple[str, ...]:
+    """Extract only recognized reverse-foil microvariants from one source block."""
+    observed: set[str] = set()
+    for entry in _top_level_variant_objects(block):
+        types = [
+            value.strip().casefold()
+            for value in re.findall(r"\btype\s*:\s*['\"]([^'\"]+)['\"]", entry)
+        ]
+        if len(types) != 1 or types[0] != "reverse":
+            continue
+        foils = [
+            value.strip().casefold()
+            for value in re.findall(r"\bfoil\s*:\s*['\"]([^'\"]+)['\"]", entry)
+        ]
+        if len(foils) != 1:
+            continue
+        special = _SPECIAL_FINISH_BY_FOIL.get(foils[0])
+        if special:
+            observed.add(special)
+    return tuple(key for key in ("poke_ball", "master_ball") if key in observed)
+
+
 def _parse_source_finish_proof(
     text: str,
     *,
@@ -195,14 +283,24 @@ def _parse_source_finish_proof(
     finishes = tuple(key for key in ("normal", "holo", "reverse") if key in observed)
     if not finishes:
         return None
-    return SourcePinnedFinishProof(finishes=finishes, source_path=source_path)
+    return SourcePinnedFinishProof(
+        finishes=finishes,
+        source_path=source_path,
+        special_finishes=_source_special_finishes(block),
+        card_names=_source_card_names(text),
+    )
 
 
 def _fetch_source_proof(path: str, *, set_id: str) -> SourcePinnedFinishProof | None:
-    global _SOURCE_REQUESTS
+    global _SOURCE_REQUESTS, _SOURCE_RETRYABLE_MISSES
     if path in _SOURCE_CACHE:
+        if _SOURCE_OUTCOMES.get(path, "") not in {"", "PROVEN", "HTTP_404", "INVALID_PROOF"}:
+            _SOURCE_RETRYABLE_MISSES += 1
         return _SOURCE_CACHE[path]
-    if not _SOURCE_ENABLED or _SOURCE_REQUESTS >= _SOURCE_MAX_REQUESTS_PER_RUN:
+    if not _SOURCE_ENABLED:
+        return None
+    if _SOURCE_REQUESTS >= _SOURCE_MAX_REQUESTS_PER_RUN:
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
 
     _SOURCE_REQUESTS += 1
@@ -212,23 +310,33 @@ def _fetch_source_proof(path: str, *, set_id: str) -> SourcePinnedFinishProof | 
         )
     except requests.RequestException:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = "TRANSPORT_ERROR"
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
     except Exception:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = "READ_ERROR"
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
 
-    if int(getattr(response, "status_code", 0) or 0) != 200:
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status != 200:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = f"HTTP_{status}"
+        _SOURCE_RETRYABLE_MISSES += status != 404
         return None
     text = str(getattr(response, "text", "") or "")
     # Card source files are tiny.  Refuse an unexpectedly large response rather
     # than parsing arbitrary content from a network intermediary.
     if not text or len(text) > 250_000:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = "INVALID_RESPONSE"
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
 
     proof = _parse_source_finish_proof(text, set_id=set_id, source_path=path)
     _SOURCE_CACHE[path] = proof
+    _SOURCE_OUTCOMES[path] = "PROVEN" if proof is not None else "INVALID_PROOF"
     return proof
 
 

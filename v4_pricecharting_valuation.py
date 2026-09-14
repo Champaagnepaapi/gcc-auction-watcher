@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 import requests
 
 import watcher
+import v4_pricecharting_identity as strict_identity
 
 
 PRICECHARTING_BASE_URL = "https://www.pricecharting.com"
@@ -166,7 +167,7 @@ class PriceChartingProvider:
                 "CLEAN_NO_MATCH", note="product id PriceCharting incohérent"
             )
         detail_match = _score_candidate(lot, product)
-        if detail_match.score < self.config.minimum_match_score:
+        if not strict_identity.exact_identity(lot, product) or detail_match.score < self.config.minimum_match_score:
             return PriceChartingLookup(
                 "CLEAN_NO_MATCH", note="identité détail PriceCharting non prouvée"
             )
@@ -219,13 +220,14 @@ class PriceChartingProvider:
             return PriceChartingLookup("PROVIDER_ERROR", note=str(error))
 
         body = _html_text(product_html)
+        heading = re.search(r"(?is)<h1\b[^>]*>(.*?)</h1>", product_html)
         pseudo_detail = {
             "id": product_url,
-            "product-name": body[:400],
-            "console-name": f"{product_url} {body[:4000]}",
+            "product-name": _html_text(heading.group(1)).strip() if heading else "",
+            "console-name": strict_identity.category_from_url(product_url),
         }
         detail_match = _score_candidate(lot, pseudo_detail)
-        if detail_match.score < self.config.minimum_match_score:
+        if not strict_identity.exact_identity(lot, pseudo_detail) or detail_match.score < self.config.minimum_match_score:
             return PriceChartingLookup(
                 "CLEAN_NO_MATCH",
                 product_id=product_url,

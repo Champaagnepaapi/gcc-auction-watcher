@@ -1,0 +1,232 @@
+"""Real comparison + watcher inspection; only the browser boundary is replaced."""
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+import unittest
+
+import watcher
+from compare_auction_discovery import resolve_legacy_ids
+
+
+ITEM = '7a84f68f-80e6-42e2-8e46-52acf1de2d74'
+URL = f'https://gradedcardcenter.com/item/{ITEM}'
+NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
+
+
+class Response:
+    status = 200
+    url = f'https://api.gradedcardcenter.com/on-sale-items/{ITEM}'
+    headers = {'content-type': 'application/json'}
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def json(self):
+        return self.payload
+
+
+class Page:
+    def __init__(self, *, body='Pikachu PSA 10\n50 €', payload=None, fail=False, redirect=None):
+        self.body, self.payload, self.fail, self.redirect = body, payload, fail, redirect
+        self.url, self.listeners, self.navigations = '', [], 0
+
+    def on(self, event, callback):
+        assert event == 'response'
+        self.listeners.append(callback)
+
+    def remove_listener(self, event, callback):
+        self.listeners.remove(callback)
+
+    def goto(self, url, **kwargs):
+        self.navigations += 1
+        if self.fail:
+            raise RuntimeError('browser unavailable')
+        self.url = self.redirect or url
+        if self.payload is not None:
+            for callback in self.listeners:
+                callback(Response(self.payload))
+        return SimpleNamespace(status=200)
+
+    def wait_for_timeout(self, *_args):
+        pass
+
+    def locator(self, selector):
+        text = 'Pikachu PSA 10' if selector == 'h1' else self.body
+        locator = SimpleNamespace(inner_text=lambda **kwargs: text)
+        locator.first = locator
+        return locator
+
+
+def terminal(**overrides):
+    return dict({'id': ITEM, 'sellingType': 'AUCTION', 'status': 'ENDED',
+                 'endTime': (NOW - timedelta(minutes=2)).isoformat()}, **overrides)
+
+
+class AuctionTerminalTests(unittest.TestCase):
+    def test_ended_regression_through_existing_comparison_api(self):
+        page = Page(payload=terminal(endTime='2020-01-01T00:00:00Z'))
+        lot = watcher.Lot(URL, 'Pikachu PSA 10', 50.0, source_type='auction')
+        # Also runs against the original API: the pre-fix defect is an actual
+        # ENDED item classified as unresolved, not just a missing diagnostic API.
+        self.assertEqual(resolve_legacy_ids(page, [lot], 717), (set(), set()))
+
+    def resolve(self, page, *, minutes=None):
+        lot = watcher.Lot(URL, 'Pikachu PSA 10', 50.0, source_type='auction', minutes_to_end=minutes)
+        diagnostics = {}
+        result = resolve_legacy_ids(page, [lot], 717, diagnostics=diagnostics, observed_at=NOW)
+        self.assertEqual(page.listeners, [])
+        return result, diagnostics[URL], lot
+
+    def test_valid_timer_uses_real_parser(self):
+        result, diagnostic, _ = self.resolve(Page(body='Pikachu PSA 10\n50 €\n0 jours 0 heures 12 minutes 0 secondes'))
+        self.assertEqual(result, ({URL}, set()))
+        self.assertEqual(diagnostic['state'], 'RESOLVED')
+        self.assertEqual(diagnostic['minutes'], 12)
+        self.assertEqual(diagnostic['provenance'], 'item_countdown')
+
+    def test_item_explicitly_ended_is_not_unknown_or_sold(self):
+        page = Page(payload=terminal())
+        result, diagnostic, lot = self.resolve(page)
+        self.assertEqual(result, (set(), set()))
+        self.assertEqual(diagnostic['state'], 'ENDED')
+        self.assertEqual(diagnostic['item_id'], ITEM)
+        self.assertFalse(diagnostic['sold_proven'])
+        self.assertEqual(lot.source_type, 'auction')
+        self.assertIsNone(lot.minutes_to_end)
+        self.assertEqual(page.navigations, 1)
+
+    def test_missing_timer_without_terminal_proof_still_fails(self):
+        page = Page(body='Pikachu PSA 10\n50 €\nRelated items\nAuction ended')
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'UNKNOWN')
+        self.assertEqual(page.navigations, 2)
+
+    def test_inspection_error_is_distinct_and_retried(self):
+        page = Page(fail=True)
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'INSPECTION_ERROR')
+        self.assertEqual(page.navigations, 2)
+
+    def test_wrong_item_active_future_or_payment_status_is_not_sold(self):
+        for payload in (terminal(id='other'), terminal(status='ON_SALE'), terminal(sellingType='FIXED'),
+                        terminal(endTime=(NOW + timedelta(minutes=2)).isoformat()),
+                        terminal(endTime='unreadable')):
+            with self.subTest(payload=payload):
+                result, diagnostic, _ = self.resolve(Page(payload=payload))
+                self.assertEqual(result, (set(), {URL}))
+                self.assertEqual(diagnostic['state'], 'UNKNOWN')
+        result, diagnostic, _ = self.resolve(Page(payload=terminal(status='WAITING_FOR_PAYMENT')))
+        self.assertEqual(result, (set(), set()))
+        self.assertEqual(diagnostic['state'], 'ENDED')
+        self.assertFalse(diagnostic['sold_proven'])
+
+    def test_redirect_or_contradictory_timer_blocks_terminal_proof(self):
+        for page in (Page(payload=terminal(), redirect='https://gradedcardcenter.com/login'),
+                     Page(payload=terminal(), body='Pikachu PSA 10\n50 €\n0 jours 0 heures 12 minutes 0 secondes')):
+            with self.subTest(page=page):
+                result, diagnostic, _ = self.resolve(page)
+                self.assertEqual(result, (set(), {URL}))
+                self.assertEqual(diagnostic['state'], 'UNKNOWN')
+
+    def test_existing_timer_needs_no_navigation(self):
+        page = Page(fail=True)
+        result, diagnostic, _ = self.resolve(page, minutes=90)
+        self.assertEqual(result, ({URL}, set()))
+        self.assertEqual(diagnostic['provenance'], 'listing_timer')
+        self.assertEqual(page.navigations, 0)
+
+    def test_item_now_fixed_price_is_out_of_auction_scope_not_ended_or_sold(self):
+        # Same item endpoint schema as the nine UNKNOWN items in run 34775550636.
+        page = Page(payload=terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None))
+        result, diagnostic, lot = self.resolve(page)
+        self.assertEqual(result, (set(), set()))
+        self.assertEqual(diagnostic['state'], 'OUT_OF_SCOPE')
+        self.assertEqual(diagnostic['reason'], 'item_explicitly_fixed_price')
+        self.assertEqual(diagnostic['provenance'], 'gcc_item_response.sellingType+status+endTime')
+        self.assertFalse(diagnostic['sold_proven'])
+        self.assertIsNone(lot.minutes_to_end)
+        self.assertEqual(page.navigations, 1)
+
+    def test_fixed_price_exclusion_requires_complete_item_proof(self):
+        valid = terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None)
+        missing_end = dict(valid)
+        del missing_end['endTime']
+        for payload in (dict(valid, id='other'), dict(valid, status='ENDED'),
+                        dict(valid, status='WAITING_FOR_PAYMENT'), dict(valid, sellingType='FIXED'),
+                        dict(valid, endTime=''), terminal(sellingType='FIXED_PRICE', status='ON_SALE'),
+                        missing_end):
+            with self.subTest(payload=payload):
+                result, diagnostic, _ = self.resolve(Page(payload=payload))
+                self.assertEqual(result, (set(), {URL}))
+                self.assertEqual(diagnostic['state'], 'UNKNOWN')
+                self.assertFalse(diagnostic['sold_proven'])
+
+    def test_fixed_price_response_conflicting_with_countdown_is_unknown(self):
+        page = Page(payload=terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None),
+                    body='Pikachu PSA 10\n50 €\n0 jours 0 heures 12 minutes 0 secondes')
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'UNKNOWN')
+
+    def test_conflicting_item_responses_cannot_exclude_an_auction(self):
+        class ConflictingPage(Page):
+            def goto(self, url, **kwargs):
+                response = super().goto(url, **kwargs)
+                for callback in self.listeners:
+                    callback(Response(terminal(status='ON_SALE', endTime=(NOW + timedelta(minutes=12)).isoformat())))
+                return response
+        result, diagnostic, _ = self.resolve(ConflictingPage(
+            payload=terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None)))
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'UNKNOWN')
+
+    def test_server_rendered_item_uses_one_bounded_public_item_read(self):
+        page = Page()  # Real page inspection, no browser response event.
+        calls = []
+        def get(url, **kwargs):
+            calls.append((url, kwargs))
+            return Response(terminal(sellingType='FIXED_PRICE', status='ON_SALE', endTime=None))
+        page.request = SimpleNamespace(get=get)
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), set()))
+        self.assertEqual(diagnostic['state'], 'OUT_OF_SCOPE')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], Response.url)
+        self.assertLessEqual(calls[0][1]['timeout'], 10000)
+
+    def test_public_item_error_is_not_retried_or_interpreted_as_empty(self):
+        page, calls = Page(), []
+        def get(url, **kwargs):
+            calls.append(url)
+            response = Response({})
+            response.status = 403
+            return response
+        page.request = SimpleNamespace(get=get)
+        result, diagnostic, _ = self.resolve(page)
+        self.assertEqual(result, (set(), {URL}))
+        self.assertEqual(diagnostic['state'], 'UNKNOWN')
+        self.assertEqual(len(calls), 1)
+
+    def test_existing_item_response_never_triggers_a_second_api_read(self):
+        page = Page(payload=terminal(status='ON_SALE'))
+        def forbidden(*args, **kwargs):
+            self.fail('already observed item response must not cause another GET')
+        page.request = SimpleNamespace(get=forbidden)
+        self.resolve(page)
+
+    def test_public_reads_share_a_fixed_run_cap(self):
+        page, calls = Page(), []
+        def get(url, **kwargs):
+            calls.append(url)
+            response = Response({})
+            response.url, response.status = url, 404
+            return response
+        page.request = SimpleNamespace(get=get)
+        lots = [watcher.Lot(f'https://gradedcardcenter.com/item/{i:036}', 'Pikachu PSA 10',
+                           50.0, source_type='auction') for i in range(21)]
+        resolved, unknown = resolve_legacy_ids(page, lots, 717)
+        self.assertEqual(len(calls), 20)
+        self.assertEqual(len(set(calls)), 20)
+        self.assertEqual(len(unknown), 21)
+        self.assertEqual(resolved, set())

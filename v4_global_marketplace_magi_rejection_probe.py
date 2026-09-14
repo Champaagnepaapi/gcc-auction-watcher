@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 from collections import Counter
+from dataclasses import dataclass, field
 
 import japan_edge_hunter as japan
 import v4_global_marketplace_magi_native_identity as native
@@ -27,6 +28,73 @@ _COUNTS: Counter[str] = Counter()
 _TOTAL = 0
 _ORIGINAL_RESOLVER = None
 _INSTALLED = False
+
+# Artifact diagnostics, independent of the optional console rejection probe.
+# This is a storage bound, never a retrieval or identity budget.
+_MANIFEST_MAX_ROWS = 200
+_REQUEST_CLASSES = ("sets_filtered", "sets_catalog", "set_detail", "set_coordinate",
+                    "card_search", "card_detail", "other")
+
+
+@dataclass(frozen=True)
+class MagiScanStatus(native.ScanStatus):
+    manifest: dict = field(default_factory=dict)
+
+
+def budget_snapshot(resolver, alias_budget) -> dict[str, int]:
+    """Read scan-owned counters only; do not resolve, fetch, or warm caches."""
+    import v4_global_marketplace_magi_recovery_budget as budget
+
+    recovery = budget._ACTIVE_RECOVERY_RESOLVER
+    counters = {
+        "native_ja": resolver.requests_used,
+        "latin_alias": alias_budget.requests_used,
+        "recovery": getattr(recovery, "requests_used", 0),
+        "recovery_broad": getattr(recovery, "_nonpriority_requests_used", 0),
+    }
+    for attribute, label in (("request_breakdown", "requests"), ("cache_hits", "cache_hits"),
+                             ("reserved_breakdown", "reserved"), ("exhausted_breakdown", "exhausted")):
+        counts = getattr(recovery, attribute, {})
+        for category in _REQUEST_CLASSES:
+            counters[f"{label}.{category}"] = int(counts.get(category, 0))
+    return counters
+
+
+class MagiManifest:
+    def __init__(self, candidates: int):
+        self.candidates = candidates
+        self.rows: list[dict] = []
+        self.seen = 0
+
+    def record(self, ask, status, reason, before, after, resolution=None):
+        self.seen += 1
+        if len(self.rows) >= _MANIFEST_MAX_ROWS:
+            return
+        # Strip query/fragment data even on otherwise valid public item URLs.
+        match = re.fullmatch(r"https://magi\.camp/items/(\d+)(?:[/?#].*)?", str(ask.url), re.I)
+        item_id = match.group(1) if match else ""
+        coordinate = {}
+        if resolution is not None:
+            for key in ("card_id", "set_id"):
+                value = _safe_public_id(getattr(resolution, key, ""))
+                if value:
+                    coordinate[key] = value
+        # Coordinates on a rejection describe the catalog evidence, not an
+        # assertion that the provider's identity matched it.
+        self.rows.append({
+            "ordinal": self.seen,
+            "item_id": item_id,
+            "url": f"https://magi.camp/items/{item_id}" if item_id else "",
+            "status": status if status in {"EXACT", "NO_MATCH", "ERROR", "NOT_EVALUATED"} else "ERROR",
+            "reason": str(reason)[:180] if re.fullmatch(r"[A-Za-z0-9_+:. -]{1,180}", str(reason)) else "identity_unproven",
+            "coordinate": coordinate,
+            "budget_delta": {key: after[key] - before.get(key, 0) for key in sorted(after)
+                             if after[key] != before.get(key, 0)},
+        })
+
+    def payload(self):
+        return {"schema_version": 1, "candidates": self.candidates,
+                "rows": self.rows, "truncated": max(0, self.seen - len(self.rows))}
 
 
 def clear_magi_rejection_probe_state() -> None:

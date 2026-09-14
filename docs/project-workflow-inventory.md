@@ -1,5 +1,13 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire workflows GitHub Actions
 
+## Mise à jour ciblée #268 — 14 septembre 2026
+
+Les validations existantes restent utilisées, sans nouveau cron ni dispatch manuel. Sur la branche candidate uniquement, `v4-global-market-offline-validation.yml` exécute quatre contrats DOM réels dans Chromium et impose un plafond PokeTrace FREE ; `v4-cardova-public-validation.yml` utilise le vrai collecteur public borné. Runtime `29f448a7441e82267fc9d84c2b0f9a52168e77cb` : Global 34812934273, Auction 34812934319 et Cardova 34812934329 SUCCESS. Les workflows automatiques Robot KB restent indépendants et leur succès ne constitue pas une modification de KB/Neon.
+
+Le tree main et ses triggers n'ont pas été modifiés. Les comptes, états et projections pré-#157 ci-dessous sont un **snapshot historique**, pas l'état actuel ni un nouvel audit exhaustif. Pour la reprise courante : [README](../README.md) et [rapport #268](v4-multimarket-readiness-20260914.md).
+
+## Snapshot historique conservé
+
 Audit vérifié le **21 août 2026** après #154 et pendant la préparation Robot KB #157.
 
 ## Résultat clé

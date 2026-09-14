@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -98,7 +99,7 @@ def _scan(args: argparse.Namespace, *, observed_at: datetime):
     listings.extend(cardova_rows)
     statuses.append(cardova_status)
 
-    if not args.no_browser_sources and seeds:
+    if not args.no_browser_sources:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
@@ -135,11 +136,22 @@ def _scan(args: argparse.Namespace, *, observed_at: datetime):
             listings.extend(comc_rows)
             statuses.append(comc_status)
 
+            from v4_global_marketplace_japan_public import scan_public_inventory
+            for market in ('mercari', 'snkrdunk'):
+                public_context = browser.new_context()
+                try:
+                    rows, status = scan_public_inventory(public_context.new_page(), market,
+                        observed_at=observed_at, max_detail_pages=args.browser_detail_cap)
+                    listings.extend(rows)
+                    statuses.append(status)
+                finally:
+                    public_context.close()
+
             context.close()
             browser.close()
     else:
         detail = "browser sources disabled" if args.no_browser_sources else "identity catalog unavailable"
-        for market in ("fanatics", "magi", "comc"):
+        for market in ("fanatics", "magi", "comc", "mercari", "snkrdunk"):
             statuses.append(ScanStatus(market, "SKIPPED", detail=detail, complete=False))
 
     deduped = {listing.stable_key: listing for listing in listings}
@@ -454,6 +466,80 @@ def _notify(
     }
 
 
+def selected_pipeline_manifest(cards, limit=50):
+    """Bounded public identity/stage evidence; never copy arbitrary provider data."""
+    result = []
+    for card in cards:
+        identity = card.get("identity") or {}
+        confirmation = card.get("economic_confirmation") or {}
+        canonical = confirmation.get("external_canonical") or {}
+        for offer in card.get("offers", []):
+            if len(result) >= min(50, max(0, limit)):
+                return result
+            parsed = urlsplit(str(offer.get("source_url") or ""))
+            result.append({
+                "market": offer.get("market"), "id": str(offer.get("source_id") or "")[:100],
+                "url": urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")),
+                "identity": {k: str(identity[k])[:200] for k in ("name", "set_name", "number", "language", "grader", "grade", "edition", "finish", "variant") if k in identity},
+                "canonical": {k: str(canonical[k])[:240] for k in ("status", "card_id", "set_id", "local_id", "language_code", "reason", "note") if k in canonical},
+                "valuation": {k: (confirmation.get(k) or {}).get("status", "NOT_EVALUATED") for k in ("ppt", "poketrace", "pricecharting")},
+                "all_in_eur": offer.get("all_in_eur"),
+                "decision": (confirmation.get("decision") or {}).get("status", "NOT_EVALUATED"),
+            })
+    return result
+
+
+def pipeline_report(statuses, cards):
+    """Per-market stage counts from existing results; no provider work or I/O."""
+    output = {}
+    for status in statuses:
+        output[status.market] = {
+            "discovery_status": status.status, "candidates": status.candidates,
+            "discovered_identities": status.exact, "pages": status.pages,
+            "pagination_complete": status.complete, "selected": 0,
+            "canonical_exact": 0, "value_matched": 0, "cost_unproven": 0,
+            "would_notify": 0, "canonical_statuses": {}, "valuation_statuses": {},
+            "decisions": {},
+        }
+    for card in cards:
+        confirmation = card.get("economic_confirmation") or {}
+        canonical = (confirmation.get("external_canonical") or {}).get("status", "NOT_EVALUATED")
+        decision = confirmation.get("decision") or {}
+        for offer in card.get("offers", []):
+            market = output.get(offer.get("market"))
+            if market is None:
+                continue
+            market["selected"] += 1
+            market["canonical_exact"] += canonical == "EXACT"
+            market["cost_unproven"] += offer.get("all_in_eur") is None
+            market["canonical_statuses"][canonical] = market["canonical_statuses"].get(canonical, 0) + 1
+            matched = False
+            for provider in ("ppt", "poketrace", "pricecharting"):
+                state = (confirmation.get(provider) or {}).get("status", "NOT_EVALUATED")
+                key = f"{provider}:{state}"
+                market["valuation_statuses"][key] = market["valuation_statuses"].get(key, 0) + 1
+                matched = matched or state == "MATCHED"
+            market["value_matched"] += matched
+            state = decision.get("status", "NOT_EVALUATED")
+            market["decisions"][state] = market["decisions"].get(state, 0) + 1
+            market["would_notify"] += bool(decision.get("would_notify")
+                and decision.get("best_market") == offer.get("market")
+                and decision.get("source_url") == offer.get("source_url"))
+    return output
+
+
+def source_budget_snapshot() -> dict[str, Any]:
+    """Read existing source-proof state; no resolver, requests or cache writes."""
+    import v4_tcgdex_source_pinned_finish as source
+    from collections import Counter
+    return {"requests": source._SOURCE_REQUESTS, "limit": source._SOURCE_MAX_REQUESTS_PER_RUN,
+            "cached_proofs": sum(value is not None for value in source._SOURCE_CACHE.values()),
+            "cached_unavailable": sum(value is None for value in source._SOURCE_CACHE.values()),
+            "remaining": max(0, source._SOURCE_MAX_REQUESTS_PER_RUN - source._SOURCE_REQUESTS),
+            "outcomes": dict(sorted(Counter(source._SOURCE_OUTCOMES.values()).items())),
+            "retryable_misses": source._SOURCE_RETRYABLE_MISSES}
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     enabled = _enabled()
     if enabled and not os.getenv("NTFY_TOPIC", "").strip():
@@ -464,7 +550,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     notify_path = state_root / "notifications.json"
     discovery_state, discovery_state_status = load_discovery_state(discovery_path, strict=enabled)
 
+    source_budget = {"before_discovery": source_budget_snapshot()}
     listings, statuses, gcc_fair, catalog_status = _scan(args, observed_at=observed_at)
+    source_budget["after_discovery"] = source_budget_snapshot()
     complete_markets = {status.market for status in statuses if status.status == "OK" and status.complete}
     discovery_state, reconciliation = reconcile_inventory(
         discovery_state,
@@ -497,6 +585,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "cards": cards,
     }
     report = _with_marketplace_evaluator(raw_report) if cards else raw_report
+    source_budget["after_valuation"] = source_budget_snapshot()
 
     by_identity = _card_by_identity(report)
     acknowledged_keys = []
@@ -511,11 +600,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     report["mode"] = MODE_ACTIVE if enabled else MODE_DRY
     report["notifications"] = enabled
     report["transactions"] = False
+    # Full per-candidate evidence is archived; the CLI prints only the compact
+    # discovery summary below, not hundreds of manifest rows.
+    report["magi_manifest"] = next(
+        (status.manifest for status in statuses if status.market == "magi" and hasattr(status, "manifest")),
+        None,
+    )
     report["marketplace_discovery"] = {
+        "source_proof_budget": source_budget,
         "strategy": "MARKETPLACE_FIRST",
         "bootstrap_detects_edges": True,
         "baseline_then_incremental": True,
-        "scan_status": [asdict(status) for status in statuses],
+        "scan_status": [{key: value for key, value in asdict(status).items() if key != "manifest"}
+                        for status in statuses],
         "catalog_status": catalog_status,
         "discovery_state_status": discovery_state_status,
         "inventory": reconciliation,
@@ -526,13 +623,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "known_gcc_history_identities_are_retrieval_catalog_only": True,
         "provider_disappearance_is_sold": False,
         "marketplace_adapters_independent": True,
-        "opportunity_sources": ["gcc", "fanatics", "comc", "magi", "cardova"],
+        "opportunity_sources": ["gcc", "fanatics", "comc", "magi", "cardova", "mercari", "snkrdunk"],
         "marketplace_sources_have_valuation_authority": False,
         "valuation_sources": [
             "PokemonPriceTracker/PokeTrace SOLD-derived aggregate",
             "PriceCharting exact PSA10 guide fallback",
         ],
         "direct_ebay_sold_is_valuation_source": False,
+        "provider_pipeline": pipeline_report(statuses, report.get("cards", [])),
     }
     report["notification_delivery"] = delivery
     report["safety"] = {
@@ -573,6 +671,8 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     report = run(args)
+    for row in selected_pipeline_manifest(report.get("cards", [])):
+        print("[V4_SELECTED_PIPELINE] " + json.dumps(row, ensure_ascii=False), flush=True)
     print(
         json.dumps(
             {

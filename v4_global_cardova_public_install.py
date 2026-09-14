@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from typing import Any
 
 import v4_global_marketplace_notify as marketplace
@@ -62,12 +63,18 @@ def _scan_with_public_cardova(args, *, observed_at):
         fixed_payload=capture.fixed_payload,
         auction_payload=capture.auction_payload,
         observed_at=observed_at,
-        buyer_fee_rate=0.0,
+        # Public commission does not prove account funding/payment charges.
+        buyer_fee_rate=None,
         # Official buyer premium varies by membership rank.  Anonymous public
         # discovery cannot prove the user's rate, so auction all-in stays unknown.
         auction_buyer_premium_rate=None,
         logistics_jpy=0.0,
     )
+    for evidence in capture.page_evidence:
+        print("[V4_CARDOVA_PAGE] " + json.dumps(evidence, ensure_ascii=False), flush=True)
+    for row in list(capture.fixed_payload.get("list", []))[:20]:
+        evidence = {key: str(row[key])[:180] for key in ("ulid", "player", "variety", "variety_short", "card_number", "language", "attribute", "attribute2", "attribute3") if key in row}
+        print("[V4_CARDOVA_IDENTITY] " + json.dumps(evidence, ensure_ascii=False), flush=True)
     merged = {listing.stable_key: listing for listing in listings}
     for listing in cardova_rows:
         merged[listing.stable_key] = listing
@@ -76,7 +83,8 @@ def _scan_with_public_cardova(args, *, observed_at):
         "public anonymous GET-only browser capture; no login/session/cookies; "
         f"json={capture.json_responses}; raw={capture.raw_listing_rows}; "
         f"scope={capture.accepted_rows}; rejects={dict(capture.rejected_rows)}; "
-        "fixed buyer fee=0 per public fee schedule; auction buyer premium unproven"
+        f"provider_pagination_complete={bool(capture.complete)}; "
+        "fixed payment/funding charges unproven; auction buyer premium unproven"
     )
     status = ScanStatus(
         "cardova",
@@ -85,8 +93,9 @@ def _scan_with_public_cardova(args, *, observed_at):
         candidates=capture.raw_listing_rows,
         exact=len(cardova_rows),
         detail=detail,
-        # Intentionally false until exhaustive public pagination is proven.
-        complete=False,
+        # True only when the capture layer has explicit provider pagination proof
+        # for both auction and fixed lanes. Local page caps/duplicate rows stay false.
+        complete=bool(capture.complete),
     )
     statuses = [row for row in statuses if row.market != "cardova"] + [status]
     return list(merged.values()), statuses, gcc_fair, catalog_status

@@ -67,7 +67,7 @@ class TestV4TCGdexUniqueCoordinateFallback(unittest.TestCase):
 
     def test_unique_numeric_denominator_recovers_japanese_localized_name(self) -> None:
         lot = self._lot(
-            name="Dedenne",
+            name="デデンネ",
             card_set="VMAX Climax",
             number="200/184",
             language="Japanese",
@@ -94,7 +94,7 @@ class TestV4TCGdexUniqueCoordinateFallback(unittest.TestCase):
         self.assertEqual(result.status, "EXACT")
         self.assertEqual(result.card_id, "S8b-200")
         self.assertEqual(result.set_id, "S8b")
-        self.assertEqual(result.name, "Dedenne")
+        self.assertEqual(result.name, "デデンネ")
         self.assertEqual(result.reason, "TCGDEX_EXACT_SET_LOCALID")
 
     def test_two_cards_with_same_numeric_coordinate_remain_ambiguous(self) -> None:
@@ -159,7 +159,7 @@ class TestV4TCGdexUniqueCoordinateFallback(unittest.TestCase):
 
     def test_exact_namespace_set_id_recovers_without_alias(self) -> None:
         lot = self._lot(
-            name="Iono's Wattrel",
+            name="ナンジャモのカイデン",
             card_set="Scarlet & Violet Promos",
             number="232/SV-P",
             language="Japanese",

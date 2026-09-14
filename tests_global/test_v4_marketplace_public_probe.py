@@ -1,0 +1,126 @@
+import unittest
+from types import SimpleNamespace
+
+import v4_global_marketplace_public_probe as module
+from v4_global_marketplace_public_probe import probe
+
+
+class Page:
+    def __init__(self, status=200, snapshots=()):
+        self.status, self.snapshots = status, list(snapshots)
+        self.events, self.waits = {}, []
+    def on(self, event, callback): self.events[event] = callback
+    def remove_listener(self, event, callback): self.events.pop(event)
+    def goto(self, url, **kwargs):
+        self.url = url
+        return SimpleNamespace(status=self.status)
+    def wait_for_timeout(self, ms): self.waits.append(ms)
+    def evaluate(self, script): return self.snapshots.pop(0)
+    def wait_for_function(self, script, **kwargs):
+        self.readiness_timeout = kwargs.get('timeout')
+
+
+class PublicProbeTests(unittest.TestCase):
+    def test_snkr_current_trading_card_offer_route_and_explicit_readiness(self):
+        market, url, pattern = module.SURFACES[1]
+        offer = 'https://snkrdunk.com/en/trading-cards/used/listings/01KX3MP0KG0F4HVD0XNFQAMMZ3'
+        page = Page(snapshots=[{'links':[offer+'?slide=right', 'https://snkrdunk.com/en/trading-cards/704397']}]*3)
+        result = probe(page, market, url, pattern)
+        self.assertEqual(result['urls'], [offer])
+        self.assertEqual(page.readiness_timeout, 15000)
+        self.assertFalse(result['complete'])
+
+    def test_item_scoped_mercari_fields_join_schema_without_overwriting_conflicts(self):
+        title = 'ピカチュウ 025/165 PSA10'
+        snapshot = {'title':title, 'product_count':1, 'product':{'name':title},
+                    'fields':{}, 'scoped_fields':{'言語':'日本語版','グレード':'PSA10'},
+                    'scoped_url':'https://jp.mercari.com/item/m123', 'scoped_title':title}
+        result = module.inspect_public_item(Page(snapshots=[snapshot]*3), snapshot['scoped_url'])
+        self.assertEqual(result['proven_fields'].get('言語'), '日本語版')
+        snapshot['product']['additionalProperty'] = [{'name':'言語','value':'English'}]
+        result = module.inspect_public_item(Page(snapshots=[snapshot]*3), snapshot['scoped_url'])
+        self.assertEqual(result['proven_fields']['言語'], '__conflict__')
+        snapshot['scoped_url'] += '9'
+        result = module.inspect_public_item(Page(snapshots=[snapshot]*3), 'https://jp.mercari.com/item/m123')
+        self.assertEqual(result['proven_fields']['言語'], 'English')
+
+    def test_snkr_uses_public_search_form_before_declaring_shell_unproven(self):
+        class SearchPage(Page):
+            def __init__(self):
+                super().__init__(snapshots=[{"links":[], "forms":[{"action":"/en/search/result", "method":"get"}], "inputs":[{"placeholder":"Search for anything", "visible":True}]}] * 3)
+                self.actions = []
+            def get_by_placeholder(self, label, *, exact):
+                assert label == 'Search for anything' and exact
+                return self
+            def count(self): return 1
+            def is_visible(self): return True
+            def fill(self, value, **kwargs): self.actions.append(('fill', value))
+            def press(self, key, **kwargs):
+                self.actions.append(('press', key))
+                self.snapshots = [{"links":["https://snkrdunk.com/en/trading-cards/704397"]}] * 2
+        page = SearchPage()
+        market, url, pattern = module.SURFACES[1]
+        result = probe(page, market, url, pattern)
+        self.assertEqual(page.actions, [('fill','PSA10 Pokemon'),('press','Enter')])
+        self.assertEqual(result['catalog_urls'], ['https://snkrdunk.com/en/trading-cards/704397'])
+        self.assertLessEqual(len(page.waits), 3)
+        self.assertEqual(result['urls'], [])
+
+    def test_product_readiness_does_not_skip_later_identity_fields(self):
+        initial = {"title":"Pikachu PSA10", "product":{"name":"Pikachu"}, "fields":{}}
+        page = Page(snapshots=[initial, dict(initial, fields={"Language":"Japanese"})])
+        result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")
+        self.assertEqual(result["fields"], {"Language":"Japanese"})
+        self.assertEqual(len(page.waits), 2)
+
+    def test_snkr_catalog_is_observed_but_never_an_individual_offer(self):
+        market, url, pattern = module.SURFACES[1]
+        page = Page(snapshots=[{"links":["https://snkrdunk.com/en/trading-cards/704397"]}] * 3)
+        result = probe(page, market, url, pattern)
+        self.assertEqual(result["catalog_urls"], ["https://snkrdunk.com/en/trading-cards/704397"])
+        self.assertEqual(result["urls"], [])
+        self.assertFalse(result["complete"])
+
+    def test_product_waits_for_explicit_late_content(self):
+        page = Page(snapshots=[{}, {}, {"title": "Pikachu PSA10", "product": {"name": "Pikachu"}}])
+        result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")
+        self.assertEqual(result["state"], "PRODUCT_OBSERVED")
+        self.assertEqual(len(page.waits), 3)
+        self.assertLessEqual(sum(page.waits), 9000)
+
+    def test_product_probe_retains_only_allowlisted_public_item_fields(self):
+        page = Page(snapshots=[{"title": "Pikachu PSA10", "product": {"name": "Pikachu", "description": "do not copy", "seller": "do not copy", "offers": {"price": "1000", "priceCurrency": "JPY", "availability": "https://schema.org/InStock", "payment": "do not copy"}}, "fields": {"商品の状態": "未使用", "配送の方法": "匿名配送", "account": "do not copy"}}])
+        result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")
+        self.assertEqual(result["product"]["offers"]["priceCurrency"], "JPY")
+        self.assertNotIn("do not copy", str(result))
+        self.assertFalse(result["sold_proven"])
+
+    def test_product_http_block_does_not_retry(self):
+        page = Page(403)
+        result = module.inspect_public_item(page, "https://jp.mercari.com/item/m123")
+        self.assertEqual(result["state"], "HTTP_BLOCKED")
+        self.assertEqual(page.waits, [])
+
+    def test_403_stops_without_dom_or_retry(self):
+        page = Page(403)
+        result = probe(page, "snkrdunk", "https://snkrdunk.com/en/search/result?keyword=Pokemon", r"/used/\d+")
+        self.assertEqual(result["state"], "HTTP_BLOCKED")
+        self.assertEqual(page.waits, [])
+        self.assertEqual(page.events, {})
+
+    def test_empty_shell_stays_incomplete(self):
+        page = Page(snapshots=[{"links": [], "container": False}] * 3)
+        result = probe(page, "mercari", "https://jp.mercari.com/search", r"/item/m\d+")
+        self.assertEqual(result["state"], "CONTENT_UNPROVEN")
+        self.assertEqual(result["observations"], 3)
+        self.assertFalse(result["complete"])
+
+    def test_late_results_record_public_urls_only(self):
+        page = Page(snapshots=[{"links": []}, {"links": ["https://jp.mercari.com/item/m123?tracking=x"]}])
+        result = probe(page, "mercari", "https://jp.mercari.com/search", r"/item/m\d+")
+        self.assertEqual(result["state"], "RESULTS")
+        self.assertEqual(result["urls"], ["https://jp.mercari.com/item/m123"])
+        self.assertFalse(result["complete"])
+
+
+if __name__ == "__main__": unittest.main()

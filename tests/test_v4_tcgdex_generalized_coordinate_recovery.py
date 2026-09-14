@@ -43,6 +43,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
         name: str,
         set_id: str,
         count: int,
+        set_name: str = "localized set",
     ) -> dict:
         return {
             "id": card_id,
@@ -50,7 +51,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             "name": name,
             "set": {
                 "id": set_id,
-                "name": "localized set",
+                "name": set_name,
                 "cardCount": {"official": count},
             },
             "pricing": {},
@@ -103,7 +104,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
         self.assertFalse(recovery._validate_reference_for_alias("023/SVP", alias))
         self.assertFalse(recovery._validate_reference_for_alias("023", alias))
 
-    def test_jolteon_japanese_coordinate_can_be_proven_without_localized_name(self) -> None:
+    def test_jolteon_japanese_coordinate_without_source_name_is_blocked(self) -> None:
         lot = self._lot(
             name="Jolteon V",
             card_set="Eevee Heroes",
@@ -127,13 +128,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             expected_count=69,
             allow_localized_name_mismatch=True,
         )
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.status, "EXACT")
-        self.assertEqual(result.card_id, "S6a-030")
-        self.assertEqual(result.name, "Jolteon V")
-        self.assertEqual(result.reason, "TCGDEX_EXACT_SET_LOCALID")
-        self.assertFalse(result.unique_name_number)
+        self.assertIsNone(result)
 
     def test_japanese_coordinate_rejects_wrong_set_localid_or_count(self) -> None:
         lot = self._lot(
@@ -153,7 +148,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
         kwargs = dict(
             language_code="ja",
             listing_set="Brilliant Stars",
-            listing_name="Charizard VStar",
+            listing_name="リザードンVSTAR",
             expected_set_id="S9",
             expected_count=100,
             allow_localized_name_mismatch=True,
@@ -266,6 +261,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             name="Pikachu",
             set_id="sv05",
             count=162,
+            set_name="Forces Temporelles",
         )
         result = recovery._canonical_from_coordinate(
             lot,
@@ -295,6 +291,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             name="Mémoire Ball",
             set_id="sm11",
             count=236,
+            set_name="Harmonie des Esprits",
         )
         result = recovery._canonical_from_coordinate(
             lot,
@@ -325,6 +322,7 @@ class TestV4TCGdexGeneralizedCoordinateRecovery(unittest.TestCase):
             name="Pikachu",
             set_id="sv05",
             count=162,
+            set_name="Forces Temporelles",
         )
         with patch.object(
             canonical,

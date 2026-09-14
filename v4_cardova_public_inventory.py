@@ -69,6 +69,7 @@ class CardovaPublicCapture:
     rejected_rows: Mapping[str, int]
     status: str
     complete: bool = False
+    page_evidence: tuple[Mapping[str, Any], ...] = ()
 
 
 def _norm(value: object) -> str:

@@ -92,7 +92,7 @@ class SourcePinnedSetReconciliationTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _source(set_id: str, *finishes: str) -> str:
+    def _source(set_id: str, *finishes: str, name: str = "") -> str:
         variants = "\n".join(
             f'        {{ type: "{finish}", thirdParty: {{ cardmarket: 1 }} }},'
             for finish in finishes
@@ -101,6 +101,8 @@ class SourcePinnedSetReconciliationTests(unittest.TestCase):
             'import { Card } from "../../../interfaces";\n'
             f'import Set from "../{set_id}";\n'
             "const card: Card = {\n"
+            "    set: Set,\n"
+            f'    name: {{ja: "{name}"}},\n'
             "    variants: [\n"
             f"{variants}\n"
             "    ],\n"
@@ -133,11 +135,11 @@ class SourcePinnedSetReconciliationTests(unittest.TestCase):
         self.assertEqual(fetch.call_args.kwargs["expected_count"], 98)
 
     def test_stale_rest_namespace_falls_back_to_immutable_crobat_source(self):
-        lot = self._lot()
+        lot = self._lot(title="ロケット団のクロバットex")
         with patch.object(generalized, "_fetch_coordinate", return_value=None), patch.object(
             source_finish._SESSION,
             "get",
-            return_value=_Response(200, self._source("SV10", "holo")),
+            return_value=_Response(200, self._source("SV10", "holo", name="ロケット団のクロバットex")),
         ) as get:
             result = reconciliation._reconcile_exact_source_pinned_set(
                 lot, self._wrong_rest_card()
@@ -156,21 +158,21 @@ class SourcePinnedSetReconciliationTests(unittest.TestCase):
         self.assertIn("/data-asia/SV/SV10/117.ts", get.call_args.args[0])
 
     def test_live_houndoom_failure_class_is_recovered_from_same_source_rule(self):
-        lot = self._lot("100/098", title="Team Rocket's Houndoom")
+        lot = self._lot("100/098", title="ロケット団のヘルガー")
         wrong = self._wrong_rest_card(
             number="100/098", title="Team Rocket's Houndoom"
         )
         with patch.object(generalized, "_fetch_coordinate", return_value=None), patch.object(
             source_finish._SESSION,
             "get",
-            return_value=_Response(200, self._source("SV10", "holo")),
+            return_value=_Response(200, self._source("SV10", "holo", name="ロケット団のヘルガー")),
         ) as get:
             result = reconciliation._reconcile_exact_source_pinned_set(lot, wrong)
 
         self.assertEqual(result.status, "EXACT")
         self.assertEqual(result.card_id, "SV10-100")
         self.assertEqual(result.set_id, "SV10")
-        self.assertEqual(result.name, "Team Rocket's Houndoom")
+        self.assertEqual(result.name, "ロケット団のヘルガー")
         self.assertTrue(result.variants["holo"])
         self.assertEqual(get.call_count, 1)
         self.assertIn("/data-asia/SV/SV10/100.ts", get.call_args.args[0])
@@ -189,6 +191,13 @@ class SourcePinnedSetReconciliationTests(unittest.TestCase):
         self.assertIn("S12 != SV10", result.reason)
         self.assertEqual(canonical._DIAGNOSTICS.tcgdex_exact, 0)
         self.assertEqual(canonical._DIAGNOSTICS.tcgdex_ambiguous, 1)
+
+    def test_nameless_source_cannot_manufacture_commercial_name(self):
+        with patch.object(generalized, "_fetch_coordinate", return_value=None), patch.object(
+            source_finish._SESSION, "get", return_value=_Response(200, self._source("SV10", "holo"))
+        ):
+            result = reconciliation._reconcile_exact_source_pinned_set(self._lot(), self._wrong_rest_card())
+        self.assertEqual(result.status, "AMBIGUOUS")
 
     def test_wrong_source_set_import_cannot_reconcile(self):
         lot = self._lot()

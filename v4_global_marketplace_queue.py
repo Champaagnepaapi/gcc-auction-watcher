@@ -9,6 +9,8 @@ marketplace bootstrap.
 from __future__ import annotations
 
 import json
+from collections import deque
+from itertools import groupby
 from typing import Any, Mapping
 
 import v4_global_marketplace_discovery as discovery
@@ -101,7 +103,23 @@ def select_pending_fair_round_robin(state, current, *, limit: int):
         ranked.append(((attempt_count, bucket, discount_sort, price_sort, index), key, listing))
 
     ranked.sort(key=lambda row: row[0])
-    chosen = ranked[: max(0, int(limit))]
+    chosen = []
+    # An attempt round is global, then each marketplace gets one turn before
+    # another turn for the same market. Preserve economic ranking within each
+    # provider; thousands of GCC offers cannot monopolize a fresh bootstrap.
+    for _attempt, rows in groupby(ranked, key=lambda row: row[0][0]):
+        lanes = {}
+        for row in rows:
+            lanes.setdefault(row[2].market, deque()).append(row)
+        while lanes and len(chosen) < max(0, int(limit)):
+            for market in list(lanes):
+                if len(chosen) >= max(0, int(limit)):
+                    break
+                chosen.append(lanes[market].popleft())
+                if not lanes[market]:
+                    del lanes[market]
+        if len(chosen) >= max(0, int(limit)):
+            break
     for _priority, key, _listing in chosen:
         attempts[key] = max(0, int(attempts.get(key, 0))) + 1
     return [row[2] for row in chosen], [row[1] for row in chosen]

@@ -98,7 +98,12 @@ def recover_unique_name_among_full_number_resolution(
     *,
     resolver: retrieval_v3.TCGdexJapaneseProofResolver,
 ) -> native.MagiNativeResolution:
-    if original.status != "AMBIGUOUS" or original.reason != _EXPECTED_REASON:
+    # native.resolve_magi_native_identity intentionally maps every non-EXACT
+    # catalog proof except ERROR/BUDGET to NO_MATCH. Therefore a proved
+    # MULTIPLE_CARDS ambiguity reaches this wrapper as NO_MATCH in live runtime,
+    # even though older focused tests represented it as AMBIGUOUS. The exact
+    # reason remains the invariant that authorizes this disambiguation lane.
+    if original.status not in {"NO_MATCH", "AMBIGUOUS"} or original.reason != _EXPECTED_REASON:
         return original
 
     evidence = detail_coordinate._current_product_evidence(ask)

@@ -25,21 +25,15 @@ def canonical(*, name, set_name, local_id, full_number, language="ja", unique=Tr
 class FanaticsNativeV3Tests(unittest.TestCase):
     def test_japanese_before_pokemon_and_bare_local_number(self):
         title = "2023 Japanese Pokemon SV2a Hitmonchan Masterball 107 PSA 10"
-
-        def resolver(lot):
-            if lot.title == "Hitmonchan" and lot.card_number == "107":
-                return canonical(
-                    name="Hitmonchan",
-                    set_name="Pokemon Card 151",
-                    local_id="107",
-                    full_number="107/165",
-                )
-            return multimarket.CanonicalCard("NO_MATCH", reason="TEST_NO_MATCH")
-
-        result = resolve_fanatics_native_identity_v3(title, resolver=resolver)
-        self.assertEqual(result.status, "EXACT")
-        self.assertEqual(result.identity.name, "Hitmonchan")
-        self.assertEqual(result.identity.finish, "Master Ball")
+        # Parser coverage only: a fabricated EXACT here used to hide the lack
+        # of source foil proof. Acceptance/rejection is covered by the actual
+        # installed runtime in test_v4_global_marketplace_fanatics_runtime_contract.
+        candidates, _ = fanatics_coordinate_candidates_v3(title)
+        exact_partition = [row for row in candidates if row.name == "Hitmonchan" and row.set_name == "SV2a"]
+        self.assertEqual(len(exact_partition), 1)
+        self.assertEqual(exact_partition[0].local_id, "107")
+        self.assertEqual(exact_partition[0].finish, "reverse")
+        self.assertEqual(exact_partition[0].variant, "master_ball")
 
     def test_jpn_abbreviation_and_fa_slash_are_explicit_not_number_conflict(self):
         title = "Pokemon 2021 JPN.SWSH VMax Climax - FA/Eevee #210 PSA 10"
