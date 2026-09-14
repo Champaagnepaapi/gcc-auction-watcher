@@ -90,6 +90,9 @@ from v4_global_marketplace_tcgdex_source_alias_recovery import (
 from v4_global_marketplace_unicode_identity import (
     install_global_marketplace_unicode_identity,
 )
+from v4_global_ppt_english_graded_recovery import (
+    install_global_ppt_english_graded_recovery,
+)
 from v4_global_provider_exact_bridge import install_global_provider_exact_bridge
 from v4_global_tcgdex_resilience import install_global_tcgdex_resilience
 from v4_pricecharting_mandatory_policy import (
@@ -209,6 +212,9 @@ def main() -> int:
     install_global_marketplace_identity_dimension_hardening()
     install_marketplace_queue_hardening()
     confirmed.install_global_external_market_stack = _install_stack_with_global_bridges
+    # PPT officially exposes English PSA graded eBay aggregates. Recover only
+    # PSA 8/9/10 after exact TCGdex macro/material proof; ambiguous variants stay blocked.
+    install_global_ppt_english_graded_recovery()
     # Install before marketplace.main() so the evaluator always requests the
     # PriceCharting guide, even when PPT/PokeTrace already supplies strong SOLD-
     # derived evidence. The stronger evidence still wins economically.
