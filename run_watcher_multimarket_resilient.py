@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import os
 import runpy
+
+# The operator's PokeTrace Pro subscription has expired. Some provider responses
+# still report PRO, so production defaults to the verified Free capability
+# ceiling unless a future deployment explicitly opts into another ceiling.
+# This only removes entitlements: inaccessible graded data stays unavailable
+# instead of being misclassified as a clean market no-match.
+os.environ.setdefault("V4_POKETRACE_PLAN_CEILING", "FREE")
 
 import v4_pricecharting_valuation as pricecharting_roles
 from v4_global_marketplace_pricecharting_public_recovery import (
