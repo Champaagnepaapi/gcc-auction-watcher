@@ -9,9 +9,10 @@ import os
 # The operator's PokeTrace Pro subscription has expired. Provider responses may
 # still report PRO, so production defaults to the verified Free capability
 # ceiling unless a future deployment explicitly opts into another ceiling.
-# This only removes entitlements and never turns inaccessible graded data into a
-# clean market no-match.
-os.environ.setdefault("V4_POKETRACE_PLAN_CEILING", "FREE")
+# Guard the default to direct production execution: importing this bootstrap in
+# unit tests must not leak a Free ceiling into tests that deliberately model Pro.
+if __name__ == "__main__":
+    os.environ.setdefault("V4_POKETRACE_PLAN_CEILING", "FREE")
 
 import v4_global_live_confirmed as confirmed
 import v4_global_marketplace_notify as marketplace
