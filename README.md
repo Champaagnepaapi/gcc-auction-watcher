@@ -4,7 +4,7 @@
 >
 > Le code/Git/GitHub live reste l'autorité. Les SHA et états ci-dessous sont des ancres de reprise ; toujours re-vérifier `main`, les PR et les workflows live avant une action importante.
 
-## État canonique — 10 septembre 2026
+## État canonique — 14 septembre 2026
 
 Repo : `Champaagnepaapi/gcc-auction-watcher`
 
@@ -39,32 +39,40 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase closeout candidate — PR #268 : Global provider coverage hardening
+### Phase candidate — PR #268 : V4 multi-market, classement validé
 
-PR #268 reste **OPEN / DRAFT / NON MERGED** sur `fix/v4-global-coverage-losses-20260907`, basée sur `main@b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Le dernier head runtime validé avant ce closeout documentaire est `e51de1e924ef9090190dba1107924d6b345ea06d`.
+PR #268 reste **OPEN / DRAFT / NON MERGED**, branche `fix/v4-global-coverage-losses-20260907`, base `main@b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Début de la mission multi-market : `eb62e78463235effbb267aa9f71f5c3a49a3b407` ; dernier runtime validé : **`29f448a7441e82267fc9d84c2b0f9a52168e77cb`**. Les commits documentaires ultérieurs ne déploient rien sur `main`.
 
-Objectif : récupérer et diagnostiquer les pertes de couverture Global sans relâcher l'identité, les budgets provider ni les sémantiques SOLD/ASK.
+Le [rapport complet avec SHA, fichiers, métriques live, comparaisons et conditions de déblocage](docs/v4-multimarket-readiness-20260914.md) est la reprise détaillée de cette phase.
 
-Durcissements validés :
+| Marketplace | État du chemin économique dans la configuration publique auditée |
+|---|---|
+| GCC | **OPERATIONAL**, conservation au vault ; découverte, EXACT, valeur PPT indépendante, coût et décision négative validés en live. Expédition domicile hors de cette preuve de coût. |
+| Fanatics | **PROVIDER_BLOCKED** : coût acheteur et valorisation indépendante compatible manquants ; discovery et EXACT observés. |
+| COMC | **PROVIDER_BLOCKED** : financement/taxe/mode de détention-livraison non prouvés ; aucune valeur canonique exploitable dans la sélection courante. |
+| Magi | **PROVIDER_BLOCKED** : coût de la route acheteur non prouvé ; certaines projections catalogue/valeurs gradées absentes. |
+| Cardova | **PROVIDER_BLOCKED** : financement et premium applicables non prouvés ; aucune valeur exacte dans la sélection courante. |
+| Mercari | **PROVIDER_BLOCKED** : identité item/matériau/langue insuffisants ou contradictoires dans l'échantillon ; coût acheteur absent. Site public accessible. |
+| SNKRDUNK | **PROVIDER_BLOCKED** : langue et offre item non prouvées, données catalogue AggregateOffer, route/coût acheteur absents. Site public accessible, pas « app-only ». |
 
-- Fanatics ne peut plus fabriquer un nom canonique en recopiant le nom du listing ; les aliases de set reviewés restent Fanatics-only et une contradiction de nom/set/langue/localId reste bloquante ;
-- les titres `Master Ball` / `Poke Ball` exigent une preuve source TCGdex immuable de la microvariante ; l'échec ou la contradiction de cette preuve est terminal, sans fallback ordinaire plus permissif ;
-- V2/V3 utilisent une représentation commune `finish=reverse` + `variant=master_ball|poke_ball`, et les contradictions explicites restent fail-closed ;
-- le cas historique `2023 Pokemon Japanese Scarlet & Violet 151 Master Ball Reverse Holo Pikachu #025 PSA 10 GEM` passe le test runtime réel V2+V3 uniquement avec la preuve source épinglée `SV2a/025`. Cette annonce n'était plus présente dans le dernier échantillon live, donc cette récupération n'est pas revendiquée comme revalidée live ;
-- une collecte Fanatics à zéro résultat n'est plus déclarée complète sans preuve : état indisponible/incomplet si le DOM ou l'inventaire vide n'est pas prouvé, avec diagnostics bornés HTTP/observations/conteneur/motif d'arrêt ;
-- Magi expose un manifeste borné à 200 entrées à partir des données déjà calculées, sans requête supplémentaire. Sur #268 seulement, le recovery reste plafonné à `50` requêtes, dont `35` broad/non-prioritaires maximum et `15` réservées aux chemins exacts ; ces bornes ne sont pas encore la production `main` tant que #268 n'est pas mergée ;
-- la comparaison Auction sépare `RESOLVED`, `ENDED`, `UNKNOWN` et `INSPECTION_ERROR`. `ENDED` exige une preuve structurée propre à l'item et **ne devient jamais SOLD**.
+Ce classement ne confond ni site inaccessible, ni pagination partielle, ni absence de fair value. Il n'affirme pas que V4 est opérationnelle sur les sept marchés. Les plafonds volontaires et la sélection de 50 ne sont pas des blocages externes ; les preuves manquantes sont détaillées dans le rapport.
 
-Validation automatique du runtime `e51de1e924ef9090190dba1107924d6b345ea06d` :
+Corrections validées depuis le closeout initial P1–P4 :
 
-- Global `34471762196` : **SUCCESS**. Fanatics `24 candidats / 0 exact`, collecte `RESULTS`, HTTP 200, 5 observations, `RESULTS_STABLE`, conteneur présent ; Magi `32/93`, manifeste `93` sans troncature, recovery `48/50`, broad `35`, réserve `15` ; PriceCharting `24 attempted / 0 matched`, tous les accès observés en HTTP 403 ; assertions de sécurité PASS et notifications `0` ;
-- comparaison Fanatics avec le dernier run à `2/24` (`34276645596`) : les deux anciens exacts Gengar Web 1st Edition et Rocket's Moltres ex sont absents du nouvel échantillon ; `20` URL sont sorties, `20` nouvelles sont entrées, les `4` communes gardent exactement `NO_MATCH / explicit_language_unproven`. Aucun `EXACT -> rejet` n'est donc observé ;
-- Auction `34471762199` : **SUCCESS**, suite complète `1002` tests avec `2` skipped, compile/YAML/diff-check PASS, comparaison live `310 effectifs / 294 legacy`, `legacy missing=0`, timers non résolus `0` ;
-- Cardova `34471762219` : **SUCCESS** ; la complétude fournisseur reste correctement `false` lorsque la pagination totale n'est pas prouvée.
+- P5 PriceCharting et P6 PPT reviewed-set : gate canonique strict avant `MATCHED`, contradictions de nom/set/numéro/langue/microvariante bloquantes ; P7 wrappers Fanatics idempotents/acycliques ; P8 pagination Cardova liée à la bonne lane/enveloppe/requête.
+- Discovery COMC autonome, routes publiques Mercari/SNKRDUNK intégrées au runtime, DOM Mercari lié à l'item et testé dans Chromium ; pagination Fanatics corrigée et complétude non inventée.
+- Coûts Fanatics/Cardova inconnus conservés inconnus, sélection équitable entre marketplaces, manifestes par URL et diagnostics sans appels supplémentaires ; aucun marketplace n'a autorité sur sa propre fair value.
+- TCGdex : noms multilingues seulement sur preuve de la même carte du pin ; indisponibilité source et budget nul restent réessayables, jamais cachés comme absence propre.
+- Auction : `RESOLVED`, `ENDED`, `UNKNOWN`, `INSPECTION_ERROR` et `OUT_OF_SCOPE` distincts. Un GET public item borné est autorisé uniquement lorsque l'inspection n'a observé aucune réponse item ; jamais un retry de 403 ou un contournement. `ENDED` et `OUT_OF_SCOPE` ne sont jamais SOLD.
+- P1–P4 restent intacts : nom canonique non fabriqué, Master/Poke Ball terminalement fail-closed, V2+V3 réels, aliases Fanatics-only. Le Pikachu historique SV2a-025 reste couvert par test source immuable, sans revendication live sur un listing absent.
 
-Limites résiduelles : PriceCharting reste indisponible via HTTP 403 et aucun contournement WAF n'est autorisé ; le Pikachu historique n'était plus dans l'échantillon Fanatics ; les points d'audit P5–P8 (durcissement identité PriceCharting, gate canonique PPT reviewed-set, idempotence des wrappers Fanatics, pagination Cardova imbriquée) restent une phase suivante séparée.
+Validation automatique du runtime : Global [34812934273](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934273) **SUCCESS** ; Auction [34812934319](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934319) **SUCCESS**, 48 effectifs / 46 legacy, zéro manquant/inconnu ; Cardova [34812934329](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934329) **SUCCESS**, pagination partielle conservée. Tests : 632 Global (4 DOM ignorés localement, exécutés en CI), 1 011 V4 (2 ignorés), 51 multimarket ; compile/YAML/diff-check PASS. Zéro opportunité signalable et zéro notification dans le live de référence.
 
-PR #8/V5, Robot KB/Neon et toute logique d'achat/bid/checkout/paiement restent inchangés. Aucun merge de #268 n'est autorisé implicitement par ce closeout.
+PokeTrace : Pro signalé expiré par l'utilisateur ; l'API observée annonce encore PRO actif. Le live applique donc un plafond effectif **FREE**, sans accès gradé utilisé. Une restriction du plan n'est jamais un `NO_MATCH`. PriceCharting public reste HTTP 403 / indisponible, sans bypass. Magi #268 reste 50 total / 35 broad / 15 réserve, non déployé sur main.
+
+La comparaison historique Fanatics `2/24 → 0/24` au head `e51de1e...` a été close : Gengar Web et Rocket's Moltres absents du nouvel inventaire, quatre URL communes inchangées. Le nouveau rapport distingue également les variations de sélection et les corrections de collecte ultérieures.
+
+PR #8/V5, Robot KB/Neon et main restent inchangés. Aucun merge n'est autorisé implicitement par cette validation ou ce classement.
 
 ### Phase closeout — #266 : TCGdex Rainbow microvariant
 

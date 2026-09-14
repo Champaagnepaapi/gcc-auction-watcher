@@ -1,5 +1,13 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
+## Mise à jour ciblée — 14 septembre 2026
+
+GitHub vérifié : main `b43dec6084f341b2b52301a4f0542d6f616cf1e2`, runtime production #266 `761b5e980aeaf63833f574127fbe1ff4728f86b4`. PR #268 OPEN/DRAFT/NON MERGED, branche `fix/v4-global-coverage-losses-20260907`, runtime candidat validé `29f448a7441e82267fc9d84c2b0f9a52168e77cb`. [Classement multi-market et preuves](v4-multimarket-readiness-20260914.md) : GCC OPERATIONAL au vault ; six autres marchés bloqués économiquement par les preuves externes/conditions acheteur documentées.
+
+PR #8 reste OPEN/DRAFT/NON MERGED, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, branche `agent/v5-poketrace-cardmarket-market-data`, sans modification. Robot KB/Neon séparés. Aucun merge ni changement de topologie dans cette passe ; les inventaires historiques ci-dessous ne sont pas un nouveau comptage exhaustif.
+
+## Snapshot historique conservé
+
 Snapshot pertinent re-vérifié le **7 septembre 2026**. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
 
 > V4 production code : `24230552d52574e2769c21dcfa84ba11320da2cf` (#261). `main` a ensuite avancé docs-only à `22303a34f7414769a04f4c587338def005b8a5c6`. PR #259/#260/#261 sont MERGED. PR #258 et #256 restent OPEN/DRAFT mais leur capacité pertinente est absorbée par #259. PR #8 reste protégée.

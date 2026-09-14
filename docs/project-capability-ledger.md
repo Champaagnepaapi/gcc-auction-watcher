@@ -1,6 +1,6 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel re-vérifié le **10 septembre 2026**. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel : mise à jour ciblée #268 le **14 septembre 2026** ; historique production conservé. Le code/Git/GitHub réel reste prioritaire sur ce document.
 
 Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`, `DRAFT_VALIDATION`.
 
@@ -88,38 +88,23 @@ Rainbow reste une microvariante matérielle, jamais un simple alias Holo. Set/la
 
 ---
 
-# #268 — Global provider coverage hardening — `DRAFT_VALIDATION`
+# #268 — V4 multi-market — `DRAFT_VALIDATION` / NON MERGED
 
-PR #268 reste **OPEN / DRAFT / NON MERGED**, branche `fix/v4-global-coverage-losses-20260907`, base `main@b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Le runtime validé avant closeout docs est `e51de1e924ef9090190dba1107924d6b345ea06d`.
+Branche `fix/v4-global-coverage-losses-20260907`, base main `b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Runtime validé `29f448a7441e82267fc9d84c2b0f9a52168e77cb` ; [preuves complètes et historique exact des 32 commits](v4-multimarket-readiness-20260914.md). Le head documentaire ultérieur ne doit pas être confondu avec le dernier changement runtime.
 
-Capacités validées sur cette branche :
+P1–P4 restent validés : noms canoniques non fabriqués, Master/Poke Ball sur preuve source immuable exacte et gates terminaux, dimensions V2+V3 compatibles, aliases Fanatics-only. Le Pikachu historique absent du live est couvert par test runtime, pas prétendu revalidé sur son ancien listing.
 
-- Fanatics : aliases TCGdex japonais reviewés strictement provider-only ; aucun nom de listing ne peut remplacer le nom catalogue pour fabriquer un `EXACT` ;
-- Master Ball/Poke Ball : preuve source immuable obligatoire, échec/contradiction terminal, représentation commune `finish=reverse` + `variant=master_ball|poke_ball` ;
-- le cas historique Pikachu `SV2a-025` est couvert par un test runtime V2+V3 avec pin `af33c9ac882e2acfadffaf19e8083aa976d12983`, mais l'annonce n'était plus dans le dernier échantillon live ;
-- Fanatics collection : zéro URL non prouvé ne devient plus `complete=true`; états et diagnostics HTTP/DOM/observations restent bornés ;
-- Magi : manifeste final borné à 200 lignes sans requête supplémentaire. Les bornes de recovery de #268 sont `50 total / 35 broad / 15 réserve exacte` ; **elles sont candidate-only et ne remplacent pas les bornes production #178 tant que #268 n'est pas mergée** ;
-- Auction compare : états `RESOLVED`, `ENDED`, `UNKNOWN`, `INSPECTION_ERROR` séparés ; `ENDED` nécessite une preuve structurée propre à l'item et ne constitue jamais une vente SOLD ;
-- Cardova : la pagination publique reste fail-closed sur la complétude ;
-- PriceCharting : les erreurs HTTP 403 restent `PROVIDER_ERROR`; aucun bypass/WAF workaround.
+P5–P8 sont maintenant corrigés sur cette branche : gates stricts PriceCharting/PPT reviewed-set, installers Fanatics idempotents, pagination Cardova liée à l'enveloppe/lane/page. Les audits de capacités existantes ont permis de réutiliser V4 Global/Japan et les providers indépendants, sans porter V5 ou Robot KB ni créer une nouvelle lane économique parallèle.
 
-Validation automatique du head runtime `e51de1e924ef9090190dba1107924d6b345ea06d` :
+Autres capacités livrées : discovery COMC autonome ; routes publiques Mercari/SNKRDUNK dans Global ; champs DOM Mercari liés à l'item et tests Chromium ; pagination Fanatics sur contrôles de destination prouvée ; coûts inconnus conservés inconnus ; sélection équitable plafonnée à 50 ; manifestes sans requêtes de diagnostic ; TCGdex noms source prouvés et indisponibilités exclues des caches négatifs ; Auction preuve item publique bornée et états terminaux séparés de SOLD.
 
-- Global `34471762196` SUCCESS : Global offline `506` PASS ; live Fanatics `24/0` avec HTTP 200/`RESULTS_STABLE`, Magi `32/93` avec manifeste `93/93`, recovery `48/50`, broad `35`, réserve `15`, PriceCharting `24/0` avec HTTP 403, notifications `0`, safety contract PASS ;
-- Fanatics avant/après : par rapport au run `34276645596` à `2/24`, les anciens exacts Gengar Web 1st Edition et Rocket's Moltres ex sont absents ; 20 URL sorties, 20 nouvelles, 4 communes inchangées en `NO_MATCH / explicit_language_unproven`. Aucun `EXACT -> rejet` observé ;
-- Auction `34471762199` SUCCESS : `1002` tests, `2` skipped, compile/YAML/diff-check PASS, live `310 effectifs / 294 legacy`, `legacy missing=0`, unresolved timers `0` ;
-- Cardova `34471762219` SUCCESS, complétude non prouvée conservée `false`.
+Classement du chemin économique public actuel : **GCC OPERATIONAL dans le scope vault** ; **Fanatics, COMC, Magi, Cardova, Mercari et SNKRDUNK PROVIDER_BLOCKED**, pour les preuves externes/conditions acheteur exactes décrites dans le rapport. Sites accessibles ne signifie pas identité, valeur et coût complet disponibles. Les caps et la pagination partielle ne sont pas des blocages fournisseurs et restent explicites.
 
-Limitations connues / suite séparée :
+Validation runtime : Global [34812934273](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934273) SUCCESS ; Auction 34812934319 SUCCESS (48 effectifs / 46 legacy, zéro manquant/inconnu) ; Cardova 34812934329 SUCCESS. Suites : 632 Global, 4 DOM ignorés localement puis exécutés dans Chromium en CI ; 1 011 V4, 2 ignorés ; 51 multimarket ; compile/YAML/diff-check PASS.
 
-- le Pikachu historique n'est pas live-revalidé parce qu'il a quitté l'échantillon Fanatics ;
-- PriceCharting reste inaccessible en live public (HTTP 403), sans contournement autorisé ;
-- audit P5 : durcir l'admissibilité identité PriceCharting avant tout `MATCHED` ;
-- audit P6 : faire passer le chemin PPT reviewed-set par le même gate canonique strict ;
-- audit P7 : rendre la chaîne d'installers Fanatics idempotente/acyclique ;
-- audit P8 : lier toute preuve de fin de pagination Cardova à la bonne enveloppe/lane.
+PokeTrace applique un plafond FREE alors que l'auth observée déclare encore PRO actif ; zéro usage gradé, restriction distincte d'absence. PriceCharting public HTTP 403 reste indisponible, pas NO_MATCH. Magi #268 conserve 50/35/15, natif JA 60, source 60, PT 60. Aucun ASK/live/ENDED/OUT_OF_SCOPE ne devient SOLD ; aucune marketplace n'est sa propre fair value.
 
-Aucun de P5–P8 n'est revendiqué corrigé par ce closeout. PR #8/V5, Robot KB/Neon et les sémantiques SOLD/ASK restent séparés.
+Les modifications sont candidate-only. Aucun merge, main/PR #8/V5/Robot KB/Neon inchangés.
 
 ---
 
