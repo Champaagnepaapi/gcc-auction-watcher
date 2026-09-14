@@ -528,6 +528,18 @@ def pipeline_report(statuses, cards):
     return output
 
 
+def source_budget_snapshot() -> dict[str, Any]:
+    """Read existing source-proof state; no resolver, requests or cache writes."""
+    import v4_tcgdex_source_pinned_finish as source
+    from collections import Counter
+    return {"requests": source._SOURCE_REQUESTS, "limit": source._SOURCE_MAX_REQUESTS_PER_RUN,
+            "cached_proofs": sum(value is not None for value in source._SOURCE_CACHE.values()),
+            "cached_unavailable": sum(value is None for value in source._SOURCE_CACHE.values()),
+            "remaining": max(0, source._SOURCE_MAX_REQUESTS_PER_RUN - source._SOURCE_REQUESTS),
+            "outcomes": dict(sorted(Counter(source._SOURCE_OUTCOMES.values()).items())),
+            "retryable_misses": source._SOURCE_RETRYABLE_MISSES}
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     enabled = _enabled()
     if enabled and not os.getenv("NTFY_TOPIC", "").strip():
@@ -538,7 +550,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     notify_path = state_root / "notifications.json"
     discovery_state, discovery_state_status = load_discovery_state(discovery_path, strict=enabled)
 
+    source_budget = {"before_discovery": source_budget_snapshot()}
     listings, statuses, gcc_fair, catalog_status = _scan(args, observed_at=observed_at)
+    source_budget["after_discovery"] = source_budget_snapshot()
     complete_markets = {status.market for status in statuses if status.status == "OK" and status.complete}
     discovery_state, reconciliation = reconcile_inventory(
         discovery_state,
@@ -571,6 +585,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "cards": cards,
     }
     report = _with_marketplace_evaluator(raw_report) if cards else raw_report
+    source_budget["after_valuation"] = source_budget_snapshot()
 
     by_identity = _card_by_identity(report)
     acknowledged_keys = []
@@ -592,6 +607,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         None,
     )
     report["marketplace_discovery"] = {
+        "source_proof_budget": source_budget,
         "strategy": "MARKETPLACE_FIRST",
         "bootstrap_detects_edges": True,
         "baseline_then_incremental": True,

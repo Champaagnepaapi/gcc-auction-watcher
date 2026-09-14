@@ -83,7 +83,17 @@ def recover_reviewed_source_alias(
 
 def _resolve_with_global_source_alias(lot: watcher.Lot) -> canonical.CanonicalCard:
     assert _ORIGINAL_RESOLVER is not None
-    return recover_reviewed_source_alias(lot, _ORIGINAL_RESOLVER(lot))
+    before = source_finish._SOURCE_RETRYABLE_MISSES
+    result = recover_reviewed_source_alias(lot, _ORIGINAL_RESOLVER(lot))
+    # A missing required source proof due to budget/transport/access cannot
+    # become a clean negative and be acknowledged permanently by Global.
+    # Exact results and explicit ambiguities keep their existing final gates.
+    if result.status == "NO_MATCH" and source_finish._SOURCE_RETRYABLE_MISSES > before:
+        diagnostics = canonical._DIAGNOSTICS
+        diagnostics.tcgdex_no_match = max(0, diagnostics.tcgdex_no_match - 1)
+        diagnostics.tcgdex_error += 1
+        return canonical.CanonicalCard("ERROR", reason="TCGDEX_SOURCE_PROOF_UNAVAILABLE")
+    return result
 
 
 def install_global_marketplace_tcgdex_source_alias_recovery() -> None:

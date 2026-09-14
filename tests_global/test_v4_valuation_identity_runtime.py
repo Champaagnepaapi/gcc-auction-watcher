@@ -144,6 +144,10 @@ def run_case(case):
                 if case.endswith("missing_native"):
                     names = 'id: "Charmeleon",'
                 payload = 'import Set from "../SV2a";\nconst card: Card = {\n set: Set,\n name: {' + names + '},\n variants: [{type: "holo"}]\n};'
+                if case.endswith(('source_403', 'cached_403')):
+                    status, payload = 403, ''
+                if case.endswith('source_timeout'):
+                    raise requests.Timeout('bounded source fixture')
             if case.startswith("source_alias_") and path.endswith("/data-asia/SV/SV8/112.ts"):
                 # Relevant root-name / finish fields of immutable SV8-112
                 # (af33c9ac): レアコイル, never ピカチュウ.
@@ -284,7 +288,29 @@ def run_case(case):
             return
         if case.startswith("coordinate_names_"):
             identity = CommercialIdentity("Charizard" if case.endswith("wrong_name") else "Charmeleon", "Base Set" if case.endswith("wrong_set") else "151", "169/165", "ja", "PSA", "10")
+            if case.endswith('source_budget'):
+                import v4_tcgdex_source_pinned_finish as source
+                source._SOURCE_MAX_REQUESTS_PER_RUN = 0
             lot, canonical = econ.resolve_global_canonical(identity)
+            if case.endswith(('source_403', 'cached_403', 'source_timeout', 'source_budget')):
+                assert canonical.status == 'ERROR', canonical
+                assert canonical.reason == 'TCGDEX_SOURCE_PROOF_UNAVAILABLE', canonical
+                assert not runner.marketplace._evaluation_complete({'economic_confirmation': {'external_canonical': {'status': canonical.status}}})
+                before = sum('raw.githubusercontent.com' in url for url, _ in calls)
+                if case.endswith('cached_403'):
+                    _, again = econ.resolve_global_canonical(identity)
+                    assert again.status == 'ERROR', again
+                    assert sum('raw.githubusercontent.com' in url for url, _ in calls) == before
+                    # A new run with restored public source access can recover;
+                    # no persisted clean-negative result may suppress it.
+                    case = 'coordinate_names_valid'
+                    import v4_canonical_multimarket as mm
+                    import v4_tcgdex_source_pinned_finish as source
+                    mm.clear_tcgdex_cache()
+                    source.clear_source_finish_runtime_state()
+                    _, restored = econ.resolve_global_canonical(identity)
+                    assert restored.status == 'EXACT' and restored.card_id == 'SV2a-169', restored
+                return
             print(case, canonical)
             assert (canonical.status == "EXACT") == case.endswith("_valid"), canonical
             if canonical.status == "EXACT":
@@ -360,7 +386,7 @@ for route in ("source_alias_", "rest_alias_"):
     for scenario in ("valid", "wrong_name"):
         case = route + scenario
         setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
-for scenario in ("valid", "wrong_name", "wrong_rest_name", "wrong_set", "missing_source", "missing_native"):
+for scenario in ("valid", "wrong_name", "wrong_rest_name", "wrong_set", "missing_source", "missing_native", "source_403", "cached_403", "source_timeout", "source_budget"):
     case = "coordinate_names_" + scenario
     setattr(ValuationIdentityRuntimeTests, "test_" + case, lambda self, case=case: self.check_case(case))
 for scenario in ("valid", "wrong_name"):

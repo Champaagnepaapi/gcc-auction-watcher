@@ -54,6 +54,23 @@ def _report(evidence=FIXED_ASK, *, guide=False):
 
 
 class MarketplaceNotifyTests(unittest.TestCase):
+    def test_source_budget_snapshot_reads_existing_state_without_io_or_mutation(self):
+        import v4_tcgdex_source_pinned_finish as source
+        from unittest.mock import patch
+        cache = {'known.ts': object(), 'unavailable.ts': None}
+        with patch.object(source, '_SOURCE_CACHE', cache), patch.object(source, '_SOURCE_REQUESTS', 60), \
+                patch.object(source, '_SOURCE_OUTCOMES', {'known.ts': 'PROVEN', 'unavailable.ts': 'HTTP_403'}), \
+                patch.object(source, '_SOURCE_RETRYABLE_MISSES', 1), \
+                patch.object(source, '_SOURCE_MAX_REQUESTS_PER_RUN', 60), \
+                patch.object(source._SESSION, 'get', side_effect=AssertionError('diagnostic network forbidden')):
+            first = runner.source_budget_snapshot()
+            self.assertEqual(first, runner.source_budget_snapshot())
+            self.assertEqual(first, {'requests': 60, 'limit': 60, 'cached_proofs': 1,
+                                     'cached_unavailable': 1, 'remaining': 0,
+                                     'outcomes': {'HTTP_403': 1, 'PROVEN': 1}, 'retryable_misses': 1})
+            self.assertEqual(source._SOURCE_REQUESTS, 60)
+            self.assertEqual(len(cache), 2)
+
     def test_external_only_candidate_is_notification_eligible(self):
         self.assertEqual(len(runner.marketplace_notification_candidates(_report())), 1)
 

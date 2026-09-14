@@ -41,6 +41,8 @@ _SPECIAL_FINISH_BY_FOIL = {
 _SAFE_COORDINATE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SESSION = requests.Session()
 _SOURCE_CACHE: dict[str, "SourcePinnedFinishProof | None"] = {}
+_SOURCE_OUTCOMES: dict[str, str] = {}
+_SOURCE_RETRYABLE_MISSES = 0
 _SOURCE_REQUESTS = 0
 _ORIGINAL_RESOLVER = None
 
@@ -81,9 +83,11 @@ def _source_card_names(text: str) -> tuple[tuple[str, str], ...]:
 def clear_source_finish_runtime_state() -> None:
     """Clear process-local proof cache/budget (mainly useful for tests)."""
 
-    global _SOURCE_REQUESTS
+    global _SOURCE_REQUESTS, _SOURCE_RETRYABLE_MISSES
     _SOURCE_CACHE.clear()
+    _SOURCE_OUTCOMES.clear()
     _SOURCE_REQUESTS = 0
+    _SOURCE_RETRYABLE_MISSES = 0
 
 
 def _same_local_id(first: object, second: object) -> bool:
@@ -288,10 +292,15 @@ def _parse_source_finish_proof(
 
 
 def _fetch_source_proof(path: str, *, set_id: str) -> SourcePinnedFinishProof | None:
-    global _SOURCE_REQUESTS
+    global _SOURCE_REQUESTS, _SOURCE_RETRYABLE_MISSES
     if path in _SOURCE_CACHE:
+        if _SOURCE_OUTCOMES.get(path, "") not in {"", "PROVEN", "HTTP_404", "INVALID_PROOF"}:
+            _SOURCE_RETRYABLE_MISSES += 1
         return _SOURCE_CACHE[path]
-    if not _SOURCE_ENABLED or _SOURCE_REQUESTS >= _SOURCE_MAX_REQUESTS_PER_RUN:
+    if not _SOURCE_ENABLED:
+        return None
+    if _SOURCE_REQUESTS >= _SOURCE_MAX_REQUESTS_PER_RUN:
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
 
     _SOURCE_REQUESTS += 1
@@ -301,23 +310,33 @@ def _fetch_source_proof(path: str, *, set_id: str) -> SourcePinnedFinishProof | 
         )
     except requests.RequestException:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = "TRANSPORT_ERROR"
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
     except Exception:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = "READ_ERROR"
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
 
-    if int(getattr(response, "status_code", 0) or 0) != 200:
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status != 200:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = f"HTTP_{status}"
+        _SOURCE_RETRYABLE_MISSES += status != 404
         return None
     text = str(getattr(response, "text", "") or "")
     # Card source files are tiny.  Refuse an unexpectedly large response rather
     # than parsing arbitrary content from a network intermediary.
     if not text or len(text) > 250_000:
         _SOURCE_CACHE[path] = None
+        _SOURCE_OUTCOMES[path] = "INVALID_RESPONSE"
+        _SOURCE_RETRYABLE_MISSES += 1
         return None
 
     proof = _parse_source_finish_proof(text, set_id=set_id, source_path=path)
     _SOURCE_CACHE[path] = proof
+    _SOURCE_OUTCOMES[path] = "PROVEN" if proof is not None else "INVALID_PROOF"
     return proof
 
 
