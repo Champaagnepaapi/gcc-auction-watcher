@@ -5,7 +5,7 @@
 Production V4 : `main@3c596370ee7fcde93c969139541bc003e7012b6e`, merge de la PR #268.
 
 Runtime multi-market de référence avant merge : `29f448a7441e82267fc9d84c2b0f9a52168e77cb`.
-Premier cycle naturel post-merge confirmé : Main Scanner `34886292095` **SUCCESS** sur `main@3c596370...`.
+Premier cycle post-merge analysé : Main Scanner `34886292095` **SUCCESS** sur `main@3c596370...`. Stabilité confirmée ensuite jusqu'au Main Scanner #5224 / run `34974368371`, également **SUCCESS** sur le même SHA.
 Rapport multi-market détaillé : [`v4-multimarket-readiness-20260914.md`](v4-multimarket-readiness-20260914.md).
 
 PR #8/V5 reste **OPEN / DRAFT / NON MERGED**, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, séparée de V4. Robot KB reste séparé de la décision commerciale V4 (`V4_USE=false`). Neon reste hors du chemin de production automatique.
@@ -55,6 +55,8 @@ Main Scanner `34886292095` sur `main@3c596370...` : **SUCCESS**.
 
 Ce dernier point est un défaut réel post-#268 : la validation #268 imposait le plafond FREE, mais pas les deux entrypoints de production.
 
+Stabilité ultérieure : Main Scanner #5221 à #5224 sont **SUCCESS** sur le même SHA production. Le dernier, run `34974368371`, a terminé avec exit code 0, zéro opportunité finale, 100/100 timers d'enchères parsés, zéro enchère `ending_soon` et aucun fallback legacy. Ces runs ne changent pas le constat de code : le plafond FREE n'est pas encore déployé tant que #271 reste non mergée.
+
 ## PR #271 — correction PokeTrace FREE — prête, NON MERGÉE
 
 PR #271 : `fix/v4-poketrace-free-ceiling-production-20260914`, head `75eb09768bf55d002466c5e3d50b038c3884ceb5`.
@@ -66,6 +68,8 @@ Validations du head #271 :
 - Global `34879803090` : **SUCCESS** ;
 - Auction `34879802895` : **SUCCESS** ;
 - Cardova `34879802823` : **SUCCESS**.
+
+Pré-merge audit du 15 septembre : base exacte `main@3c596370...`, head `75eb09768...`, 5 commits devant / 0 derrière, 3 fichiers touchés seulement (`run_watcher_multimarket_resilient.py`, `v4_global_marketplace_notify_resilient.py`, test dédié). Le diff pose `V4_POKETRACE_PLAN_CEILING=FREE` avant les imports provider lors de l'exécution directe, sans autre changement runtime.
 
 #271 reste **OPEN / DRAFT / NON MERGÉE** et nécessite une autorisation explicite avant merge.
 
@@ -100,5 +104,5 @@ Conclusion : **Fanatics reste PROVIDER_BLOCKED** ; aucune relaxation d'identité
 1. ne pas investir dans des corrections de parsing provider qui ne lèvent pas le blocage économique réel ;
 2. conserver GCC **OPERATIONAL** et les six autres providers **PROVIDER_BLOCKED** jusqu'à preuve externe propre de déblocage ;
 3. priorité production immédiate : décider explicitement du merge de #271 ;
-4. après tout merge production autorisé, observer un run naturel avant nouveau closeout ;
+4. après tout merge production autorisé, observer un run de production avant nouveau closeout ;
 5. fermer/archiver les diagnostics seulement avec housekeeping explicite, sans suppression de branche.
