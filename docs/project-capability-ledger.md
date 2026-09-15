@@ -1,33 +1,32 @@
 # Robot Pokémon / GCC Auction Watcher — capability ledger
 
-Snapshot fonctionnel : mise à jour ciblée #268 le **14 septembre 2026** ; historique production conservé. Le code/Git/GitHub réel reste prioritaire sur ce document.
+Snapshot fonctionnel : **15 septembre 2026**. Git/GitHub réel reste prioritaire sur ce document.
 
-Statuts : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`, `DRAFT_VALIDATION`.
+Statuts utilisés : `PROD_V4`, `MAIN_SUPPORT`, `ROBOT_KB`, `P3_ONLY`, `V5_ONLY`, `SHADOW`, `DEFERRED`, `DISABLED`, `SUPERSEDED`, `STALE_OPEN`, `DRAFT_VALIDATION`, `PROVIDER_BLOCKED`.
 
 ## Autorité courante
 
 ```text
 V4 production branch             : main
-V4 main HEAD                     : b43dec6084f341b2b52301a4f0542d6f616cf1e2
-V4 production code HEAD #266     : 761b5e980aeaf63833f574127fbe1ff4728f86b4
+V4 main HEAD                     : 3c596370ee7fcde93c969139541bc003e7012b6e
+Global provider hardening        : #268 / PROD_V4 / MERGED
 External fair-value authority    : #255 / PROD_V4
 Integrated recall/source roles   : #259 / PROD_V4
 TCGdex constrained name recovery : #260 / PROD_V4
 Cross-grader calibration         : #261 / PROD_V4
 CA -> PSA recall tuning          : #263 / haircut 35 %
 TCGdex Rainbow microvariant      : #266 / PROD_V4
-Global provider hardening        : #268 / DRAFT_VALIDATION / NON MERGED
+PokeTrace FREE production fix    : #271 / DRAFT_VALIDATION / NON MERGED
+Fanatics diagnostic              : #273 / DIAGNOSTIC_ONLY / NON MERGED
 Auction pagination preservation  : #245 / PROD_V4
-Auction recovery capacity        : #229/#231 / PROD_V4 / adaptive sizing / hard cap 250
+Auction recovery capacity        : #229/#231 / PROD_V4 / hard cap 250
 Auction order hardening          : #211/#212 / PROD_V4
 Future-start auction guard       : #220 + #243 / PROD_V4
-V4 run registry                  : issue #235 ACTIVE / issue #1 archive
-External pending throughput      : #214 / PROD_V4 / P4 bounded
+External pending throughput      : #214 / PROD_V4 / P4 max 16/run
 TCGdex transport resilience      : #216/#217 / PROD_V4
 TCGdex outage fallback           : #222/#224 / PROD_V4
 Magi native identity             : #174/#177/#178 / PROD_V4
-Global schedule watchdog         : #179 / PROD_V4
-Robot KB local cutover           : #166 / PostgreSQL Mac ACTIF
+Robot KB local cutover           : #166 / PostgreSQL Mac / V4_USE=false
 Robot KB multisource             : #180 / ROBOT_KB
 P3 rarity-symbol print_run       : #207 / P3_ONLY
 V5 expérimentale                 : PR #8 / OPEN / DRAFT / NON MERGED
@@ -36,83 +35,144 @@ TCGdex source pin                : af33c9ac882e2acfadffaf19e8083aa976d12983
 
 ---
 
-# Production actuelle — #255 + #259 + #260 + #261 + #263 + #266
+# Production V4 actuelle
 
-## #255 — external fair-value authority — `PROD_V4`
+## #268 — multi-market hardening — `PROD_V4`
 
-GCC reste une source de listing/identité/prix/timing. Son historique est observationnel pour l'économie : il ne peut pas créer, ancrer, confirmer, plafonner ou conflict-block une fair value. Une panne provider ou une preuve externe faible/indisponible ne devient jamais une preuve de marché négative.
+PR #268 a été mergée dans `main` via `3c596370ee7fcde93c969139541bc003e7012b6e`.
 
-## #259 — integrated recall/source-role/Global/Japan — `PROD_V4`
+Runtime de référence avant merge : `29f448a7441e82267fc9d84c2b0f9a52168e77cb`.
+Rapport détaillé : [`v4-multimarket-readiness-20260914.md`](v4-multimarket-readiness-20260914.md).
 
-#259 est l'intégration canonique des capacités précédemment réparties dans #256/#257/#258.
+Capacités mises en production :
 
-Production :
+- gates PriceCharting/PPT derrière identité canonique stricte ;
+- `variants_detailed` et preuves déterministes pour microvariantes sensibles ;
+- wrappers Fanatics idempotents ;
+- pagination Cardova rattachée à la bonne lane/enveloppe/page ;
+- discovery COMC autonome ;
+- Mercari/SNKRDUNK read-only dans Global ;
+- coûts inconnus conservés inconnus ;
+- TCGdex indisponible/budget/403 jamais transformé en clean `NO_MATCH` ;
+- Auction distingue les états terminaux de SOLD.
+
+Validation #268 : Global `34812934273`, Auction `34812934319`, Cardova `34812934329` **SUCCESS** ; tests/compile/YAML/diff-check PASS ; aucune transaction.
+
+## Classement provider validé
+
+`OPERATIONAL` exige qu'un chemin réel `annonce → identité exacte → valeur indépendante → coût réel → décision` ait été observé.
+
+| Provider | État | Preuve / blocage principal |
+|---|---|---|
+| GCC | **OPERATIONAL** | Chemin vault complet observé. |
+| Fanatics | **PROVIDER_BLOCKED** | Deux identités EXACT observées mais coût acheteur final non prouvé ; Shining Mewtwo reste matériellement ambigu côté valorisation. |
+| COMC | **PROVIDER_BLOCKED** | SOLD public anonyme HTTP 403 ; coût Store Credits/taxe/détention-livraison non prouvé. |
+| Magi | **PROVIDER_BLOCKED** | Route/coût acheteur non prouvés ; certaines valeurs gradées exactes absentes. |
+| Cardova | **PROVIDER_BLOCKED** | Financement/paiement et premium applicables non prouvés ; pas de valeur indépendante exacte dans la sélection validée. |
+| Mercari | **PROVIDER_BLOCKED** | Identité item-level incomplète/contradictoire et coût acheteur non prouvé. |
+| SNKRDUNK | **PROVIDER_BLOCKED** | Les pages répondent mais ne prouvent pas ensemble identité commerciale, grade/langue et offre individuelle exploitable ; coût acheteur absent. |
+
+Un site accessible peut rester `PROVIDER_BLOCKED`. Pagination partielle, caps volontaires ou budget borné ne suffisent pas à eux seuls pour ce statut.
+
+## Premier run naturel post-#268
+
+Main Scanner `34886292095` : **SUCCESS** sur `main@3c596370...`.
+
+Observé :
+
+- découverte GCC complète dans le scope filtré ;
+- TCGdex sans erreur transport sur ce run ;
+- `EXTERNAL_PENDING_BACKLOG=2320` ;
+- PSA APR HTTP 403 ;
+- PriceCharting public HTTP 403 ;
+- eBay SOLD 0 tentative ;
+- aucun cas future-start réellement prouvé ;
+- PokeTrace encore `effective_plan=PRO` dans les entrypoints production.
+
+Le backlog ne justifie pas une hausse des caps. P4 reste borné à 16/run.
+
+---
+
+# #271 — PokeTrace FREE production — `DRAFT_VALIDATION`
+
+Branche `fix/v4-poketrace-free-ceiling-production-20260914`, head `75eb09768bf55d002466c5e3d50b038c3884ceb5`.
+
+Objet : imposer par défaut `V4_POKETRACE_PLAN_CEILING=FREE` dans Main Scanner et Global avant import provider, sans changer identité, budgets, seuils ou SOLD/ASK. Les données gradées Pro ne deviennent pas utilisables simplement parce que l'API continue à annoncer PRO.
+
+Validations du head :
+
+- Global `34879803090` SUCCESS ;
+- Auction `34879802895` SUCCESS ;
+- Cardova `34879802823` SUCCESS.
+
+#271 reste **OPEN / DRAFT / NON MERGÉE**. Aucun déploiement sans autorisation explicite.
+
+---
+
+# #273 — diagnostic Fanatics — `DIAGNOSTIC_ONLY`
+
+Branche `diag/v4-fanatics-ppt-variant-proof-20260914`, head `c31882e8adacff8c291a43e78eb8ab6712ff2359`.
+
+Workflow `34886340368` : **SUCCESS**, read-only, aucune mutation runtime. Le diagnostic a respecté le plancher PPT : `daily_remaining=55 < 15000`, donc aucune baisse de protection pour forcer un résultat.
+
+Preuves conservées :
+
+- Shining Mewtwo `neo4-109` : EXACT, deux variantes matérielles applicables → doit rester bloqué ;
+- Litten `mep-044` : EXACT, une variante TCGdex applicable, mais même une amélioration du matcher ne prouverait pas le coût acheteur final Fanatics.
+
+Conclusion : Fanatics reste `PROVIDER_BLOCKED`; pas de relaxation d'identité ni de correctif carte-par-carte.
+
+#273 n'est pas destinée au merge production.
+
+---
+
+# Fair value / source roles — `PROD_V4`
+
+## #255
+
+GCC reste source de listing/identité/prix/timing, mais son historique ne peut pas créer ou confirmer seul une fair value. Une panne provider ou une preuve externe faible ne devient jamais une preuve négative de marché.
+
+## #259
+
+Intégration canonique des capacités recall/source-role/Global/Japan :
 
 - `MAX_PRICE_EUR=250` ;
 - plancher économique adaptatif 20 % ;
 - PSA numérique 1–10, aucune synthèse PSA 9.5 ;
 - opportunity sources et valuation providers séparés ;
 - PriceCharting = `GUIDE`, jamais item-level SOLD ;
-- PokeTrace reste agrégé ;
-- ASK eBay exact = revue secondaire seulement, jamais SOLD ;
-- Mercari/SNKRDUNK = ASK/opportunités read-only ;
-- historique GCC toujours sans autorité économique.
+- PokeTrace = agrégat marché après identité ;
+- ASK eBay exact = contexte secondaire, jamais SOLD ;
+- Mercari/SNKRDUNK = offres read-only ;
+- historique GCC sans autorité économique.
 
-La lignée #247 reste une provenance importante de qualité PokeTrace, mais #259 a modifié la politique recall autour des agrégats ; ne pas réintroduire automatiquement l'ancien downgrade `low==avg==high` sans relire #259 et le runtime courant.
-
-## #260 — constrained TCGdex name recovery — `PROD_V4`
-
-Base `7cb0e067...`, head validé `d809f4aacce0cbfb362546a65de351be2451dcf6`, merge production `db4954f5b223817fe14ccfeb9dcac80c960d5dd9`.
-
-Le recovery n'est pas un fuzzy global. Il intervient uniquement après la lignée exacte TCGdex lorsqu'une coordonnée imprimée bornée reste ambiguë. Conditions : langue/coordonnée exactes, nom seulement très légèrement différent, tokens numériques inchangés, unique candidat compatible. Plusieurs candidats ou différence matérielle => `AMBIGUOUS`.
-
-Validation : workflow `34053317112`, job `101541221319`, suite V4 958 PASS / 2 skipped, compile/YAML/diff-check PASS, comparaison live read-only PASS. Premier Main naturel post-merge `34091885754` SUCCESS sur le SHA exact.
-
-## #261 + #263 — cross-grader review calibration — `PROD_V4`
-
-Merge runtime #261 `24230552d52574e2769c21dcfa84ba11320da2cf` ; closeout docs main `22303a34...` puis consolidation #262 `85f429e2...`.
-
-- non-PSA fractionnaire : proxy secondaire **même grade numérique** CGC/BGS, pas de rabattement PCA9.5→PSA9 ;
-- non-PSA entier : CGC même grade préféré ; PSA même grade fallback conservateur ;
-- haircuts spécifiques au grader cible ;
-- #263 ramène uniquement le fallback `CA -> PSA_FALLBACK_CONSERVATIVE` de 45 % à **35 %** ;
-- PriceCharting compatible peut plafonner la référence brute mais reste `GUIDE` ;
-- revue cross-grader seulement si décote >=30 % après haircut ;
-- déduplication cross-market v2.
-
-Validation #261 code `c58aa4c...`, run `34092254431` SUCCESS, tests ciblés + suite V4 + compile/YAML/diff-check + comparaison live read-only PASS. #263 conserve des régressions dédiées Glaceon/Riolu et un cas de recall à la frontière ; le head exact doit rester CI-vert avant merge.
-
-## #266 — TCGdex Rainbow microvariant — `PROD_V4`
-
-Rainbow reste une microvariante matérielle, jamais un simple alias Holo. Set/langue/localId/dénominateur/nom doivent être exacts et `variants_detailed` doit prouver `type=holo + foil=rainbow`; toute absence, autre foil ou contradiction reste fail-closed. Merge production : `761b5e980aeaf63833f574127fbe1ff4728f86b4`; closeout `main` : `b43dec6084f341b2b52301a4f0542d6f616cf1e2`.
+Priorité prix canonique : **SOLD exact récent > SOLD exact ancien ajusté > fixed ASK compatible > snapshot auction ≤5 min si aucun SOLD > enchère en cours signal faible**.
 
 ---
 
-# #268 — V4 multi-market — `DRAFT_VALIDATION` / NON MERGED
+# TCGdex / identité — `PROD_V4`
 
-Branche `fix/v4-global-coverage-losses-20260907`, base main `b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Runtime validé `29f448a7441e82267fc9d84c2b0f9a52168e77cb` ; [preuves complètes et historique exact des 32 commits](v4-multimarket-readiness-20260914.md). Le head documentaire ultérieur ne doit pas être confondu avec le dernier changement runtime.
+Fondations à réutiliser avant tout nouveau resolver :
 
-P1–P4 restent validés : noms canoniques non fabriqués, Master/Poke Ball sur preuve source immuable exacte et gates terminaux, dimensions V2+V3 compatibles, aliases Fanatics-only. Le Pikachu historique absent du live est couvert par test runtime, pas prétendu revalidé sur son ancien listing.
+- exact-coordinate / reviewed bridges #119→#135 ;
+- generalized coordinate recovery ;
+- two-of-three backport ;
+- unique-coordinate fallback ;
+- source-pinned finish ;
+- #216/#217 transport retry/breaker ;
+- #222/#224 outage fallback immuable source-pinné ;
+- #260 constrained name-filtered coordinate recovery ;
+- #266 Rainbow source-proven via `variants_detailed`.
 
-P5–P8 sont maintenant corrigés sur cette branche : gates stricts PriceCharting/PPT reviewed-set, installers Fanatics idempotents, pagination Cardova liée à l'enveloppe/lane/page. Les audits de capacités existantes ont permis de réutiliser V4 Global/Japan et les providers indépendants, sans porter V5 ou Robot KB ni créer une nouvelle lane économique parallèle.
+`AMBIGUOUS` reste bloquant. Aucun substring, fuzzy global, traduction supposée, name-only ou number-only ne fabrique une identité exacte.
 
-Autres capacités livrées : discovery COMC autonome ; routes publiques Mercari/SNKRDUNK dans Global ; champs DOM Mercari liés à l'item et tests Chromium ; pagination Fanatics sur contrôles de destination prouvée ; coûts inconnus conservés inconnus ; sélection équitable plafonnée à 50 ; manifestes sans requêtes de diagnostic ; TCGdex noms source prouvés et indisponibilités exclues des caches négatifs ; Auction preuve item publique bornée et états terminaux séparés de SOLD.
-
-Classement du chemin économique public actuel : **GCC OPERATIONAL dans le scope vault** ; **Fanatics, COMC, Magi, Cardova, Mercari et SNKRDUNK PROVIDER_BLOCKED**, pour les preuves externes/conditions acheteur exactes décrites dans le rapport. Sites accessibles ne signifie pas identité, valeur et coût complet disponibles. Les caps et la pagination partielle ne sont pas des blocages fournisseurs et restent explicites.
-
-Validation runtime : Global [34812934273](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934273) SUCCESS ; Auction 34812934319 SUCCESS (48 effectifs / 46 legacy, zéro manquant/inconnu) ; Cardova 34812934329 SUCCESS. Suites : 632 Global, 4 DOM ignorés localement puis exécutés dans Chromium en CI ; 1 011 V4, 2 ignorés ; 51 multimarket ; compile/YAML/diff-check PASS.
-
-PokeTrace applique un plafond FREE alors que l'auth observée déclare encore PRO actif ; zéro usage gradé, restriction distincte d'absence. PriceCharting public HTTP 403 reste indisponible, pas NO_MATCH. Magi #268 conserve 50/35/15, natif JA 60, source 60, PT 60. Aucun ASK/live/ENDED/OUT_OF_SCOPE ne devient SOLD ; aucune marketplace n'est sa propre fair value.
-
-Les modifications sont candidate-only. Aucun merge, main/PR #8/V5/Robot KB/Neon inchangés.
+Ne jamais mélanger langue, set, numéro, édition, printing, finish, microvariante, grader ou grade incompatibles.
 
 ---
 
 # Fixed queue / external coverage — `PROD_V4`
 
-## #214 — external pending throughput
-
-La file fixed est persistante et sépare :
+File persistante :
 
 ```text
 P0_NEW
@@ -123,152 +183,77 @@ P4_EXTERNAL_PENDING
 FRESH_ALREADY_EVALUATED
 ```
 
-`MAX_FIXED_CANDIDATES=120` est un plafond global de traitement, pas un quota à remplir.
+`MAX_FIXED_CANDIDATES=120` est un plafond global, pas un quota à remplir.
 
-Le module `v4_external_coverage_drain.py` garde :
-
-```text
-V4_EXTERNAL_PENDING_MAX_PER_RUN       configurable
-production actuelle                  16
-hard ceiling code                    20
-budget-pending cooldown              5 min
-provider-error backoff               inchangé / séparé
-```
-
-Le hard ceiling 20 est volontaire : le P4 ne doit pas monopoliser les budgets provider ni affamer P0/P1/P3. Une hausse à 100 serait un changement d'architecture/budgets, pas un simple tuning d'environnement.
-
-Preuve naturelle post-#260 `34091885754` : `processed 27 = new 1 + changed 1 + stale 9 + pending 16`, `pending backlog 1496`, `first-evaluation backlog 0`. Le backlog doit être audité par flux net et cause avant relèvement des bornes.
-
----
-
-# TCGdex — `PROD_V4`
-
-## Discovery / identity lineage
-
-Fondations à réutiliser avant tout nouveau resolver :
-
-- exact-coordinate / reviewed bridges #119→#135 ;
-- generalized coordinate recovery ;
-- two-of-three backport ;
-- unique-coordinate fallback ;
-- source-pinned finish metadata ;
-- #216/#217 transport retry/breaker ;
-- #222/#224 outage fallback immuable source-pinné ;
-- #260 constrained name-filtered coordinate recovery.
-
-`AMBIGUOUS` reste bloquant. Aucun substring, traduction supposée ou fuzzy global ne peut fabriquer une identité.
-
-Résiduel live post-#260 : plusieurs ambiguïtés portent des suffixes de présentation GCC (`Reverse`, `Rainbow`, `Gold`, `Holo`). Le code #260 impose actuellement le même nombre de tokens entre nom listing et nom TCGdex ; toute évolution doit donc distinguer explicitement **qualifier de variante** et **nom canonique** sans jeter un token au hasard.
-
-## Fondations historiques récupérées — provenance à conserver
-
-Ces marqueurs restent volontairement explicites : ils sont des points d'entrée de réutilisation et empêchent qu'un closeout récent efface la provenance d'anciennes capacités validées.
-
-**Capacités structurantes : #9, #50, #52, #104**, puis #211/#212, #220, #229/#231, #243 et #245.
-
-**TCGdex / PokeTrace #119→#135** : exact-coordinate, catalogue uniqueness, source-pinned finish/set et PokeTrace market-only après identité TCGdex. Le **fallback générique catalogue immuable** reste une fondation récupérée ; aucun alias treadmill. **PR #126 = `SUPERSEDED`** par #127→#135.
+`V4_EXTERNAL_PENDING_MAX_PER_RUN=16`, hard ceiling code 20. Le P4 ne doit pas monopoliser les providers ni affamer P0/P1/P3. Le run naturel actuel montre 2320 `EXTERNAL_PENDING`, mais ce volume n'autorise pas une hausse automatique des caps.
 
 ---
 
 # Auction discovery — `PROD_V4`
 
-## #211/#212
+- #211/#212 : `AUCTION + ON_SALE + ENDING_SOON`, pagination durcie ;
+- #220 + #243 : future-start prouvé exclu avant interprétation du prix/countdown ;
+- #229/#231 + #245 : recovery order-drift adaptatif, page size 100, hard ceiling 250, economic cap 360 ; priorité `<=5 min → <=12 min → <=60 min`.
 
-Discovery `AUCTION + ON_SALE + ENDING_SOON`, pagination durcie, safety-net legacy si couverture non prouvée.
-
-## #220 + #243
-
-Future-start prouvé => exclusion avant interprétation prix/countdown. Ambiguïté => fail-closed.
-
-## #229/#231 + #245
-
-Recovery order-drift : sizing adaptatif `ceil(api_total/page_size)+2`, page size 100, hard ceiling 250, economic cap 360, priorité `<=5 min -> <=12 min -> <=60 min`. `api_total` ne prouve jamais la complétude à lui seul.
+`ACTIVE_AUCTION`, `ENDED`, `OUT_OF_SCOPE`, disparition ou statut fournisseur ne deviennent jamais automatiquement SOLD.
 
 ---
 
 # eBay / PSA / PriceCharting — provenance production
 
-- #238/#239 + #242 + #253 : résilience eBay historique, worker jetable/bornes/salvage ;
-- #175 : isolation eBay hard deadline ;
-- #189 : breaker run-local ;
-- #137 : salvage DOM après timeout seulement avec preuve suffisante ;
-- PSA APR : erreurs/403 restent visibles, aucun contournement WAF ;
-- PriceCharting : guide compatible, jamais faux SOLD ;
-- direct eBay SOLD n'est plus l'autorité de fair value dans la phase #259.
+- #137 : salvage DOM seulement avec preuve suffisante ;
+- #175 : worker eBay jetable avec hard deadline ;
+- #189 : breakers run-local ;
+- #238/#239/#242/#253 : résilience/navigation eBay ;
+- PSA APR HTTP 403 reste provider unavailable, sans bypass ;
+- PriceCharting HTTP 403 reste provider unavailable, jamais faux no-match ;
+- direct eBay SOLD n'est plus l'autorité unique de fair value après #259.
 
-Ne pas créer une nouvelle couche timeout/breaker avant de prouver l'insuffisance de ces protections.
-
----
-
-# Global Multi-Vault / Japan — `PROD_V4`
-
-#139 a réintégré/revalidé le stack historique #108/#109/#110/#113/#114/#115/#138. #259 est désormais l'intégration canonique récente des rôles de sources, du recall et des providers Japan.
-
-Production actuelle : **GCC/Cardova/Magi/Fanatics/COMC** → identité commerciale exacte → TCGdex exact + microvariante → preuves externes → décision. `PPT = `SOLD_AGGREGATED`` est conservé comme sémantique historique : agrégé SOLD, jamais item-level SOLD.
-
-Architecture : GCC/Fanatics/COMC/Magi/Cardova/Mercari/SNKRDUNK découvrent des offres ; TCGdex prouve l'identité ; les providers externes établissent la valorisation ; une marketplace ne devient jamais sa propre fair value.
-
-`ACTIVE_AUCTION` reste non actionnable hors règle explicitement bornée de snapshot final. Disparition != SOLD. Aucune transaction.
+Ne pas créer une nouvelle couche timeout/breaker avant de prouver l'insuffisance de celles-ci.
 
 ---
 
 # Magi — `PROD_V4`
 
-#174 + #177 = identité native déterministe ; #178 = recovery total 36, broad/nonpriority max 28, réserve exact search/detail 8. Pas de name-only/alias carte-par-carte.
+#174/#177 : identité native déterministe. #178 : recovery historique. #268 a ensuite validé des budgets bornés 50 total / 35 broad / 15 réserve exact search/detail sur sa lane Global.
+
+Les lignes explicitement SOLD de Magi ne deviennent pas des ventes finales prouvées sans prix final/date de vente prouvés.
 
 ---
 
-# Robot KB — `ROBOT_KB`
+# Robot KB / P3 — séparés de V4
 
-PostgreSQL local Mac actif, `V4_USE=false`, Neon writers automatiques OFF. Observations append-only datées ; SOLD final prouvé prioritaire ; ASK/live/disparition/`WAITING_FOR_PAYMENT` != vente.
+Robot KB local : PostgreSQL Mac, `V4_USE=false`, observations append-only datées, SOLD final prouvé prioritaire. Fixed = ASK/baseline ; auction final SOLD prioritaire, snapshot ≤5 min seulement fallback identifié.
 
-#180 collecte Fanatics/COMC/Magi/Cardova + PokeTrace/PPT en conservant les sémantiques. `SOLD_AGGREGATED` != item-level SOLD et `FIXED_ASK_AGGREGATED` reste ASK.
+#180 = `ROBOT_KB`. #207 = `P3_ONLY`. #210 prépare Cardova durable mais reste OPEN/DRAFT ; aucun write durable sans autorisation explicite + backup + locks + preflight.
 
-#207 est `P3_ONLY`. #210 reste OPEN/DRAFT ; aucun durable write Cardova sans autorisation explicite + backup + locks + preflight.
-
----
-
-# V5 / non-production
-
-PR #8 = **`V5_ONLY`**, OPEN/DRAFT/NON-MERGED, head vérifié `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` le 10 septembre 2026. Ne jamais merger PR #8 dans `main` sans autorisation explicite.
+PR #270 (`feat/robot-kb-magi-sold-marked-snapshots-20260907`) reste Robot KB seulement : un marqueur SOLD Magi est conservé comme snapshot, avec `genuine_sale_evidence=False`, jamais comme vente finale inventée.
 
 ---
 
-# Supersessions / provenance
+# V5 — non-production
+
+PR #8 = **`V5_ONLY / PROTECTED`**, OPEN/DRAFT/NON-MERGED, branche `agent/v5-poketrace-cardmarket-market-data`, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`.
+
+Ne jamais merger PR #8 dans `main` sans autorisation explicite utilisateur.
+
+---
+
+# Supersessions / provenance utile
 
 - #126 : `SUPERSEDED` par #127→#135 ;
 - #108/#109/#110/#113/#114/#115/#138 : absorbées par #139 ;
 - #159 : superseded fonctionnellement par #177 ;
-- #211/#212 : une capacité runtime ;
-- #216/#217 : une capacité runtime ;
-- #222/#224 : une capacité runtime ;
-- #229/#231 : une capacité runtime ;
-- #238/#239 : une capacité eBay runtime ;
-- #243 complète #220 ;
-- #245 complète #229/#231 et #243 ;
-- #247 : provenance qualité PokeTrace, politique agrégat ensuite modifiée par #259 ;
-- #255 : historique GCC observationnel économiquement ;
-- #256 : `STALE_OPEN/SUPERSEDED_BY_259` pour les capacités Japan intégrées ;
-- #257 : MERGED, puis intégré avec la pile recall/Global/Japan dans #259 ;
-- #258 : `STALE_OPEN/SUPERSEDED_BY_259` pour le runtime recall intégré ;
-- #259 : intégration production canonique recall/source-role/Global/Japan ;
-- #260 : recovery TCGdex contraint production ;
-- #261 : calibration cross-grader production ;
-- #263 : tuning CA→PSA 35 % de la lane de revue cross-grader, sans changement du floor 30 % ni des règles d'identité ;
-- #266 : Rainbow source-proven en production ;
-- #268 : `DRAFT_VALIDATION`, provider coverage/hardening validé sur branche mais non mergé.
+- #211/#212, #216/#217, #222/#224, #229/#231 : paires d'une même capacité runtime ;
+- #243 complète #220 ; #245 complète #229/#231 et #243 ;
+- #247 : provenance PokeTrace, politique recall ensuite modifiée par #259 ;
+- #256 et #258 : `STALE_OPEN/SUPERSEDED_BY_259` ;
+- #257 : MERGED puis intégré dans #259 ;
+- #259/#260/#261/#263/#266/#268 : production canonique V4 ;
+- #272 : CLOSED / NON MERGED / redondante, car le support PPT English PSA 8/8.5/9/10 existe déjà dans `main` ;
+- #271 : correction production validée mais non mergée ;
+- #273 : diagnostic uniquement, non destiné au merge.
 
----
+## Règle de reprise
 
-# Invariants de reprise
-
-- V4/main canonique ;
-- PR #8 protégée ;
-- aucun achat/bid/checkout/paiement ;
-- Robot KB local séparé de V4 ;
-- aucune écriture durable Cardova sans autorisation explicite ;
-- identité ambiguë/microvariante incertaine = fail-closed ;
-- ASK, enchère live et disparition != SOLD ;
-- marketplace/opportunity source != valuation source ;
-- panne provider != clean no-match ;
-- avant nouveau code, REUSE AUDIT sur README + ledger + inventaires + branches/PR historiques.
+Avant toute nouvelle capacité : vérifier `main`, PR mergées, V5, Robot KB/P3 et branches historiques. Préférer une règle générique déterministe ; ne jamais recréer une capacité déjà absorbée par une supersession documentée.

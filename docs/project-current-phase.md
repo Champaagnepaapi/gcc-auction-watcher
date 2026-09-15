@@ -1,137 +1,108 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-## Mise à jour ciblée — 14 septembre 2026
+## État canonique — 15 septembre 2026
 
-GitHub vérifié : main `b43dec6084f341b2b52301a4f0542d6f616cf1e2`, runtime production #266 `761b5e980aeaf63833f574127fbe1ff4728f86b4`. PR #268 OPEN/DRAFT/NON MERGED, branche `fix/v4-global-coverage-losses-20260907`, runtime candidat validé `29f448a7441e82267fc9d84c2b0f9a52168e77cb`. [Classement multi-market et preuves](v4-multimarket-readiness-20260914.md) : GCC OPERATIONAL au vault ; six autres marchés bloqués économiquement par les preuves externes/conditions acheteur documentées.
+Production V4 : `main@3c596370ee7fcde93c969139541bc003e7012b6e`, merge de la PR #268.
 
-PR #8 reste OPEN/DRAFT/NON MERGED, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, branche `agent/v5-poketrace-cardmarket-market-data`, sans modification. Robot KB/Neon séparés. Aucun merge ni changement de topologie dans cette passe ; les inventaires historiques ci-dessous ne sont pas un nouveau comptage exhaustif.
+Runtime multi-market de référence avant merge : `29f448a7441e82267fc9d84c2b0f9a52168e77cb`.
+Premier cycle post-merge analysé : Main Scanner `34886292095` **SUCCESS** sur `main@3c596370...`. Stabilité confirmée ensuite jusqu'au Main Scanner #5224 / run `34974368371`, également **SUCCESS** sur le même SHA.
+Rapport multi-market détaillé : [`v4-multimarket-readiness-20260914.md`](v4-multimarket-readiness-20260914.md).
 
-## Snapshot historique conservé
+PR #8/V5 reste **OPEN / DRAFT / NON MERGED**, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, séparée de V4. Robot KB reste séparé de la décision commerciale V4 (`V4_USE=false`). Neon reste hors du chemin de production automatique.
 
-État re-vérifié le **7 septembre 2026**. Le code/Git/GitHub live reste l'autorité ; re-vérifier le HEAD avant toute action importante.
+## Classement multi-market actuel
 
-## Autorité
+| Marketplace | État | Résiduel principal |
+|---|---|---|
+| GCC | **OPERATIONAL** | Chemin vault observé : découverte → identité exacte → valorisation indépendante → coût → décision. |
+| Fanatics | **PROVIDER_BLOCKED** | Coût acheteur final non prouvé ; Shining Mewtwo reste matériellement ambigu côté valorisation. Litten peut avoir une preuve variante plus forte, mais cela ne lève pas le blocage coût. |
+| COMC | **PROVIDER_BLOCKED** | Historique SOLD public anonyme bloqué par HTTP 403 ; coût Store Credits/taxe/détention-livraison non prouvé. |
+| Magi | **PROVIDER_BLOCKED** | Route/coût acheteur non prouvés ; certaines valeurs gradées exactes restent absentes. |
+| Cardova | **PROVIDER_BLOCKED** | Financement/paiement et premium Auction applicables non prouvés ; aucune valeur indépendante exacte dans la sélection validée. |
+| Mercari | **PROVIDER_BLOCKED** | Preuves item langue/numéro/grade/matériau insuffisantes ou contradictoires ; route et coût acheteur absents. |
+| SNKRDUNK | **PROVIDER_BLOCKED** | Les pages publiques répondent, mais les fiches observées ne prouvent pas ensemble catégorie item, langue, grade PSA et offre individuelle exploitable ; route/coût acheteur absents. |
 
-```text
-V4 production branch             main
-V4 production code HEAD #261     24230552d52574e2769c21dcfa84ba11320da2cf
-V4 main HEAD docs closeout #261  22303a34f7414769a04f4c587338def005b8a5c6
-#255 external FV authority       MERGED / PROD_V4
-#259 integrated recall stack     MERGED / PROD_V4
-#260 TCGdex constrained recovery MERGED / PROD_V4
-#261 cross-grader calibration    MERGED / PROD_V4
-V5                               PR #8 / OPEN / DRAFT / NON MERGED
-Robot KB durable                 PostgreSQL local Mac / séparé de V4 / V4_USE=false
-Neon                             writers automatiques OFF / rollback manuel
-```
+`PROVIDER_BLOCKED` décrit le chemin économique autonome dans les conditions publiques auditées. Cela ne signifie pas que le site est inaccessible. Pagination partielle, caps volontaires et budgets bornés restent des limites logicielles séparées.
 
-`22303a34...` est docs-only au-dessus du merge runtime #261 `24230552...`. Pour raisonner sur le comportement production, distinguer le HEAD Git courant du dernier SHA runtime.
+## #268 en production
 
-## Production post-#259/#260/#261
+#268 a mis en production le hardening Global multi-market :
 
-#259 a intégré en production les capacités recall/source-role/PriceCharting/Global/Japan auparavant réparties dans #256/#257/#258 :
+- gates d'identité TCGdex/microvariantes fail-closed ;
+- PriceCharting/PPT derrière une identité canonique stricte ;
+- wrappers Fanatics idempotents ;
+- pagination Cardova liée à la bonne lane/enveloppe/page ;
+- discovery COMC autonome ;
+- Mercari/SNKRDUNK read-only intégrés à Global ;
+- coûts inconnus conservés inconnus ;
+- panne/budget/403 provider jamais converti en `NO_MATCH` propre ;
+- états Auction `RESOLVED`, `ENDED`, `UNKNOWN`, `INSPECTION_ERROR`, `OUT_OF_SCOPE` séparés de SOLD.
 
-- `MAX_PRICE_EUR=250` ;
-- plancher de décote adaptatif 20 % ;
-- PSA numérique 1–10, aucune synthèse PSA 9.5 ;
-- historique GCC sans autorité économique ;
-- PriceCharting = `GUIDE`, jamais item-level SOLD ;
-- PokeTrace agrégé uniquement après identité/langue/grader/grade compatibles ;
-- ASK eBay actif exact = revue secondaire, toujours ASK ;
-- opportunity adapters et providers de valorisation séparés ;
-- Mercari/SNKRDUNK intégrés comme sources ASK/opportunités read-only.
+Validation de référence #268 : Global `34812934273`, Auction `34812934319`, Cardova `34812934329` **SUCCESS** ; suites de tests, compilation, YAML et diff-check PASS ; zéro achat/bid/checkout/paiement.
 
-#260 complète l'identité TCGdex : un nom légèrement différent peut être récupéré uniquement après preuve exacte de coordonnée imprimée + langue et seulement s'il reste un unique candidat compatible. Une différence matérielle ou plusieurs candidats restent `AMBIGUOUS`.
+## Post-merge réellement observé
 
-#261 calibre la lane CROSS-GRADER : demi-grades non-PSA => proxy secondaire même grade numérique seulement ; grades entiers => CGC même grade privilégié, PSA même grade fallback conservateur ; haircuts spécifiques et seuil de revue cross-grader >=30 % après haircut. PriceCharting peut plafonner une référence compatible mais reste `GUIDE`.
+Main Scanner `34886292095` sur `main@3c596370...` : **SUCCESS**.
 
-## Validation #260
+- découverte GCC complète dans le scope production filtré ;
+- TCGdex sans erreur transport sur ce run ;
+- `EXTERNAL_PENDING_BACKLOG=2320`, first-evaluation coverage complète mais couverture marché externe incomplète ;
+- PSA APR : HTTP 403, breaker run-local ;
+- PriceCharting public : HTTP 403 / indisponible ;
+- eBay SOLD : 0 tentative sur ce run ;
+- aucun vrai cas future-start prouvé observé ;
+- PokeTrace se déclare encore `effective_plan=PRO` sur les entrypoints production.
 
-```text
-validated head                d809f4aacce0cbfb362546a65de351be2451dcf6
-validation run                34053317112
-validation job                101541221319
-suite V4                      958 PASS / 2 skipped
-compile / YAML / diff-check   PASS
-read-only auction compare     PASS
-merge/runtime SHA             db4954f5b223817fe14ccfeb9dcac80c960d5dd9
-natural Main post-merge       34091885754 / 101646924190 / SUCCESS
-```
+Ce dernier point est un défaut réel post-#268 : la validation #268 imposait le plafond FREE, mais pas les deux entrypoints de production.
 
-Le natural Main post-#260 a exécuté exactement `db4954f5...`, avec TCGdex `errors=0`. Le chemin fuzzy unique #260 était déployé mais n'a pas été observé sur un cas récupéré dans cet échantillon.
+Stabilité ultérieure : Main Scanner #5221 à #5224 sont **SUCCESS** sur le même SHA production. Le dernier, run `34974368371`, a terminé avec exit code 0, zéro opportunité finale, 100/100 timers d'enchères parsés, zéro enchère `ending_soon` et aucun fallback legacy. Ces runs ne changent pas le constat de code : le plafond FREE n'est pas encore déployé tant que #271 reste non mergée.
 
-## Validation #261
+## PR #271 — correction PokeTrace FREE — prête, NON MERGÉE
 
-```text
-validated code head           c58aa4c75768144946f858267a13eb493bf7a420
-validation run                34092254431
-full V4 + targeted            PASS
-compile / YAML / diff-check   PASS
-read-only compare             PASS
-PR final head                 c5e61d1b5377508ccf1a720959e0f7e09d570fbc
-merge runtime                 24230552d52574e2769c21dcfa84ba11320da2cf
-```
+PR #271 : `fix/v4-poketrace-free-ceiling-production-20260914`, head `75eb09768bf55d002466c5e3d50b038c3884ceb5`.
 
-## Queue fixed / EXTERNAL_PENDING
+Elle impose le plafond FREE dans Main Scanner et Global avant import provider, tout en conservant la possibilité d'un futur opt-in explicite. Elle ne modifie ni identité, ni budget, ni seuil économique, ni sémantique SOLD/ASK.
 
-`processing budget: 120` est un plafond global, pas une cible.
+Validations du head #271 :
 
-`V4_EXTERNAL_PENDING_MAX_PER_RUN=16` limite séparément les anciens P4. Le code garde en plus un hard ceiling `MAX_CONFIGURED_EXTERNAL_PENDING_PER_RUN=20` : passer à 100 n'est pas un simple réglage, cela exigerait de supprimer une borne de sécurité alors que les budgets providers restent eux-mêmes bornés.
+- Global `34879803090` : **SUCCESS** ;
+- Auction `34879802895` : **SUCCESS** ;
+- Cardova `34879802823` : **SUCCESS**.
 
-Exemple naturel post-#260 :
+Pré-merge audit du 15 septembre : base exacte `main@3c596370...`, head `75eb09768...`, 5 commits devant / 0 derrière, 3 fichiers touchés seulement (`run_watcher_multimarket_resilient.py`, `v4_global_marketplace_notify_resilient.py`, test dédié). Le diff pose `V4_POKETRACE_PLAN_CEILING=FREE` avant les imports provider lors de l'exécution directe, sans autre changement runtime.
 
-```text
-eligible candidates        4175
-new                           1
-changed                       1
-stale                         9
-pending retry              1512
-fresh already evaluated    2652
-processed this run            27
-  new                         1
-  changed                     1
-  stale                       9
-  pending retry              16
-pending retry backlog       1496
-first-evaluation backlog       0
-```
+#271 reste **OPEN / DRAFT / NON MERGÉE** et nécessite une autorisation explicite avant merge.
 
-Donc `27/120` = `1 + 1 + 9 + 16`, pas une sous-utilisation mystérieuse du cap. Le backlog P4 est réel ; il faut mesurer son **flux net** et ses raisons avant tout relèvement de borne.
+## PR #273 — diagnostic Fanatics — terminé, NON DESTINÉE AU MERGE
 
-## Bottleneck courant
+PR #273 : `diag/v4-fanatics-ppt-variant-proof-20260914`, head `c31882e8adacff8c291a43e78eb8ab6712ff2359`.
 
-La discovery GCC est saine sur les runs audités. Les deux résiduels prioritaires sont :
+- tests ciblés, compilation et diff-check : PASS ;
+- workflow diagnostic `34886340368` : **SUCCESS**, lecture seule et aucune mutation runtime ;
+- le probe cible n'a pas forcé PPT : `daily_remaining=55` était sous le plancher de sécurité `15000`, donc le budget s'est arrêté proprement ;
+- aucun abaissement de ce plancher n'est recommandé.
 
-1. **couverture marché externe incomplète / backlog P4** ;
-2. **résolution TCGdex de certains NO_MATCH/AMBIGUOUS**.
+Les preuves #268 restent suffisantes pour le classement : Shining Mewtwo est EXACT mais expose deux variantes matérielles applicables et doit rester bloqué ; Litten est EXACT avec une variante TCGdex applicable, mais Fanatics reste de toute façon bloqué par l'absence de coût acheteur final prouvé.
 
-Plusieurs ambiguïtés live restantes portent des suffixes GCC tels que `Reverse`, `Rainbow`, `Gold`, `Holo`. Le recovery #260 n'accepte pas actuellement une différence de nombre de tokens ; ces cas doivent être audités comme éventuelle séparation `nom canonique` vs `qualifier de variante`, sans jamais supprimer aveuglément un token matériel.
-
-## PR / supersession
-
-- #257 : MERGED, capacité intégrée dans la lignée production ;
-- #259 : MERGED, intégration canonique recall/source-role/Global/Japan ;
-- #260 : MERGED, recovery TCGdex contraint ;
-- #261 : MERGED, calibration cross-grader ;
-- #258 : OPEN/DRAFT mais contenu runtime absorbé par #259 => `STALE_OPEN/SUPERSEDED_BY_259`, ne pas merger ;
-- #256 : OPEN/DRAFT mais contenu pertinent absorbé par #259 => `STALE_OPEN/SUPERSEDED_BY_259`, ne pas merger ;
-- #210 : durable Robot KB, autorisation explicite + backup/locks/preflight ;
-- PR #8 : V5 protégée, non mergée.
+Conclusion : **Fanatics reste PROVIDER_BLOCKED** ; aucune relaxation d'identité et aucun changement V4 supplémentaire ne sont justifiés sur cette base.
 
 ## Invariants
 
-- ASK/current auction/disparition != SOLD ;
-- aucune panne provider n'est transformée en preuve de marché négative ;
-- aucun mélange langue/grader/grade/microvariante ;
-- aucune identité ambiguë promue automatiquement ;
-- aucun achat, bid, checkout ou paiement automatique ;
-- Robot KB/Neon séparés de V4 ;
-- aucun durable write Cardova sans autorisation explicite ;
-- aucun cron GitHub parallèle au Main Scanner externe.
+- SOLD exact récent > SOLD exact ancien ajusté > fixed ASK compatible > snapshot auction ≤5 min si aucun SOLD ;
+- ASK / annonce active / enchère live / disparition / ENDED / OUT_OF_SCOPE ≠ SOLD ;
+- une marketplace où la carte est achetable ne prouve jamais seule sa fair value ;
+- panne provider ≠ preuve négative de marché ;
+- aucune relaxation langue/grader/grade/set/numéro/microvariante ;
+- identité ambiguë = blocage ou revue manuelle ;
+- aucun achat, bid, checkout, paiement ou grading automatique ;
+- aucun contournement WAF/anti-bot ;
+- ne pas relever les caps uniquement pour vider un backlog ;
+- PR #8/V5, Robot KB/P3 et Neon restent séparés de V4.
 
-## Prochaine étape
+## Prochaine action canonique
 
-1. mesurer plusieurs runs naturels pour le **delta net P4** et classifier les causes `PENDING_BUDGET` vs provider retry ;
-2. auditer les NO_MATCH/AMBIGUOUS TCGdex réels et n'ajouter qu'un recovery déterministe réutilisant les gates existants ;
-3. ne relever aucun cap provider/P4 avant preuve qu'il s'agit du vrai goulot et qu'une hausse reste compatible avec les budgets/rate limits ;
-4. PR #8/V5 et Robot KB durable restent hors scope.
+1. ne pas investir dans des corrections de parsing provider qui ne lèvent pas le blocage économique réel ;
+2. conserver GCC **OPERATIONAL** et les six autres providers **PROVIDER_BLOCKED** jusqu'à preuve externe propre de déblocage ;
+3. priorité production immédiate : décider explicitement du merge de #271 ;
+4. après tout merge production autorisé, observer un run de production avant nouveau closeout ;
+5. fermer/archiver les diagnostics seulement avec housekeeping explicite, sans suppression de branche.

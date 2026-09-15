@@ -10,14 +10,15 @@ Repo : `Champaagnepaapi/gcc-auction-watcher`
 
 ```text
 V4 production branch                 : main
-V4 production code HEAD #266         : 761b5e980aeaf63833f574127fbe1ff4728f86b4
+V4 production HEAD #268              : 3c596370ee7fcde93c969139541bc003e7012b6e
+V4 validated runtime #268            : 29f448a7441e82267fc9d84c2b0f9a52168e77cb
 V4 external fair-value authority     : #255 MERGED / production
 Vault/source-role + PriceCharting    : #257 + #259 MERGED / production
 Global/Japan integration             : #259 MERGED / production
 Cross-grader calibration             : #261 MERGED / production
 CA -> PSA recall tuning              : #263 / haircut 35 %
 TCGdex Rainbow microvariant          : #266 MERGED / production
-Global provider hardening            : #268 / OPEN / DRAFT / NON MERGED
+Global provider hardening            : #268 MERGED / production
 PokeTrace aggregate guard            : #247 MERGED
 Auction pagination preservation      : #245 MERGED
 Auction recovery capacity            : #229/#231 MERGED / adaptive sizing / hard cap 250
@@ -39,9 +40,9 @@ V5 expérimentale                     : PR #8 / OPEN / DRAFT / NON MERGED
 TCGdex source pin                    : af33c9ac882e2acfadffaf19e8083aa976d12983
 ```
 
-### Phase candidate — PR #268 : V4 multi-market, classement validé
+### Phase closeout — PR #268 : V4 multi-market en production
 
-PR #268 reste **OPEN / DRAFT / NON MERGED**, branche `fix/v4-global-coverage-losses-20260907`, base `main@b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Début de la mission multi-market : `eb62e78463235effbb267aa9f71f5c3a49a3b407` ; dernier runtime validé : **`29f448a7441e82267fc9d84c2b0f9a52168e77cb`**. Les commits documentaires ultérieurs ne déploient rien sur `main`.
+PR #268 est **MERGED** dans `main` via `3c596370ee7fcde93c969139541bc003e7012b6e`. Base pré-merge : `main@b43dec6084f341b2b52301a4f0542d6f616cf1e2`. Début de la mission multi-market : `eb62e78463235effbb267aa9f71f5c3a49a3b407` ; runtime validé : **`29f448a7441e82267fc9d84c2b0f9a52168e77cb`** ; closeout documentaire pré-merge : `c846aa6067d7aea0e8aa0812cdeec02cf3524bb5`.
 
 Le [rapport complet avec SHA, fichiers, métriques live, comparaisons et conditions de déblocage](docs/v4-multimarket-readiness-20260914.md) est la reprise détaillée de cette phase.
 
@@ -68,11 +69,11 @@ Corrections validées depuis le closeout initial P1–P4 :
 
 Validation automatique du runtime : Global [34812934273](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934273) **SUCCESS** ; Auction [34812934319](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934319) **SUCCESS**, 48 effectifs / 46 legacy, zéro manquant/inconnu ; Cardova [34812934329](https://github.com/Champaagnepaapi/gcc-auction-watcher/actions/runs/34812934329) **SUCCESS**, pagination partielle conservée. Tests : 632 Global (4 DOM ignorés localement, exécutés en CI), 1 011 V4 (2 ignorés), 51 multimarket ; compile/YAML/diff-check PASS. Zéro opportunité signalable et zéro notification dans le live de référence.
 
-PokeTrace : Pro signalé expiré par l'utilisateur ; l'API observée annonce encore PRO actif. Le live applique donc un plafond effectif **FREE**, sans accès gradé utilisé. Une restriction du plan n'est jamais un `NO_MATCH`. PriceCharting public reste HTTP 403 / indisponible, sans bypass. Magi #268 reste 50 total / 35 broad / 15 réserve, non déployé sur main.
+PokeTrace : Pro signalé expiré par l'utilisateur ; l'API observée annonce encore PRO actif. Le live applique donc un plafond effectif **FREE**, sans accès gradé utilisé. Une restriction du plan n'est jamais un `NO_MATCH`. PriceCharting public reste HTTP 403 / indisponible, sans bypass. Magi en production conserve les budgets validés de #268 : 50 total / 35 broad / 15 réserve.
 
 La comparaison historique Fanatics `2/24 → 0/24` au head `e51de1e...` a été close : Gengar Web et Rocket's Moltres absents du nouvel inventaire, quatre URL communes inchangées. Le nouveau rapport distingue également les variations de sélection et les corrections de collecte ultérieures.
 
-PR #8/V5, Robot KB/Neon et main restent inchangés. Aucun merge n'est autorisé implicitement par cette validation ou ce classement.
+PR #8/V5 et Robot KB/Neon restent séparés et inchangés par #268.
 
 ### Phase closeout — #266 : TCGdex Rainbow microvariant
 
@@ -319,12 +320,18 @@ Documents de reprise :
 # Prochaine direction canonique
 
 ```text
-PR #268
-  -> phase provider-hardening validée sur head runtime e51de1e924ef9090190dba1107924d6b345ea06d
-  -> conserver les gates Fanatics source-pinnées et le manifeste Magi borné
-  -> PriceCharting/PPT : traiter ensuite les défauts d'identité P5/P6 avant tout gain de couverture
-  -> wrappers Fanatics/Cardova : P7/P8 ensuite, sans élargissement d'identité
-  -> aucun merge de #268 sans décision explicite utilisateur
+Post-#268 production
+  -> observer les premiers runs naturels de main@3c596370ee7fcde93c969139541bc003e7012b6e
+  -> GCC reste OPERATIONAL dans le scope vault validé
+  -> Fanatics / COMC / Magi / Cardova / Mercari / SNKRDUNK restent PROVIDER_BLOCKED tant que les preuves manquantes ne sont pas obtenues proprement
+  -> ne pas augmenter les budgets pour masquer une limite d'identité, de coût ou de provider
+
+Déblocage providers
+  -> Fanatics : priorité coût acheteur final + valorisation indépendante de microvariante
+  -> Magi : priorité route/coût acheteur + valeurs gradées exactes manquantes
+  -> COMC/Cardova : coût total, financement/taxe/premium/détention-livraison avant décision autonome
+  -> Mercari/SNKRDUNK : preuve item-level langue/numéro/grade/matériau avant tout gain de recall
+  -> règles génériques et déterministes uniquement ; aucune correction carte-par-carte
 
 Post-#266
   -> observer en production le recall Rainbow réellement source-proven
@@ -339,8 +346,8 @@ Post-#263
   -> ne pas relâcher l'identité ni transformer un proxy en comparable exact
 
 V4 providers
-  -> priorité aux SOLD exacts récents lorsqu'ils existent
-  -> PriceCharting = référence guide systématique compatible, jamais faux SOLD
+  -> priorité SOLD exact récent > SOLD exact ancien ajusté > fixed ask compatible > snapshot auction ≤5 min si aucun SOLD
+  -> PriceCharting = référence guide compatible, jamais faux SOLD
   -> aucun secret ni contournement anti-bot/WAF
 
 Robot KB
