@@ -1,87 +1,104 @@
 # Robot Pokémon / GCC Auction Watcher — phase courante
 
-## État canonique — 14 septembre 2026
+## État canonique — 15 septembre 2026
 
-Production V4 : `main@3c596370ee7fcde93c969139541bc003e7012b6e` après merge de la PR #268.
+Production V4 : `main@3c596370ee7fcde93c969139541bc003e7012b6e`, merge de la PR #268.
 
-Runtime multi-market validé avant merge : `29f448a7441e82267fc9d84c2b0f9a52168e77cb`.
-Closeout documentaire pré-merge : `c846aa6067d7aea0e8aa0812cdeec02cf3524bb5`.
-Rapport de référence : [`v4-multimarket-readiness-20260914.md`](v4-multimarket-readiness-20260914.md).
+Runtime multi-market de référence avant merge : `29f448a7441e82267fc9d84c2b0f9a52168e77cb`.
+Premier cycle naturel post-merge confirmé : Main Scanner `34886292095` **SUCCESS** sur `main@3c596370...`.
+Rapport multi-market détaillé : [`v4-multimarket-readiness-20260914.md`](v4-multimarket-readiness-20260914.md).
 
-PR #8/V5 reste OPEN/DRAFT/NON-MERGED et séparée de V4. Robot KB reste séparé de la décision commerciale V4 (`V4_USE=false`). Neon reste hors du chemin de production.
+PR #8/V5 reste **OPEN / DRAFT / NON MERGED**, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, séparée de V4. Robot KB reste séparé de la décision commerciale V4 (`V4_USE=false`). Neon reste hors du chemin de production automatique.
 
 ## Classement multi-market actuel
 
 | Marketplace | État | Résiduel principal |
 |---|---|---|
-| GCC | **OPERATIONAL** | Chemin vault validé : discovery → identité exacte → valorisation indépendante → coût → décision. Livraison domicile hors de la preuve de coût validée. |
-| Fanatics | **PROVIDER_BLOCKED** | Coût acheteur final et valorisation indépendante compatible avec la microvariante non prouvés. |
-| COMC | **PROVIDER_BLOCKED** | Financement/taxe/mode de détention-livraison non prouvés ; aucune valeur canonique exploitable dans la sélection validée. |
-| Magi | **PROVIDER_BLOCKED** | Route/coût acheteur non prouvés ; certaines projections catalogue/valeurs gradées exactes absentes. |
-| Cardova | **PROVIDER_BLOCKED** | Financement/paiement et premium applicables non prouvés ; aucune valeur indépendante exacte dans la sélection validée. |
-| Mercari | **PROVIDER_BLOCKED** | Preuves item de langue/numéro/grade/matériau insuffisantes ou contradictoires ; coût acheteur absent. |
-| SNKRDUNK | **PROVIDER_BLOCKED** | Langue de carte et offre individuelle non prouvées ; données observées de type catalogue/AggregateOffer ; route/coût acheteur absents. |
+| GCC | **OPERATIONAL** | Chemin vault observé : découverte → identité exacte → valorisation indépendante → coût → décision. |
+| Fanatics | **PROVIDER_BLOCKED** | Coût acheteur final non prouvé ; Shining Mewtwo reste matériellement ambigu côté valorisation. Litten peut avoir une preuve variante plus forte, mais cela ne lève pas le blocage coût. |
+| COMC | **PROVIDER_BLOCKED** | Historique SOLD public anonyme bloqué par HTTP 403 ; coût Store Credits/taxe/détention-livraison non prouvé. |
+| Magi | **PROVIDER_BLOCKED** | Route/coût acheteur non prouvés ; certaines valeurs gradées exactes restent absentes. |
+| Cardova | **PROVIDER_BLOCKED** | Financement/paiement et premium Auction applicables non prouvés ; aucune valeur indépendante exacte dans la sélection validée. |
+| Mercari | **PROVIDER_BLOCKED** | Preuves item langue/numéro/grade/matériau insuffisantes ou contradictoires ; route et coût acheteur absents. |
+| SNKRDUNK | **PROVIDER_BLOCKED** | Les pages publiques répondent, mais les fiches observées ne prouvent pas ensemble catégorie item, langue, grade PSA et offre individuelle exploitable ; route/coût acheteur absents. |
 
-`PROVIDER_BLOCKED` décrit ici le chemin économique autonome dans les conditions publiques auditées. Cela ne signifie pas que le site est inaccessible. Pagination partielle, caps volontaires et budgets bornés restent des limites logicielles séparées, pas des preuves de blocage fournisseur.
+`PROVIDER_BLOCKED` décrit le chemin économique autonome dans les conditions publiques auditées. Cela ne signifie pas que le site est inaccessible. Pagination partielle, caps volontaires et budgets bornés restent des limites logicielles séparées.
 
-## Ce que #268 a mis en production
+## #268 en production
 
-- P1–P4 conservés : aucun nom canonique fabriqué ; Master/Poke Ball fail-closed avec preuve source exacte ; vraies dimensions V2+V3 ; aliases Fanatics bornés au provider.
-- P5/P6 : PriceCharting et PPT reviewed-set passent par un gate canonique strict ; contradictions nom/set/numéro/langue/grade/matériau restent bloquantes.
-- P7 : wrappers/installers Fanatics idempotents et sans récursion.
-- P8 : pagination Cardova rattachée à la bonne lane/enveloppe/page ; aucune complétude inventée.
-- COMC dispose d'une discovery autonome.
-- Mercari et SNKRDUNK disposent de routes publiques read-only intégrées à Global.
-- Le DOM Mercari est lié à l'item et couvert par contrat Chromium.
-- Les coûts inconnus restent inconnus ; aucune hypothèse de taxe/frais/livraison n'est fabriquée.
-- TCGdex ne propage les noms multilingues qu'avec preuve de la même carte source ; panne/budget/403 ne deviennent pas des `NO_MATCH` propres.
-- Auction sépare `RESOLVED`, `ENDED`, `UNKNOWN`, `INSPECTION_ERROR` et `OUT_OF_SCOPE`. Aucun de ces états ne devient automatiquement SOLD.
-- PokeTrace fonctionne avec un plafond effectif FREE lorsque requis ; donnée de plan inaccessible != `NO_MATCH`.
-- PriceCharting public HTTP 403 reste `provider unavailable`, sans contournement.
+#268 a mis en production le hardening Global multi-market :
 
-## Validation de référence
+- gates d'identité TCGdex/microvariantes fail-closed ;
+- PriceCharting/PPT derrière une identité canonique stricte ;
+- wrappers Fanatics idempotents ;
+- pagination Cardova liée à la bonne lane/enveloppe/page ;
+- discovery COMC autonome ;
+- Mercari/SNKRDUNK read-only intégrés à Global ;
+- coûts inconnus conservés inconnus ;
+- panne/budget/403 provider jamais converti en `NO_MATCH` propre ;
+- états Auction `RESOLVED`, `ENDED`, `UNKNOWN`, `INSPECTION_ERROR`, `OUT_OF_SCOPE` séparés de SOLD.
 
-Runtime `29f448a7441e82267fc9d84c2b0f9a52168e77cb` :
+Validation de référence #268 : Global `34812934273`, Auction `34812934319`, Cardova `34812934329` **SUCCESS** ; suites de tests, compilation, YAML et diff-check PASS ; zéro achat/bid/checkout/paiement.
 
-- Global `34812934273` : **SUCCESS** ;
-- Auction `34812934319` : **SUCCESS** ;
-- Cardova `34812934329` : **SUCCESS** ;
-- 632 tests Global, dont 4 contrats DOM exécutés en CI ;
-- 1 011 tests V4, 2 ignorés ;
-- 51 tests multimarket ;
-- compilation, YAML et diff-check : PASS ;
-- zéro achat/bid/checkout/paiement ;
-- zéro opportunité signalable et zéro notification dans le live de référence.
+## Post-merge réellement observé
 
-Closeout `c846aa6067d7aea0e8aa0812cdeec02cf3524bb5` : Global, Auction, Cardova et validation Robot KB automatiques **SUCCESS** avant merge.
+Main Scanner `34886292095` sur `main@3c596370...` : **SUCCESS**.
 
-Merge production #268 : `3c596370ee7fcde93c969139541bc003e7012b6e`.
+- découverte GCC complète dans le scope production filtré ;
+- TCGdex sans erreur transport sur ce run ;
+- `EXTERNAL_PENDING_BACKLOG=2320`, first-evaluation coverage complète mais couverture marché externe incomplète ;
+- PSA APR : HTTP 403, breaker run-local ;
+- PriceCharting public : HTTP 403 / indisponible ;
+- eBay SOLD : 0 tentative sur ce run ;
+- aucun vrai cas future-start prouvé observé ;
+- PokeTrace se déclare encore `effective_plan=PRO` sur les entrypoints production.
+
+Ce dernier point est un défaut réel post-#268 : la validation #268 imposait le plafond FREE, mais pas les deux entrypoints de production.
+
+## PR #271 — correction PokeTrace FREE — prête, NON MERGÉE
+
+PR #271 : `fix/v4-poketrace-free-ceiling-production-20260914`, head `75eb09768bf55d002466c5e3d50b038c3884ceb5`.
+
+Elle impose le plafond FREE dans Main Scanner et Global avant import provider, tout en conservant la possibilité d'un futur opt-in explicite. Elle ne modifie ni identité, ni budget, ni seuil économique, ni sémantique SOLD/ASK.
+
+Validations du head #271 :
+
+- Global `34879803090` : **SUCCESS** ;
+- Auction `34879802895` : **SUCCESS** ;
+- Cardova `34879802823` : **SUCCESS**.
+
+#271 reste **OPEN / DRAFT / NON MERGÉE** et nécessite une autorisation explicite avant merge.
+
+## PR #273 — diagnostic Fanatics — terminé, NON DESTINÉE AU MERGE
+
+PR #273 : `diag/v4-fanatics-ppt-variant-proof-20260914`, head `c31882e8adacff8c291a43e78eb8ab6712ff2359`.
+
+- tests ciblés, compilation et diff-check : PASS ;
+- workflow diagnostic `34886340368` : **SUCCESS**, lecture seule et aucune mutation runtime ;
+- le probe cible n'a pas forcé PPT : `daily_remaining=55` était sous le plancher de sécurité `15000`, donc le budget s'est arrêté proprement ;
+- aucun abaissement de ce plancher n'est recommandé.
+
+Les preuves #268 restent suffisantes pour le classement : Shining Mewtwo est EXACT mais expose deux variantes matérielles applicables et doit rester bloqué ; Litten est EXACT avec une variante TCGdex applicable, mais Fanatics reste de toute façon bloqué par l'absence de coût acheteur final prouvé.
+
+Conclusion : **Fanatics reste PROVIDER_BLOCKED** ; aucune relaxation d'identité et aucun changement V4 supplémentaire ne sont justifiés sur cette base.
 
 ## Invariants
 
-- ASK / annonce active / enchère live / disparition / ENDED / OUT_OF_SCOPE != SOLD ;
+- SOLD exact récent > SOLD exact ancien ajusté > fixed ASK compatible > snapshot auction ≤5 min si aucun SOLD ;
+- ASK / annonce active / enchère live / disparition / ENDED / OUT_OF_SCOPE ≠ SOLD ;
 - une marketplace où la carte est achetable ne prouve jamais seule sa fair value ;
-- aucune panne provider n'est transformée en preuve négative de marché ;
+- panne provider ≠ preuve négative de marché ;
 - aucune relaxation langue/grader/grade/set/numéro/microvariante ;
 - identité ambiguë = blocage ou revue manuelle ;
-- aucun achat, bid, checkout ou paiement automatique ;
+- aucun achat, bid, checkout, paiement ou grading automatique ;
 - aucun contournement WAF/anti-bot ;
-- PR #8/V5 reste séparée et ne doit pas être mergée sans autorisation explicite ;
-- Robot KB/Neon restent séparés de V4.
+- ne pas relever les caps uniquement pour vider un backlog ;
+- PR #8/V5, Robot KB/P3 et Neon restent séparés de V4.
 
-## Prochaine phase
+## Prochaine action canonique
 
-1. observer les premiers runs naturels post-merge de `main@3c596370...` et vérifier absence de régression ;
-2. traiter les providers bloqués **un par un**, uniquement si une preuve externe propre permet réellement de lever le blocage ;
-3. priorité : obtenir le coût acheteur complet et les preuves d'identité/valorisation manquantes sans augmenter artificiellement les budgets ;
-4. conserver la priorité des preuves de prix : SOLD exact récent → SOLD exact plus ancien ajusté → fixed ask compatible → snapshot d'enchère ≤5 min si aucun SOLD ;
-5. ne jamais présenter une limite logicielle volontaire comme un blocage fournisseur, ni un `PROVIDER_BLOCKED` comme une panne du site.
-
-### Ordre recommandé de travail
-
-- **Fanatics** : déjà 2 identités EXACT observées ; chercher d'abord la preuve de coût acheteur final et une valorisation indépendante compatible avec la microvariante.
-- **Magi** : identité commerciale déjà relativement forte ; chercher coût/route acheteur puis valeurs gradées exactes manquantes.
-- **COMC / Cardova** : clarifier proprement le coût acheteur total et les conditions de détention/livraison/premium avant toute décision économique autonome.
-- **Mercari / SNKRDUNK** : renforcer d'abord la preuve item-level déterministe ; aucun élargissement d'identité pour gagner du recall.
-
-Les caps et budgets ne doivent être relevés qu'après preuve qu'ils sont le vrai goulot et que le changement respecte les limites provider.
+1. ne pas investir dans des corrections de parsing provider qui ne lèvent pas le blocage économique réel ;
+2. conserver GCC **OPERATIONAL** et les six autres providers **PROVIDER_BLOCKED** jusqu'à preuve externe propre de déblocage ;
+3. priorité production immédiate : décider explicitement du merge de #271 ;
+4. après tout merge production autorisé, observer un run naturel avant nouveau closeout ;
+5. fermer/archiver les diagnostics seulement avec housekeeping explicite, sans suppression de branche.
