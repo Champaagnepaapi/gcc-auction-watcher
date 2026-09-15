@@ -9,7 +9,7 @@ V4 production main                 main / 3c596370ee7fcde93c969139541bc003e7012b
 #268 source                         fix/v4-global-coverage-losses-20260907 / MERGED
 #271 PokeTrace FREE                 fix/v4-poketrace-free-ceiling-production-20260914 / 75eb09768bf55d002466c5e3d50b038c3884ceb5 / OPEN DRAFT
 #273 Fanatics diagnostic            diag/v4-fanatics-ppt-variant-proof-20260914 / c31882e8adacff8c291a43e78eb8ab6712ff2359 / OPEN DRAFT / DIAGNOSTIC_ONLY
-post-#268 docs closeout             docs/post-268-closeout-20260914 / ACTIVE DOCS-ONLY
+#274 post-#268 docs closeout         docs/post-268-closeout-20260914 / OPEN DRAFT / DOCS_ONLY
 #270 Robot KB Magi snapshots        feat/robot-kb-magi-sold-marked-snapshots-20260907 / 9232931fbbc2cc6c970850e0f8c4d7eac69a46e8 / OPEN DRAFT / ROBOT_KB_ONLY
 #269 exact-coordinate branch        fix/v4-coordinate-authoritative-card-identity-20260907 / a94d5009f556969e242fa16babb6aea14f3f8a31 / OPEN DRAFT / RE-AUDIT REQUIRED
 V5 expérimentale                   agent/v5-poketrace-cardmarket-market-data / #8 OPEN DRAFT / PROTECTED
@@ -50,13 +50,13 @@ Le classement provider actuel est : GCC `OPERATIONAL`; Fanatics, COMC, Magi, Car
 
 Ne pas baisser le plancher PPT ou relâcher l'identité pour forcer un diagnostic. Shining Mewtwo reste matériellement ambigu ; Fanatics reste `PROVIDER_BLOCKED` indépendamment du cas Litten à cause du coût acheteur final non prouvé.
 
-## Branche de closeout docs post-#268
+## Branche de closeout docs post-#268 — PR #274
 
 `docs/post-268-closeout-20260914`
 
 Cette branche part du `main@3c596370...` et ne doit contenir que de la documentation. Elle met à jour README/phase courante/ledger/inventaires après le merge #268 et les observations post-merge #271/#273.
 
-Aucune PR de merge n'était ouverte pour cette branche au contrôle du 15 septembre 2026. Aucun merge n'est implicite.
+PR #274 est **OPEN / DRAFT / DOCS_ONLY**. Sa création n'autorise aucun merge. Aucun merge n'est implicite.
 
 ## Branches V4 récentes / supersessions
 
@@ -70,7 +70,7 @@ Aucune PR de merge n'était ouverte pour cette branche au contrôle du 15 septem
 - `fix/v4-coordinate-authoritative-card-identity-20260907` — #269, OPEN/DRAFT, branche large basée avant #268 ; ne pas merger sans nouveau reuse audit ;
 - `fix/v4-poketrace-free-ceiling-production-20260914` — #271, OPEN/DRAFT, validation verte, autorisation explicite requise ;
 - `diag/v4-fanatics-ppt-variant-proof-20260914` — #273, OPEN/DRAFT diagnostic-only ;
-- `docs/post-268-closeout-20260914` — docs-only active ;
+- `docs/post-268-closeout-20260914` — #274 OPEN/DRAFT/docs-only ;
 - `docs/post-260-tcgdex-closeout-20260907` — provenance historique, ne pas reset/delete ;
 - `docs/post-260-261-closeout-20260907` — #262, **MERGED**.
 
