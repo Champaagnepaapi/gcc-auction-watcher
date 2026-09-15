@@ -12,6 +12,7 @@ Ce document n'est pas un compteur exhaustif de toutes les PR historiques. Il cla
 
 | PR | État / instruction |
 |---|---|
+| #274 | **OPEN / DRAFT / DOCS_ONLY / EXPLICIT_AUTH_REQUIRED**. Closeout documentaire post-#268, branche `docs/post-268-closeout-20260914`. Aucun runtime modifié ; ne pas merger sans autorisation explicite. |
 | #273 | **OPEN / DRAFT / DIAGNOSTIC_ONLY / DO_NOT_MERGE**. Diagnostic Fanatics read-only, head `c31882e8adacff8c291a43e78eb8ab6712ff2359`. Workflow `34886340368` SUCCESS. Le plancher PPT a correctement bloqué un appel lorsque `daily_remaining=55`; aucune raison de relâcher cette protection. |
 | #271 | **OPEN / DRAFT / DRAFT_VALIDATION / EXPLICIT_AUTH_REQUIRED**. Correction PokeTrace FREE production, head `75eb09768bf55d002466c5e3d50b038c3884ceb5`. Global `34879803090`, Auction `34879802895`, Cardova `34879802823` SUCCESS. Prête techniquement, non déployée. |
 | #270 | **OPEN / DRAFT / ROBOT_KB_ONLY / EXPLICIT_AUTH_REQUIRED**. Snapshots Magi marqués SOLD, sans les transformer en ventes prouvées. Séparée de V4. |
@@ -92,7 +93,7 @@ Mercari   PROVIDER_BLOCKED
 SNKRDUNK  PROVIDER_BLOCKED
 ```
 
-#271 ne change pas ce classement : elle corrige uniquement l'application du plan PokeTrace FREE en production. #273 ne change pas ce classement : elle est diagnostique.
+#271 ne change pas ce classement : elle corrige uniquement l'application du plan PokeTrace FREE en production. #273 ne change pas ce classement : elle est diagnostique. #274 ne change pas ce classement : elle est documentation uniquement.
 
 ## Règles
 
@@ -104,4 +105,5 @@ SNKRDUNK  PROVIDER_BLOCKED
 - aucune fermeture housekeeping destructive ni suppression de branche sans autorisation ;
 - #8 reste protégée ;
 - #271 exige une autorisation explicite avant merge ;
-- #273 n'est pas destinée au merge production.
+- #273 n'est pas destinée au merge production ;
+- #274 exige une autorisation explicite avant merge.
