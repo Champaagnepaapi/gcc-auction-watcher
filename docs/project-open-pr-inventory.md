@@ -1,87 +1,107 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des PR ouvertes
 
-## Mise à jour ciblée — 14 septembre 2026
+## État vérifié — 15 septembre 2026
 
-GitHub vérifié : main `b43dec6084f341b2b52301a4f0542d6f616cf1e2`, runtime production #266 `761b5e980aeaf63833f574127fbe1ff4728f86b4`. PR #268 OPEN/DRAFT/NON MERGED, branche `fix/v4-global-coverage-losses-20260907`, runtime candidat validé `29f448a7441e82267fc9d84c2b0f9a52168e77cb`. [Classement multi-market et preuves](v4-multimarket-readiness-20260914.md) : GCC OPERATIONAL au vault ; six autres marchés bloqués économiquement par les preuves externes/conditions acheteur documentées.
+Autorité production : `main@3c596370ee7fcde93c969139541bc003e7012b6e` après merge de #268.
 
-PR #8 reste OPEN/DRAFT/NON MERGED, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, branche `agent/v5-poketrace-cardmarket-market-data`, sans modification. Robot KB/Neon séparés. Aucun merge ni changement de topologie dans cette passe ; les inventaires historiques ci-dessous ne sont pas un nouveau comptage exhaustif.
+PR #8/V5 reste **OPEN / DRAFT / NON MERGED**, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, protégée. Robot KB/P3/Neon restent séparés de V4.
 
-## Snapshot historique conservé
+Ce document n'est pas un compteur exhaustif de toutes les PR historiques. Il classe les PR encore pertinentes pour une décision ou une supersession. GitHub live reste prioritaire.
 
-Snapshot pertinent re-vérifié le **7 septembre 2026**. Le contrôle GitHub live reste l'autorité ; ne pas utiliser ce document comme compteur exhaustif sans nouveau search live.
+## PR courantes à connaître
 
-> V4 production code : `24230552d52574e2769c21dcfa84ba11320da2cf` (#261). `main` a ensuite avancé docs-only à `22303a34f7414769a04f4c587338def005b8a5c6`. PR #259/#260/#261 sont MERGED. PR #258 et #256 restent OPEN/DRAFT mais leur capacité pertinente est absorbée par #259. PR #8 reste protégée.
-
-## PR ouvertes pertinentes pour la gouvernance courante
-
-| PR | Classification / instruction |
+| PR | État / instruction |
 |---|---|
-| #258 | `STALE_OPEN/SUPERSEDED_BY_259`. Recall-first, scope 250 EUR, PSA 1–10 et ASK-review ont été intégrés par #259. Ne pas merger cette branche empilée sur l'ancienne #257. |
-| #256 | `STALE_OPEN/SUPERSEDED_BY_259`. Les capacités Japan Mercari/SNKRDUNK pertinentes ont été intégrées par #259. Ne pas merger indépendamment. |
-| #248 | `STALE_OPEN/SUPERSEDED_DIAGNOSTIC`. Diagnostic navigation eBay ancien ; la lignée actuelle a été portée puis prolongée par #250→#254. Ne pas merger. |
-| #246 | `STALE_OPEN / DOCS_ONLY`. Ancien closeout #245/#247 désormais dépassé par les closeouts ultérieurs. Ne pas merger sans re-audit. |
-| #234 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Benchmark eBay public borné/inconclusif. |
-| #233 | `STALE_OPEN/SUPERSEDED` par #238/#239. Ne pas merger. |
-| #230 | `VALIDATION_ONLY / OPEN_DRAFT / DO_NOT_MERGE`. Capacité historique déjà en production. |
-| #226/#228 | `STALE_OPEN/SUPERSEDED` par #238/#239. |
-| #210 | `ROBOT_KB_DURABLE_WRITE_GUARD / EXPLICIT_AUTH_REQUIRED`. Aucun durable write exécuté. |
-| #209 | `ROBOT_KB_ROLLBACK_REHEARSAL`. Preuve rollback uniquement. |
-| #208 | `ROBOT_KB_MEMORY_ONLY / P3_STACKED`. |
-| #206 | `ROBOT_KB_PRE_207_FAIL_CLOSED_PROOF`. |
-| #205 | `ROBOT_KB_MEMORY_ONLY_SOLD_CANDIDATES`. |
-| #204 | `ROBOT_KB_CARDOVA_MICROVARIANT_PROOF`. |
-| #199 | `ROBOT_KB_CARDOVA_SOLD_STACK_ROOT`. |
-| #198 | `ROBOT_KB_COMC_PUBLIC_HISTORY_DIAGNOSTIC`. |
-| #197 | `ROBOT_KB_FANATICS_PAID_HISTORY_DIAGNOSTIC`. |
-| #196 | `ROBOT_KB_LOCAL_PSA_CORROBORATION`. |
-| #195 | `ROBOT_KB_BATCH_STACKED`. |
-| #194 | `ROBOT_KB_CANONICAL_BOOTSTRAP / STACKED`. |
-| #193 | `ROBOT_KB_MANUAL_WRITE_PATH / STACKED`. |
-| #192 | `ROBOT_KB_EBAY_BENCHMARK`. |
-| #190 | `STALE_OPEN / DOCS_DIAGNOSTIC`. |
-| #187 | `ROBOT_KB_PUBLIC_MARKET_RECOVERY`. |
-| #176 | `STALE_OPEN / DOCS`. |
-| #159 | `STALE_OPEN/SUPERSEDED` fonctionnellement par #177. |
-| #141 | `SUPERSEDED_DIAGNOSTIC` par #142/#140. |
-| #138 | `SUPERSEDED_BY_139`. |
-| #126 | `STALE_OPEN/SUPERSEDED` par #127→#135. |
-| #115/#114/#113/#110/#109/#108 | `SUPERSEDED_BY_139`. |
-| #111 | `STALE_OPEN/SUPERSEDED` docs. |
-| #107 | `STALE_OPEN/SUPERSEDED` Japan Edge PPT display shadow. |
-| #106 | `STALE_OPEN/SUPERSEDED` V4 PPT shadow. |
-| #96 | `V5 child/deferred`; ne pas merger dans main. |
-| #92 | `V5 child/shadow/deferred`; ne pas merger dans main. |
-| #87 | Décision produit V4 séparée/non déployée. |
-| #54 | `STALE_OPEN/SUPERSEDED`. |
-| #8 | **`V5_ONLY / PROTECTED`**. OPEN/DRAFT/NON-MERGED. Ne jamais merger dans `main` sans autorisation explicite utilisateur. |
+| #273 | **OPEN / DRAFT / DIAGNOSTIC_ONLY / DO_NOT_MERGE**. Diagnostic Fanatics read-only, head `c31882e8adacff8c291a43e78eb8ab6712ff2359`. Workflow `34886340368` SUCCESS. Le plancher PPT a correctement bloqué un appel lorsque `daily_remaining=55`; aucune raison de relâcher cette protection. |
+| #271 | **OPEN / DRAFT / DRAFT_VALIDATION / EXPLICIT_AUTH_REQUIRED**. Correction PokeTrace FREE production, head `75eb09768bf55d002466c5e3d50b038c3884ceb5`. Global `34879803090`, Auction `34879802895`, Cardova `34879802823` SUCCESS. Prête techniquement, non déployée. |
+| #270 | **OPEN / DRAFT / ROBOT_KB_ONLY / EXPLICIT_AUTH_REQUIRED**. Snapshots Magi marqués SOLD, sans les transformer en ventes prouvées. Séparée de V4. |
+| #269 | **OPEN / DRAFT / STALE_REVIEW_REQUIRED**. Branche d'identité exact-coordinate basée avant #268 et très large ; ne pas merger telle quelle sans nouveau reuse audit contre `main`. |
+| #258 | **OPEN / DRAFT / STALE_OPEN / SUPERSEDED_BY_259**. Recall intégré par #259. Ne pas merger. |
+| #256 | **OPEN / DRAFT / STALE_OPEN / SUPERSEDED_BY_259**. Capacités Japan Mercari/SNKRDUNK pertinentes intégrées par #259. Ne pas merger. |
+| #248 | **OPEN / DRAFT / STALE_OPEN / SUPERSEDED_DIAGNOSTIC**. Ancien diagnostic eBay, superseded par #250→#254. |
+| #246 | **OPEN / DOCS_ONLY / STALE_OPEN**. Ancien closeout dépassé par les phases ultérieures. |
+| #234 | **OPEN / DRAFT / VALIDATION_ONLY / DO_NOT_MERGE**. Benchmark eBay public borné/inconclusif. |
+| #233 | **OPEN / STALE_OPEN / SUPERSEDED** par #238/#239. |
+| #230 | **OPEN / DRAFT / VALIDATION_ONLY / DO_NOT_MERGE**. Capacité historique déjà en production. |
+| #226/#228 | **OPEN / STALE_OPEN / SUPERSEDED** par la lignée eBay ultérieure. |
+| #210 | **OPEN / DRAFT / ROBOT_KB_DURABLE_WRITE_GUARD / EXPLICIT_AUTH_REQUIRED**. Aucun durable write Cardova autorisé par défaut. |
+| #209 | **OPEN / ROBOT_KB_ROLLBACK_REHEARSAL**. Preuve rollback seulement. |
+| #208 | **OPEN / ROBOT_KB_MEMORY_ONLY / P3_STACKED**. |
+| #206 | **OPEN / ROBOT_KB_PRE_207_FAIL_CLOSED_PROOF**. |
+| #205 | **OPEN / ROBOT_KB_MEMORY_ONLY_SOLD_CANDIDATES**. |
+| #204 | **OPEN / ROBOT_KB_CARDOVA_MICROVARIANT_PROOF**. |
+| #199 | **OPEN / ROBOT_KB_CARDOVA_SOLD_STACK_ROOT**. |
+| #198 | **OPEN / ROBOT_KB_COMC_PUBLIC_HISTORY_DIAGNOSTIC**. HTTP 403 public history observé ; aucun bypass. |
+| #197 | **OPEN / ROBOT_KB_FANATICS_PAID_HISTORY_DIAGNOSTIC**. |
+| #196 | **OPEN / ROBOT_KB_LOCAL_PSA_CORROBORATION**. |
+| #195 | **OPEN / ROBOT_KB_BATCH_STACKED**. |
+| #194 | **OPEN / ROBOT_KB_CANONICAL_BOOTSTRAP / STACKED**. |
+| #193 | **OPEN / ROBOT_KB_MANUAL_WRITE_PATH / STACKED**. |
+| #192 | **OPEN / ROBOT_KB_EBAY_BENCHMARK**. |
+| #190 | **OPEN / STALE_OPEN / DOCS_DIAGNOSTIC**. |
+| #187 | **OPEN / ROBOT_KB_PUBLIC_MARKET_RECOVERY**. |
+| #176 | **OPEN / STALE_OPEN / DOCS**. |
+| #159 | **OPEN / STALE_OPEN / SUPERSEDED** fonctionnellement par #177. |
+| #141 | **OPEN / SUPERSEDED_DIAGNOSTIC** par #142/#140. |
+| #138 | **OPEN / SUPERSEDED_BY_139**. |
+| #126 | **OPEN / STALE_OPEN / SUPERSEDED** par #127→#135. |
+| #115/#114/#113/#110/#109/#108 | **OPEN / SUPERSEDED_BY_139**. |
+| #111 | **OPEN / STALE_OPEN / SUPERSEDED_DOCS**. |
+| #107 | **OPEN / STALE_OPEN / SUPERSEDED** Japan Edge PPT shadow. |
+| #106 | **OPEN / STALE_OPEN / SUPERSEDED** V4 PPT shadow. |
+| #96 | **OPEN / V5 child/deferred**. Ne pas merger dans `main`. |
+| #92 | **OPEN / V5 child/shadow/deferred**. Ne pas merger dans `main`. |
+| #87 | **OPEN / décision produit V4 séparée/non déployée**. |
+| #54 | **OPEN / STALE_OPEN / SUPERSEDED**. |
+| #8 | **OPEN / DRAFT / V5_ONLY / PROTECTED**. Ne jamais merger dans `main` sans autorisation explicite utilisateur. |
 
-## Merges récents pertinents
+## PR récentes fermées/mergées qui changent l'interprétation
 
-- #261 : cross-grader proxy calibration **MERGED / PROD_V4** ; merge runtime `24230552...` ;
-- #260 : constrained fuzzy/name TCGdex recovery **MERGED / PROD_V4** ; merge runtime `db4954f5...` ;
-- #259 : recall + source roles + PriceCharting + Global + Japan **MERGED / PROD_V4** ;
-- #257 : source-role/PriceCharting foundation **MERGED**, puis intégrée avec la pile #259 ;
-- #255 : external fair-value authority **MERGED / PROD_V4** ; historique GCC observationnel économiquement ;
-- #254/#253/#252/#251/#250 : lignée de résilience/diagnostic eBay **MERGED** ;
-- #247 : PokeTrace aggregate quality historique **MERGED** ; politique recall ultérieure modifiée par #259 ;
-- #245 : auction pagination default preservation **MERGED / PROD_V4** ;
-- #243/#244 : future-start runtime + docs closeout **MERGED** ;
-- #238/#239/#242 : eBay worker lineage **MERGED** ;
-- #237 : Main Scanner registry rollover **MERGED** ;
+- #272 : **CLOSED / NON MERGED** ; récupération PPT English redondante, capacité déjà présente dans `main` ;
+- #268 : **MERGED / PROD_V4** via `3c596370...` ; hardening multi-market canonique ;
+- #266 : **MERGED / PROD_V4** ; Rainbow microvariant ;
+- #263 : **MERGED / PROD_V4** ; tuning CA→PSA 35 % ;
+- #261 : **MERGED / PROD_V4** ; cross-grader calibration ;
+- #260 : **MERGED / PROD_V4** ; constrained TCGdex name recovery ;
+- #259 : **MERGED / PROD_V4** ; recall/source roles/Global/Japan ;
+- #257 : **MERGED**, puis intégrée à #259 ;
+- #255 : **MERGED / PROD_V4** ; external fair-value authority ;
+- #254/#253/#252/#251/#250 : lignée eBay **MERGED** ;
+- #247 : PokeTrace aggregate quality historique **MERGED**, politique ensuite modifiée par #259 ;
+- #245 : auction pagination preservation **MERGED / PROD_V4** ;
+- #243/#244 : future-start runtime + closeout **MERGED** ;
+- #238/#239/#242 : lignée eBay worker **MERGED** ;
 - #229/#231 : auction recovery capacity **MERGED** ;
 - #222/#224 : TCGdex outage fallback **MERGED** ;
 - #216/#217 : TCGdex transport resilience **MERGED** ;
 - #214 : external pending throughput **MERGED** ;
-- #211/#212 : auction order-drift hardening **MERGED** ;
+- #211/#212 : auction order hardening **MERGED** ;
 - #178/#179/#180 : **MERGED**.
+
+## Statut provider lié aux PR actuelles
+
+Le closeout #268 reste le classement canonique actuel :
+
+```text
+GCC       OPERATIONAL
+Fanatics  PROVIDER_BLOCKED
+COMC      PROVIDER_BLOCKED
+Magi      PROVIDER_BLOCKED
+Cardova   PROVIDER_BLOCKED
+Mercari   PROVIDER_BLOCKED
+SNKRDUNK  PROVIDER_BLOCKED
+```
+
+#271 ne change pas ce classement : elle corrige uniquement l'application du plan PokeTrace FREE en production. #273 ne change pas ce classement : elle est diagnostique.
 
 ## Règles
 
-- `open` ne veut pas dire `à merger` ;
+- `open` ne signifie jamais `à merger` ;
 - draft/non-draft ne vaut pas autorisation ;
-- vérifier patch + ancestry + supersession avant toute décision ;
-- une PR encore ouverte peut être `STALE_OPEN` après absorption par un merge ultérieur ;
-- ne jamais merger un child stacké directement si son parent/successeur n'est pas résolu ;
+- vérifier patch + ancestry + supersession avant décision ;
+- ne jamais merger une branche stackée/superseded simplement parce qu'elle reste ouverte ;
 - ne jamais exécuter une migration/écriture durable Robot KB par simple merge de code préparatoire ;
-- aucune fermeture housekeeping destructive sans autorisation utilisateur ;
-- **PR #8 reste explicitement protégée** et non mergée.
+- aucune fermeture housekeeping destructive ni suppression de branche sans autorisation ;
+- #8 reste protégée ;
+- #271 exige une autorisation explicite avant merge ;
+- #273 n'est pas destinée au merge production.
