@@ -1,114 +1,125 @@
 # Robot Pokémon / GCC Auction Watcher — inventaire des branches
 
-## Mise à jour ciblée — 14 septembre 2026
+## État vérifié — 15 septembre 2026
 
-GitHub vérifié : main `b43dec6084f341b2b52301a4f0542d6f616cf1e2`, runtime production #266 `761b5e980aeaf63833f574127fbe1ff4728f86b4`. PR #268 OPEN/DRAFT/NON MERGED, branche `fix/v4-global-coverage-losses-20260907`, runtime candidat validé `29f448a7441e82267fc9d84c2b0f9a52168e77cb`. [Classement multi-market et preuves](v4-multimarket-readiness-20260914.md) : GCC OPERATIONAL au vault ; six autres marchés bloqués économiquement par les preuves externes/conditions acheteur documentées.
-
-PR #8 reste OPEN/DRAFT/NON MERGED, head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f`, branche `agent/v5-poketrace-cardmarket-market-data`, sans modification. Robot KB/Neon séparés. Aucun merge ni changement de topologie dans cette passe ; les inventaires historiques ci-dessous ne sont pas un nouveau comptage exhaustif.
-
-## Snapshot historique conservé
-
-État pertinent re-vérifié le **7 septembre 2026** après les merges production #259/#260/#261 et le closeout #262.
-
-> `main` est actuellement à `85f429e2eec6f810e53f7fcbc00d77f2da525c75` ; dernier SHA runtime #261 `24230552d52574e2769c21dcfa84ba11320da2cf`. Toujours re-vérifier le HEAD GitHub live avant une action.
-
-## Autorités / branches récentes
+Autorité production :
 
 ```text
-V4 production main                main / 85f429e2eec6f810e53f7fcbc00d77f2da525c75
-V4 runtime #261                   24230552d52574e2769c21dcfa84ba11320da2cf
-#259 integration source           integration/v4-recall-pricecharting-global-japan-20260906 / 7b444a242723b66894e02114fc6c8f2c0710ba24 / MERGED
-#260 TCGdex recovery source       fix/v4-unique-fuzzy-name-recovery-20260906 / d809f4aacce0cbfb362546a65de351be2451dcf6 / MERGED
-#261 cross-grader source          fix/v4-crossgrader-proxy-calibration-20260907 / c5e61d1b5377508ccf1a720959e0f7e09d570fbc / MERGED
-#262 closeout docs                docs/post-260-261-closeout-20260907 / 1f4374c724c2a0397df6809a165283f51005ee4e / MERGED
-#257 source-role foundation       fix/v4-source-role-pricecharting-20260906 / 68d8dec2880583cb40a824f48bcf3dd8c6ea4843 / MERGED
-#258 recall source                tune/v4-recall-policy-20260906 / 85a72280876771feb5803df760b88fac105b591d / OPEN DRAFT / SUPERSEDED_BY_259
-#256 Japan source                 v4-jp-market-providers-20260906 / 2ebf7bc07e757f2f6b3bcb1a59578fdfda927df1 / OPEN DRAFT / SUPERSEDED_BY_259
-Old post-260 docs branch          docs/post-260-tcgdex-closeout-20260907 / b324ae538981eb99d6a91c15516c3db514e34b38 / HISTORICAL, DO NOT RESET/DELETE
-V5 expérimentale                  agent/v5-poketrace-cardmarket-market-data / #8 OPEN DRAFT
+V4 production main                 main / 3c596370ee7fcde93c969139541bc003e7012b6e
+#268 source                         fix/v4-global-coverage-losses-20260907 / MERGED
+#271 PokeTrace FREE                 fix/v4-poketrace-free-ceiling-production-20260914 / 75eb09768bf55d002466c5e3d50b038c3884ceb5 / OPEN DRAFT
+#273 Fanatics diagnostic            diag/v4-fanatics-ppt-variant-proof-20260914 / c31882e8adacff8c291a43e78eb8ab6712ff2359 / OPEN DRAFT / DIAGNOSTIC_ONLY
+post-#268 docs closeout             docs/post-268-closeout-20260914 / ACTIVE DOCS-ONLY
+#270 Robot KB Magi snapshots        feat/robot-kb-magi-sold-marked-snapshots-20260907 / 9232931fbbc2cc6c970850e0f8c4d7eac69a46e8 / OPEN DRAFT / ROBOT_KB_ONLY
+#269 exact-coordinate branch        fix/v4-coordinate-authoritative-card-identity-20260907 / a94d5009f556969e242fa16babb6aea14f3f8a31 / OPEN DRAFT / RE-AUDIT REQUIRED
+V5 expérimentale                   agent/v5-poketrace-cardmarket-market-data / #8 OPEN DRAFT / PROTECTED
+P3 durable shadow                  agent/p3-postgres-durable-shadow / SEPARATE FROM MAIN
 ```
 
-PR #8 reste expérimentale/draft/non mergée ; ne jamais la merger dans `main` sans autorisation explicite.
+Le worktree local historique `/Users/dylanduarte/.codex/.chatgpt-projects/g-p-6a7a34b31aa081919bbc38dfbb210097/work/gcc-auction-watcher` n'est pas supposé accessible ni synchronisé. GitHub réel reste l'autorité pour cet inventaire.
 
-## Pourquoi deux branches de closeout le 7 septembre
+## Branche production
 
-`docs/post-260-tcgdex-closeout-20260907` a été créée sur le `main` post-#260. Pendant son édition, #261 a été mergée puis un closeout docs #261 a fait avancer `main`. Rebaser cette branche par reset aurait été destructif et aurait risqué d'écraser les docs #261. Elle est donc conservée comme provenance historique.
+`main@3c596370ee7fcde93c969139541bc003e7012b6e` contient #268 et constitue V4 production canonique.
 
-`docs/post-260-261-closeout-20260907` est repartie proprement du `main@22303a34...`, a consolidé seulement les documents de reprise, puis a été mergée via #262. Aucune branche n'a été supprimée.
+Premier Main Scanner naturel post-#268 vérifié : `34886292095` **SUCCESS** sur ce SHA.
 
-## Comptage / provenance
+Le classement provider actuel est : GCC `OPERATIONAL`; Fanatics, COMC, Magi, Cardova, Mercari et SNKRDUNK `PROVIDER_BLOCKED`.
 
-Le dernier audit exhaustif historique connu, le 18 août, comptait **158 branches distantes**. Ce nombre n'est plus actuel : **ne pas présenter `158` comme nombre actuel** sans nouvel audit exhaustif.
+## Branche #271 — PokeTrace FREE
 
-Toute suppression exige audit + autorisation explicite.
+`fix/v4-poketrace-free-ceiling-production-20260914`
 
-## Branches V4 / main récentes
+- head `75eb09768bf55d002466c5e3d50b038c3884ceb5` ;
+- base `main@3c596370...` ;
+- PR #271 OPEN/DRAFT/NON MERGED ;
+- validations Global `34879803090`, Auction `34879802895`, Cardova `34879802823` : SUCCESS ;
+- corrige uniquement le plafond PokeTrace FREE des entrypoints production ;
+- aucun merge sans autorisation explicite.
 
-- `integration/v4-recall-pricecharting-global-japan-20260906` — #259, intégration canonique des capacités #256/#257/#258, **MERGED** ;
-- `fix/v4-unique-fuzzy-name-recovery-20260906` — #260, base `7cb0e067...`, head validé `d809f4aac...`, validation `34053317112` SUCCESS, merge production `db4954f5...` ;
-- `fix/v4-crossgrader-proxy-calibration-20260907` — #261, base `db4954f5...`, code validé `c58aa4c...`, final head `c5e61d1...`, validation `34092254431` SUCCESS, merge runtime `24230552...` ;
-- `docs/post-260-261-closeout-20260907` — #262, closeout docs-only consolidé, **MERGED** à `85f429e2...` ;
-- `fix/v4-source-role-pricecharting-20260906` — #257, foundation source-role/PriceCharting, **MERGED** puis incluse dans #259 ;
-- `tune/v4-recall-policy-20260906` — #258, **OPEN/DRAFT/STALE_OPEN/SUPERSEDED_BY_259** ; ne pas merger ;
-- `v4-jp-market-providers-20260906` — #256, **OPEN/DRAFT/STALE_OPEN/SUPERSEDED_BY_259** ; ne pas merger ;
-- `docs/post-260-tcgdex-closeout-20260907` — ancienne branche docs-only post-#260, devenue provenance après merge concurrent #261 ; ne pas reset/delete sans autorisation.
+## Branche #273 — Fanatics diagnostic
 
-## Lignée eBay récente
+`diag/v4-fanatics-ppt-variant-proof-20260914`
 
-- #250→#254 : diagnostics/résilience body/navigation/structured salvage, mergés sur main ;
-- `diag/v4-ebay-navigation-salvage-reasons-20260904` — #248 OPEN/DRAFT mais superseded par la lignée #250→#254 ;
-- anciennes branches #226/#228/#233 : superseded par #238/#239 puis les correctifs ultérieurs ;
-- `validate/v4-ebay-bulk-live-benchmark-20260902` — #234 validation-only/inconclusive ; ne pas merger.
+- head `c31882e8adacff8c291a43e78eb8ab6712ff2359` ;
+- PR #273 OPEN/DRAFT ;
+- workflow diagnostic `34886340368` SUCCESS ;
+- lecture seule, aucune mutation runtime ;
+- le plancher PPT a empêché un appel lorsque le budget restant était trop bas ;
+- branche diagnostique, **non destinée au merge production**.
 
-## Auction / TCGdex production provenance
+Ne pas baisser le plancher PPT ou relâcher l'identité pour forcer un diagnostic. Shining Mewtwo reste matériellement ambigu ; Fanatics reste `PROVIDER_BLOCKED` indépendamment du cas Litten à cause du coût acheteur final non prouvé.
 
-- `fix/v4-poketrace-aggregate-quality-20260903` — #247, provenance historique ; politique agrégat ensuite modifiée par #259 ;
+## Branche de closeout docs post-#268
+
+`docs/post-268-closeout-20260914`
+
+Cette branche part du `main@3c596370...` et ne doit contenir que de la documentation. Elle met à jour README/phase courante/ledger/inventaires après le merge #268 et les observations post-merge #271/#273.
+
+Aucune PR de merge n'était ouverte pour cette branche au contrôle du 15 septembre 2026. Aucun merge n'est implicite.
+
+## Branches V4 récentes / supersessions
+
+- `integration/v4-recall-pricecharting-global-japan-20260906` — #259, **MERGED**, intégration canonique de #256/#257/#258 ;
+- `fix/v4-unique-fuzzy-name-recovery-20260906` — #260, **MERGED**, constrained TCGdex recovery ;
+- `fix/v4-crossgrader-proxy-calibration-20260907` — #261, **MERGED** ;
+- `fix/v4-source-role-pricecharting-20260906` — #257, **MERGED** puis absorbée dans #259 ;
+- `tune/v4-recall-policy-20260906` — #258, **OPEN/DRAFT/STALE_OPEN/SUPERSEDED_BY_259** ;
+- `v4-jp-market-providers-20260906` — #256, **OPEN/DRAFT/STALE_OPEN/SUPERSEDED_BY_259** ;
+- `fix/v4-global-coverage-losses-20260907` — #268, **MERGED** dans main ;
+- `fix/v4-coordinate-authoritative-card-identity-20260907` — #269, OPEN/DRAFT, branche large basée avant #268 ; ne pas merger sans nouveau reuse audit ;
+- `fix/v4-poketrace-free-ceiling-production-20260914` — #271, OPEN/DRAFT, validation verte, autorisation explicite requise ;
+- `diag/v4-fanatics-ppt-variant-proof-20260914` — #273, OPEN/DRAFT diagnostic-only ;
+- `docs/post-268-closeout-20260914` — docs-only active ;
+- `docs/post-260-tcgdex-closeout-20260907` — provenance historique, ne pas reset/delete ;
+- `docs/post-260-261-closeout-20260907` — #262, **MERGED**.
+
+## eBay / Auction / TCGdex provenance
+
+- #250→#254 : diagnostics/résilience eBay, mergés ;
+- `diag/v4-ebay-navigation-salvage-reasons-20260904` — #248 OPEN/DRAFT mais superseded ;
+- `validate/v4-ebay-bulk-live-benchmark-20260902` — #234 validation-only/inconclusive ;
 - `fix/v4-auction-pagination-default-preservation-20260903` — #245 MERGED ;
 - #243/#244 — future-start runtime + closeout MERGED ;
-- `fix/v4-auction-recovery-capacity-20260901` — #229 MERGED via #231 ;
-- `merge/v4-auction-recovery-capacity-20260901` — #231 MERGED ;
+- `fix/v4-auction-recovery-capacity-20260901` + `merge/v4-auction-recovery-capacity-20260901` — #229/#231 MERGED ;
 - `validate/v4-auction-recovery-capacity-20260901` — #230 OPEN/DRAFT/DO NOT MERGE ;
-- `fix/v4-tcgdex-source-outage-fallback-20260901` — #222 MERGED via #224 ;
-- `merge/v4-tcgdex-source-outage-fallback-20260901` — #224 MERGED ;
-- `fix/v4-tcgdex-transport-resilience-20260901` — #216 MERGED via #217 ;
-- `merge/v4-tcgdex-transport-resilience-20260901` — #217 MERGED ;
-- `fix/v4-upcoming-auction-start-guard-current-main-20260901` — #220 MERGED ;
-- `fix/v4-external-pending-throughput-20260831` — #214 MERGED ;
-- `fix/v4-auction-order-exhaustive-coverage-20260831` — #211 MERGED ;
-- `merge/v4-auction-order-hardening-20260831` — #212 MERGED.
+- #222/#224 — TCGdex outage fallback MERGED ;
+- #216/#217 — TCGdex transport resilience MERGED ;
+- #220 — future-start guard MERGED ;
+- #214 — external pending throughput MERGED ;
+- #211/#212 — auction order hardening MERGED.
 
 ## Robot KB / P3 / Cardova
 
-- `feat/robot-kb-print-run-rarity-symbol-20260831` — #207, mergée uniquement dans `agent/p3-postgres-durable-shadow`; aucune migration durable utilisateur exécutée ;
-- `agent/p3-postgres-durable-shadow` — P3 durable/shadow séparé de `main` ;
-- Cardova stack #199/#204/#205/#206/#208/#209/#210 — principalement OPEN/DRAFT ; aucun write durable par housekeeping ;
-- #210 prépare un chemin durable avec backup/locks/autorisation explicite ; aucune exécution autorisée par défaut.
+- `feat/robot-kb-magi-sold-marked-snapshots-20260907` — #270 OPEN/DRAFT, Robot KB seulement ; un SOLD-marked n'est pas une vente finale prouvée ;
+- `feat/robot-kb-print-run-rarity-symbol-20260831` — #207 mergée uniquement dans P3 ;
+- `agent/p3-postgres-durable-shadow` — P3 séparé de `main` ;
+- Cardova stack #199/#204/#205/#206/#208/#209/#210 — durable/shadow ;
+- #210 exige autorisation explicite + backup + locks + preflight avant toute écriture durable.
+
+Aucune action V4 ne doit déclencher une écriture Neon/Robot KB durable par défaut.
 
 ## V5
 
-- `agent/v5-poketrace-cardmarket-market-data` — PR #8, OPEN/DRAFT/NON-MERGED ; head historiquement vérifié `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` ;
-- V5 et ses child/shadow ne sont pas des branches de production V4.
+`agent/v5-poketrace-cardmarket-market-data`
 
-## Global / historique
+- PR #8 OPEN/DRAFT/NON MERGED ;
+- head `bc641dfe64c1cacc912b585d4e86fc3c1bd7d95f` ;
+- V5 et ses child/shadow ne sont pas des branches V4 production ;
+- ne jamais merger #8 dans `main` sans autorisation explicite utilisateur.
 
-- `feat/v4-global-marketplace-discovery-20260820` — provenance #147 ;
-- `ops/v4-global-marketplace-cutover-20260820` — provenance #148 ;
-- `ops/v4-global-run-registry-20260820` — provenance #151 ;
-- `shadow/v4-global-current-main-reintegration-20260819` — #138 superseded par #139 ;
-- #108/#109/#110/#113/#114/#115 — stack historique absorbé par #139 ;
-- PR #126 : superseded par #127→#135 ;
-- #159 superseded fonctionnellement par #177 ;
-- anciens one-shots/temp/diagnostics = provenance uniquement.
+## Nettoyage / suppression
 
-## Règle cleanup branches
+Le dernier audit exhaustif historique connu n'est pas un compteur actuel. Ne pas annoncer un nombre courant de branches sans nouvel audit exhaustif.
 
-1. inventaire distant exhaustif ;
+Toute suppression de branche exige :
+
+1. inventaire distant ;
 2. PR/supersession ;
 3. atteignabilité du SHA utile ;
 4. références workflow ;
 5. fichiers/tests/docs uniques ;
 6. autorisation explicite ;
-7. jamais de suppression V5/P3/branche active par simple housekeeping ;
-8. jamais de reset/force-push pour « remettre à jour » une branche de provenance.
+7. aucun reset/force-push pour remettre une branche de provenance « à jour ».
 
 Aucune branche n'a été supprimée par ce closeout.
