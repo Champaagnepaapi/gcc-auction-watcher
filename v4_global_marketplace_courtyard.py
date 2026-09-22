@@ -11,6 +11,8 @@ from v4_global_marketplace_discovery import MarketplaceListing
 
 
 COURTYARD_MARKETPLACE_URL = "https://courtyard.io/marketplace"
+COURTYARD_MAX_DETAIL_PAGES = 30
+COURTYARD_MAX_SCROLL_ROUNDS = 8
 COURTYARD_ASSET_RE = re.compile(
     r"https?://(?:www\.)?(?:marketplace\.)?courtyard\.io/asset/[0-9a-f]{64}",
     re.I,
