@@ -9,6 +9,7 @@ from v4_global_marketplace_courtyard import (
     parse_courtyard_asset_page,
 )
 from v4_global_market_core import FIXED_ASK
+from v4_global_marketplace_scan import scan_courtyard_inventory
 
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
@@ -147,6 +148,72 @@ class CourtyardMarketplaceTests(unittest.TestCase):
                 observed_at=NOW,
             )
         )
+
+
+    def test_public_scanner_is_bounded_and_never_claims_pagination_complete(self):
+        class Response:
+            status = 200
+
+        class Locator:
+            def __init__(self, kind):
+                self.kind = kind
+
+            def inner_text(self, timeout=None):
+                return "Vaulted and insured\\nBuy Now\\n$80"
+
+            def all_text_contents(self):
+                return [_script()]
+
+        class Page:
+            def __init__(self):
+                self.current = ""
+
+            def goto(self, url, **kwargs):
+                self.current = url
+                return Response()
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+            def evaluate(self, expression):
+                if "querySelectorAll" in expression:
+                    return [ASSET]
+                return None
+
+            def content(self):
+                return ""
+
+            def locator(self, selector):
+                return Locator("body" if selector == "body" else "script")
+
+        rows, status = scan_courtyard_inventory(
+            Page(), observed_at=NOW, max_detail_pages=1, scroll_rounds=1
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(status.market, "courtyard")
+        self.assertEqual(status.status, "OK")
+        self.assertEqual(status.candidates, 1)
+        self.assertEqual(status.exact, 1)
+        self.assertFalse(status.complete)
+        self.assertIn("FMV ignored", status.detail)
+
+    def test_public_scanner_does_not_bypass_http_block(self):
+        class Response:
+            status = 403
+
+        class Page:
+            def goto(self, url, **kwargs):
+                return Response()
+
+            def wait_for_timeout(self, _milliseconds):
+                return None
+
+        rows, status = scan_courtyard_inventory(Page(), observed_at=NOW)
+        self.assertEqual(rows, [])
+        self.assertEqual(status.status, "UNAVAILABLE")
+        self.assertEqual(status.detail, "HTTP_403")
+        self.assertFalse(status.complete)
+
 
 
 if __name__ == "__main__":
