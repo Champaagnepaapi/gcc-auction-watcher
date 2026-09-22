@@ -175,11 +175,17 @@ def build_identity_catalog(
 def _fanatics_urls(page: Any, *, scroll_rounds: int) -> tuple[list[str], int]:
     page.goto(FANATICS_BROWSE, wait_until="domcontentloaded", timeout=25000)
     page.wait_for_timeout(1200)
+    detail_limit = min(
+        max(1, int(max_detail_pages)), courtyard.COURTYARD_MAX_DETAIL_PAGES
+    )
+    scroll_limit = min(
+        max(1, int(scroll_rounds)), courtyard.COURTYARD_MAX_SCROLL_ROUNDS
+    )
     found: list[str] = []
     rounds = 0
     stable = 0
     previous = 0
-    for _ in range(max(1, int(scroll_rounds))):
+    for _ in range(scroll_limit):
         rounds += 1
         try:
             hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(Boolean)")
@@ -442,7 +448,7 @@ def scan_courtyard_inventory(
 
     output: list[MarketplaceListing] = []
     inspected = 0
-    for url in found[: max(1, int(max_detail_pages))]:
+    for url in found[:detail_limit]:
         inspected += 1
         try:
             response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
@@ -470,7 +476,7 @@ def scan_courtyard_inventory(
         candidates=len(found),
         exact=len(output),
         detail=(
-            f"public vaulted marketplace; inspected={inspected}; "
+            f"public vaulted marketplace; inspected={inspected}/{detail_limit}; "
             "FMV ignored; buyer funding all-in unproven; pagination/exhaustion unproven"
         ),
         complete=False,
