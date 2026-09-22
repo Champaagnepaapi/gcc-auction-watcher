@@ -403,11 +403,17 @@ def scan_courtyard_inventory(
             "courtyard", "ERROR", detail=type(error).__name__, complete=False
         )
 
+    detail_limit = min(
+        max(1, int(max_detail_pages)), courtyard.COURTYARD_MAX_DETAIL_PAGES
+    )
+    scroll_limit = min(
+        max(1, int(scroll_rounds)), courtyard.COURTYARD_MAX_SCROLL_ROUNDS
+    )
     found: list[str] = []
     rounds = 0
     stable = 0
     previous = 0
-    for _ in range(max(1, int(scroll_rounds))):
+    for _ in range(scroll_limit):
         rounds += 1
         try:
             hrefs = page.evaluate(
