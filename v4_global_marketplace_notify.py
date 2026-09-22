@@ -33,6 +33,7 @@ from v4_global_marketplace_scan import (
     build_identity_catalog,
     load_cardova_files,
     scan_comc_inventory,
+    scan_courtyard_inventory,
     scan_fanatics_inventory,
     scan_gcc_inventory,
     scan_magi_inventory,
@@ -136,6 +137,19 @@ def _scan(args: argparse.Namespace, *, observed_at: datetime):
             listings.extend(comc_rows)
             statuses.append(comc_status)
 
+            courtyard_context = browser.new_context(locale="en-US", user_agent="Mozilla/5.0")
+            try:
+                courtyard_rows, courtyard_status = scan_courtyard_inventory(
+                    courtyard_context.new_page(),
+                    observed_at=observed_at,
+                    max_detail_pages=max(1, int(args.browser_detail_cap)),
+                    scroll_rounds=max(1, int(args.browser_scroll_rounds)),
+                )
+                listings.extend(courtyard_rows)
+                statuses.append(courtyard_status)
+            finally:
+                courtyard_context.close()
+
             from v4_global_marketplace_japan_public import scan_public_inventory
             for market in ('mercari', 'snkrdunk'):
                 public_context = browser.new_context()
@@ -151,7 +165,7 @@ def _scan(args: argparse.Namespace, *, observed_at: datetime):
             browser.close()
     else:
         detail = "browser sources disabled" if args.no_browser_sources else "identity catalog unavailable"
-        for market in ("fanatics", "magi", "comc", "mercari", "snkrdunk"):
+        for market in ("fanatics", "magi", "comc", "courtyard", "mercari", "snkrdunk"):
             statuses.append(ScanStatus(market, "SKIPPED", detail=detail, complete=False))
 
     deduped = {listing.stable_key: listing for listing in listings}
@@ -623,7 +637,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "known_gcc_history_identities_are_retrieval_catalog_only": True,
         "provider_disappearance_is_sold": False,
         "marketplace_adapters_independent": True,
-        "opportunity_sources": ["gcc", "fanatics", "comc", "magi", "cardova", "mercari", "snkrdunk"],
+        "opportunity_sources": ["gcc", "fanatics", "comc", "magi", "cardova", "courtyard", "mercari", "snkrdunk"],
         "marketplace_sources_have_valuation_authority": False,
         "valuation_sources": [
             "PokemonPriceTracker/PokeTrace SOLD-derived aggregate",
