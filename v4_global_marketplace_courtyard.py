@@ -330,43 +330,63 @@ def _body_listing_price(body: str) -> Optional[float]:
     return None
 
 
-def parse_courtyard_asset_page(
+def courtyard_asset_outcome(
     *,
     source_url: str,
     body: str,
     script_texts: Sequence[str],
     observed_at: datetime,
-) -> Optional[MarketplaceListing]:
-    """Parse one public Courtyard asset page conservatively.
+) -> tuple[Optional[MarketplaceListing], str]:
+    """Return one safe listing plus a bounded rejection reason.
 
-    Courtyard's own FMV/market value is deliberately ignored: this adapter is
-    opportunity-only. A listing is emitted only when the page proves a live ask,
-    exact card identity, language, grader and grade. Buyer funding costs remain
-    unknown until a concrete payment route is proven, so all-in stays unavailable.
+    The reason contains no provider payload or user data and is suitable for
+    aggregate live diagnostics.
     """
     source = _asset_url(source_url)
-    if not source or re.search(r"\bNot\s+listed\b", body, re.I):
-        return None
+    if not source:
+        return None, "ASSET_URL_UNPROVEN"
+    if re.search(r"\bNot\s+listed\b", body, re.I):
+        return None, "NOT_LISTED"
 
     candidates: dict[tuple[str, float], tuple[CommercialIdentity, float]] = {}
+    saw_live_price = False
+    saw_identity = False
     for row in _json_objects(script_texts):
         price = _active_listing_price(row)
-        if price is None:
-            continue
+        if price is not None:
+            saw_live_price = True
         identity = _nested_identity(row)
-        if identity is None:
+        if identity is not None:
+            saw_identity = True
+        if price is None or identity is None:
             continue
         candidates[(identity.strict_key, price)] = (identity, price)
 
     body_price = _body_listing_price(body)
     body_identity = _body_identity(body) if body_price is not None else None
+    if body_price is not None:
+        saw_live_price = True
+    if body_identity is not None:
+        saw_identity = True
     if body_price is not None and body_identity is not None:
         candidates[(body_identity.strict_key, body_price)] = (body_identity, body_price)
 
+    if not candidates:
+        if not saw_live_price and not saw_identity:
+            return None, "PRICE_AND_IDENTITY_UNPROVEN"
+        if not saw_live_price:
+            return None, "LIVE_PRICE_UNPROVEN"
+        if not saw_identity:
+            return None, "IDENTITY_UNPROVEN"
+        return None, "PRICE_IDENTITY_NOT_JOINTLY_PROVEN"
+
     identity_keys = {key[0] for key in candidates}
     prices = {key[1] for key in candidates}
-    if len(identity_keys) != 1 or len(prices) != 1:
-        return None
+    if len(identity_keys) != 1:
+        return None, "IDENTITY_CONFLICT"
+    if len(prices) != 1:
+        return None, "PRICE_CONFLICT"
+
     identity, price = next(iter(candidates.values()))
     source_id = source.rsplit("/", 1)[-1]
     return MarketplaceListing(
@@ -387,4 +407,27 @@ def parse_courtyard_asset_page(
             "Courtyard vaulted marketplace fixed ASK; marketplace itself has no valuation authority; "
             "buyer funding/payment all-in intentionally unproven; physical redemption shipping/tax excluded from vault route"
         ),
+    ), "EXACT"
+
+
+def parse_courtyard_asset_page(
+    *,
+    source_url: str,
+    body: str,
+    script_texts: Sequence[str],
+    observed_at: datetime,
+) -> Optional[MarketplaceListing]:
+    """Parse one public Courtyard asset page conservatively.
+
+    Courtyard's own FMV/market value is deliberately ignored: this adapter is
+    opportunity-only. A listing is emitted only when the page proves a live ask,
+    exact card identity, language, grader and grade. Buyer funding costs remain
+    unknown until a concrete payment route is proven, so all-in stays unavailable.
+    """
+    listing, _reason = courtyard_asset_outcome(
+        source_url=source_url,
+        body=body,
+        script_texts=script_texts,
+        observed_at=observed_at,
     )
+    return listing
