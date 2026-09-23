@@ -13,6 +13,7 @@ import requests
 
 import japan_edge_hunter as japan
 import v4_global_comc_hardening as comc_v4
+import v4_global_marketplace_courtyard as courtyard
 import v4_global_live_shadow as legacy
 import v4_global_magi_registry_hardening as magi_hardening
 import v4_global_retrieval_hardening as retrieval_v1
@@ -174,11 +175,17 @@ def build_identity_catalog(
 def _fanatics_urls(page: Any, *, scroll_rounds: int) -> tuple[list[str], int]:
     page.goto(FANATICS_BROWSE, wait_until="domcontentloaded", timeout=25000)
     page.wait_for_timeout(1200)
+    detail_limit = min(
+        max(1, int(max_detail_pages)), courtyard.COURTYARD_MAX_DETAIL_PAGES
+    )
+    scroll_limit = min(
+        max(1, int(scroll_rounds)), courtyard.COURTYARD_MAX_SCROLL_ROUNDS
+    )
     found: list[str] = []
     rounds = 0
     stable = 0
     previous = 0
-    for _ in range(max(1, int(scroll_rounds))):
+    for _ in range(scroll_limit):
         rounds += 1
         try:
             hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(Boolean)")
@@ -363,6 +370,127 @@ def scan_magi_inventory(
         candidates=len(asks),
         exact=len(output),
         detail="broad Pokemon PSA10 inventory query; no per-card searches; PAGINATION_UNPROVEN; one observed search page",
+        complete=False,
+    )
+
+
+def scan_courtyard_inventory(
+    page: Any,
+    *,
+    observed_at: datetime,
+    max_detail_pages: int = 200,
+    scroll_rounds: int = 20,
+) -> tuple[list[MarketplaceListing], ScanStatus]:
+    """Read the public Courtyard marketplace without assuming completeness.
+
+    Asset pages are accepted only through the fail-closed parser in
+    v4_global_marketplace_courtyard. Courtyard FMV is never valuation evidence.
+    """
+    try:
+        response = page.goto(
+            courtyard.COURTYARD_MARKETPLACE_URL,
+            wait_until="domcontentloaded",
+            timeout=25000,
+        )
+        status = getattr(response, "status", None)
+        if isinstance(status, int) and not 200 <= status < 300:
+            return [], ScanStatus(
+                "courtyard", "UNAVAILABLE", detail=f"HTTP_{status}", complete=False
+            )
+        page.wait_for_timeout(1000)
+    except Exception as error:
+        return [], ScanStatus(
+            "courtyard", "ERROR", detail=type(error).__name__, complete=False
+        )
+
+    detail_limit = min(
+        max(1, int(max_detail_pages)), courtyard.COURTYARD_MAX_DETAIL_PAGES
+    )
+    scroll_limit = min(
+        max(1, int(scroll_rounds)), courtyard.COURTYARD_MAX_SCROLL_ROUNDS
+    )
+    found: list[str] = []
+    rounds = 0
+    stable = 0
+    previous = 0
+    for _ in range(scroll_limit):
+        rounds += 1
+        try:
+            hrefs = page.evaluate(
+                "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(Boolean)"
+            )
+        except Exception:
+            hrefs = []
+        try:
+            html = page.content()
+        except Exception:
+            html = ""
+        for url in courtyard.asset_urls_from_values(
+            [*(hrefs if isinstance(hrefs, list) else []), html]
+        ):
+            if url not in found:
+                found.append(url)
+        if len(found) == previous:
+            stable += 1
+        else:
+            stable = 0
+        previous = len(found)
+        if stable >= 2:
+            break
+        try:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(800)
+        except Exception:
+            break
+
+    if not found:
+        return [], ScanStatus(
+            "courtyard",
+            "UNAVAILABLE",
+            pages=rounds,
+            detail="public marketplace yielded no asset URLs; no bypass attempted",
+            complete=False,
+        )
+
+    output: list[MarketplaceListing] = []
+    rejects: Counter[str] = Counter()
+    inspected = 0
+    for url in found[:detail_limit]:
+        inspected += 1
+        try:
+            response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            status = getattr(response, "status", None)
+            if isinstance(status, int) and not 200 <= status < 300:
+                rejects[f"HTTP_{status}"] += 1
+                continue
+            page.wait_for_timeout(500)
+            body = page.locator("body").inner_text(timeout=5000)
+            scripts = page.locator("script").all_text_contents()
+        except Exception as error:
+            rejects[type(error).__name__.upper()] += 1
+            continue
+        listing, reason = courtyard.courtyard_asset_outcome(
+            source_url=url,
+            body=body,
+            script_texts=scripts if isinstance(scripts, list) else [],
+            observed_at=observed_at,
+        )
+        if listing is not None:
+            output.append(listing)
+        else:
+            rejects[reason] += 1
+
+    return output, ScanStatus(
+        "courtyard",
+        "OK",
+        pages=rounds,
+        candidates=len(found),
+        exact=len(output),
+        detail=(
+            f"public vaulted marketplace; inspected={inspected}/{detail_limit}; "
+            f"rejects={dict(rejects)}; FMV ignored; buyer funding all-in unproven; "
+            "pagination/exhaustion unproven"
+        ),
         complete=False,
     )
 
