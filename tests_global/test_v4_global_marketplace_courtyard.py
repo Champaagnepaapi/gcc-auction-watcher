@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from v4_global_marketplace_courtyard import (
     asset_urls_from_values,
+    courtyard_asset_outcome,
     parse_courtyard_asset_page,
 )
 from v4_global_market_core import FIXED_ASK
@@ -315,6 +316,38 @@ $125"""
             observed_at=NOW,
         )
         self.assertIsNotNone(listing)
+
+
+    def test_bounded_diagnostics_distinguish_not_listed_price_and_identity(self):
+        cases = [
+            (
+                "Not listed\nMake an offer",
+                [],
+                "NOT_LISTED",
+            ),
+            (
+                "Category\nPokémon\nName\nPikachu\nSet\nS Promo\nCard Number\n272\n"
+                "Language\nJapanese\nGrader\nPSA\nGrade\n10",
+                [],
+                "LIVE_PRICE_UNPROVEN",
+            ),
+            (
+                "Buy Now\n$125",
+                [],
+                "IDENTITY_UNPROVEN",
+            ),
+        ]
+        for body, scripts, expected in cases:
+            with self.subTest(expected=expected):
+                listing, reason = courtyard_asset_outcome(
+                    source_url=ASSET,
+                    body=body,
+                    script_texts=scripts,
+                    observed_at=NOW,
+                )
+                self.assertIsNone(listing)
+                self.assertEqual(reason, expected)
+
 
 
 if __name__ == "__main__":
