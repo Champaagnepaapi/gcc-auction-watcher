@@ -293,10 +293,10 @@ def _label_value(body: str, labels: Sequence[str]) -> str:
         if not line:
             continue
         for label in labels:
-            same_line = re.fullmatch(rf"{label}\\s*:\\s*(.+)", line, re.I)
+            same_line = re.fullmatch(rf"{label}\s*:\s*(.+)", line, re.I)
             if same_line:
                 return same_line.group(1).strip()
-            if not re.fullmatch(rf"{label}\\s*:?", line, re.I):
+            if not re.fullmatch(rf"{label}\s*:?", line, re.I):
                 continue
             for value in lines[index + 1 :]:
                 if value:
@@ -369,7 +369,7 @@ def courtyard_asset_outcome(
         candidates[(identity.strict_key, price)] = (identity, price)
 
     body_price = _body_listing_price(body)
-    body_identity = _body_identity(body) if body_price is not None else None
+    body_identity = _body_identity(body)
     if body_price is not None:
         saw_live_price = True
     if body_identity is not None:
