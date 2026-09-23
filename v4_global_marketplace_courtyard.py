@@ -299,8 +299,6 @@ def _label_value(body: str, labels: Sequence[str]) -> str:
 
 
 def _body_identity(body: str) -> Optional[CommercialIdentity]:
-    if "pokemon" not in _norm(body):
-        return None
     row = {
         "cardName": _label_value(body, (r"Card\s*Name", r"Name")),
         "setName": _label_value(body, (r"Set(?:\s*Name)?",)),
@@ -313,7 +311,7 @@ def _body_identity(body: str) -> Optional[CommercialIdentity]:
         "edition": _label_value(body, (r"Edition",)),
         "finish": _label_value(body, (r"Finish", r"Foil")),
         "variant": _label_value(body, (r"Variant", r"Rarity")),
-        "game": "Pokemon",
+        "game": _label_value(body, (r"Category", r"Game", r"Franchise")),
     }
     return _identity_from_mapping(row)
 
