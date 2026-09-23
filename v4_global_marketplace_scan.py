@@ -453,6 +453,7 @@ def scan_courtyard_inventory(
         )
 
     output: list[MarketplaceListing] = []
+    rejects: Counter[str] = Counter()
     inspected = 0
     for url in found[:detail_limit]:
         inspected += 1
@@ -460,13 +461,15 @@ def scan_courtyard_inventory(
             response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
             status = getattr(response, "status", None)
             if isinstance(status, int) and not 200 <= status < 300:
+                rejects[f"HTTP_{status}"] += 1
                 continue
             page.wait_for_timeout(500)
             body = page.locator("body").inner_text(timeout=5000)
             scripts = page.locator("script").all_text_contents()
-        except Exception:
+        except Exception as error:
+            rejects[type(error).__name__.upper()] += 1
             continue
-        listing = courtyard.parse_courtyard_asset_page(
+        listing, reason = courtyard.courtyard_asset_outcome(
             source_url=url,
             body=body,
             script_texts=scripts if isinstance(scripts, list) else [],
@@ -474,6 +477,8 @@ def scan_courtyard_inventory(
         )
         if listing is not None:
             output.append(listing)
+        else:
+            rejects[reason] += 1
 
     return output, ScanStatus(
         "courtyard",
@@ -483,7 +488,8 @@ def scan_courtyard_inventory(
         exact=len(output),
         detail=(
             f"public vaulted marketplace; inspected={inspected}/{detail_limit}; "
-            "FMV ignored; buyer funding all-in unproven; pagination/exhaustion unproven"
+            f"rejects={dict(rejects)}; FMV ignored; buyer funding all-in unproven; "
+            "pagination/exhaustion unproven"
         ),
         complete=False,
     )
