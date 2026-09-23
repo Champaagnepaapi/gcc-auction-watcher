@@ -283,5 +283,39 @@ class CourtyardMarketplaceTests(unittest.TestCase):
         )
 
 
+    def test_dom_fallback_requires_explicit_pokemon_category(self):
+        body = """Name
+Pikachu
+Set
+Pokémon S Promo
+Card Number
+272
+Language
+Japanese
+Grader
+PSA
+Grade
+10
+Buy Now
+$125"""
+        self.assertIsNone(
+            parse_courtyard_asset_page(
+                source_url=ASSET,
+                body=body,
+                script_texts=[],
+                observed_at=NOW,
+            )
+        )
+
+        proven = "Category\nPokémon\n" + body
+        listing = parse_courtyard_asset_page(
+            source_url=ASSET,
+            body=proven,
+            script_texts=[],
+            observed_at=NOW,
+        )
+        self.assertIsNotNone(listing)
+
+
 if __name__ == "__main__":
     unittest.main()
