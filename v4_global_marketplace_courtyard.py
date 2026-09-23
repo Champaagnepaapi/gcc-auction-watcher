@@ -287,16 +287,22 @@ def _active_listing_price(row: Mapping[str, Any]) -> Optional[float]:
 
 
 def _label_value(body: str, labels: Sequence[str]) -> str:
-    for label in labels:
-        match = re.search(
-            rf"(?:^|\n)\s*{label}\s*:?[ \t]*(?:\n[ \t]*)?([^\n]+)",
-            body,
-            re.I,
-        )
-        if match:
-            return match.group(1).strip()
+    """Read one explicit visible label/value pair deterministically."""
+    lines = [line.strip() for line in str(body or "").splitlines()]
+    for index, line in enumerate(lines):
+        if not line:
+            continue
+        for label in labels:
+            same_line = re.fullmatch(rf"{label}\\s*:\\s*(.+)", line, re.I)
+            if same_line:
+                return same_line.group(1).strip()
+            if not re.fullmatch(rf"{label}\\s*:?", line, re.I):
+                continue
+            for value in lines[index + 1 :]:
+                if value:
+                    return value
+            return ""
     return ""
-
 
 def _body_identity(body: str) -> Optional[CommercialIdentity]:
     row = {
