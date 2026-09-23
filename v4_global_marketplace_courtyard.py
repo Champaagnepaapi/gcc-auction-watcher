@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional, Sequence
 from urllib.parse import urlsplit, urlunsplit
@@ -34,7 +35,9 @@ def _text(value: object) -> str:
 
 
 def _norm(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", _text(value).casefold()).strip()
+    text = unicodedata.normalize("NFKD", _text(value))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
 
 
 def _asset_url(value: object) -> str:
@@ -132,7 +135,7 @@ def _grade(value: object) -> str:
 
 def _identity_from_mapping(row: Mapping[str, Any]) -> Optional[CommercialIdentity]:
     game = _direct_value(row, ("game", "category", "franchise", "brand"))
-    if game is not None and "pokemon" not in _norm(game):
+    if _norm(game) not in {"pokemon", "pokemon cards", "pokemon card"}:
         return None
     name = _text(_direct_value(row, ("cardName", "card_name", "collectibleName", "collectible_name")))
     set_name = _text(_direct_value(row, ("setName", "set_name", "cardSet", "card_set")))
@@ -157,17 +160,111 @@ def _identity_from_mapping(row: Mapping[str, Any]) -> Optional[CommercialIdentit
     )
 
 
+def _identity_from_attributes(attributes: object) -> Optional[CommercialIdentity]:
+    """Parse Courtyard's public NFT trait array without inventing missing fields."""
+    if not isinstance(attributes, list):
+        return None
+    traits: dict[str, list[str]] = {}
+    for raw in attributes:
+        if not isinstance(raw, Mapping):
+            continue
+        key = _norm(_direct_value(raw, ("trait_type", "traitType", "name", "key")))
+        value = _text(_direct_value(raw, ("value", "trait_value", "traitValue")))
+        if key and value:
+            traits.setdefault(key, []).append(value)
+
+    def unique(*names: str) -> str:
+        values: list[str] = []
+        for name in names:
+            for value in traits.get(_norm(name), []):
+                if value not in values:
+                    values.append(value)
+        return values[0] if len(values) == 1 else ""
+
+    category = unique("Category", "Game", "Franchise")
+    if _norm(category) not in {"pokemon", "pokemon cards", "pokemon card"}:
+        return None
+    name = unique("Title/Subject", "Title", "Subject", "Card Name")
+    set_name = unique("Set", "Set Name")
+    number = unique("Card Number", "Collector Number").lstrip("#")
+    language = _language(unique("Language"))
+    grader = unique("Grader", "Grading Company").upper()
+    grade = _grade(unique("Grade"))
+
+    properties: list[str] = []
+    for key in ("property", "variant", "rarity", "finish", "edition", "printing"):
+        for value in traits.get(key, []):
+            if value not in properties:
+                properties.append(value)
+
+    finish = ""
+    edition = ""
+    variant_parts: list[str] = []
+    for value in properties:
+        normalized = _norm(value)
+        if normalized in {"holo", "holofoil"} and not finish:
+            finish = "Holo"
+        elif normalized in {"reverse", "reverse holo", "reverse holofoil"} and not finish:
+            finish = "Reverse"
+        elif normalized in {"non holo", "non holofoil"} and not finish:
+            finish = "Non Holo"
+        elif normalized in {"1st edition", "first edition"} and not edition:
+            edition = "First Edition"
+        elif normalized == "unlimited" and not edition:
+            edition = "Unlimited"
+        else:
+            variant_parts.append(value)
+
+    if not (
+        name
+        and set_name
+        and number
+        and language
+        and grader in _SUPPORTED_GRADERS
+        and grade
+    ):
+        return None
+    identity = CommercialIdentity(
+        name=name,
+        set_name=set_name,
+        number=number,
+        language=language,
+        grader=grader,
+        grade=grade,
+        edition=edition,
+        finish=finish,
+        variant=" | ".join(variant_parts),
+    )
+    return (
+        identity
+        if identity.complete_for_exact_market and identity.opportunity_language
+        else None
+    )
+
+
 def _nested_identity(row: Mapping[str, Any]) -> Optional[CommercialIdentity]:
     candidates: list[CommercialIdentity] = []
-    direct = _identity_from_mapping(row)
-    if direct is not None:
-        candidates.append(direct)
-    for key in ("card", "collectible", "asset", "item", "product", "metadata"):
-        value = _direct_value(row, (key,))
+
+    def walk(value: object, depth: int = 0) -> None:
+        if depth > 6:
+            return
         if isinstance(value, Mapping):
-            candidate = _identity_from_mapping(value)
-            if candidate is not None:
-                candidates.append(candidate)
+            direct = _identity_from_mapping(value)
+            if direct is not None:
+                candidates.append(direct)
+            attrs = _direct_value(value, ("attributes", "traits", "properties"))
+            attribute_identity = _identity_from_attributes(attrs)
+            if attribute_identity is not None:
+                candidates.append(attribute_identity)
+            for child in value.values():
+                if isinstance(child, (Mapping, list)):
+                    walk(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value:
+                if isinstance(child, (Mapping, list)):
+                    walk(child, depth + 1)
+
+    walk(row)
     by_key = {candidate.strict_key: candidate for candidate in candidates}
     return next(iter(by_key.values())) if len(by_key) == 1 else None
 
