@@ -216,5 +216,72 @@ class CourtyardMarketplaceTests(unittest.TestCase):
 
 
 
+    def test_nft_trait_metadata_with_accented_pokemon_category_is_exact(self):
+        traits = [
+            {"trait_type": "Grader", "value": "PSA"},
+            {"trait_type": "Grade", "value": "10 GEM MINT"},
+            {"trait_type": "Category", "value": "Pokémon"},
+            {"trait_type": "Set", "value": "Pokémon S Promo"},
+            {"trait_type": "Title/Subject", "value": "Pikachu"},
+            {"trait_type": "Language", "value": "Japanese"},
+            {"trait_type": "Card Number", "value": "272"},
+            {"trait_type": "property", "value": "Holo"},
+            {"trait_type": "property", "value": "Pokemon Go Card File Set"},
+        ]
+        script = json.dumps(
+            {
+                "listing": {
+                    "listingStatus": "ACTIVE",
+                    "listingPriceUsd": 125,
+                    "asset": {"metadata": {"attributes": traits}},
+                }
+            }
+        )
+        listing = parse_courtyard_asset_page(
+            source_url=ASSET,
+            body="Vaulted and insured\nBuy Now\n$125",
+            script_texts=[script],
+            observed_at=NOW,
+        )
+        self.assertIsNotNone(listing)
+        assert listing is not None
+        self.assertEqual(listing.identity.name, "Pikachu")
+        self.assertEqual(listing.identity.set_name, "Pokémon S Promo")
+        self.assertEqual(listing.identity.number, "272")
+        self.assertEqual(listing.identity.language, "ja")
+        self.assertEqual(listing.identity.grader, "PSA")
+        self.assertEqual(listing.identity.grade, "10")
+        self.assertEqual(listing.identity.finish, "Holo")
+        self.assertEqual(listing.identity.variant, "Pokemon Go Card File Set")
+
+    def test_nft_trait_metadata_requires_explicit_pokemon_category(self):
+        traits = [
+            {"trait_type": "Grader", "value": "PSA"},
+            {"trait_type": "Grade", "value": "10 GEM MINT"},
+            {"trait_type": "Category", "value": "Baseball"},
+            {"trait_type": "Set", "value": "Topps"},
+            {"trait_type": "Title/Subject", "value": "Pikachu"},
+            {"trait_type": "Language", "value": "English"},
+            {"trait_type": "Card Number", "value": "25"},
+        ]
+        script = json.dumps(
+            {
+                "listing": {
+                    "listingStatus": "ACTIVE",
+                    "listingPriceUsd": 125,
+                    "asset": {"metadata": {"attributes": traits}},
+                }
+            }
+        )
+        self.assertIsNone(
+            parse_courtyard_asset_page(
+                source_url=ASSET,
+                body="Buy Now\n$125",
+                script_texts=[script],
+                observed_at=NOW,
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
